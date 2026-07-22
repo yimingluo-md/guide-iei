@@ -1,0 +1,240 @@
+# =============================================================================
+# VEP annotation pipeline — configuration
+# =============================================================================
+# Every annotation source is a toggleable block: set `enabled: true|false` and
+# give a `path`. A source whose file is missing at run time is auto-skipped
+# with a warning (the run does NOT fail) unless `required: true`.
+#
+# Availability tiers (see docs/ANNOTATIONS.md):
+#   auto          – fetched by scripts/download_references.sh
+#   auto-per-run  – fetched fresh every run (ClinVar)
+#   bring-your-own-large     – large/registered download; you supply it
+#   bring-your-own-custom    – lab-generated track; not public
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Container: how to run VEP. `runtime` = docker | podman | singularity | apptainer
+# -----------------------------------------------------------------------------
+container:
+  runtime: docker
+  image: "vep-annotate:latest"        # built by docker/build.sh
+  vep_image_tag: "release_113.4"      # base ensemblorg/ensembl-vep tag (>=110 for AlphaMissense)
+  loftee_branch: "grch38"             # MUST be grch38 for GRCh38
+  # Extra bind-mounts (host:container). Reference dirs are auto-mounted from paths below.
+  extra_mounts: []
+
+# -----------------------------------------------------------------------------
+# Reference genome + VEP cache (species/assembly-wide settings)
+# -----------------------------------------------------------------------------
+reference:
+  species: homo_sapiens
+  assembly: GRCh38
+  # Root dir holding the VEP offline cache (the INSTALL.pl `-c` dir).
+  vep_cache_dir: "references/vep_cache"     # tier: auto
+  # Reference FASTA (bgzipped). Required for HGVS + LOFTEE + SpliceAI.
+  fasta:
+    enabled: true
+    required: true
+    path: "references/fasta/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"  # tier: auto
+
+# -----------------------------------------------------------------------------
+# Region restriction  (the main PC-vs-HPC lever)
+# -----------------------------------------------------------------------------
+# DEFAULT: restrict to coding exons + essential/consensus splice sites. This
+# pre-filters the input VCF with `bcftools view -R <bed>` BEFORE VEP, so VEP
+# only processes on-target variants. On a whole-genome VCF this cuts the work
+# from tens of millions of variants to the ~1-2% that are coding/splice —
+# turning a multi-hour HPC job into minutes on a workstation.
+#
+# NOTE: VEP's own --coding_only filters the OUTPUT but still PROCESSES every
+# variant, so it gives no speedup. The speedup comes from the BED pre-filter.
+region:
+  coding_only: true          # DEFAULT. false => annotate all variants (WGS/non-coding; HPC-scale)
+  # How the coding+splice BED is built. `ensembl_gtf` uses the CDS features from
+  # the release-matched Ensembl GTF (same coordinates as your VEP cache — no
+  # contig-name mismatch). Rebuilt by scripts/build_coding_bed.sh.
+  source: ensembl_gtf        # ensembl_gtf | bed
+  # Padding (bp) added to each side of every CDS block, to capture splice sites.
+  # 8 bp matches the splice consensus window dbNSFP annotates (-3..+8) and the
+  # Sequence Ontology splice_region definition (3 exonic / 8 intronic). The
+  # essential GT-AG dinucleotides (+/-1..2) are a subset of this window.
+  padding_bp: 8
+  # Built/cached BED (bgzipped + tabix). Auto-generated if missing.
+  bed: "references/regions/coding_splice.padded.bed.gz"
+  # OPTIONAL user BED override (e.g. a gene-panel / exome-capture BED). If set
+  # and non-empty, this is used verbatim instead of building from the GTF.
+  custom_bed: ""
+
+# -----------------------------------------------------------------------------
+# Run / performance / output
+# -----------------------------------------------------------------------------
+run:
+  fork: 8                    # parallel forks; set to your core count (vep_hg38.sh used 64)
+  buffer_size: 5000
+  force_overwrite: true
+
+output:
+  # VCF output preserves sample GT/zygosity (unlike --tab). Do not change unless
+  # you specifically want a TSV and are willing to lose zygosity.
+  format: vcf                # vcf | tab
+  compress: bgzip            # bgzip | none  (bgzip => .vcf.gz + tabix index)
+  vep_stats: true            # write the *_summary.html VEP stats report
+
+# -----------------------------------------------------------------------------
+# Core VEP annotation flags (mirror vep_hg38.sh)
+# -----------------------------------------------------------------------------
+core:
+  pick: true                 # one consequence per variant (VEP --pick)
+  # If you prefer all consequences, set pick:false and pick_flag below.
+  pick_flag: "--pick"        # alt: --flag_pick, --pick_allele, --everything, etc.
+  symbol: true               # gene symbol
+  hgvs: true                 # HGVSc / HGVSp
+  numbers: false             # exon/intron numbers
+  canonical: false
+  biotype: true
+  sift: "p"                  # p=prediction only, s=score, b=both, or false
+  polyphen: "p"
+  af_gnomade: true           # gnomAD exomes AF
+  af_gnomadg: true           # gnomAD genomes AF
+  # Any extra raw VEP flags to append verbatim:
+  extra_flags: []
+
+# -----------------------------------------------------------------------------
+# Plugins  (installed in /plugins inside the container)
+# -----------------------------------------------------------------------------
+plugins:
+
+  # dbNSFP — ONE file consolidates dozens of precomputed scores that used to
+  # need separate plugins/downloads: CADD, REVEL, AlphaMissense, SIFT, PolyPhen,
+  # PrimateAI, MetaRNN, GERP, phyloP/phastCons, and more. tier: bring-your-own-large.
+  #
+  # Get the file (manual, one-time) from https://www.dbnsfp.org/ (academic v5.1a
+  # matches GENCODE 47 / Ensembl 113 / VEP 113). After download it MUST be
+  # rebuilt into a single position-sorted, bgzipped, tabix-indexed file — see
+  # scripts/prepare_dbnsfp.sh (and docs/ANNOTATIONS.md).
+  dbNSFP:                     # tier: bring-your-own-large
+    enabled: true
+    required: false
+    path: "references/dbnsfp/dbNSFP5.1a_grch38.gz"
+    # Columns pulled into INFO/CSQ. Trim or extend freely; use "ALL" for every
+    # column (large). These defaults reproduce the old CADD/REVEL/AlphaMissense/
+    # SIFT/PolyPhen stack plus common conservation + ensemble scores.
+    columns:
+      - SIFT_score
+      - SIFT_pred
+      - Polyphen2_HDIV_score
+      - Polyphen2_HDIV_pred
+      - CADD_phred
+      - CADD_raw
+      - REVEL_score
+      - AlphaMissense_score
+      - AlphaMissense_pred
+      - MetaRNN_score
+      - MetaRNN_pred
+      - PrimateAI_score
+      - PrimateAI_pred
+      - GERP++_RS
+      - phyloP100way_vertebrate
+      - phastCons100way_vertebrate
+
+  LoF:                       # LOFTEE — tier: auto (Broad loftee_data GRCh38)
+    enabled: true
+    required: false
+    # loftee_path is the in-container LOFTEE dir; leave "auto" to use $LOFTEE_DIR.
+    loftee_path: "auto"
+    human_ancestor_fa: "references/loftee/human_ancestor.fa.gz"
+    conservation_file: "references/loftee/loftee.sql"
+    gerp_bigwig: "references/loftee/gerp_conservation_scores.homo_sapiens.GRCh38.bw"
+
+  # SpliceAI — precomputed delta scores. tier: bring-your-own-large.
+  # NOT auto-downloadable (BaseSpace login-gated), and NOT provided by dbNSFP's
+  # VEP plugin. Supply your own precomputed VCFs — e.g. scores you recompute
+  # yourself with the SpliceAI model (recommended for diagnostics; the 2019
+  # precomputed tables only report the max delta within 50 nt). See
+  # docs/ANNOTATIONS.md. Left enabled but auto-skipped until the files exist.
+  SpliceAI:                  # tier: bring-your-own-large (precompute yourself)
+    enabled: true
+    required: false
+    snv: "references/spliceai/spliceai_scores.snv.hg38.vcf.gz"
+    indel: "references/spliceai/spliceai_scores.indel.hg38.vcf.gz"
+
+# -----------------------------------------------------------------------------
+# Custom annotation tracks  (VEP --custom)
+# Each: file, format (bed|vcf), and vcf-specific type/coords/fields.
+# -----------------------------------------------------------------------------
+custom_tracks:
+
+  RepeatMasker:              # tier: auto (UCSC hg38 rmsk, cleaned for VEP)
+    enabled: true
+    required: false
+    # Built by scripts/download_references.sh from UCSC goldenPath rmsk.txt.gz:
+    # BED of repeat intervals, `chr` prefix stripped + chrM->MT to match the
+    # Ensembl cache, bgzipped + tabix-indexed. name col = repClass|repFamily|repName.
+    file: "references/custom/repeatmasker_hg38.bed.gz"
+    short_name: RepeatMasker
+    format: bed
+
+  SegDup:                    # tier: auto (UCSC hg38 genomicSuperDups, cleaned)
+    enabled: true
+    required: false
+    # Built by scripts/download_references.sh from UCSC genomicSuperDups.txt.gz:
+    # BED of segmental-duplication intervals, `chr` stripped + chrM->MT,
+    # bgzipped + tabix-indexed. name col = fracMatch score of the dup.
+    file: "references/custom/segmental_dups_hg38.bed.gz"
+    short_name: SegDup
+    format: bed
+
+  promoterAI:                # tier: bring-your-own-custom (Illumina license form)
+    enabled: true
+    required: false
+    # NOT auto-downloadable. Request precomputed scores via Illumina's
+    # noncommercial license form (link emailed) — see docs/ANNOTATIONS.md.
+    # Convert to a bgzipped, tabix-indexed VCF with a promoterAI INFO field.
+    file: "references/custom/promoterAI_tss500.vcf.gz"
+    short_name: promoterAI
+    format: vcf
+    type: exact
+    fields: ["promoterAI"]
+
+  ClinVar:                   # tier: auto-per-run (fetched fresh each run)
+    enabled: true
+    required: false
+    # Path is (re)written by scripts/fetch_clinvar.sh each run. Leave as-is.
+    file: "references/clinvar/clinvar_latest.GRCh38.vcf.gz"
+    short_name: ClinVar
+    format: vcf
+    type: exact
+    coords: 0
+    fields: ["CLNSIG", "CLNSIGCONF", "CLNREVSTAT", "CLNDN"]
+
+  LoGoFunc:                  # tier: bring-your-own-custom (lab-generated)
+    enabled: true
+    required: false
+    file: "references/custom/LoGoFunc_custom_annotation.vcf.gz"
+    short_name: LoGoFunc
+    format: vcf
+    type: exact
+    coords: 0
+    fields: ["LoGoFunc_GOF", "LoGoFunc_LOF"]
+
+# -----------------------------------------------------------------------------
+# ClinVar auto-fetch (scripts/fetch_clinvar.sh)
+# -----------------------------------------------------------------------------
+clinvar:
+  auto_fetch: true           # download latest NCBI ClinVar VCF each run
+  # NCBI weekly GRCh38 ClinVar VCF. {ASSEMBLY} is filled from reference.assembly.
+  url: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_{ASSEMBLY}/clinvar.vcf.gz"
+  dest_dir: "references/clinvar"
+  keep_dated_copy: true      # keep clinvar_<releasedate>.GRCh38.vcf.gz alongside latest
+
+# -----------------------------------------------------------------------------
+# Post-processing (after VEP)
+# -----------------------------------------------------------------------------
+post_processing:
+  # Adds ClinVar_path_aa_match INFO flag: 1 if a variant's (SYMBOL, protein
+  # position) collides with a KNOWN PATHOGENIC missense ClinVar variant at the
+  # same residue. Reimplements the awk step from vep_hg38.sh for VCF output.
+  clinvar_aa_match:
+    enabled: true
+    # Pathogenicity terms (in CLNSIG) that count as "pathogenic".
+    pathogenic_terms: ["Pathogenic", "Likely_pathogenic", "Pathogenic/Likely_pathogenic"]

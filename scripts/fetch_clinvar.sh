@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# =============================================================================
+# fetch_clinvar.sh — download the latest NCBI ClinVar VCF for the configured
+# assembly, version-stamp it, and point the ClinVar custom track at it.
+#
+# Called automatically by run_annotation.sh before each run when
+# clinvar.auto_fetch: true. Can also be run standalone.
+#
+#   scripts/fetch_clinvar.sh [config.yaml]
+#
+# Result: references/clinvar/clinvar_<releasedate>.GRCh38.vcf.gz (+ .tbi),
+# and a stable symlink/copy clinvar_latest.GRCh38.vcf.gz that the config's
+# ClinVar track points to.
+# =============================================================================
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "${HERE}/lib.sh"
+ROOT="$(cd "${HERE}/.." && pwd)"
+
+CONFIG="${1:-${ROOT}/config/annotation.config.yaml}"
+[[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
+
+ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh38}"
+AUTO="$(yaml_get "$CONFIG" clinvar.auto_fetch)"
+DEST_DIR="$(yaml_get "$CONFIG" clinvar.dest_dir)"; DEST_DIR="${DEST_DIR:-references/clinvar}"
+URL_TMPL="$(yaml_get "$CONFIG" clinvar.url)"
+KEEP_DATED="$(yaml_get "$CONFIG" clinvar.keep_dated_copy)"
+
+# Resolve relative dest against repo root
+[[ "$DEST_DIR" = /* ]] || DEST_DIR="${ROOT}/${DEST_DIR}"
+mkdir -p "$DEST_DIR"
+
+if [[ "${AUTO}" == "false" ]]; then
+    log "clinvar.auto_fetch is false — skipping ClinVar download."
+    exit 0
+fi
+
+# Fill {ASSEMBLY} in the URL template.
+URL="${URL_TMPL//\{ASSEMBLY\}/$ASSEMBLY}"
+[[ -n "$URL" ]] || URL="https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_${ASSEMBLY}/clinvar.vcf.gz"
+
+log "ClinVar source: $URL"
+
+TMP_VCF="${DEST_DIR}/clinvar.download.vcf.gz"
+rm -f "$TMP_VCF"
+# Always fetch fresh (NCBI updates weekly); don't reuse a prior clinvar.vcf.gz.
+if command -v curl >/dev/null 2>&1; then
+    curl -fL --retry 3 --retry-delay 5 -o "$TMP_VCF" "$URL" || die "ClinVar download failed"
+    curl -fL --retry 3 -o "${TMP_VCF}.tbi" "${URL}.tbi" 2>/dev/null || true
+else
+    wget -O "$TMP_VCF" "$URL" || die "ClinVar download failed"
+    wget -O "${TMP_VCF}.tbi" "${URL}.tbi" 2>/dev/null || true
+fi
+
+# Extract the ClinVar release date from the VCF header
+#   ##fileDate=2026-02-18  (or a source-stamped line). Fall back to today.
+RELEASE="$(zcat "$TMP_VCF" 2>/dev/null | head -200 | \
+           sed -n 's/^##fileDate=\([0-9-]*\).*/\1/p' | head -1 | tr -d '-')"
+[[ -n "$RELEASE" ]] || RELEASE="$(date +%Y%m%d)"
+log "ClinVar release date: $RELEASE"
+
+DATED="${DEST_DIR}/clinvar_${RELEASE}.${ASSEMBLY}.vcf.gz"
+LATEST="${DEST_DIR}/clinvar_latest.${ASSEMBLY}.vcf.gz"
+
+mv -f "$TMP_VCF" "$DATED"
+[[ -f "${TMP_VCF}.tbi" ]] && mv -f "${TMP_VCF}.tbi" "${DATED}.tbi"
+
+# (Re)build the tabix index if we didn't get one.
+if [[ ! -f "${DATED}.tbi" ]]; then
+    log "indexing ClinVar VCF (tabix)"
+    hts tabix -p vcf "$DATED"
+fi
+
+# Point 'latest' at the dated file (copy for portability across FS without symlink support).
+cp -f "$DATED" "$LATEST"
+cp -f "${DATED}.tbi" "${LATEST}.tbi"
+
+if [[ "${KEEP_DATED}" == "false" ]]; then
+    log "keep_dated_copy=false — removing dated copy, keeping only latest"
+    rm -f "$DATED" "${DATED}.tbi"
+fi
+
+# Emit the resolved path + release for the caller (run script captures this).
+echo "CLINVAR_VCF=${LATEST}"
+echo "CLINVAR_RELEASE=${RELEASE}"
+log "ClinVar ready: $LATEST (release $RELEASE)"
