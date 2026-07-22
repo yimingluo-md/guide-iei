@@ -81,6 +81,38 @@ test/                           tiny VCF + config + tests (no container needed)
 No VEP, LOFTEE, bgtools, or Perl installation on the host — everything runs in
 the container.
 
+## Supported platforms
+
+| Platform | Status | Notes |
+|----------|--------|-------|
+| **Linux** | ✅ native | Primary target. Run directly. |
+| **macOS** (Intel or Apple Silicon) | ✅ native | Scripts are Bash-3.2-compatible (macOS ships Bash 3.2); run the Linux container with Docker Desktop, Podman, or Colima. |
+| **Windows** | ✅ via **WSL2** only | Not supported from native Windows shells or Git Bash. Use WSL2 (see below). |
+
+The runner is a set of **Bash** scripts that call standard Unix tools
+(`awk`, `sed`, `sort`, `gzip`, `curl`/`wget`, `python3`, `rsync`) plus a Linux
+**container** (`ensemblorg/ensembl-vep`). Anything that needs `bcftools` /
+`tabix` / `bgzip` runs them natively if present, or falls back to the container.
+
+### Windows: use WSL2
+
+Native Windows (`cmd`, PowerShell, or bare Git Bash) **cannot** run this — the
+scripts need a real Unix shell + coreutils, and the VEP image is Linux-only.
+The supported route is **WSL2** (Windows Subsystem for Linux 2), which is a real
+Linux kernel:
+
+1. Install WSL2 with a Linux distro (e.g. Ubuntu): `wsl --install` in an
+   elevated PowerShell, then reboot.
+2. Install **Docker Desktop** and enable its **WSL2 backend** (Settings →
+   Resources → WSL integration).
+3. Open the WSL2 (Ubuntu) shell and clone + run the pipeline there exactly as a
+   Linux user would.
+
+> **Performance caveat.** Keep the clone **and** the large reference files on
+> the **WSL2 filesystem** (`~/...` inside the distro), *not* on a Windows drive
+> under `/mnt/c/...`. Cross-filesystem I/O to `/mnt/c` is very slow, which badly
+> hurts the multi-GB tabix reference reads (dbNSFP, SpliceAI, CADD).
+
 ## Where to keep the clone (cloud-sync note)
 
 Keep the git clone in a **non-synced** location (e.g. `~/repos/`) and do all
