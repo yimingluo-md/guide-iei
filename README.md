@@ -61,6 +61,7 @@ scripts/prepare_dbnsfp.sh       rebuild a downloaded dbNSFP release for GRCh38 (
 scripts/fetch_clinvar.sh        download + version-stamp the latest ClinVar
 scripts/run_annotation.sh       main entry point: config -> VEP -> annotated VCF
 scripts/build_clinvar_aa_reference.sh   build the aa-match catalog from ClinVar
+scripts/sync_to_onedrive.sh     copy the working tree (no .git) to a cloud-synced folder
 pipeline/build_vep_command.py   translate the config into VEP argv + bind-mounts
 pipeline/clinvar_aa_match.py    add INFO/ClinVar_path_aa_match to the VCF
 pipeline/reduce_vep_to_aa_reference.py  VEP-tab -> aa-match catalog
@@ -79,6 +80,22 @@ test/                           tiny VCF + config + tests (no container needed)
 
 No VEP, LOFTEE, bgtools, or Perl installation on the host — everything runs in
 the container.
+
+## Where to keep the clone (cloud-sync note)
+
+Keep the git clone in a **non-synced** location (e.g. `~/repos/`) and do all
+`git pull` / `git push` there. **Do not run git directly inside a OneDrive /
+Dropbox / Google Drive folder** — those providers block or corrupt the `.git`
+directory (OneDrive returns "Operation not permitted" on `.git`, and syncing
+git's internal object files mid-write can corrupt the repo).
+
+If you want a copy inside a synced folder to edit/run from, use the helper,
+which copies the working tree **without** `.git`:
+
+```bash
+# refresh the OneDrive snapshot after a git pull (edit DEST or set ONEDRIVE_DEST)
+scripts/sync_to_onedrive.sh [DEST]
+```
 
 ## Quickstart
 
