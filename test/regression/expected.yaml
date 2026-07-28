@@ -1,0 +1,64 @@
+schema_version: 1
+description: >-
+  Public ClinVar variants chosen to exercise the required annotation sources.
+  Coordinates and alleles are GRCh38; no patient data are present.
+
+resource_contract:
+  assembly: GRCh38
+  dbNSFP: "5.3.1a"
+  vep_image_tag: "release_113.4"
+
+variants:
+  - id: NCSTN_frameshift_PTC_50bp
+    key: 1-160343408-AG-A
+    gene: NCSTN
+    consequence_any: [frameshift_variant]
+    fields_nonempty:
+      - LoF_50_BP_RULE_PTC
+      - PTC_dist_from_last_exon
+    field_in:
+      LoF: [HC, LC]
+      PTC_calc_status: [ok, ok_utr_only_terminal_exon]
+    clinvar_contains: Pathogenic
+
+  - id: STAT3_missense
+    key: 17-42322474-C-T
+    gene: STAT3
+    consequence_any: [missense_variant]
+    fields_nonempty: [AlphaMissense_score, CADD_phred]
+    clinvar_contains: Pathogenic
+    info_equals:
+      ClinVar_path_aa_match: "1"
+
+  - id: IL2RG_splice_donor
+    key: X-71108276-C-T
+    gene: IL2RG
+    consequence_any: [splice_donor_variant]
+    any_numeric_field_at_least:
+      fields:
+        - SpliceAI_pred_DS_AG
+        - SpliceAI_pred_DS_AL
+        - SpliceAI_pred_DS_DG
+        - SpliceAI_pred_DS_DL
+      value: 0.20
+    clinvar_contains: Pathogenic
+
+  - id: IL2RG_stop_gained
+    key: X-71110228-C-T
+    gene: IL2RG
+    consequence_any: [stop_gained]
+    field_in:
+      LoF: [HC, LC]
+    clinvar_contains: Pathogenic
+
+  - id: TERT_promoter
+    key: 5-1295113-G-A
+    gene: TERT
+    consequence_any: [upstream_gene_variant]
+    # promoterAI is a licensed bring-your-own track. Absence of its CSQ field
+    # is an explicit SKIP; if installed, this assertion becomes mandatory.
+    optional_any_field_nonempty:
+      - promoterAI_promoterAI
+      - PromoterAI_promoterAI
+      - promoterAI
+      - PromoterAI

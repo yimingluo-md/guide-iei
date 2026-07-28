@@ -54,8 +54,11 @@ fi
 
 # Extract the ClinVar release date from the VCF header
 #   ##fileDate=2026-02-18  (or a source-stamped line). Fall back to today.
-RELEASE="$(zcat "$TMP_VCF" 2>/dev/null | head -200 | \
-           sed -n 's/^##fileDate=\([0-9-]*\).*/\1/p' | head -1 | tr -d '-')"
+# macOS zcat expects legacy .Z files; gzip -cd is portable. Keep every stage
+# consuming its input fully so `set -o pipefail` does not turn SIGPIPE into a
+# false download failure.
+RELEASE="$(gzip -cd "$TMP_VCF" 2>/dev/null | \
+           sed -n 's/^##fileDate=\([0-9-]*\).*/\1/p' | sed -n '1p' | tr -d '-')"
 [[ -n "$RELEASE" ]] || RELEASE="$(date +%Y%m%d)"
 log "ClinVar release date: $RELEASE"
 

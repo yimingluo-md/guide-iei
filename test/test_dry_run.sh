@@ -38,8 +38,13 @@ python3 "${ROOT}/pipeline/build_vep_command.py" --config "$CFG" \
   | python3 -c "import json,sys; p=json.load(sys.stdin); assert p['argv'][0]=='vep'; assert not p['errors'], p['errors']; print('  argv tokens:', len(p['argv']), ' mounts:', len(p['mounts']))"
 
 echo "[2/3] run_annotation.sh --dry-run"
-bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
-  -o test/out/sample.vep.vcf.gz -c "$CFG" --no-clinvar --dry-run >/dev/null
+DRY_LOG="$(bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
+  -o test/out/sample.vep.vcf.gz -c "$CFG" --no-clinvar --dry-run 2>&1)"
+grep -q -- '-f PASS' <<<"$DRY_LOG"
+DRY_ALL_LOG="$(bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
+  -o test/out/sample.vep.vcf.gz -c "$CFG" --no-clinvar --dry-run \
+  --all-variants --include-filtered 2>&1)"
+grep -q 'input pre-filter OFF' <<<"$DRY_ALL_LOG"
 echo "  dry-run assembled OK"
 
 echo "[3/3] clinvar_aa_match.py on simulated VEP output"

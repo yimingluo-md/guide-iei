@@ -10,6 +10,7 @@ CONFIG="${1:-${REPO_ROOT}/config/annotation.config.yaml}"
 # --- defaults (overridable by env) -------------------------------------------
 VEP_TAG="${VEP_TAG:-release_113.4}"
 LOFTEE_BRANCH="${LOFTEE_BRANCH:-grch38}"
+PICARD_VERSION="${PICARD_VERSION:-3.3.0}"
 IMAGE_NAME="${IMAGE_NAME:-vep-annotate}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
 
@@ -28,11 +29,13 @@ command -v "${RUNTIME}" >/dev/null 2>&1 || { echo "ERROR: '${RUNTIME}' not found
 echo "Building ${IMAGE_NAME}:${IMAGE_TAG}"
 echo "  base VEP image : ensemblorg/ensembl-vep:${VEP_TAG}"
 echo "  LOFTEE branch  : ${LOFTEE_BRANCH}"
+echo "  Picard version : ${PICARD_VERSION}"
 echo "  runtime        : ${RUNTIME}"
 
 exec "${RUNTIME}" build \
     -t "${IMAGE_NAME}:${IMAGE_TAG}" \
     --build-arg "VEP_TAG=${VEP_TAG}" \
     --build-arg "LOFTEE_BRANCH=${LOFTEE_BRANCH}" \
+    --build-arg "PICARD_VERSION=${PICARD_VERSION}" \
     -f "${HERE}/Dockerfile" \
     "${HERE}"

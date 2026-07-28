@@ -189,6 +189,13 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
     # --- core flags ----------------------------------------------------------
     if core.get("pick", True):
         argv += [core.get("pick_flag", "--pick")]
+        pick_order = core.get("pick_order")
+        if pick_order:
+            if isinstance(pick_order, str):
+                order_value = pick_order
+            else:
+                order_value = ",".join(str(item) for item in pick_order)
+            argv += ["--pick_order", order_value]
     if core.get("symbol", True):
         argv += ["--symbol"]
     if core.get("hgvs", True):
@@ -197,6 +204,16 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
         argv += ["--numbers"]
     if core.get("canonical"):
         argv += ["--canonical"]
+    if core.get("appris"):
+        argv += ["--appris"]
+    if core.get("tsl"):
+        argv += ["--tsl"]
+    if core.get("ccds"):
+        argv += ["--ccds"]
+    if core.get("mane", True):
+        argv += ["--mane"]
+    if core.get("allele_number"):
+        argv += ["--allele_number"]
     if core.get("biotype", True):
         argv += ["--biotype"]
     if core.get("sift"):
@@ -207,6 +224,8 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
         argv += ["--af_gnomade"]
     if core.get("af_gnomadg"):
         argv += ["--af_gnomadg"]
+    if core.get("max_af"):
+        argv += ["--max_af"]
     for extra in core.get("extra_flags", []) or []:
         argv += [str(extra)]
 

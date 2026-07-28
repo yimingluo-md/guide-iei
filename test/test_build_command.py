@@ -19,7 +19,7 @@ def _full_cfg(root):
     j = lambda *p: os.path.join(root, *p)
     for rel in [
         "vep_cache/.ok", "fasta/genome.fa.gz",
-        "dbnsfp/dbNSFP5.1a_grch38.gz",
+        "dbnsfp/dbNSFP5.3.1a_grch38.gz",
         "loftee/human_ancestor.fa.gz", "loftee/loftee.sql",
         "loftee/gerp.bw", "spliceai/snv.vcf.gz", "spliceai/indel.vcf.gz",
         "custom/rm.bed.gz", "custom/segdup.bed.gz", "custom/promoter.vcf.gz",
@@ -32,11 +32,18 @@ def _full_cfg(root):
                       "fasta": {"enabled": True, "required": True, "path": j("fasta/genome.fa.gz")}},
         "run": {"fork": 8, "buffer_size": 5000, "force_overwrite": True},
         "output": {"format": "vcf", "compress": "bgzip", "vep_stats": True},
-        "core": {"pick": True, "pick_flag": "--pick", "symbol": True, "hgvs": True,
+        "core": {
+                 "pick": True, "pick_flag": "--flag_pick_allele_gene",
+                 "pick_order": ["mane_select", "mane_plus_clinical", "canonical",
+                                "appris", "tsl", "biotype", "ccds", "rank", "length"],
+                 "symbol": True, "hgvs": True, "numbers": True,
+                 "canonical": True, "appris": True, "tsl": True, "ccds": True,
+                 "mane": True, "allele_number": True,
                  "biotype": True, "sift": "p", "polyphen": "p",
-                 "af_gnomade": True, "af_gnomadg": True},
+                 "af_gnomade": True, "af_gnomadg": True, "max_af": True},
         "plugins": {
-            "dbNSFP": {"enabled": True, "path": j("dbnsfp/dbNSFP5.1a_grch38.gz"),
+            "dbNSFP": {"enabled": True, "version": "5.3.1a",
+                       "path": j("dbnsfp/dbNSFP5.3.1a_grch38.gz"),
                        "columns": ["CADD_phred", "REVEL_score", "AlphaMissense_score",
                                    "SIFT_pred", "Polyphen2_HDIV_pred"]},
             "LoF": {"enabled": True, "loftee_path": "auto",
@@ -75,9 +82,16 @@ def test_full_stack_native(tmp_path):
     assert "--vcf" in plan.argv and "--tab" not in plan.argv
     assert "--compress_output" in plan.argv
     # core
-    for flag in ["--offline", "--cache", "--pick", "--symbol", "--hgvs",
-                 "--af_gnomade", "--af_gnomadg"]:
+    for flag in ["--offline", "--cache", "--flag_pick_allele_gene", "--pick_order",
+                 "--symbol", "--hgvs", "--numbers", "--canonical", "--appris",
+                 "--tsl", "--ccds", "--mane", "--allele_number",
+                 "--af_gnomade", "--af_gnomadg", "--max_af"]:
         assert flag in plan.argv, flag
+    pick_order = plan.argv[plan.argv.index("--pick_order") + 1]
+    assert pick_order == (
+        "mane_select,mane_plus_clinical,canonical,appris,tsl,"
+        "biotype,ccds,rank,length"
+    )
     assert "--sift" in plan.argv and "p" in plan.argv
     # plugins — dbNSFP with file + selected columns
     dbnsfp = [a for a in plan.argv if a.startswith("dbNSFP,")]
@@ -94,6 +108,22 @@ def test_full_stack_native(tmp_path):
     return s
 
 
+def test_required_spliceai_snv_only(tmp_path):
+    """The default public dataset is SNV-only and must not imply an indel file."""
+    cfg = _full_cfg(str(tmp_path))
+    cfg["plugins"]["SpliceAI"] = {
+        "enabled": True,
+        "required": True,
+        "snv": str(tmp_path / "spliceai" / "snv.vcf.gz"),
+    }
+    plan = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz", container=False)
+    spliceai = [a for a in plan.argv if a.startswith("SpliceAI,")]
+    assert len(spliceai) == 1
+    assert ",snv=" in spliceai[0]
+    assert "indel=" not in spliceai[0]
+    assert not plan.errors, plan.errors
+
+
 def test_core_only(tmp_path):
     """All plugins/customs disabled -> only core flags, no plugin/custom args."""
     cfg = _full_cfg(str(tmp_path))
@@ -104,7 +134,7 @@ def test_core_only(tmp_path):
     plan = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
     assert "--plugin" not in plan.argv
     assert "--custom" not in plan.argv
-    assert "--pick" in plan.argv and "--vcf" in plan.argv
+    assert "--flag_pick_allele_gene" in plan.argv and "--vcf" in plan.argv
     assert not plan.errors
 
 

@@ -1,0 +1,14 @@
+##fileformat=VCFv4.2
+##reference=GRCh38
+##contig=<ID=1,length=248956422>
+##contig=<ID=5,length=181538259>
+##contig=<ID=17,length=83257441>
+##contig=<ID=X,length=156040895>
+##FILTER=<ID=PASS,Description="All filters passed">
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	REGRESSION
+1	160343408	NCSTN_frameshift	AG	A	1000	PASS	.	GT	0/1
+5	1295113	TERT_promoter_c.-124C-T	G	A	1000	PASS	.	GT	0/1
+17	42322474	STAT3_p.Arg382Trp	C	T	1000	PASS	.	GT	0/1
+X	71108276	IL2RG_splice_donor	C	T	1000	PASS	.	GT	0/1
+X	71110228	IL2RG_stop_gained	C	T	1000	PASS	.	GT	0/1

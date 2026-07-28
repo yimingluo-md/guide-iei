@@ -1,0 +1,4 @@
+#!/bin/sh
+# LiftoverVcf loads the target reference into memory; the JVM's container-based
+# default can be too small even when Docker has sufficient RAM.
+exec java ${PICARD_JAVA_OPTIONS:--Xmx6g} -jar /opt/picard/picard.jar "$@"

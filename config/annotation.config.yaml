@@ -18,7 +18,7 @@
 container:
   runtime: docker
   image: "vep-annotate:latest"        # built by docker/build.sh
-  vep_image_tag: "release_113.4"      # base ensemblorg/ensembl-vep tag (>=110 for AlphaMissense)
+  vep_image_tag: "release_113.4"      # validated bundle; change only in a tested software release
   loftee_branch: "grch38"             # MUST be grch38 for GRCh38
   # Extra bind-mounts (host:container). Reference dirs are auto-mounted from paths below.
   extra_mounts: []
@@ -36,6 +36,30 @@ reference:
     enabled: true
     required: true
     path: "references/fasta/Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"  # tier: auto
+
+# -----------------------------------------------------------------------------
+# Input assembly + GRCh37/hg19 intake
+# -----------------------------------------------------------------------------
+# GRCh38 is the only annotation and cohort assembly. A GRCh37/hg19 VCF can be
+# converted before PASS/coding filtering with --input-assembly GRCh37. `auto`
+# requires reliable header evidence and refuses to guess when the header is
+# ambiguous. Re-alignment/re-calling on GRCh38 remains preferable when reads
+# are available.
+input:
+  # Safest workstation default: read reference/contig metadata from the VCF.
+  # Ambiguous headers stop with a clear prompt instead of silently assuming.
+  default_assembly: auto     # GRCh38 | GRCh37 | auto
+
+liftover:
+  enabled: true
+  picard_version: "3.3.0"   # pinned in docker/Dockerfile
+  grch37_to_grch38:
+    # UCSC chain with target/query contigs normalized to Ensembl 1..22/X/Y/MT.
+    chain: "references/liftover/hg19ToGRCh38.ensembl.over.chain.gz"  # tier: auto
+  # Validated initial scope: primary-contig SNVs and short indels. Longer,
+  # symbolic, breakend, spanning-deletion, decoy, and alt-contig records are
+  # retained in a separate unsupported VCF rather than silently discarded.
+  max_allele_length: 50
 
 # -----------------------------------------------------------------------------
 # Region restriction  (the main PC-vs-HPC lever)
@@ -69,6 +93,9 @@ region:
 # Run / performance / output
 # -----------------------------------------------------------------------------
 run:
+  # Clinical default: annotate only records that explicitly passed caller QC.
+  # Override per run with --include-filtered for review/debugging.
+  pass_only: true
   fork: 8                    # parallel forks; set to your core count (vep_hg38.sh used 64)
   buffer_size: 5000
   force_overwrite: true
@@ -81,21 +108,55 @@ output:
   vep_stats: true            # write the *_summary.html VEP stats report
 
 # -----------------------------------------------------------------------------
+# Annotation completeness certificate
+# -----------------------------------------------------------------------------
+# Written beside every completed VCF as both JSON (machine/audit use) and HTML
+# (human review). Coverage denominators are annotation-specific: missense for
+# AlphaMissense/CADD, predicted LoF for LOFTEE, and MANE SNVs for the bundled
+# SpliceAI table. A warning does not discard or alter any variant.
+annotation_qc:
+  enabled: true
+  critical_dbnsfp_fields: ["AlphaMissense_score", "CADD_phred"]
+  warn_below:
+    dbnsfp_missense: 0.80
+    loftee_plof: 0.90
+    loftee_ptc_frameshift: 0.90
+    spliceai_mane_snv: 0.90
+  max_missing_examples: 20
+
+# -----------------------------------------------------------------------------
 # Core VEP annotation flags (mirror vep_hg38.sh)
 # -----------------------------------------------------------------------------
 core:
-  pick: true                 # one consequence per variant (VEP --pick)
-  # If you prefer all consequences, set pick:false and pick_flag below.
-  pick_flag: "--pick"        # alt: --flag_pick, --pick_allele, --everything, etc.
+  # Retain every transcript consequence for reanalysis, while marking one
+  # preferred consequence for each ALT allele + gene with PICK=1.
+  pick: true
+  pick_flag: "--flag_pick_allele_gene"
+  pick_order:
+    - mane_select
+    - mane_plus_clinical
+    - canonical
+    - appris
+    - tsl
+    - biotype
+    - ccds
+    - rank
+    - length
   symbol: true               # gene symbol
   hgvs: true                 # HGVSc / HGVSp
-  numbers: false             # exon/intron numbers
-  canonical: false
+  numbers: true              # exon/intron numbers
+  canonical: true
+  appris: true
+  tsl: true
+  ccds: true
+  mane: true                 # MANE_SELECT / MANE_PLUS_CLINICAL for UI default
+  allele_number: true        # robust ALT-to-CSQ mapping for multiallelic VCF records
   biotype: true
   sift: "p"                  # p=prediction only, s=score, b=both, or false
   polyphen: "p"
   af_gnomade: true           # gnomAD exomes AF
   af_gnomadg: true           # gnomAD genomes AF
+  max_af: true               # MAX_AF/MAX_AF_POPS (popfreqmax for UI filtering)
   # Any extra raw VEP flags to append verbatim:
   extra_flags: []
 
@@ -108,17 +169,20 @@ plugins:
   # need separate plugins/downloads: CADD, REVEL, AlphaMissense, SIFT, PolyPhen,
   # PrimateAI, MetaRNN, GERP, phyloP/phastCons, and more. tier: bring-your-own-large.
   #
-  # Get the file (manual, one-time) from https://www.dbnsfp.org/ (academic v5.1a
-  # matches GENCODE 47 / Ensembl 113 / VEP 113). After download it MUST be
+  # Get the file (manual, one-time) from https://www.dbnsfp.org/. This
+  # workstation uses the prebuilt GRCh38 dbNSFP 5.3.1a archive. After download
+  # it MUST be
   # rebuilt into a single position-sorted, bgzipped, tabix-indexed file — see
   # scripts/prepare_dbnsfp.sh (and docs/ANNOTATIONS.md).
   dbNSFP:                     # tier: bring-your-own-large
     enabled: true
-    required: false
-    path: "references/dbnsfp/dbNSFP5.1a_grch38.gz"
-    # Columns pulled into INFO/CSQ. Trim or extend freely; use "ALL" for every
-    # column (large). These defaults reproduce the old CADD/REVEL/AlphaMissense/
-    # SIFT/PolyPhen stack plus common conservation + ensemble scores.
+    required: true
+    version: "5.3.1a"
+    releases_url: "https://www.dbnsfp.org/releases/"
+    path: "/Users/yl3232/Library/CloudStorage/OneDrive-ColumbiaUniversityIrvingMedicalCenter/large_dataset/dbNSFP5.3.1a_grch38.gz"
+    # Core columns always pulled into CSQ. Additional curated predictors can be
+    # selected for each job in the local UI; the generated job config appends
+    # only those fields. Avoid `ALL` (hundreds of columns and very large VCFs).
     columns:
       - SIFT_score
       - SIFT_pred
@@ -139,24 +203,21 @@ plugins:
 
   LoF:                       # LOFTEE — tier: auto (Broad loftee_data GRCh38)
     enabled: true
-    required: false
+    required: true
     # loftee_path is the in-container LOFTEE dir; leave "auto" to use $LOFTEE_DIR.
     loftee_path: "auto"
     human_ancestor_fa: "references/loftee/human_ancestor.fa.gz"
     conservation_file: "references/loftee/loftee.sql"
     gerp_bigwig: "references/loftee/gerp_conservation_scores.homo_sapiens.GRCh38.bw"
 
-  # SpliceAI — precomputed delta scores. tier: bring-your-own-large.
-  # NOT auto-downloadable (BaseSpace login-gated), and NOT provided by dbNSFP's
-  # VEP plugin. Supply your own precomputed VCFs — e.g. scores you recompute
-  # yourself with the SpliceAI model (recommended for diagnostics; the 2019
-  # precomputed tables only report the max delta within 50 nt). See
-  # docs/ANNOTATIONS.md. Left enabled but auto-skipped until the files exist.
-  SpliceAI:                  # tier: bring-your-own-large (precompute yourself)
+  # SpliceAI — Ensembl MANE v1.4 masked SNV scores for GRCh38. tier: auto.
+  # Required by the default diagnostic profile and downloaded by
+  # scripts/download_references.sh. This public table covers SNVs; a lab may
+  # add an optional `indel:` VCF here if it has a compatible indexed dataset.
+  SpliceAI:
     enabled: true
-    required: false
-    snv: "references/spliceai/spliceai_scores.snv.hg38.vcf.gz"
-    indel: "references/spliceai/spliceai_scores.indel.hg38.vcf.gz"
+    required: true
+    snv: "references/spliceai/spliceai_scores.masked.snv.ensembl_mane_v1.4.grch38.vcf.gz"
 
 # -----------------------------------------------------------------------------
 # Custom annotation tracks  (VEP --custom)
@@ -231,6 +292,26 @@ clinvar:
 # Post-processing (after VEP)
 # -----------------------------------------------------------------------------
 post_processing:
+  # LOFTEE evaluates 50_BP_RULE at the variant coordinate. For frameshifts the
+  # relevant premature termination codon (PTC) is downstream in the shifted
+  # reading frame. Recompute the rule at that PTC from the release-matched local
+  # GTF + FASTA, replace 50_BP_RULE inside LoF_info, and retain the original
+  # value plus calculation provenance in appended CSQ fields.
+  loftee_ptc_50bp:
+    enabled: true
+    required: true
+    threshold_bp: 50
+    gtf: "references/regions/Homo_sapiens.GRCh38.113.gtf.gz"
+    replace_lof_info: true
+
+  # Reconstruct sample-specific transcript/protein haplotypes for frameshift
+  # indels. Confirmed same-haplotype frame restoration is distinguished from
+  # possible restoration when heterozygous phase is unresolved. Per-variant
+  # VEP/LOFTEE evidence is retained for auditability.
+  haplotype_consequences:
+    enabled: true
+    required: true
+
   # Adds ClinVar_path_aa_match INFO flag: 1 if a variant's (SYMBOL, protein
   # position) collides with a KNOWN PATHOGENIC missense ClinVar variant at the
   # same residue. Reimplements the awk step from vep_hg38.sh for VCF output.

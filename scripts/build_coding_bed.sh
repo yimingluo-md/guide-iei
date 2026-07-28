@@ -8,8 +8,8 @@
 # stripping needed, unlike the UCSC tracks).
 #
 # Output: references/regions/coding_splice.padded.bed.gz (+ .tbi)
-#   * CDS features (protein-coding), each expanded by `padding_bp` on both
-#     sides to capture essential/consensus splice sites, then merged.
+#   * CDS/stop-codon features plus splice windows centered on the actual exon
+#     boundaries of protein-coding transcripts, then merged.
 #
 # Usage:
 #   scripts/build_coding_bed.sh [config.yaml] [--force]
@@ -64,21 +64,28 @@ fi
 FAI="$(absdir "$(yaml_get "$CONFIG" reference.fasta.path)").fai"
 
 TMP="$(mktemp)"
-# Extract CDS + stop_codon (stop_codon is a separate GTF feature but is coding),
-# convert GTF [1-based, inclusive] -> BED [0-based, half-open], pad by $PAD,
-# clamp low end to 0.
-zcat "$RAW" \
+# Extract CDS + stop_codon (stop_codon is a separate GTF feature but is coding)
+# and true exon-junction windows for protein-coding transcripts. Using only
+# padded CDS edges misses splice sites when a UTR separates the CDS from the
+# exon boundary. Convert GTF [1-based, inclusive] -> BED [0-based, half-open]
+# and clamp low coordinates to 0.
+# `zcat` on macOS is the legacy .Z reader; `gzip -cd` is portable for .gz.
+gzip -cd "$RAW" \
   | awk -v pad="$PAD" 'BEGIN{FS=OFS="\t"}
       $3=="CDS" || $3=="stop_codon" {
         s=$4-1-pad; if(s<0)s=0;
         e=$5+pad;
         print $1, s, e
+      }
+      $3=="exon" && ($9 ~ /transcript_biotype "protein_coding"/ || $9 ~ /gene_biotype "protein_coding"/) {
+        left=$4-1; s=left-pad; if(s<0)s=0; print $1, s, left+pad;
+        right=$5; s=right-pad; if(s<0)s=0; print $1, s, right+pad
       }' \
   | sort -k1,1 -k2,2n > "$TMP"
 
 NFEAT=$(wc -l < "$TMP" | tr -d ' ')
-[[ "$NFEAT" -gt 0 ]] || die "no CDS features parsed from $RAW"
-log "parsed $NFEAT CDS/stop_codon intervals; merging"
+[[ "$NFEAT" -gt 0 ]] || die "no coding or exon-boundary features parsed from $RAW"
+log "parsed $NFEAT coding and exon-boundary intervals; merging"
 
 # Merge overlapping/adjacent intervals (pure awk, no bedtools dependency).
 MERGED="$(mktemp)"

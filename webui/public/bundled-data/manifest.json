@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-07-24T12:29:45.846757+00:00",
+  "gnomad": {
+    "release": "4.1.1",
+    "selected_genes": 19638,
+    "selection": "One row per gene: Ensembl MANE Select, then Ensembl canonical, then MANE/canonical, then Ensembl protein-coding/longest CDS.",
+    "source_rows": 221898,
+    "source_sha256": "91b5cdfc9a9fb8d3b6c28c3b884b9f3e71dcc2da4805b428a9b763d997597ff9",
+    "source_url": "https://storage.googleapis.com/gcp-public-data--gnomad/release/4.1.1/constraint/gnomad.v4.1.1.constraint_metrics.tsv.bgz"
+  },
+  "iuis": {
+    "dominant_genes": 137,
+    "normalization": "Composite entries split; known legacy aliases converted to current VEP-compatible symbols; cytogenetic and unknown entries retained with a blank gene_symbol.",
+    "normalized_rows": 591,
+    "release": "October 2024",
+    "source_rows": 582,
+    "source_sha256": "6e56ea25ef7601d72951289cda77293230f8f9add05d6a502ba126ffe35ad82b",
+    "source_url": "https://wp-iuis.s3.eu-west-1.amazonaws.com/app/uploads/2024/10/30094653/IUIS-IEI-list-for-web-site-July-2024V2.xlsx",
+    "unique_genes": 505
+  },
+  "haploinsufficiency": {
+    "release": "2026-07-27",
+    "genes": 50,
+    "source": "Manually curated IEI haploinsufficiency gene list"
+  },
+  "schema_version": 1
+}

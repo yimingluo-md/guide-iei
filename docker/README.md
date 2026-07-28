@@ -14,6 +14,17 @@ pieces that image does not bundle:
 | VEP + full plugin stack (`/plugins`) | `ensemblorg/ensembl-vep:release_113.4` | `vep` binary, AlphaMissense/CADD/REVEL/SpliceAI/LoF `.pm`, bgzip/tabix |
 | **LOFTEE (grch38 branch)** | `konradjk/loftee@grch38` → `/opt/vep/src/loftee` | only branch supporting GRCh38 `loftee.sql` + GERP bigwig |
 | **samtools** | apt | LOFTEE `ancestral.pm` runs `samtools faidx` on `human_ancestor.fa.gz` |
+| **bcftools** | apt | PASS/region filtering, normalization, and `chr` to Ensembl contig normalization |
+| **Picard 3.3.0** | pinned release JAR | allele-aware GRCh37/hg19 VCF liftover to canonical GRCh38 |
+
+Picard defaults to a 6 GB Java heap because `LiftoverVcf` loads the target
+reference. Override `PICARD_JAVA_OPTIONS` when building/running a customized
+image if the workstation allocation differs.
+
+The image also applies a narrow compatibility guard to Ensembl's bundled
+`SpliceAI.pm`: absent `snv` or `indel` parameters are skipped instead of being
+passed to `add_file()`. This permits the required public MANE SNV-only dataset;
+an indel dataset is still loaded whenever it is configured.
 | **DBD::SQLite** | cpanm | LOFTEE reads the `loftee.sql` conservation DB |
 
 `LOFTEE_DIR=/opt/vep/src/loftee` is exported and prepended to `PERL5LIB`, so
@@ -23,17 +34,18 @@ pieces that image does not bundle:
 
 ```bash
 # from repo root
-docker/build.sh                      # reads VEP tag / LOFTEE branch from config
-# or explicitly:
-VEP_TAG=release_114.1 docker/build.sh
+docker/build.sh
 ```
 
-Any `release_>=110` tag works. Default is `release_113.4`
-(CADD 1.7 + gnomAD v4.1, matching the reference stack in `vep_hg38.sh`).
+The supported image is pinned to `release_113.4` (CADD 1.7 + gnomAD v4.1,
+matching the validated reference stack). Do not update the base VEP tag by
+itself: upgrades must coordinate the cache, GTF/exome regions, LOFTEE and plugin
+resources, then pass the annotation-completeness regression panel.
 
 ## Version compatibility notes
 
-- **AlphaMissense** plugin requires VEP **≥ 110**. The default 113.4 is fine.
+- **AlphaMissense** plugin requires VEP **≥ 110**. The pinned 113.4 bundle is
+  validated.
 - **LOFTEE branch MUST be `grch38`** for a GRCh38 pipeline. The `master`
   branch is GRCh37-only and will fail with "no such table: gerp_*" against
   GRCh38 data.

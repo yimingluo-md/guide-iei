@@ -1,0 +1,178 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+
+const root = new URL("../", import.meta.url);
+
+test("is configured as a loopback-only local application", async () => {
+  const packageJson = JSON.parse(await readFile(new URL("package.json", root), "utf8"));
+  assert.match(packageJson.scripts.dev, /next dev --hostname 127\.0\.0\.1/);
+  assert.match(packageJson.scripts.start, /next start --hostname 127\.0\.0\.1/);
+  await assert.rejects(readFile(new URL(".openai/hosting.json", root), "utf8"));
+});
+
+test("keeps the clinical review defaults visible", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  assert.match(source, /useState<VariantRow\[\]>\(\[\]\)/);
+  assert.doesNotMatch(source, /demoVariants/);
+  assert.match(source, /Clinical transcripts \(MANE \+ PICK fallback\)/);
+  assert.match(source, /Exclude RepeatMasker/);
+  assert.match(source, /Exclude SegDup/);
+  assert.match(source, /ClinVar P \/ LP only/);
+  assert.match(source, /Candidate compound het/);
+});
+
+test("provides separate local annotation and annotated-VCF review paths", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(source, /useState<View>\("import"\)/);
+  assert.match(source, /pendingFiles\.length \? "review" : "annotate"/);
+  assert.match(source, /Run VEP first/);
+  assert.match(source, /Review annotated VCF/);
+  assert.match(source, /Drop \.vcf or \.vcf\.gz files here/);
+  assert.match(source, /Gzip and BGZF-compressed VCFs/);
+  assert.match(source, /const VCF_FILE_ACCEPT = "[^"]*\.gz[^"]*application\/gzip/);
+  assert.match(source, /accept=\{VCF_FILE_ACCEPT\}/);
+  assert.match(source, /Annotation datasets/);
+  assert.match(source, /Check label="Exome only"/);
+  assert.match(source, /InfoTip label="What does Exome only include\?"/);
+  assert.match(source, /aria-expanded/);
+  assert.match(source, /Protein-coding regions and essential splice sites/);
+  assert.match(source, /high-performance computing \(HPC\)/);
+  assert.match(source, /PASS records only/);
+  assert.match(source, /not read yet/);
+  assert.match(source, /Import and review variants/);
+  assert.match(source, /onClick=\{\(\) => onImportFiles\(pendingFiles\)\}/);
+  assert.match(source, /Input genome build/);
+  assert.match(source, /useState<"GRCh38" \| "GRCh37" \| "auto">\("auto"\)/);
+  assert.match(source, /Detected .* logical CPU threads/);
+  assert.match(source, /Use automatic/);
+  assert.match(source, /Validated annotation bundle · VEP 113 \/ GRCh38/);
+  assert.match(source, /intentionally pinned/);
+  assert.doesNotMatch(source, /Check for updates/);
+  assert.doesNotMatch(service, /\/api\/references\/update/);
+  assert.doesNotMatch(source, /Annotation config/);
+  assert.match(service, /annotation_options/);
+  assert.match(service, /annotation-files\/stage/);
+  assert.match(service, /http:\/\/127\.0\.0\.1:43117/);
+});
+
+test("provides annotation dataset setup and constrained local downloads", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(source, /Set up annotation datasets/);
+  assert.match(source, /Registration and setup instructions/);
+  assert.match(source, /Download \/ resume/);
+  assert.match(source, /Download latest/);
+  assert.match(source, /Configured location/);
+  assert.match(source, /downloadJob\.progress/);
+  assert.match(service, /\/api\/resource-downloads/);
+  assert.match(service, /startResourceDownload/);
+});
+
+test("builds compound-het candidates only from rows surviving active filters", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  assert.match(source, /candidateCompoundHetKeys\(eligibleRows\)/);
+  assert.doesNotMatch(source, /candidateCompoundHetKeys\(rows\)/);
+});
+
+test("provides a full variant review workspace with configurable evidence", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const styles = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(source, /review-workspace/);
+  assert.match(source, /Information shown/);
+  assert.match(source, /AlphaMissense/);
+  assert.match(source, /CADD phred/);
+  assert.match(source, /SpliceAI max/);
+  assert.match(source, /promoterAI/);
+  assert.match(source, /CADD raw/);
+  assert.match(source, /GERP\+\+ RS/);
+  assert.match(source, /phyloP 100-way/);
+  assert.match(source, /phastCons 100-way/);
+  assert.match(source, /All gnomAD population frequencies/);
+  assert.match(source, /Loaded automatically from bundled gnomAD/);
+  assert.match(source, /loadBundledReferences/);
+  assert.match(styles, /\.workspace\.review-mode/);
+  assert.match(styles, /\.review-list/);
+  assert.match(styles, /\.review-detail/);
+  assert.match(styles, /\.review-detail \{[^}]*min-height: 0;[^}]*overflow-y: auto/);
+  assert.match(styles, /\.review-workspace \{[^}]*min-height: 0;[^}]*overflow: hidden/);
+  assert.match(source, /detailRef\.current\?\.scrollTo\(\{ top: 0 \}\)/);
+});
+
+test("uses editable gene sets and compact coordinate-based variant IDs", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  assert.match(source, /IEI haploinsufficiency/);
+  assert.match(source, /type View = .*"gene_lists"/);
+  assert.match(source, />Gene lists</);
+  assert.match(source, /Custom gene lists/);
+  assert.match(source, /Create list/);
+  assert.match(source, /Upload list/);
+  assert.match(source, /CUSTOM_GENE_LISTS_STORAGE_KEY/);
+  assert.match(source, /customLists\.map/);
+  assert.match(source, /Restore bundled list/);
+  assert.match(source, /Changes remain on this workstation/);
+  assert.match(source, /LoF constrained/);
+  assert.match(source, /pLI ≥ 0\.9 or LOEUF/);
+  assert.match(source, /`\$\{row\.chrom\}:\$\{row\.pos\}:\$\{row\.ref\}:\$\{row\.alt\}`/);
+  assert.match(source, /compactAllele/);
+  assert.doesNotMatch(source, /row\.pos\.toLocaleString\(\).*row\.ref/);
+});
+
+test("provides persistent genotype-first cohort indexing and carrier search", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  const styles = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(source, /Genotype-first discovery/);
+  assert.match(source, /Index annotated VCFs/);
+  assert.match(source, /Exact variant/);
+  assert.match(source, /Qualifying variants in gene/);
+  assert.match(source, /Find carriers/);
+  assert.match(source, /I confirm header-ambiguous VCFs are GRCh38/);
+  assert.match(service, /\/api\/cohort\/import/);
+  assert.match(service, /\/api\/cohort\/import-jobs/);
+  assert.match(source, /startCohortImport/);
+  assert.match(source, /role="progressbar"/);
+  assert.match(source, /records scanned/);
+  assert.match(service, /\/api\/cohort\/query/);
+  assert.match(styles, /\.workspace\.cohort-mode/);
+  assert.match(styles, /\.cohort-table/);
+});
+
+test("provides pedigree-aware de novo and compound-heterozygous review", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const parser = await readFile(new URL("app/vcf.ts", root), "utf8");
+  const trio = await readFile(new URL("app/trio.ts", root), "utf8");
+  const styles = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(source, /Family analysis/);
+  assert.match(source, /Upload PED/);
+  assert.match(source, /High-confidence de novo/);
+  assert.match(source, /Parental relationships confirmed/);
+  assert.match(source, /Both variants pass active filters/);
+  assert.match(source, /Trio genotypes/);
+  assert.match(parser, /sampleGenotypes/);
+  assert.match(parser, /phaseHaplotype/);
+  assert.match(trio, /confirmed_trans_inheritance/);
+  assert.match(trio, /possible_parental_mosaicism/);
+  assert.match(styles, /\.family-page/);
+  assert.match(styles, /\.trio-table/);
+});
+
+test("provides local manual and mapped spreadsheet phenotype intake", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  const styles = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(source, /Demographics & phenotypes/);
+  assert.match(source, /Manual entry/);
+  assert.match(source, /Spreadsheet import/);
+  assert.match(source, /Reported race/);
+  assert.match(source, /Reported ethnicity/);
+  assert.match(source, /No HPO inference or phenotype-based variant ranking/);
+  assert.match(source, /CSV, TSV, or XLSX/);
+  assert.match(source, /Preserve unmapped columns as custom fields/);
+  assert.match(service, /\/api\/phenotypes\/preview/);
+  assert.match(service, /\/api\/phenotypes\/validate/);
+  assert.match(service, /\/api\/phenotypes\/import/);
+  assert.match(styles, /\.workspace\.phenotype-mode/);
+  assert.match(styles, /\.mapping-grid/);
+});

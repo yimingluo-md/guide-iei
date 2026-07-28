@@ -22,14 +22,22 @@ output:
   vep_stats: false
 core:
   pick: true
-  pick_flag: "--pick"
+  pick_flag: "--flag_pick_allele_gene"
+  pick_order: [mane_select, mane_plus_clinical, canonical, appris, tsl, biotype, ccds, rank, length]
   symbol: true
   hgvs: true
+  numbers: true
+  canonical: true
+  appris: true
+  tsl: true
+  ccds: true
+  mane: true
   biotype: true
   sift: "p"
   polyphen: "p"
   af_gnomade: true
   af_gnomadg: true
+  max_af: true
   extra_flags: []
 plugins:
   dbNSFP: {enabled: false}
@@ -63,6 +71,9 @@ clinvar:
   dest_dir: "test/fixtures/clinvar"
   keep_dated_copy: true
 post_processing:
+  haplotype_consequences:
+    enabled: false
+    required: false
   clinvar_aa_match:
     enabled: true
     pathogenic_terms: ["Pathogenic","Likely_pathogenic","Pathogenic/Likely_pathogenic"]

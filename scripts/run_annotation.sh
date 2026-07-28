@@ -1,18 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
-# run_annotation.sh — annotate a single-sample VCF with VEP + LOFTEE in the
+# run_annotation.sh — annotate a single- or multi-sample VCF with VEP + LOFTEE
 # container, driven entirely by config/annotation.config.yaml.
 #
 #   scripts/run_annotation.sh -i sample.vcf.gz -o results/sample.vep.vcf.gz \
-#       [-c config/annotation.config.yaml] [--no-clinvar] [--all-variants] [--dry-run]
+#       [-c config/annotation.config.yaml] [--no-clinvar] [--all-variants]
+#       [--include-filtered] [--input-assembly GRCh38|GRCh37|auto] [--dry-run]
 #
 # Steps:
-#   0. (default) restrict input VCF to coding+splice BED  -> build_coding_bed.sh
-#      Skipped with --all-variants or region.coding_only:false (WGS/non-coding).
+#   0a. Resolve input assembly; liftover GRCh37/hg19 to canonical GRCh38.
+#   0b. (default) retain FILTER=PASS and restrict to GRCh38 coding+splice BED.
+#      Region filtering is skipped with --all-variants or
+#      region.coding_only:false. PASS filtering is skipped only with
+#      --include-filtered or run.pass_only:false.
 #   1. (optional) fetch latest ClinVar               -> fetch_clinvar.sh
 #   2. build VEP argv + bind-mounts from config      -> build_vep_command.py
 #   3. run vep inside the container                  -> docker/podman/singularity
-#   4. ClinVar amino-acid-match post-processing      -> clinvar_aa_match.py
+#   4. frameshift PTC-based LOFTEE 50-bp correction  -> loftee_ptc_50bp.py
+#   5. sample-specific haplotype consequences         -> Haplosaurus
+#   6. ClinVar amino-acid-match post-processing       -> clinvar_aa_match.py
+#   7. annotation completeness certificate            -> annotation_qc.py
 #
 # Output is an annotated VCF (INFO/CSQ), preserving sample GT/zygosity.
 # =============================================================================
@@ -22,7 +29,8 @@ source "${HERE}/lib.sh"
 ROOT="$(cd "${HERE}/.." && pwd)"
 
 CONFIG="${ROOT}/config/annotation.config.yaml"
-INPUT=""; OUTPUT=""; DRY=0; DO_CLINVAR=1; ALL_VARIANTS=0
+INPUT=""; OUTPUT=""; DRY=0; DO_CLINVAR=1; ALL_VARIANTS=0; INCLUDE_FILTERED=0
+REQUESTED_ASSEMBLY=""
 while [[ $# -gt 0 ]]; do
     case "$1" in
         -i|--input)  INPUT="$2"; shift 2 ;;
@@ -30,6 +38,8 @@ while [[ $# -gt 0 ]]; do
         -c|--config) CONFIG="$2"; shift 2 ;;
         --no-clinvar) DO_CLINVAR=0; shift ;;
         --all-variants) ALL_VARIANTS=1; shift ;;   # bypass coding-only region restriction (WGS/non-coding)
+        --include-filtered) INCLUDE_FILTERED=1; shift ;; # retain non-PASS records (review/debug only)
+        --input-assembly) REQUESTED_ASSEMBLY="$2"; shift 2 ;;
         --dry-run)   DRY=1; shift ;;
         -h|--help)   grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown arg: $1" ;;
@@ -42,6 +52,9 @@ done
 INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
+ORIGINAL_INPUT="$INPUT"
+WORKDIR="$(dirname "$OUTPUT")"
+INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="${INPUT_BASE%.vcf}"
 
 # --- runtime / image from config ---------------------------------------------
 RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
@@ -49,11 +62,46 @@ IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:
 export RUNTIME IMAGE
 
 # ============================================================================ #
-# 0. Region restriction (DEFAULT): pre-filter input to coding exons + splice
-#    sites. This is what makes a workstation run feasible — VEP then only sees
-#    on-target variants. Bypass with --all-variants or region.coding_only:false.
+# 0a. Input assembly. Annotation references and the cohort model stay GRCh38.
+#     GRCh37/hg19 conversion occurs BEFORE the GRCh38 coding-region filter.
+# ============================================================================ #
+if [[ -z "$REQUESTED_ASSEMBLY" ]]; then
+    REQUESTED_ASSEMBLY="$(yaml_get "$CONFIG" input.default_assembly)"
+    REQUESTED_ASSEMBLY="${REQUESTED_ASSEMBLY:-GRCh38}"
+fi
+case "$REQUESTED_ASSEMBLY" in
+    auto|GRCh37|GRCh38) ;;
+    *) die "--input-assembly must be GRCh38, GRCh37, or auto" ;;
+esac
+RESOLVED_ASSEMBLY="$(python3 "${ROOT}/pipeline/vcf_assembly.py" \
+    --vcf "$INPUT" --requested "$REQUESTED_ASSEMBLY")" \
+    || die "input assembly validation failed"
+log "input assembly: requested=${REQUESTED_ASSEMBLY}, resolved=${RESOLVED_ASSEMBLY}"
+
+if [[ "$RESOLVED_ASSEMBLY" == "GRCh37" ]]; then
+    [[ "$(yaml_get "$CONFIG" liftover.enabled)" != "false" ]] \
+        || die "GRCh37 input requires liftover.enabled:true"
+    LIFTED_INPUT="${WORKDIR}/${INPUT_BASE}.lifted.GRCh38.vcf.gz"
+    LIFTOVER_ARGS=(
+        --input "$INPUT" --output "$LIFTED_INPUT" --config "$CONFIG"
+    )
+    [[ "$DRY" == "1" ]] && LIFTOVER_ARGS+=(--dry-run)
+    bash "${HERE}/liftover_grch37_to_grch38.sh" "${LIFTOVER_ARGS[@]}" \
+        || die "GRCh37->GRCh38 liftover failed"
+    if [[ "$DRY" != "1" ]]; then
+        INPUT="$LIFTED_INPUT"
+        log "annotation input converted to canonical GRCh38: $INPUT"
+    fi
+fi
+
+# ============================================================================ #
+# 0b. Input pre-filtering (DEFAULT): retain explicit FILTER=PASS records and
+#    restrict to coding exons + splice sites. Both filters are applied in one
+#    bcftools pass so sample genotypes and headers remain intact.
 # ============================================================================ #
 CODING_ONLY="$(yaml_get "$CONFIG" region.coding_only)"
+PASS_ONLY="$(yaml_get "$CONFIG" run.pass_only)"; PASS_ONLY="${PASS_ONLY:-true}"
+REGION_BED=""
 if [[ "$ALL_VARIANTS" == "1" ]]; then
     log "--all-variants: region restriction OFF (annotating every variant)."
 elif [[ "$CODING_ONLY" == "false" ]]; then
@@ -75,26 +123,65 @@ else
         log "region restriction ON (coding+splice BED: $REGION_BED)"
     fi
 
+fi
+
+VIEW_ARGS=()
+FILTER_LABELS=()
+if [[ "$INCLUDE_FILTERED" == "1" ]]; then
+    log "--include-filtered: PASS filter OFF (retaining non-PASS records)."
+elif [[ "$PASS_ONLY" == "false" ]]; then
+    log "run.pass_only:false — PASS filter OFF (retaining non-PASS records)."
+else
+    VIEW_ARGS+=( -f PASS )
+    FILTER_LABELS+=( "FILTER=PASS" )
+fi
+if [[ -n "$REGION_BED" ]]; then
+    VIEW_ARGS+=( -R "$REGION_BED" )
+    FILTER_LABELS+=( "coding+splice region" )
+fi
+
+if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
+    INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="${INPUT_BASE%.vcf}"
+    FILT="${WORKDIR}/${INPUT_BASE}.prefiltered.vcf.gz"
     if [[ "$DRY" != "1" ]]; then
-        # bcftools view -R needs an index on the input; ensure one, then subset.
-        WORKDIR="$(dirname "$OUTPUT")"
-        FILT="${WORKDIR}/$(basename "${INPUT%.vcf.gz}").coding.vcf.gz"
-        FILT="${FILT%.vcf}.vcf.gz"   # normalize if input was plain .vcf
-        [[ -f "${INPUT}.tbi" || -f "${INPUT}.csi" ]] || hts tabix -p vcf -f "$INPUT" 2>/dev/null || {
-            # input not bgzipped/indexable as-is: bgzip a copy first
-            hts bgzip -c "$INPUT" > "${WORKDIR}/$(basename "${INPUT%.gz}").gz"
-            INPUT="${WORKDIR}/$(basename "${INPUT%.gz}").gz"
-            hts tabix -p vcf -f "$INPUT"
-        }
+        # Normalize only contig labels when a GRCh38 VCF uses UCSC chr1/chrM
+        # names but the Ensembl region BED/cache uses 1/MT (or vice versa).
+        # Coordinates, alleles, INFO and sample FORMAT fields are unchanged.
+        if [[ -n "$REGION_BED" ]]; then
+            CHROM_MAP="${WORKDIR}/${INPUT_BASE}.chr-map.tsv"
+            python3 "${ROOT}/pipeline/contig_map.py" \
+                --vcf "$INPUT" --bed "$REGION_BED" --output "$CHROM_MAP"
+            if [[ -s "$CHROM_MAP" ]]; then
+                NORMALIZED="${WORKDIR}/${INPUT_BASE}.contigs-normalized.vcf.gz"
+                hts bcftools annotate --rename-chrs "$CHROM_MAP" -O z -o "$NORMALIZED" "$INPUT" \
+                    || die "contig-name normalization failed"
+                hts tabix -p vcf -f "$NORMALIZED"
+                INPUT="$NORMALIZED"
+                log "contig labels normalized to match the coding-region BED"
+            fi
+        fi
+        # bcftools view -R needs an indexed input. PASS-only filtering can read
+        # a plain or unindexed VCF directly.
+        if [[ -n "$REGION_BED" ]] && [[ ! -f "${INPUT}.tbi" && ! -f "${INPUT}.csi" ]]; then
+            hts tabix -p vcf -f "$INPUT" 2>/dev/null || {
+                COMPRESSED_INPUT="${WORKDIR}/${INPUT_BASE}.input.vcf.gz"
+                hts bgzip -c "$INPUT" > "$COMPRESSED_INPUT"
+                INPUT="$COMPRESSED_INPUT"
+                hts tabix -p vcf -f "$INPUT"
+            }
+        fi
         NBEFORE="$(hts bcftools view -H "$INPUT" 2>/dev/null | wc -l | tr -d ' ')"
-        hts bcftools view -R "$REGION_BED" -O z -o "$FILT" "$INPUT" || die "region pre-filter (bcftools view -R) failed"
+        hts bcftools view "${VIEW_ARGS[@]}" -O z -o "$FILT" "$INPUT" \
+            || die "input pre-filter failed"
         hts tabix -p vcf -f "$FILT" 2>/dev/null || true
         NAFTER="$(hts bcftools view -H "$FILT" 2>/dev/null | wc -l | tr -d ' ')"
-        log "region pre-filter: ${NBEFORE} -> ${NAFTER} variants on-target"
-        INPUT="$FILT"   # everything downstream annotates the filtered VCF
+        log "input pre-filter (${FILTER_LABELS[*]}): ${NBEFORE} -> ${NAFTER} variants"
+        INPUT="$FILT"
     else
-        log "--dry-run: would pre-filter $INPUT with bcftools view -R $REGION_BED"
+        log "--dry-run: would pre-filter $INPUT with bcftools view ${VIEW_ARGS[*]}"
     fi
+else
+    log "input pre-filter OFF: annotating every record in the input VCF."
 fi
 
 # ============================================================================ #
@@ -239,26 +326,189 @@ if [[ "$DRY" == "1" ]]; then
     exit 0
 fi
 
+# VEP only creates this sidecar when warnings occur. Remove a sidecar from a
+# prior failed/forced run so it cannot be mistaken for the current run's state.
+rm -f "${OUTPUT}_warnings.txt"
 "${FULL[@]}" || die "VEP run failed"
 log "VEP finished -> $OUTPUT"
+python3 "${ROOT}/pipeline/validate_vep_output.py" \
+    --config "$CONFIG" --vcf "$OUTPUT" \
+    || die "required annotation validation failed"
 
 # ============================================================================ #
-# 4. ClinVar amino-acid-match post-processing
+# 4. Recompute LOFTEE's frameshift 50-bp rule at the resulting PTC.
+#    The corrected value replaces 50_BP_RULE inside CSQ/LoF_info; the original
+#    verdict and calculation provenance remain in appended CSQ fields.
+# ============================================================================ #
+if [[ "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.enabled)" == "true" ]]; then
+    log "=== LOFTEE frameshift PTC 50-bp recomputation ==="
+    PTC_TMP="${OUTPUT%.gz}.ptc50.tmp"
+    PTC_AUDIT="${OUTPUT}.loftee_ptc50.audit.json"
+    if python3 "${ROOT}/pipeline/loftee_ptc_50bp.py" \
+        --config "$CONFIG" --input "$OUTPUT" --output "$PTC_TMP" \
+        --reported-output "$OUTPUT" --audit-json "$PTC_AUDIT"; then
+        if [[ "$OUTPUT" == *.gz ]]; then
+            hts bgzip -f "$PTC_TMP" || die "PTC 50-bp bgzip failed"
+            mv "${PTC_TMP}.gz" "$OUTPUT"
+            hts tabix -p vcf -f "$OUTPUT" || die "PTC 50-bp tabix index failed"
+        else
+            mv "$PTC_TMP" "$OUTPUT"
+        fi
+        log "PTC-based 50-bp rule applied in place -> $OUTPUT"
+    elif [[ "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.required)" == "true" ]]; then
+        die "required LOFTEE PTC 50-bp recomputation failed"
+    else
+        warn "optional LOFTEE PTC 50-bp recomputation failed; retaining original LOFTEE rule"
+    fi
+fi
+
+# ============================================================================ #
+# 5. Sample-specific Haplosaurus consequences and frame-restoration evidence.
+#    Haplosaurus proposes multi-variant protein haplotypes; the Python
+#    postprocessor independently checks GT/PS before calling restoration
+#    confirmed. Unphased heterozygous combinations remain explicitly possible.
+# ============================================================================ #
+if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == "true" ]]; then
+    log "=== sample-specific Haplosaurus post-processing ==="
+    HAPLO_STEM="${OUTPUT%.vcf.gz}"
+    [[ "$HAPLO_STEM" == "$OUTPUT" ]] && HAPLO_STEM="${OUTPUT%.vcf}"
+    HAPLO_SELECTED="${HAPLO_STEM}.haplo.selected.vcf.gz"
+    HAPLO_CANDIDATES="${HAPLO_STEM}.haplo.candidates.vcf.gz"
+    HAPLO_JSON="${HAPLO_STEM}.haplo.raw.json"
+    HAPLO_TMP="${HAPLO_STEM}.haplo.tmp"
+    HAPLO_AUDIT="${OUTPUT}.haplotype.audit.json"
+    HAPLO_OK=1
+
+    hts bcftools view -i 'INFO/CSQ~"frameshift_variant"' -O z \
+        -o "$HAPLO_SELECTED" "$OUTPUT" || HAPLO_OK=0
+    if [[ "$HAPLO_OK" == "1" ]]; then
+        hts bcftools norm -m -any -O z -o "$HAPLO_CANDIDATES" \
+            "$HAPLO_SELECTED" || HAPLO_OK=0
+    fi
+    if [[ "$HAPLO_OK" == "1" ]]; then
+        hts bcftools annotate -x INFO --set-id '%CHROM:%POS:%REF:%FIRST_ALT' \
+            -O z -o "${HAPLO_CANDIDATES}.id.vcf.gz" "$HAPLO_CANDIDATES" \
+            || HAPLO_OK=0
+    fi
+    if [[ "$HAPLO_OK" == "1" ]]; then
+        mv "${HAPLO_CANDIDATES}.id.vcf.gz" "$HAPLO_CANDIDATES"
+        hts tabix -p vcf -f "$HAPLO_CANDIDATES" || HAPLO_OK=0
+    fi
+
+    HAPLO_COUNT=0
+    if [[ "$HAPLO_OK" == "1" ]]; then
+        HAPLO_COUNT="$(hts bcftools view -H "$HAPLO_CANDIDATES" | wc -l | tr -d ' ')"
+    fi
+    if [[ "$HAPLO_OK" == "1" && "$HAPLO_COUNT" -gt 0 ]]; then
+        CACHE_DIR="$(yaml_get "$CONFIG" reference.vep_cache_dir)"
+        CACHE_DIR="${CACHE_DIR:-references/vep_cache}"
+        [[ "$CACHE_DIR" = /* ]] || CACHE_DIR="${ROOT}/${CACHE_DIR}"
+        FASTA_PATH="$(yaml_get "$CONFIG" reference.fasta.path)"
+        [[ "$FASTA_PATH" = /* ]] || FASTA_PATH="${ROOT}/${FASTA_PATH}"
+        FASTA_DIR="$(dirname "$FASTA_PATH")"
+        FASTA_NAME="$(basename "$FASTA_PATH")"
+        CANDIDATE_DIR="$(dirname "$HAPLO_CANDIDATES")"
+        CANDIDATE_NAME="$(basename "$HAPLO_CANDIDATES")"
+        HAPLO_JSON_NAME="$(basename "$HAPLO_JSON")"
+        SPECIES="$(yaml_get "$CONFIG" reference.species)"
+        SPECIES="${SPECIES:-homo_sapiens}"
+        ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"
+        ASSEMBLY="${ASSEMBLY:-GRCh38}"
+        case "$RUNTIME" in
+            docker|podman)
+                "$RUNTIME" run --rm \
+                    -v "${CANDIDATE_DIR}:/work:rw" \
+                    -v "${CACHE_DIR}:/cache:rw" \
+                    -v "${FASTA_DIR}:/fasta:ro" \
+                    --entrypoint haplo "$IMAGE" \
+                    --input_file "/work/${CANDIDATE_NAME}" \
+                    --output_file "/work/${HAPLO_JSON_NAME}" \
+                    --offline --cache --dir_cache /cache \
+                    --species "$SPECIES" --assembly "$ASSEMBLY" \
+                    --fasta "/fasta/${FASTA_NAME}" --json --force_overwrite \
+                    || HAPLO_OK=0
+                ;;
+            singularity|apptainer)
+                "$RUNTIME" exec \
+                    --bind "${CANDIDATE_DIR}:/work" \
+                    --bind "${CACHE_DIR}:/cache" \
+                    --bind "${FASTA_DIR}:/fasta:ro" \
+                    "$IMAGE" haplo \
+                    --input_file "/work/${CANDIDATE_NAME}" \
+                    --output_file "/work/${HAPLO_JSON_NAME}" \
+                    --offline --cache --dir_cache /cache \
+                    --species "$SPECIES" --assembly "$ASSEMBLY" \
+                    --fasta "/fasta/${FASTA_NAME}" --json --force_overwrite \
+                    || HAPLO_OK=0
+                ;;
+        esac
+    elif [[ "$HAPLO_OK" == "1" ]]; then
+        : > "$HAPLO_JSON"
+        log "no frameshift candidates; recording an empty haplotype evidence set"
+    fi
+
+    if [[ "$HAPLO_OK" == "1" ]] && python3 "${ROOT}/pipeline/haplotype_consequences.py" \
+        --input "$OUTPUT" --candidate-vcf "$HAPLO_CANDIDATES" \
+        --haplosaurus-json "$HAPLO_JSON" --output "$HAPLO_TMP" \
+        --audit-json "$HAPLO_AUDIT"; then
+        if [[ "$OUTPUT" == *.gz ]]; then
+            hts bgzip -f "$HAPLO_TMP" || die "haplotype post-processing bgzip failed"
+            mv "${HAPLO_TMP}.gz" "$OUTPUT"
+            hts tabix -p vcf -f "$OUTPUT" || die "haplotype post-processing tabix failed"
+        else
+            mv "$HAPLO_TMP" "$OUTPUT"
+        fi
+        rm -f "$HAPLO_SELECTED" "${HAPLO_SELECTED}.tbi" \
+            "$HAPLO_CANDIDATES" "${HAPLO_CANDIDATES}.tbi" "$HAPLO_JSON"
+        log "sample-specific haplotype evidence applied -> $OUTPUT"
+    elif [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.required)" == "true" ]]; then
+        die "required sample-specific Haplosaurus post-processing failed"
+    else
+        warn "optional Haplosaurus post-processing failed; retaining per-variant consequences"
+    fi
+fi
+
+# ============================================================================ #
+# 6. ClinVar amino-acid-match post-processing
 # ============================================================================ #
 if [[ "$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)" != "false" ]]; then
     log "=== ClinVar amino-acid-match post-processing ==="
     FINAL="${OUTPUT%.vcf.gz}.aamatch.vcf.gz"
     [[ "$OUTPUT" == *.vcf.gz ]] || FINAL="${OUTPUT%.vcf}.aamatch.vcf"
-    AA_REF_ARG=()
-    [[ -n "$AA_REF" && -s "$AA_REF" ]] && AA_REF_ARG=(--reference "$AA_REF")
-    python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
-        --config "$CONFIG" --input "$OUTPUT" --output "$FINAL" \
-        "${AA_REF_ARG[@]}" \
-        --clinvar-release "$CLINVAR_RELEASE" || die "post-processing failed"
+    MATCH_OUTPUT="$FINAL"
+    [[ "$FINAL" == *.gz ]] && MATCH_OUTPUT="${FINAL%.gz}.tmp"
+    if [[ -n "$AA_REF" && -s "$AA_REF" ]]; then
+        python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
+            --config "$CONFIG" --input "$OUTPUT" --output "$MATCH_OUTPUT" \
+            --reference "$AA_REF" \
+            --clinvar-release "$CLINVAR_RELEASE" || die "post-processing failed"
+    else
+        python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
+            --config "$CONFIG" --input "$OUTPUT" --output "$MATCH_OUTPUT" \
+            --clinvar-release "$CLINVAR_RELEASE" || die "post-processing failed"
+    fi
+    if [[ "$FINAL" == *.gz ]]; then
+        hts bgzip -f "$MATCH_OUTPUT" || die "post-processing bgzip failed"
+        mv "${MATCH_OUTPUT}.gz" "$FINAL"
+    fi
     log "post-processing done -> $FINAL"
     # index final if bgzipped
-    [[ "$FINAL" == *.gz ]] && hts tabix -p vcf -f "$FINAL" 2>/dev/null || true
-    log "DONE. Annotated VCF: $FINAL"
+    if [[ "$FINAL" == *.gz ]]; then
+        hts tabix -p vcf -f "$FINAL" || die "post-processing tabix index failed"
+    fi
+    FINAL_OUTPUT="$FINAL"
 else
-    log "DONE. Annotated VCF: $OUTPUT (post-processing disabled)"
+    FINAL_OUTPUT="$OUTPUT"
 fi
+
+# ============================================================================ #
+# 7. Annotation completeness certificate
+# ============================================================================ #
+if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
+    log "=== annotation completeness certificate ==="
+    python3 "${ROOT}/pipeline/annotation_qc.py" \
+        --config "$CONFIG" --vcf "$FINAL_OUTPUT" \
+        || die "annotation completeness certificate generation failed"
+fi
+
+log "DONE. Annotated VCF: $FINAL_OUTPUT"

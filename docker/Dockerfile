@@ -17,7 +17,11 @@
 #      GRCh38 loftee.sql (conservation_file) + GERP bigwig invocation used in
 #      vep_hg38.sh:  --plugin LoF,loftee_path:...,gerp_bigwig:...
 #   2. samtools -- LOFTEE's ancestral.pm shells out to `samtools faidx` to read
-#      human_ancestor.fa.gz. The official VEP image copies only bgzip/tabix.
+#      human_ancestor.fa.gz.
+#   3. bcftools -- PASS/region filtering and contig-label normalization happen
+#      before VEP. The official image does not include this executable.
+#   4. Picard -- allele-aware GRCh37/hg19 VCF liftover into the canonical
+#      GRCh38 annotation assembly.
 #
 # This modernizes yk-tanigawa/docker-ensembl-vep-loftee (VEP 101/105,
 # LOFTEE master, Ubuntu 18.04), which cannot run AlphaMissense (needs >=110)
@@ -32,8 +36,8 @@
 # Or use docker/build.sh which reads these from config.
 # =============================================================================
 
-# Pin the official VEP image. Any release_>=110 tag works (AlphaMissense needs
-# >=110). Override with --build-arg VEP_TAG=release_114.x for a newer VEP.
+# Validated bundle pin. Change only as part of a coordinated software release
+# that also updates and regression-tests the cache and annotation resources.
 ARG VEP_TAG=release_113.4
 FROM ensemblorg/ensembl-vep:${VEP_TAG}
 
@@ -41,22 +45,30 @@ FROM ensemblorg/ensembl-vep:${VEP_TAG}
 ARG LOFTEE_BRANCH=grch38
 # LOFTEE is cloned here and added to PERL5LIB so `--plugin LoF` resolves LoF.pm.
 ARG LOFTEE_DIR=/opt/vep/src/loftee
+ARG PICARD_VERSION=3.3.0
 
 # The base image runs as the unprivileged `vep` user; drop to root to install.
 USER root
 
-# samtools (for LOFTEE ancestral allele lookup) + git (to clone LOFTEE).
+# samtools (LOFTEE), bcftools (VCF preprocessing), and git (clone LOFTEE).
 # Clean apt lists in the same layer to keep the image small.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         samtools \
+        bcftools \
         git \
+        openjdk-17-jre-headless \
+        curl \
         ca-certificates && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
 # Clone the LOFTEE grch38 branch. Depth 1: we only need the working tree.
+# The official VEP image also bundles an older /plugins/LoF.pm. VEP resolves
+# plugin entry points from /plugins before PERL5LIB, so replace that one with
+# the cloned GRCh38 entry point; helper modules still resolve from LOFTEE_DIR.
 RUN git clone --depth 1 --branch ${LOFTEE_BRANCH} \
         https://github.com/konradjk/loftee.git ${LOFTEE_DIR} && \
+    cp ${LOFTEE_DIR}/LoF.pm /plugins/LoF.pm && \
     chown -R vep:vep ${LOFTEE_DIR}
 
 # Make LOFTEE importable by VEP's Perl and expose its dir as an env var so the
@@ -67,6 +79,27 @@ ENV PERL5LIB=${LOFTEE_DIR}:${PERL5LIB}
 # LOFTEE also needs the Perl module DBD::SQLite (to read loftee.sql / *.sql
 # conservation DB). Install via cpanm (present in the base image).
 RUN cpanm --notest DBD::SQLite && rm -rf /root/.cpanm
+
+# Pin Picard so liftover behavior is reproducible across workstations.
+RUN mkdir -p /opt/picard && \
+    curl -fsSL --retry 3 \
+      "https://github.com/broadinstitute/picard/releases/download/${PICARD_VERSION}/picard.jar" \
+      -o /opt/picard/picard.jar && \
+    chmod 0444 /opt/picard/picard.jar
+COPY picard /usr/local/bin/picard
+RUN chmod 0755 /usr/local/bin/picard
+ENV PICARD_VERSION=${PICARD_VERSION}
+
+# Ensembl's SpliceAI plugin unconditionally calls add_file() for both SNV and
+# indel parameters, although this pipeline's required public MANE resource is
+# SNV-only. Guard absent parameters so a single indexed source is valid; if an
+# indel file is configured it is still loaded normally.
+RUN sed -i \
+      's/\$self->add_file(\$param_hash->{snv});/\$self->add_file(\$param_hash->{snv}) if defined(\$param_hash->{snv}) \&\& length(\$param_hash->{snv});/' \
+      /plugins/SpliceAI.pm && \
+    sed -i \
+      's/\$self->add_file(\$param_hash->{indel});/\$self->add_file(\$param_hash->{indel}) if defined(\$param_hash->{indel}) \&\& length(\$param_hash->{indel});/' \
+      /plugins/SpliceAI.pm
 
 # Return to the unprivileged user for runtime.
 USER vep

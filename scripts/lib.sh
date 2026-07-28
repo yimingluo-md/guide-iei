@@ -56,7 +56,8 @@ PY
 # The container image ships bgzip+tabix. If they aren't on the host PATH, we
 # shell into the image. Set HTS_VIA_CONTAINER=1 to force container use.
 # Usage: hts bgzip -f file ;  hts tabix -p vcf file.gz
-#        (paths must be under $PWD, which is bind-mounted to /w)
+# Absolute input/output/reference paths are mapped into distinct container
+# mounts, including paths outside the repository and paths containing spaces.
 _hts_runtime() { echo "${RUNTIME:-docker}"; }
 hts() {
     local tool="$1"; shift
@@ -68,5 +69,44 @@ hts() {
     local rt; rt="$(_hts_runtime)"
     command -v "$rt" >/dev/null 2>&1 || die "no host $tool and no '$rt' to run it via container"
     log "($tool via $rt $img)"
-    "$rt" run --rm -v "$PWD:/w" -w /w --entrypoint "$tool" "$img" "$@"
+
+    local args=("$@") hosts=() conts=() mount_flags=()
+    local i j arg host_dir base mapped found
+    # Rewrite every absolute path argument to a dedicated bind mount. Output
+    # files do not need to exist yet; their existing parent directory is used.
+    for i in "${!args[@]}"; do
+        arg="${args[$i]}"
+        [[ "$arg" == /* ]] || continue
+        if [[ -d "$arg" ]]; then
+            host_dir="$(cd "$arg" && pwd -P)"; base=""
+        else
+            host_dir="$(cd "$(dirname "$arg")" && pwd -P)"; base="$(basename "$arg")"
+        fi
+        found=-1
+        for j in "${!hosts[@]}"; do
+            [[ "${hosts[$j]}" == "$host_dir" ]] && found="$j" && break
+        done
+        if [[ "$found" == "-1" ]]; then
+            found="${#hosts[@]}"
+            hosts+=("$host_dir")
+            conts+=("/hts_$((found + 1))")
+        fi
+        mapped="${conts[$found]}"
+        [[ -n "$base" ]] && mapped="${mapped}/${base}"
+        args[$i]="$mapped"
+    done
+
+    case "$rt" in
+        docker|podman)
+            mount_flags=(-v "$PWD:/w")
+            for i in "${!hosts[@]}"; do mount_flags+=(-v "${hosts[$i]}:${conts[$i]}:rw"); done
+            "$rt" run --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}"
+            ;;
+        singularity|apptainer)
+            mount_flags=(--bind "$PWD:/w")
+            for i in "${!hosts[@]}"; do mount_flags+=(--bind "${hosts[$i]}:${conts[$i]}"); done
+            "$rt" exec "${mount_flags[@]}" --pwd /w "$img" "$tool" "${args[@]}"
+            ;;
+        *) die "unsupported HTS container runtime: $rt" ;;
+    esac
 }

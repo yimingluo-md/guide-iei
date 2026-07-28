@@ -43,7 +43,7 @@ trap 'rm -rf "$WORK"' EXIT
 
 # --- 1. filter to pathogenic missense ----------------------------------------
 # Keep records where CLNSIG is Pathogenic/Likely_pathogenic AND MC contains
-# missense_variant. Pure zcat|awk so it needs no container.
+# missense_variant. Pure gzip|awk so it needs no container.
 PATH_TERMS="$(python3 - "$CONFIG" <<'PY'
 import sys, yaml
 cfg = yaml.safe_load(open(sys.argv[1]))
@@ -56,7 +56,8 @@ PY
 log "pathogenic terms: $PATH_TERMS"
 
 SUBSET="${WORK}/clinvar_path_missense.vcf"
-zcat "$CLINVAR_VCF" 2>/dev/null | awk -v terms="$PATH_TERMS" '
+# `gzip -cd` works on both GNU/Linux and macOS; macOS zcat expects .Z files.
+gzip -cd "$CLINVAR_VCF" 2>/dev/null | awk -v terms="$PATH_TERMS" '
     /^#/ { print; next }
     {
         info = $8

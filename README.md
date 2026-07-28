@@ -1,7 +1,7 @@
 # WES/WGS diagnostic analysis pipeline
 
 Config-driven, containerized **local** variant annotation with Ensembl VEP +
-LOFTEE, for single-sample VCFs. Clone, build the image once, download the
+LOFTEE, for single- or multi-sample VCFs. Clone, build the image once, download the
 references you want, and annotate — output is an **annotated VCF** (all
 annotations in `INFO/CSQ`), so sample genotype / zygosity is preserved.
 
@@ -40,19 +40,24 @@ portable, config-toggled local setup.
   VEP, the full plugin stack including dbNSFP, and bgzip/tabix).
 - **dbNSFP-consolidated scores** — one file + one plugin replaces the separate
   CADD / REVEL / AlphaMissense / SIFT / PolyPhen downloads.
-- A **single YAML config** where every annotation source is toggled on/off with
-  a path — one config works whether or not you have the large/custom datasets.
+- A **plain-language workstation UI** that reports annotation-dataset
+  availability and lets users choose per-run sources and settings. YAML remains
+  an internal/CLI configuration format for administrators and reproducibility.
 - A **run script** that builds the exact VEP command from the config and runs
   it in the container (docker / podman / singularity).
 - **Reference download helpers** for the freely-scriptable data, plus
   **automatic latest-ClinVar fetch** on every run.
 - **ClinVar amino-acid-match** post-processing, adapted from the original awk
   step to work on VCF (`INFO/ClinVar_path_aa_match`).
+- **PTC-based LOFTEE 50-bp correction** for frameshifts, calculated locally
+  from the release-matched GTF and indexed FASTA.
+- **Sample-specific Haplosaurus post-processing** so nearby indels that restore
+  a reading frame are reviewed as a haplotype rather than two isolated LoFs.
 
 ## Layout
 
 ```
-config/annotation.config.yaml   the single source of truth for a run
+config/annotation.config.yaml   administrator defaults used by CLI and the UI
 docker/Dockerfile               VEP 113 + LOFTEE grch38 + samtools + DBD::SQLite
 docker/build.sh                 build the image (docker or podman)
 scripts/download_references.sh  fetch VEP cache / FASTA / LOFTEE / RepeatMasker / SegDup
@@ -60,12 +65,21 @@ scripts/build_coding_bed.sh     build coding+splice BED (Ensembl GTF) for region
 scripts/prepare_dbnsfp.sh       rebuild a downloaded dbNSFP release for GRCh38 (one-time)
 scripts/fetch_clinvar.sh        download + version-stamp the latest ClinVar
 scripts/run_annotation.sh       main entry point: config -> VEP -> annotated VCF
+scripts/liftover_grch37_to_grch38.sh  controlled legacy-VCF intake into GRCh38
 scripts/build_clinvar_aa_reference.sh   build the aa-match catalog from ClinVar
+scripts/update_workbench_references.sh  rebuild bundled gnomAD/IUIS UI resources
 scripts/sync_to_onedrive.sh     copy the working tree (no .git) to a cloud-synced folder
 pipeline/build_vep_command.py   translate the config into VEP argv + bind-mounts
+pipeline/loftee_ptc_50bp.py     replace frameshift 50_BP_RULE using the resulting PTC
+pipeline/haplotype_consequences.py validate sample GT/phase for frame-restoring haplotypes
 pipeline/clinvar_aa_match.py    add INFO/ClinVar_path_aa_match to the VCF
 pipeline/reduce_vep_to_aa_reference.py  VEP-tab -> aa-match catalog
+local_service/                  loopback API + persistent SQLite job queue
+webui/                          local IEI variant-review workbench
 docs/ANNOTATIONS.md             per-source reference: what each is, how to get it
+docs/GRCH37_INPUT.md             assembly detection, liftover QC, provenance, limitations
+docs/TRIO_ANALYSIS.md            pedigree input, de novo tiers, compound-het phase
+docs/BUNDLED_WORKBENCH_REFERENCES.md  gnomAD constraint + IUIS provenance
 test/                           tiny VCF + config + tests (no container needed)
 ```
 
@@ -73,6 +87,7 @@ test/                           tiny VCF + config + tests (no container needed)
 
 - **Docker** (or Podman / Singularity / Apptainer)
 - **Python 3.8+** with **PyYAML** (`pip install pyyaml`) — for the config parser
+- **Node.js 22.13+** (including npm) — for the local review UI
 - Disk for references: the VEP cache alone is ~25 GB; dbNSFP is a ~50 GB
   download (academic registration required — see below) and needs ~200 GB
   scratch for its one-time GRCh38 rebuild; SpliceAI (if enabled) adds tens of
@@ -136,35 +151,101 @@ scripts/sync_to_onedrive.sh [DEST]
 bash docker/build.sh
 
 # 2. download the freely-scriptable references (VEP cache, FASTA, LOFTEE,
-#    RepeatMasker + SegDup auto-cleaned from UCSC)
+#    required SpliceAI MANE SNVs, RepeatMasker, SegDup, hg19->hg38 chain)
 bash scripts/download_references.sh config/annotation.config.yaml
 
 # 2b. dbNSFP (~50 GB) is NOT auto-downloaded: register at dbnsfp.org/download
-#     for an academic access code, request + download v5.1a, unzip, then:
-bash scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.1a_unzipped_dir
-#    SpliceAI / promoterAI / LoGoFunc: place manually, see docs/ANNOTATIONS.md
+#     for an academic access code, request + download v5.3.1a, unzip, then:
+bash scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir
 
-# 3. annotate a single-sample VCF
+# Advisory only: report whether a newer academic dbNSFP release exists.
+python3 pipeline/check_dbnsfp_version.py --config config/annotation.config.yaml
+#    promoterAI / LoGoFunc: place manually, see docs/ANNOTATIONS.md
+
+# 3. annotate a single- or multi-sample VCF
 bash scripts/run_annotation.sh \
     -i /path/to/sample.vcf.gz \
     -o results/sample.vep.vcf.gz \
     -c config/annotation.config.yaml
+
+# Legacy GRCh37/hg19 VCF (conversion occurs before GRCh38 region filtering):
+bash scripts/run_annotation.sh \
+    -i /path/to/legacy.grch37.vcf.gz \
+    -o results/legacy.vep.vcf.gz \
+    -c config/annotation.config.yaml \
+    --input-assembly GRCh37
 ```
 
+To use the integrated workstation application instead, run:
+
+```bash
+bash scripts/start_workbench.sh
+```
+
+This starts the loopback-only annotation queue at `127.0.0.1:43117` and the
+review UI at `127.0.0.1:3000`. The application lands on **Import VCF**. Choose
+**Run VEP first** (the default) or **Review annotated VCF**. The VEP route
+accepts dropped `.vcf` / `.vcf.gz` files or a selected folder, then opens a
+second screen for parameters and dataset readiness. See `webui/README.md` for
+the workflow and WSL2 instructions.
+
+The workbench also provides a persistent, local **genotype-first cohort
+search**. Add directories of annotated single- or multi-sample VCFs once, then
+query every carrier of an exact variant/rsID or carriers of qualifying variants
+in a gene. The indexed variant, annotation, and non-reference genotype records
+stay in `~/.iei-variant-review/cohort.sqlite3`; raw VCF files remain in place.
+
+The workbench includes compact, versioned gnomAD v4.1.1 gene-constraint and
+IUIS October 2024 IEI resources. It joins pLI/LOEUF and related gene metrics by
+gene symbol and loads the IUIS IEI/dominant filters automatically; these
+gene-level resources do not need to be added to the VCF. See
+`docs/BUNDLED_WORKBENCH_REFERENCES.md`.
+
+VEP annotation resources can be checked and set up from **Run VEP first → Set
+up annotation datasets**. The UI provides dbNSFP registration and preparation
+instructions, resumable SpliceAI MANE download, latest-ClinVar download, local
+path/index checks, bundled-resource provenance links, and visible download
+status. See [`docs/REFERENCE_SETUP.md`](docs/REFERENCE_SETUP.md).
+
+The local workbench also stores individual demographics and plain-text
+phenotypes separately from sequencing samples. Records may be entered manually
+or imported from mapped CSV, TSV, or XLSX columns, with reusable mapping
+profiles and sample-link validation. Reported race and reported ethnicity are
+kept separate; neither is treated as genetic ancestry. HPO mapping and
+phenotype-based prioritization are not performed in this release. See
+`docs/PHENOTYPE_INPUT.md`.
+
+The workbench also supports session-local **trio analysis**. Upload a standard
+PED file or manually assign proband, mother, and father to identify
+confidence-tiered de novo candidates and compound-heterozygous pairs classified
+by parental origin or available phase. A jointly genotyped multi-sample VCF is
+preferred; absence from a separate parental VCF is never interpreted as a
+confident `0/0` call. See `docs/TRIO_ANALYSIS.md`.
+
 The run will:
-1. **restrict the input to coding exons + splice sites** (default; builds the
+1. retain only explicit `FILTER=PASS` records and **restrict the input to coding
+   exons + splice sites** (defaults; builds the
    BED once from the release-matched Ensembl GTF — see *Scope* below),
-2. download the latest ClinVar (version-stamped),
+2. retain all transcript consequences, flag the preferred consequence per ALT
+   allele and gene, annotate MANE transcript status for the review UI, and
+   download the latest ClinVar (version-stamped),
 3. (re)build the ClinVar amino-acid-match catalog if ClinVar changed,
 4. build the VEP command from your config and run it in the container,
-5. write `results/sample.vep.vcf.gz`, then
-6. post-process to `results/sample.vep.aamatch.vcf.gz` (+ tabix index) with the
+5. write `results/sample.vep.vcf.gz`,
+6. recompute the frameshift PTC 50-bp rule and run sample-specific Haplosaurus
+   consequence post-processing, then
+7. write `results/sample.vep.aamatch.vcf.gz` (+ tabix index) with the
    `ClinVar_path_aa_match` flag added.
 
 Useful flags: `--dry-run` (print the assembled container command and stop),
 `--no-clinvar` (skip the per-run ClinVar download), `--all-variants` (annotate
 **every** variant, not just coding+splice — for WGS / non-coding work; see
-*Scope* below).
+*Scope* below), `--include-filtered` (retain non-PASS calls for deliberate
+review/debugging), and `--input-assembly GRCh38|GRCh37|auto`. GRCh38 is the
+canonical annotation/cohort assembly; GRCh37 is converted with allele-aware
+Picard liftover before any GRCh38 region filter, while `auto` refuses ambiguous
+headers. See `docs/GRCH37_INPUT.md`. The PASS default can also be changed with
+`run.pass_only`.
 
 ## Scope: coding/exome (recommended for a workstation) vs whole-genome
 
@@ -206,12 +287,27 @@ pipelines. Run those on a cluster.
 own BED (gene panel, capture kit) and it is used verbatim instead of the
 built coding BED.
 
+GRCh38 VCFs using UCSC-style `chr1`/`chrM` contig labels are normalized in a
+workspace copy to the Ensembl cache convention (`1`/`MT`) before region
+filtering. Coordinates, alleles, FORMAT fields, and genotypes are unchanged.
+
+GRCh37/hg19 inputs are never mixed directly into this step. The controlled
+intake writes a derived GRCh38 VCF, an unsupported-record VCF, a Picard reject
+VCF, QC JSON, and provenance JSON while preserving the original locus in INFO.
+The original input is not modified. Re-alignment/re-calling against GRCh38 is
+preferred when reads are available.
+
 ## Configuring annotations
 
-Open `config/annotation.config.yaml`. Each source has `enabled` / `required` /
-a path. Turn something off, or leave it on but omit the file (with
-`required: false`) and it's skipped with a warning. See **`docs/ANNOTATIONS.md`**
-for what every source is, which tier it's in, and how to obtain it.
+For normal workstation use, open **Import VCF → Run VEP first**. After selecting
+files, the next screen shows which required and optional annotation datasets
+are available and provides the per-run switches and performance settings.
+Users do not need to open or edit YAML.
+
+For scripted/CLI use and administrator reference locations,
+`config/annotation.config.yaml` remains the default template. See
+**`docs/ANNOTATIONS.md`** for what every source is, which tier it belongs to,
+and how to obtain it.
 
 ## Try the tiny example (no container, no downloads)
 
@@ -240,29 +336,97 @@ ALL DRY-RUN CHECKS PASSED
 Unit tests for the two Python components:
 
 ```bash
-python test/test_build_command.py   # config -> VEP command (6 tests)
+python test/test_build_command.py   # config -> VEP command (7 tests)
 python test/test_aa_match.py         # ClinVar aa-match + reducer (8 tests)
 ```
 
+To exercise the installed annotation data—not only the command wiring—run the
+small public regression panel:
+
+```bash
+bash scripts/run_annotation_regression.sh
+```
+
+It annotates five public GRCh38 ClinVar controls (NCSTN frameshift, STAT3
+missense, IL2RG splice donor, IL2RG stop-gained, and a TERT promoter variant),
+then asserts the PTC-based LOFTEE 50-bp correction, LOFTEE, AlphaMissense,
+CADD, SpliceAI, ClinVar, and ClinVar amino-acid matching.
+promoterAI is tested when its licensed track is installed and reported as an
+explicit `SKIP` otherwise. The input contains one synthetic sample named
+`REGRESSION`; it contains no patient data.
+
 ## Output
 
-An annotated, bgzipped VCF. All VEP annotations live in the `CSQ` INFO field
-(one entry per picked transcript); LOFTEE, plugins and custom tracks are CSQ
+An annotated, bgzipped VCF. All VEP annotations live in the `CSQ` INFO field,
+with every transcript consequence retained and the preferred consequence for
+each ALT allele + gene marked `PICK=1`. MANE Select and MANE Plus Clinical are
+preferred by the explicit pick order; LOFTEE, plugins and custom tracks are CSQ
 subfields; the amino-acid-match adds `INFO/ClinVar_path_aa_match` (0/1). The
 `##INFO` header for that flag records the ClinVar release used. Sample columns
 (`FORMAT` / genotype) are passed through unchanged, so zygosity is preserved.
 
+For frameshift consequences, the postprocessor recalculates LOFTEE's
+`50_BP_RULE` at the premature termination codon created by the shifted reading
+frame. Successful calculations replace the value inside `CSQ/LoF_info`.
+`LoF_50_BP_RULE_original`, `LoF_50_BP_RULE_PTC`,
+`PTC_dist_from_last_exon`, and `PTC_calc_status` preserve the comparison and
+provenance. The original `LoF=HC/LC` classification is retained.
+
+For multi-indel events, `INFO/IEI_HAPLOTYPE_FRAME` records the sample,
+transcript, partner variant(s), combined protein consequence, and one of three
+states: fully restored and phase-confirmed, partially restored (another allele
+copy remains disrupted), or possible restoration with unresolved phase. The
+review UI excludes only the fully restored state by default. It keeps partial
+and unresolved events visible and retains the original per-variant LOFTEE
+annotation for audit.
+
+Every completed run also writes two annotation-completeness artifacts beside
+the final VCF:
+
+- `<final.vcf.gz>.annotation_qc.json` for software/audit use
+- `<final.vcf.gz>.annotation_qc.html` for human review
+
+The certificate uses source-appropriate denominators: AlphaMissense and CADD
+on missense records, LOFTEE on predicted loss-of-function records, and
+SpliceAI on transcript-overlapping MANE SNVs. It records coverage, limited
+examples of missing annotations, ClinVar matches, repeat/segdup overlaps,
+configured resource versions, and whether promoterAI is installed. `WARN`
+means annotation coverage needs review; it does not remove variants or assign
+clinical significance.
+
 ## Notes on the container
 
-- **VEP release 113** is chosen so it lines up with **dbNSFP v5.1a** (GENCODE 47
-  / Ensembl 113) and gnomAD v4.1. Change `container.vep_image_tag` in the config
-  to move releases — keep the VEP cache release *and* the dbNSFP release in step.
+- The diagnostic profile uses **dbNSFP v5.3.1a**, the current academic release
+  when this profile was updated. dbNSFP 5.3.x was rebuilt on GENCODE 49 /
+  Ensembl 115, while the currently pinned VEP image/cache remains release 113.
+  Coordinate-level dbNSFP lookup works by GRCh38 allele, but transcript-specific
+  fields must be regression-tested across this release difference. Run
+  `pipeline/check_dbnsfp_version.py` to see update and compatibility
+  recommendations before changing either resource.
+- **VEP gnomAD frequencies can differ slightly from the gnomAD Browser.**
+  Depending on the VEP cache release and matching path, a variant without an
+  rsID may not receive a gnomAD frequency even when the normalized allele is
+  present in the Browser. Therefore, a blank gnomAD annotation means
+  “unavailable from this VEP annotation,” not definitive absence from gnomAD.
+  This is expected to have limited practical impact because variants without
+  rsIDs are generally rare, but important candidates should be confirmed in
+  the gnomAD Browser by normalized chromosome, position, REF, and ALT.
 - **LOFTEE must be the `grch38` branch** for GRCh38 (GERP bigwig + GRCh38
   conservation SQL). This is baked into the image at `/opt/vep/src/loftee` and
   exposed to VEP as `$LOFTEE_DIR`; `loftee_path: auto` in the config resolves to
   it inside the container.
+- **Picard 3.3.0** is pinned in the image for allele-aware GRCh37 VCF liftover.
+  Rebuild the image after upgrading from a version without the liftover path.
 - See `docker/README.md` for Singularity build instructions and compatibility
   details.
+
+## Development disclosure
+
+This software has been developed with AI-assisted coding using **OpenAI Codex
+(GPT-5.6 Sol)** and **Anthropic Claude Code (Claude Opus 5)**, under human
+direction and review. AI assistance does not constitute independent software
+validation; users remain responsible for validating the pipeline for their
+intended research or clinical-laboratory context.
 
 ## License
 
