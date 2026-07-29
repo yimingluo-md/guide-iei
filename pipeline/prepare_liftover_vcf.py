@@ -147,7 +147,7 @@ def main() -> int:
                 )
                 reject_headers = (
                     '##FILTER=<ID=IEI_UNSUPPORTED_LIFTOVER,Description="Record is outside the validated GRCh37 small-variant liftover scope">\n'
-                    '##INFO=<ID=IEI_LIFTOVER_REJECT_REASON,Number=1,Type=String,Description="Reason the record was not sent to Picard LiftoverVcf">\n'
+                    '##INFO=<ID=IEI_LIFTOVER_REJECT_REASON,Number=1,Type=String,Description="Reason the record was not sent to BCFtools/liftover">\n'
                 )
                 good.write(provenance_headers)
                 bad.write(reject_headers)

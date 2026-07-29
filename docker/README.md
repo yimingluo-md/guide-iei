@@ -14,12 +14,8 @@ pieces that image does not bundle:
 | VEP + full plugin stack (`/plugins`) | `ensemblorg/ensembl-vep:release_113.4` | `vep` binary, AlphaMissense/CADD/REVEL/SpliceAI/LoF `.pm`, bgzip/tabix |
 | **LOFTEE (grch38 branch)** | `konradjk/loftee@grch38` → `/opt/vep/src/loftee` | only branch supporting GRCh38 `loftee.sql` + GERP bigwig |
 | **samtools** | apt | LOFTEE `ancestral.pm` runs `samtools faidx` on `human_ancestor.fa.gz` |
-| **bcftools** | apt | PASS/region filtering, normalization, and `chr` to Ensembl contig normalization |
-| **Picard 3.3.0** | pinned release JAR | allele-aware GRCh37/hg19 VCF liftover to canonical GRCh38 |
-
-Picard defaults to a 6 GB Java heap because `LiftoverVcf` loads the target
-reference. Override `PICARD_JAVA_OPTIONS` when building/running a customized
-image if the workstation allocation differs.
+| **bcftools 1.20** | pinned source build | PASS/region filtering, normalization, and `chr` to Ensembl contig normalization |
+| **BCFtools/liftover** | pinned `freeseek/score` plugin source | assembly-gap-aware hg19/GRCh37 VCF conversion to canonical GRCh38 with GT/AD/PL remapping |
 
 The image also applies a narrow compatibility guard to Ensembl's bundled
 `SpliceAI.pm`: absent `snv` or `indel` parameters are skipped instead of being

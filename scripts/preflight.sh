@@ -163,8 +163,28 @@ if mode != "--dry-run":
         liftover = cfg.get("liftover", {}) or {}
         if not liftover.get("enabled", True):
             errors.append("GRCh37 input requires liftover.enabled:true")
+        conversion = liftover.get("grch37_to_grch38", {}) or {}
+        source_reference = str(conversion.get("source_reference") or "")
+        if source_reference.lower() != "hg19":
+            errors.append(
+                "The validated GRCh37 intake preset requires "
+                "liftover.grch37_to_grch38.source_reference:hg19"
+            )
+        source_fasta = absolute(conversion.get("source_fasta"))
+        if not source_fasta or not os.path.isfile(source_fasta):
+            errors.append(
+                f"hg19 source FASTA missing: {source_fasta} "
+                "(run download_references.sh --only liftover)"
+            )
+        else:
+            for suffix in (".fai", ".gzi"):
+                if not os.path.isfile(source_fasta + suffix):
+                    errors.append(
+                        f"hg19 source FASTA index missing: {source_fasta}{suffix} "
+                        "(run download_references.sh --only liftover)"
+                    )
         chain = absolute(
-            (liftover.get("grch37_to_grch38", {}) or {}).get("chain")
+            conversion.get("chain")
         )
         if not chain or not os.path.isfile(chain):
             errors.append(
@@ -235,7 +255,7 @@ fi
 RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
 IMAGE="$(yaml_get "$CONFIG" container.image)"; IMAGE="${IMAGE:-vep-annotate:latest}"
 command -v "$RUNTIME" >/dev/null 2>&1 || die "container runtime not found: $RUNTIME"
-CHECK='for tool in vep haplo bgzip tabix bcftools samtools picard; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }; done'
+CHECK='for tool in vep haplo bgzip tabix bcftools samtools; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }; done; bcftools plugin -l | grep -qx liftover || { echo "missing bcftools +liftover plugin" >&2; exit 2; }'
 case "$RUNTIME" in
     docker|podman)
         # Docker Desktop can occasionally list and run a tagged image while

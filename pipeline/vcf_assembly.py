@@ -110,7 +110,7 @@ def detect_vcf_assembly(path: str | Path) -> dict:
         "lifted_from_grch37": bool(
             target_marker == "GRCh38"
             and (
-                liftover_source == "GRCh37"
+                bool(liftover_source and liftover_source.startswith("GRCh37"))
                 or any(
                     assembly_from_reference(value) == "GRCh37"
                     for value in original_references

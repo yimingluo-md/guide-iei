@@ -9,7 +9,7 @@
 #   * SpliceAI masked MANE SNVs (Ensembl) ~27 GB  (bgzipped VCF + tabix index)
 #   * RepeatMasker (UCSC hg38, cleaned)   ~50 MB  (chr-stripped, bgzipped, tabix'd BED)
 #   * SegDup / genomicSuperDups (UCSC)    ~2 MB   (chr-stripped, bgzipped, tabix'd BED)
-#   * hg19 -> hg38 UCSC chain             ~1 MB   (GRCh37 VCF intake only)
+#   * hg19 primary FASTA + hg19->hg38 chain ~1 GB (GRCh37 VCF intake only)
 #
 # Does NOT fetch (you supply these):
 #   * dbNSFP  (~50 GB; CADD/REVEL/AlphaMissense/SIFT/PolyPhen/... in one file)
@@ -69,6 +69,9 @@ SEGDUP_PATH="$(absdir "$(yaml_get "$CONFIG" custom_tracks.SegDup.file)")"
 LIFTOVER_CHAIN_RAW="$(yaml_get "$CONFIG" liftover.grch37_to_grch38.chain)"
 LIFTOVER_CHAIN=""
 [[ -z "$LIFTOVER_CHAIN_RAW" ]] || LIFTOVER_CHAIN="$(absdir "$LIFTOVER_CHAIN_RAW")"
+LIFTOVER_SOURCE_FASTA_RAW="$(yaml_get "$CONFIG" liftover.grch37_to_grch38.source_fasta)"
+LIFTOVER_SOURCE_FASTA=""
+[[ -z "$LIFTOVER_SOURCE_FASTA_RAW" ]] || LIFTOVER_SOURCE_FASTA="$(absdir "$LIFTOVER_SOURCE_FASTA_RAW")"
 
 # ============================================================================ #
 # 1. VEP offline cache
@@ -222,18 +225,49 @@ if want segdup; then
 fi
 
 # ============================================================================ #
-# 6. GRCh37/hg19 -> GRCh38 UCSC chain
+# 6. GRCh37/hg19 source FASTA + GRCh38 UCSC chain
 # ============================================================================ #
 if want liftover; then
-    log "=== GRCh37/hg19 -> GRCh38 liftover chain ==="
+    log "=== GRCh37/hg19 -> GRCh38 liftover reference bundle ==="
     [[ "$ASSEMBLY" == "GRCh38" ]] || die "liftover target requires reference.assembly: GRCh38"
     [[ -n "$LIFTOVER_CHAIN" ]] || die "liftover.grch37_to_grch38.chain is not configured"
-    RAW_CHAIN="${LIFTOVER_CHAIN%.gz}.ucsc.chain.gz"
-    fetch \
-      "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz" \
-      "$RAW_CHAIN" \
-      || die "UCSC hg19ToHg38 chain download failed"
+    [[ -n "$LIFTOVER_SOURCE_FASTA" ]] || die "liftover.grch37_to_grch38.source_fasta is not configured"
+
+    if [[ ! -s "$LIFTOVER_SOURCE_FASTA" ]]; then
+        mkdir -p "$(dirname "$LIFTOVER_SOURCE_FASTA")"
+        RAW_HG19="${LIFTOVER_SOURCE_FASTA%.fa.gz}.ucsc.fa.gz"
+        UNCOMPRESSED_HG19="${LIFTOVER_SOURCE_FASTA%.gz}"
+        fetch \
+          "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/bigZips/hg19.fa.gz" \
+          "$RAW_HG19" \
+          || die "UCSC hg19 FASTA download failed"
+        log "retaining hg19 primary contigs and normalizing names to 1..22/X/Y/MT"
+        gzip -cd "$RAW_HG19" \
+          | awk '
+              /^>/ {
+                header=$1; name=substr(header,2)
+                keep=(name ~ /^chr([1-9]|1[0-9]|2[0-2]|X|Y|M)$/)
+                if (keep) {
+                  sub(/^chr/, "", name); if (name=="M") name="MT"
+                  print ">" name substr($0,length(header)+1)
+                }
+                next
+              }
+              keep {print}
+            ' > "$UNCOMPRESSED_HG19"
+        hts bgzip -@ 4 -f "$UNCOMPRESSED_HG19"
+        rm -f "$RAW_HG19"
+    else
+        log "hg19 source FASTA present, skip."
+    fi
+    hts samtools faidx "$LIFTOVER_SOURCE_FASTA"
+
     if [[ ! -s "$LIFTOVER_CHAIN" ]]; then
+        RAW_CHAIN="${LIFTOVER_CHAIN%.gz}.ucsc.chain.gz"
+        fetch \
+          "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/hg19ToHg38.over.chain.gz" \
+          "$RAW_CHAIN" \
+          || die "UCSC hg19ToHg38 chain download failed"
         log "normalizing UCSC chain contigs to Ensembl 1..22/X/Y/MT"
         gzip -cd "$RAW_CHAIN" \
           | awk 'BEGIN{OFS=" "}
@@ -243,7 +277,14 @@ if want liftover; then
               }
               {print}' \
           | gzip -c > "$LIFTOVER_CHAIN"
+        rm -f "$RAW_CHAIN"
+    else
+        log "hg19-to-GRCh38 chain present, skip."
     fi
+    (
+      cd "$(dirname "$LIFTOVER_SOURCE_FASTA")"
+      shasum -a 256 "$(basename "$LIFTOVER_SOURCE_FASTA")" > "$(basename "$LIFTOVER_SOURCE_FASTA").sha256.local"
+    )
     (
       cd "$(dirname "$LIFTOVER_CHAIN")"
       shasum -a 256 "$(basename "$LIFTOVER_CHAIN")" > "$(basename "$LIFTOVER_CHAIN").sha256.local"

@@ -19,9 +19,8 @@
 #   2. samtools -- LOFTEE's ancestral.pm shells out to `samtools faidx` to read
 #      human_ancestor.fa.gz.
 #   3. bcftools -- PASS/region filtering and contig-label normalization happen
-#      before VEP. The official image does not include this executable.
-#   4. Picard -- allele-aware GRCh37/hg19 VCF liftover into the canonical
-#      GRCh38 annotation assembly.
+#      before VEP. A pinned build also carries the published +liftover plugin
+#      for assembly-gap-aware GRCh37/hg19 conversion.
 #
 # This modernizes yk-tanigawa/docker-ensembl-vep-loftee (VEP 101/105,
 # LOFTEE master, Ubuntu 18.04), which cannot run AlphaMissense (needs >=110)
@@ -45,22 +44,48 @@ FROM ensemblorg/ensembl-vep:${VEP_TAG}
 ARG LOFTEE_BRANCH=grch38
 # LOFTEE is cloned here and added to PERL5LIB so `--plugin LoF` resolves LoF.pm.
 ARG LOFTEE_DIR=/opt/vep/src/loftee
-ARG PICARD_VERSION=3.3.0
+ARG BCFTOOLS_VERSION=1.20
+ARG BCFTOOLS_LIFTOVER_COMMIT=909d23019e19aeadf3bf6fe1407fd6afc094592a
 
 # The base image runs as the unprivileged `vep` user; drop to root to install.
 USER root
 
-# samtools (LOFTEE), bcftools (VCF preprocessing), and git (clone LOFTEE).
+# samtools (LOFTEE), build dependencies for pinned bcftools, and git.
 # Clean apt lists in the same layer to keep the image small.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         samtools \
-        bcftools \
         git \
-        openjdk-17-jre-headless \
         curl \
-        ca-certificates && \
+        ca-certificates \
+        build-essential \
+        autoconf \
+        automake \
+        libbz2-dev \
+        libcurl4-openssl-dev \
+        liblzma-dev \
+        libssl-dev \
+        zlib1g-dev && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
+
+# Build the peer-reviewed BCFtools/liftover implementation from exact source
+# pins. It remaps GT and Number=A/R/G annotations when REF/ALT changes and can
+# represent small assembly gaps that Picard LiftoverVcf cannot resolve safely.
+RUN git clone --depth 1 --branch "${BCFTOOLS_VERSION}" \
+        https://github.com/samtools/bcftools.git /tmp/bcftools && \
+    git clone --depth 1 --branch "${BCFTOOLS_VERSION}" --recurse-submodules \
+        https://github.com/samtools/htslib.git /tmp/htslib && \
+    curl -fsSL --retry 3 \
+        "https://raw.githubusercontent.com/freeseek/score/${BCFTOOLS_LIFTOVER_COMMIT}/liftover.c" \
+        -o /tmp/bcftools/plugins/liftover.c && \
+    make -C /tmp/bcftools -j2 && \
+    install -m 0755 /tmp/bcftools/bcftools /usr/local/bin/bcftools && \
+    mkdir -p /usr/local/libexec/bcftools && \
+    install -m 0755 /tmp/bcftools/plugins/liftover.so /usr/local/libexec/bcftools/liftover.so && \
+    rm -rf /tmp/bcftools /tmp/htslib
+ENV BCFTOOLS_PLUGINS=/usr/local/libexec/bcftools
+ENV BCFTOOLS_VERSION=${BCFTOOLS_VERSION}
+ENV BCFTOOLS_LIFTOVER_COMMIT=${BCFTOOLS_LIFTOVER_COMMIT}
 
 # Clone the LOFTEE grch38 branch. Depth 1: we only need the working tree.
 # The official VEP image also bundles an older /plugins/LoF.pm. VEP resolves
@@ -79,16 +104,6 @@ ENV PERL5LIB=${LOFTEE_DIR}:${PERL5LIB}
 # LOFTEE also needs the Perl module DBD::SQLite (to read loftee.sql / *.sql
 # conservation DB). Install via cpanm (present in the base image).
 RUN cpanm --notest DBD::SQLite && rm -rf /root/.cpanm
-
-# Pin Picard so liftover behavior is reproducible across workstations.
-RUN mkdir -p /opt/picard && \
-    curl -fsSL --retry 3 \
-      "https://github.com/broadinstitute/picard/releases/download/${PICARD_VERSION}/picard.jar" \
-      -o /opt/picard/picard.jar && \
-    chmod 0444 /opt/picard/picard.jar
-COPY picard /usr/local/bin/picard
-RUN chmod 0755 /usr/local/bin/picard
-ENV PICARD_VERSION=${PICARD_VERSION}
 
 # Ensembl's SpliceAI plugin unconditionally calls add_file() for both SNV and
 # indel parameters, although this pipeline's required public MANE resource is

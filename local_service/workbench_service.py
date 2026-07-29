@@ -33,7 +33,7 @@ from local_service.cohort_store import CohortStore
 from local_service.phenotype_store import PhenotypeStore
 
 
-SERVICE_VERSION = "0.7.0"
+SERVICE_VERSION = "0.8.0"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 ALLOWED_PROFILES = {"local", "wsl-local"}
 ANNOTATION_SOURCE_PATHS = {
@@ -47,6 +47,7 @@ ANNOTATION_SOURCE_PATHS = {
     "clinvar": ("custom_tracks", "ClinVar"),
     "loftee_ptc_50bp": ("post_processing", "loftee_ptc_50bp"),
     "clinvar_aa_match": ("post_processing", "clinvar_aa_match"),
+    "liftover": ("liftover", "grch37_to_grch38"),
 }
 REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp"}
 DBNSFP_OPTIONAL_PREDICTORS = [
@@ -191,10 +192,25 @@ ANNOTATION_SOURCE_SETUP = {
             "Its local residue table is rebuilt automatically from the downloaded ClinVar release.",
         ],
     },
+    "liftover": {
+        "setup_mode": "download",
+        "download_id": "liftover",
+        "reference_url": "https://github.com/freeseek/score#liftover-vcfs",
+        "reference_label": "BCFtools/liftover documentation and publication",
+        "size_hint": "approximately 1 GB; required only for hg19/GRCh37 input",
+        "instructions": [
+            "Select Download / resume to install the exact UCSC hg19 primary FASTA and hg19-to-GRCh38 chain.",
+            "The downloader retains primary chromosomes and normalizes contig names to the pipeline convention.",
+            "The pinned BCFtools/liftover plugin remaps GT, AD, PL, and other allele-indexed fields when REF/ALT changes.",
+            "Calls that become GRCh38 reference are kept in a separate audit VCF and do not enter VEP or candidate lists.",
+            "Re-alignment and re-calling on GRCh38 remains preferable when source reads are available.",
+        ],
+    },
 }
 RESOURCE_DOWNLOAD_COMMANDS = {
     "spliceai": ("scripts/download_references.sh", "--only", "spliceai"),
     "clinvar": ("scripts/fetch_clinvar.sh",),
+    "liftover": ("scripts/download_references.sh", "--only", "liftover"),
 }
 
 
@@ -810,6 +826,7 @@ class AnnotationJobService:
             "clinvar": ("ClinVar", "Clinical assertions; refreshed per run by default"),
             "loftee_ptc_50bp": ("Frameshift PTC 50-bp rule", "Pipeline recomputation using local GTF and FASTA"),
             "clinvar_aa_match": ("ClinVar residue match", "Known pathogenic missense at the same amino-acid residue"),
+            "liftover": ("hg19 input bundle", "Assembly-gap-aware conversion to canonical GRCh38"),
         }
         try:
             config = self._load_config(config_path)
@@ -841,6 +858,8 @@ class AnnotationJobService:
                 ]
             elif source_id == "clinvar_aa_match":
                 values = []
+            elif source_id == "liftover":
+                values = [block.get("source_fasta"), block.get("chain")]
             else:
                 values = [block.get("file")]
             return [
@@ -874,6 +893,14 @@ class AnnotationJobService:
                         or Path(str(path) + ".csi").exists()
                     )
                     for path in paths
+                )
+            if installed and source_id == "liftover" and paths:
+                source_fasta = paths[0]
+                installed = (
+                    source_fasta.exists()
+                    and Path(str(source_fasta) + ".fai").exists()
+                    and Path(str(source_fasta) + ".gzi").exists()
+                    and all(path.exists() for path in paths[1:])
                 )
             available = auto_fetch or installed
             label, description = labels[source_id]

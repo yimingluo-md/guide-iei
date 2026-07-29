@@ -242,8 +242,9 @@ Useful flags: `--dry-run` (print the assembled container command and stop),
 **every** variant, not just coding+splice — for WGS / non-coding work; see
 *Scope* below), `--include-filtered` (retain non-PASS calls for deliberate
 review/debugging), and `--input-assembly GRCh38|GRCh37|auto`. GRCh38 is the
-canonical annotation/cohort assembly; GRCh37 is converted with allele-aware
-Picard liftover before any GRCh38 region filter, while `auto` refuses ambiguous
+canonical annotation/cohort assembly; GRCh37 is converted with the
+assembly-gap-aware BCFtools/liftover plugin before any GRCh38 region filter,
+while `auto` refuses ambiguous
 headers. See `docs/GRCH37_INPUT.md`. The PASS default can also be changed with
 `run.pass_only`.
 
@@ -292,8 +293,11 @@ workspace copy to the Ensembl cache convention (`1`/`MT`) before region
 filtering. Coordinates, alleles, FORMAT fields, and genotypes are unchanged.
 
 GRCh37/hg19 inputs are never mixed directly into this step. The controlled
-intake writes a derived GRCh38 VCF, an unsupported-record VCF, a Picard reject
-VCF, QC JSON, and provenance JSON while preserving the original locus in INFO.
+intake writes a derived GRCh38 VCF, a reference-correction audit VCF, an
+unsupported-record VCF, a liftover-reject VCF, QC JSON, and provenance JSON
+while preserving the original locus in INFO. A source ALT that becomes the
+GRCh38 reference is excluded from annotation only when every called sample is
+reference after genotype-aware allele remapping.
 The original input is not modified. Re-alignment/re-calling against GRCh38 is
 preferred when reads are available.
 
@@ -415,8 +419,10 @@ clinical significance.
   conservation SQL). This is baked into the image at `/opt/vep/src/loftee` and
   exposed to VEP as `$LOFTEE_DIR`; `loftee_path: auto` in the config resolves to
   it inside the container.
-- **Picard 3.3.0** is pinned in the image for allele-aware GRCh37 VCF liftover.
-  Rebuild the image after upgrading from a version without the liftover path.
+- **BCFtools/liftover** is built from pinned bcftools and plugin commits for
+  assembly-gap-aware hg19 intake. It uses both source and destination FASTAs,
+  remaps genotype/allele-indexed fields, and audits source calls that become
+  the GRCh38 reference. See `docs/GRCH37_INPUT.md`.
 - See `docker/README.md` for Singularity build instructions and compatibility
   details.
 

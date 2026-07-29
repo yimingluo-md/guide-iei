@@ -220,14 +220,15 @@ test("retains both loci for a lifted GRCh37 variant", async () => {
       "##reference=GRCh38",
       "##reference=GRCh38\n"
       + "##iei_target_assembly=GRCh38\n"
-      + "##iei_liftover=<SourceAssembly=GRCh37,TargetAssembly=GRCh38>",
+      + "##iei_liftover=<SourceAssembly=GRCh37/hg19,TargetAssembly=GRCh38>",
     )
     .replace(
       `CSQ=${PASS_CSQ}`,
-      `IEI_LIFTOVER;IEI_ORIGINAL_ASSEMBLY=GRCh37;IEI_ORIGINAL_CHROM=1;IEI_ORIGINAL_POS=99;IEI_ORIGINAL_REF=A;IEI_ORIGINAL_ALT=G;CSQ=${PASS_CSQ}`,
+      `IEI_LIFTOVER;IEI_ASSEMBLY_ALLELE_SWAP;IEI_ORIGINAL_ASSEMBLY=GRCh37;IEI_ORIGINAL_CHROM=1;IEI_ORIGINAL_POS=99;IEI_ORIGINAL_REF=A;IEI_ORIGINAL_ALT=G;CSQ=${PASS_CSQ}`,
     );
   const result = await parseVcfFiles([new File([lifted], "lifted.vep.vcf")]);
   assert.equal(result.rows[0].liftedFromGrch37, true);
+  assert.equal(result.rows[0].assemblyAlleleSwap, true);
   assert.equal(result.rows[0].originalPos, 99);
   assert.equal(result.rows[0].originalAlt, "G");
 });

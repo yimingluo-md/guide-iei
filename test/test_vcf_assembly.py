@@ -35,9 +35,12 @@ def test_detects_both_assemblies_and_pipeline_marker(tmp_path):
     write_vcf(
         lifted,
         "##iei_target_assembly=GRCh38\n"
+        "##iei_liftover=<SourceAssembly=GRCh37/hg19,TargetAssembly=GRCh38>\n"
         "##iei_original_reference=GRCh37\n",
     )
-    assert detect_vcf_assembly(lifted)["assembly"] == "GRCh38"
+    result = detect_vcf_assembly(lifted)
+    assert result["assembly"] == "GRCh38"
+    assert result["lifted_from_grch37"]
 
 
 def test_auto_requires_evidence_and_explicit_choice_checks_conflicts(tmp_path):

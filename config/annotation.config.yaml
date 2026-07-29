@@ -52,9 +52,17 @@ input:
 
 liftover:
   enabled: true
-  picard_version: "3.3.0"   # pinned in docker/Dockerfile
+  engine: bcftools_liftover
+  bcftools_version: "1.20"   # pinned in docker/Dockerfile
+  # Exact published plugin source used by the validated container build.
+  plugin_commit: "909d23019e19aeadf3bf6fe1407fd6afc094592a"
   grch37_to_grch38:
-    # UCSC chain with target/query contigs normalized to Ensembl 1..22/X/Y/MT.
+    enabled: true
+    # Source sequence is required for assembly-gap indels and REF/ALT swaps.
+    # Primary contigs are normalized to Ensembl 1..22/X/Y/MT.
+    source_reference: hg19
+    source_fasta: "references/liftover/hg19.primary.fa.gz"  # tier: auto
+    # UCSC chain with source/target contigs normalized to 1..22/X/Y/MT.
     chain: "references/liftover/hg19ToGRCh38.ensembl.over.chain.gz"  # tier: auto
   # Validated initial scope: primary-contig SNVs and short indels. Longer,
   # symbolic, breakend, spanning-deletion, decoy, and alt-contig records are

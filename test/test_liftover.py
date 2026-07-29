@@ -58,15 +58,32 @@ def test_prepare_and_qc_preserve_all_input_records(tmp_path):
     assert "MLEAC=" not in supported_text
     assert "DP=20" in supported_text
 
-    lifted = tmp_path / "lifted.vcf.gz"
+    lifted_all = tmp_path / "lifted-all.vcf.gz"
     lifted_text = supported_text.replace(
         "#CHROM\tPOS", "##reference=GRCh38\n##iei_target_assembly=GRCh38\n#CHROM\tPOS"
     ).replace("1\t100\trs1", "1\t120\trs1")
-    with gzip.open(lifted, "wt") as handle:
+    with gzip.open(lifted_all, "wt") as handle:
         handle.write(lifted_text)
+    retained_plain = tmp_path / "retained.vcf"
+    correction_plain = tmp_path / "corrections.vcf"
+    classification = tmp_path / "classification.json"
+    subprocess.run(
+        [
+            "python3", str(ROOT / "pipeline" / "classify_liftover_records.py"),
+            "--input", str(lifted_all),
+            "--retained", str(retained_plain),
+            "--reference-corrections", str(correction_plain),
+            "--stats", str(classification),
+        ],
+        check=True,
+    )
+    lifted = tmp_path / "lifted.vcf.gz"
+    corrections = tmp_path / "corrections.vcf.gz"
+    gzip_copy(retained_plain, lifted)
+    gzip_copy(correction_plain, corrections)
     unsupported_gz = tmp_path / "unsupported.vcf.gz"
     gzip_copy(unsupported, unsupported_gz)
-    reject = tmp_path / "picard-reject.vcf.gz"
+    reject = tmp_path / "liftover-reject.vcf.gz"
     with gzip.open(reject, "wt") as handle:
         handle.write(
             "##fileformat=VCFv4.2\n"
@@ -76,21 +93,31 @@ def test_prepare_and_qc_preserve_all_input_records(tmp_path):
     chain.write_bytes(b"chain")
     dictionary = tmp_path / "GRCh38.dict"
     dictionary.write_text("@HD\tVN:1.6\n")
+    source_fasta = tmp_path / "hg19.fa.gz"
+    source_fasta.write_bytes(b"source")
+    target_fasta = tmp_path / "GRCh38.fa.gz"
+    target_fasta.write_bytes(b"target")
     qc = tmp_path / "qc.json"
     provenance = tmp_path / "provenance.json"
     subprocess.run(
         [
             "python3", str(ROOT / "pipeline" / "write_liftover_qc.py"),
             "--input", str(input_vcf),
+            "--lifted-all", str(lifted_all),
             "--lifted", str(lifted),
-            "--picard-reject", str(reject),
+            "--reference-corrections", str(corrections),
+            "--liftover-reject", str(reject),
             "--unsupported", str(unsupported_gz),
             "--pre-stats", str(stats),
+            "--classification-stats", str(classification),
             "--chain", str(chain),
+            "--source-fasta", str(source_fasta),
+            "--target-fasta", str(target_fasta),
             "--target-dict", str(dictionary),
             "--qc-output", str(qc),
             "--provenance-output", str(provenance),
-            "--picard-version", "TEST",
+            "--bcftools-version", "TEST",
+            "--plugin-commit", "TEST-COMMIT",
         ],
         check=True,
     )
@@ -105,9 +132,62 @@ def test_prepare_and_qc_preserve_all_input_records(tmp_path):
     details = json.loads(provenance.read_text())
     assert details["chain"]["sha256"]
     assert details["policy"]["unlifted_records_are_not_interpreted_as_reference"]
+    assert details["tool"]["name"] == "BCFtools/liftover"
+
+
+def test_reference_alt_becoming_grch38_ref_is_audited_not_retained(tmp_path):
+    lifted = tmp_path / "lifted.vcf"
+    lifted.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=IEI_LIFTOVER_SWAP,Number=1,Type=Integer,Description="swap">\n'
+        '##INFO=<ID=SRC_CHROM,Number=1,Type=String,Description="source chrom">\n'
+        '##INFO=<ID=SRC_POS,Number=1,Type=Integer,Description="source pos">\n'
+        '##INFO=<ID=SRC_REF_ALT,Number=.,Type=String,Description="source alleles">\n'
+        '##INFO=<ID=IEI_ORIGINAL_RECORD,Number=1,Type=Integer,Description="ordinal">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="genotype">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "11\t67997692\trs5792426\tAG\tA\t99\tPASS\t"
+        "IEI_LIFTOVER_SWAP=1;SRC_CHROM=11;SRC_POS=67765163;"
+        "SRC_REF_ALT=A,AG;IEI_ORIGINAL_RECORD=1\tGT\t0/0\n"
+        "11\t68000000\ttrue-variant\tC\tT\t99\tPASS\t"
+        "IEI_LIFTOVER_SWAP=1;SRC_CHROM=11;SRC_POS=67767471;"
+        "SRC_REF_ALT=T,C;IEI_ORIGINAL_RECORD=2\tGT\t0/1\n"
+        "11\t68001000\tordinary\tG\tA\t99\tPASS\t"
+        "SRC_CHROM=11;SRC_POS=67768471;SRC_REF_ALT=G,A;"
+        "IEI_ORIGINAL_RECORD=3\tGT\t0/1\n"
+    )
+    retained = tmp_path / "retained.vcf"
+    corrections = tmp_path / "corrections.vcf"
+    stats = tmp_path / "stats.json"
+    subprocess.run(
+        [
+            "python3", str(ROOT / "pipeline" / "classify_liftover_records.py"),
+            "--input", str(lifted),
+            "--retained", str(retained),
+            "--reference-corrections", str(corrections),
+            "--stats", str(stats),
+        ],
+        check=True,
+    )
+    retained_text = retained.read_text()
+    correction_text = corrections.read_text()
+    assert "rs5792426" not in retained_text
+    assert "rs5792426" in correction_text
+    assert "IEI_REFERENCE_CORRECTION" in correction_text
+    assert "true-variant" in retained_text
+    assert "IEI_ASSEMBLY_ALLELE_SWAP" in retained_text
+    assert "ordinary" in retained_text
+    report = json.loads(stats.read_text())
+    assert report["raw_lifted_allele_records"] == 3
+    assert report["retained_allele_records"] == 2
+    assert report["reference_correction_allele_records"] == 1
 
 
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         test_prepare_and_qc_preserve_all_input_records(pathlib.Path(directory))
-    print("1 test passed")
+    with tempfile.TemporaryDirectory() as directory:
+        test_reference_alt_becoming_grch38_ref_is_audited_not_retained(
+            pathlib.Path(directory)
+        )
+    print("2 tests passed")

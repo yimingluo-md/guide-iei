@@ -130,6 +130,7 @@ export type VariantRow = {
   ref: string;
   alt: string;
   liftedFromGrch37?: boolean;
+  assemblyAlleleSwap?: boolean;
   originalAssembly?: string;
   originalChrom?: string;
   originalPos?: number | null;
@@ -966,6 +967,7 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
               alt,
               liftedFromGrch37: assembly.liftedFromGrch37
                 || first(info, ["IEI_ORIGINAL_ASSEMBLY"]) === "GRCh37",
+              assemblyAlleleSwap: truthy(info.IEI_ASSEMBLY_ALLELE_SWAP),
               originalAssembly: first(info, ["IEI_ORIGINAL_ASSEMBLY"]),
               originalChrom: first(info, ["IEI_ORIGINAL_CHROM"]),
               originalPos: number(first(info, ["IEI_ORIGINAL_POS"])),

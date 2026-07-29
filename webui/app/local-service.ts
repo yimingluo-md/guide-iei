@@ -95,7 +95,7 @@ export type AnnotationOptions = Record<string, boolean | number | string[]>;
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "spliceai" | "clinvar";
+  resource_id: "spliceai" | "clinvar" | "liftover";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;
   message: string;
@@ -355,7 +355,7 @@ export async function getResourceDownloads() {
   return (await request<{ jobs: ResourceDownloadJob[] }>("/api/resource-downloads")).jobs;
 }
 
-export async function startResourceDownload(resourceId: "spliceai" | "clinvar") {
+export async function startResourceDownload(resourceId: "spliceai" | "clinvar" | "liftover") {
   return request<ResourceDownloadJob>(
     `/api/resource-downloads/${encodeURIComponent(resourceId)}`,
     { method: "POST", body: "{}" },

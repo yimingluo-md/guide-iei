@@ -7,34 +7,65 @@ It does not maintain a parallel GRCh37 VEP cache and plugin database.
 
 1. If FASTQ, BAM, or CRAM data are available, align and call variants against
    GRCh38. This is preferable for reportable findings because coordinate
-   liftover cannot revisit mapping, local assembly, or callability.
-2. If only a GRCh37/hg19 small-variant VCF is available, select
+   conversion cannot revisit read mapping, local assembly, or callability.
+2. If only an hg19/GRCh37 small-variant VCF is available, select
    **GRCh37 / hg19 — liftover to GRCh38** in the workbench or pass:
 
    ```bash
    bash scripts/run_annotation.sh \
-     --input legacy.grch37.vcf.gz \
+     --input legacy.hg19.vcf.gz \
      --output results/legacy.vep.vcf.gz \
      --input-assembly GRCh37
    ```
 
 3. Annotate, review, and cohort-index the resulting GRCh38 representation.
 
-`--input-assembly auto` uses `##reference`, the chromosome-1 contig length, or
-the pipeline target marker. It fails if the header is ambiguous. An explicit
+`--input-assembly auto` uses `##reference`, chromosome-1 contig length, or the
+pipeline target marker. It fails if the header is ambiguous. An explicit
 choice is accepted for an ambiguous header but rejected when it conflicts with
 reliable header evidence.
 
-## Conversion behavior
+## Why ordinary coordinate-only liftover is insufficient
 
-The conversion runs before GRCh38 PASS/coding-region filtering and uses
-[Picard LiftoverVcf](https://gatk.broadinstitute.org/hc/en-us/articles/360036733851-LiftoverVcf-Picard)
-with UCSC's `hg19ToHg38.over.chain.gz`. The downloaded chain's query and target
-contigs are normalized to the Ensembl `1..22/X/Y/MT` convention used by the
-configured FASTA and VEP cache; input `chr1`/`chrM` labels are normalized in
-the derived copy while the original label remains in INFO. The pipeline then
-validates and left-normalizes REF/ALT against the configured GRCh38 FASTA.
+Some apparent hg19 variants are differences between the hg19 and GRCh38
+reference sequences. For example, an hg19 insertion can become the normal
+GRCh38 reference allele across a small assembly gap. Copying the coordinate
+while preserving the old REF/ALT can create a false GRCh38 frameshift.
 
+The pipeline therefore uses the published
+[BCFtools/liftover](https://github.com/freeseek/score#liftover-vcfs)
+implementation (Genovese et al., *Bioinformatics* 2024,
+[doi:10.1093/bioinformatics/btae038](https://doi.org/10.1093/bioinformatics/btae038)).
+Both the source hg19 FASTA and destination GRCh38 FASTA are supplied. The
+plugin can bridge small chain gaps, recognize allele swaps, and remap GT plus
+Number=A/R/G annotations such as AD and PL.
+
+## Reference-correction policy
+
+For each successfully lifted allele:
+
+- If a source ALT becomes the GRCh38 REF and every called sample is `0/0`
+  after allele-aware remapping, it is an **assembly reference correction**.
+  It is excluded from the VEP input and candidate/cohort lists, but retained in
+  `*.liftover-reference-corrections.vcf.gz` with
+  `IEI_REFERENCE_CORRECTION`.
+- If a source ALT becomes the GRCh38 REF but at least one sample remains
+  non-reference, the record is a genuine reviewable GRCh38 variant. It is
+  retained and labelled `IEI_ASSEMBLY_ALLELE_SWAP`; the UI shows
+  **Assembly allele swap**.
+- If GT is absent or entirely missing, the record is retained for review. The
+  pipeline does not infer reference status without genotype evidence.
+- Unmapped or unsupported records are never interpreted as absent or
+  homozygous reference.
+
+This policy fixes the reference-artefact failure mode without using a brittle
+blacklist of known loci.
+
+## Conversion scope and artifacts
+
+Conversion runs before GRCh38 PASS/exome-region filtering. The downloaded UCSC
+hg19 primary FASTA and chain are normalized to the Ensembl
+`1..22/X/Y/MT` convention used by the configured GRCh38 FASTA and VEP cache.
 The initial validated scope is:
 
 - chromosomes 1–22, X, Y, and mitochondrial sequence;
@@ -43,11 +74,11 @@ The initial validated scope is:
   (default 50 bp).
 
 Symbolic alleles, breakends, spanning deletions, longer alleles, and
-non-primary/decoy/alt contigs are not silently discarded. They are retained in
-an `*.liftover-unsupported.vcf.gz` artifact. Picard mapping/reference failures
-are retained separately in `*.liftover-rejected.vcf.gz`.
+non-primary/decoy/alt contigs are retained in
+`*.liftover-unsupported.vcf.gz`. Mapping/reference failures are retained in
+`*.liftover-rejected.vcf.gz`.
 
-Every converted record contains:
+Every converted record retains:
 
 - `IEI_ORIGINAL_ASSEMBLY`
 - `IEI_ORIGINAL_CHROM`
@@ -55,29 +86,26 @@ Every converted record contains:
 - `IEI_ORIGINAL_REF`
 - `IEI_ORIGINAL_ALT`
 
-These survive VEP annotation. The review UI and cohort results display both
-representations and label the call **Lifted from GRCh37**.
+These fields survive VEP annotation. The UI and cohort results display the
+original representation and label the call **Lifted from GRCh37**.
 
 ## QC and provenance
 
 The derived GRCh38 VCF has two JSON sidecars:
 
-- `*.liftover.qc.json` — attempted, lifted, unsupported, Picard-rejected,
-  allele-changed, and reverse-complemented counts plus rejection reasons.
-- `*.liftover.provenance.json` — input identity, Picard version, chain SHA-256,
-  target sequence-dictionary SHA-256, policy, and artifact paths.
+- `*.liftover.qc.json` — attempted, raw-lifted, retained,
+  reference-correction, unsupported, and rejected counts plus reasons.
+- `*.liftover.provenance.json` — input and reference identities, chain
+  SHA-256, exact bcftools version and plugin commit, policy, and artifact paths.
 
-Accepted plus rejected/unsupported input records must reconcile or the
-conversion fails. An unlifted record must never be interpreted as absent or
-homozygous reference.
-
-Identical conversions are cached using input, chain, target dictionary, tool,
-and policy identities. This makes large-lab ingestion a one-time conversion
-cost rather than a per-query operation.
+All prepared allele records must reconcile across retained, correction,
+rejected, and unsupported artifacts or conversion fails. Identical conversions
+are cached using input, reference, chain, tool, and policy identities.
 
 ## Setup
 
-Build the updated image and download the small chain file:
+In the local workbench, open **Run VEP first → Set up annotation datasets → hg19
+input bundle → Download hg19 bundle**. Or use:
 
 ```bash
 bash docker/build.sh
@@ -85,8 +113,17 @@ bash scripts/download_references.sh \
   config/annotation.config.yaml --only liftover
 ```
 
-The image pins Picard 3.3.0. The target GRCh38 FASTA is the same reference used
-by VEP; a sequence dictionary is generated beside it on first use.
+The bundle is approximately 1 GB. The validated software pins bcftools 1.20
+and the BCFtools/liftover source commit recorded in
+`config/annotation.config.yaml`.
+
+## Input-reference limitation
+
+The current preset is the UCSC hg19 primary assembly, with primary contig names
+normalized during intake. GRCh37 primary chromosome sequences are normally
+equivalent at supported loci, but unusual b37/hs37d5/decoy callsets should not
+be assumed compatible without checking their header and reference provenance.
+Decoy and alternate-contig calls remain outside the validated scope.
 
 ## Clinical interpretation
 
