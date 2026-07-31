@@ -22,8 +22,12 @@ def test_prepare_and_qc_preserve_all_input_records(tmp_path):
         "##contig=<ID=1,length=249250621>\n"
         '##INFO=<ID=MLEAC,Number=A,Type=Integer,Description="test">\n'
         '##INFO=<ID=DP,Number=1,Type=Integer,Description="test">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="genotype">\n'
+        '##FORMAT=<ID=GP,Number=G,Type=Float,Description="probabilities">\n'
+        '##FORMAT=<ID=PL,Number=G,Type=Integer,Description="likelihoods">\n'
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
-        "1\t100\trs1\tA\tG\t99\tPASS\tMLEAC=1,1;DP=20\tGT\t0/1\n"
+        "1\t100\trs1\tA\tG\t99\tPASS\tMLEAC=1,1;DP=20\tGT:GP:PL\t"
+        "0/1:0.1,0.9:30,0,40\n"
         "1\t200\t.\tC\t<DEL>\t99\tPASS\t.\tGT\t0/1\n"
         "GL000207.1\t300\t.\tG\tA\t99\tPASS\t.\tGT\t0/1\n"
     )
@@ -51,12 +55,16 @@ def test_prepare_and_qc_preserve_all_input_records(tmp_path):
     }
     assert pre["records_with_removed_malformed_info"] == 1
     assert pre["removed_malformed_info_fields"] == {"MLEAC": 1}
+    assert pre["records_with_removed_malformed_format"] == 1
+    assert pre["removed_malformed_format_fields"] == {"GP": 1}
     supported_text = supported.read_text()
     assert "##iei_original_reference=GRCh37" in supported_text
     assert "IEI_ORIGINAL_POS=100" in supported_text
     assert "IEI_ORIGINAL_RECORD=1" in supported_text
     assert "MLEAC=" not in supported_text
     assert "DP=20" in supported_text
+    assert "GT:PL\t0/1:30,0,40" in supported_text
+    assert "GT:GP:PL" not in supported_text
 
     lifted_all = tmp_path / "lifted-all.vcf.gz"
     lifted_text = supported_text.replace(
@@ -128,7 +136,16 @@ def test_prepare_and_qc_preserve_all_input_records(tmp_path):
     assert report["all_records_accounted_for"]
     assert report["records_with_removed_malformed_info"] == 1
     assert report["removed_malformed_info_fields"] == {"MLEAC": 1}
-    assert "Malformed allele-indexed INFO values" in report["warnings"][0]
+    assert report["records_with_removed_malformed_format"] == 1
+    assert report["removed_malformed_format_fields"] == {"GP": 1}
+    assert any(
+        "Malformed allele-indexed INFO values" in warning
+        for warning in report["warnings"]
+    )
+    assert any(
+        "Malformed allele-indexed FORMAT values" in warning
+        for warning in report["warnings"]
+    )
     details = json.loads(provenance.read_text())
     assert details["chain"]["sha256"]
     assert details["policy"]["unlifted_records_are_not_interpreted_as_reference"]
@@ -155,6 +172,12 @@ def test_reference_alt_becoming_grch38_ref_is_audited_not_retained(tmp_path):
         "11\t68001000\tordinary\tG\tA\t99\tPASS\t"
         "SRC_CHROM=11;SRC_POS=67768471;SRC_REF_ALT=G,A;"
         "IEI_ORIGINAL_RECORD=3\tGT\t0/1\n"
+        "11\t68002000\tnew-ref-a\tC\tA\t99\tPASS\t"
+        "IEI_LIFTOVER_SWAP=-1;SRC_CHROM=11;SRC_POS=67769471;"
+        "SRC_REF_ALT=A,G;IEI_ORIGINAL_RECORD=4\tGT\t0/1\n"
+        "11\t68002000\tnew-ref-g\tC\tG\t99\tPASS\t"
+        "IEI_LIFTOVER_SWAP=-1;SRC_CHROM=11;SRC_POS=67769471;"
+        "SRC_REF_ALT=A,G;IEI_ORIGINAL_RECORD=4\tGT\t0/1\n"
     )
     retained = tmp_path / "retained.vcf"
     corrections = tmp_path / "corrections.vcf"
@@ -178,9 +201,54 @@ def test_reference_alt_becoming_grch38_ref_is_audited_not_retained(tmp_path):
     assert "IEI_ASSEMBLY_ALLELE_SWAP" in retained_text
     assert "ordinary" in retained_text
     report = json.loads(stats.read_text())
-    assert report["raw_lifted_allele_records"] == 3
-    assert report["retained_allele_records"] == 2
+    assert report["raw_lifted_allele_records"] == 5
+    assert report["retained_allele_records"] == 4
     assert report["reference_correction_allele_records"] == 1
+    assert report["raw_lifted_source_allele_records"] == 4
+    assert report["new_reference_records"] == 2
+    assert report["new_reference_source_allele_records"] == 1
+
+
+def test_prepare_removes_only_number_g_fields_incompatible_with_liftover(tmp_path):
+    input_vcf = tmp_path / "haploid.vcf"
+    input_vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        "##reference=GRCh37\n"
+        "##contig=<ID=X,length=155270560>\n"
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="genotype">\n'
+        '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="depths">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="depth">\n'
+        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="quality">\n'
+        '##FORMAT=<ID=GP,Number=G,Type=Float,Description="probabilities">\n'
+        '##FORMAT=<ID=PL,Number=G,Type=Integer,Description="likelihoods">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        "X\t100\t.\tA\tG\t99\tPASS\t.\tGT:AD:DP:GQ:GP:PL\t"
+        "1:0,20:20:80:80,1e-8:100,0\n"
+    )
+    supported = tmp_path / "supported.vcf"
+    unsupported = tmp_path / "unsupported.vcf"
+    stats = tmp_path / "stats.json"
+    subprocess.run(
+        [
+            "python3", str(ROOT / "pipeline" / "prepare_liftover_vcf.py"),
+            "--input", str(input_vcf),
+            "--supported", str(supported),
+            "--unsupported", str(unsupported),
+            "--stats", str(stats),
+        ],
+        check=True,
+    )
+    text = supported.read_text()
+    assert "GT:AD:DP:GQ\t1:0,20:20:80" in text
+    assert ":GP" not in text
+    assert ":PL" not in text
+    report = json.loads(stats.read_text())
+    assert report["records_with_removed_malformed_format"] == 0
+    assert report["records_with_removed_liftover_incompatible_format"] == 1
+    assert report["removed_liftover_incompatible_format_fields"] == {
+        "GP": 1,
+        "PL": 1,
+    }
 
 
 if __name__ == "__main__":
@@ -190,4 +258,8 @@ if __name__ == "__main__":
         test_reference_alt_becoming_grch38_ref_is_audited_not_retained(
             pathlib.Path(directory)
         )
-    print("2 tests passed")
+    with tempfile.TemporaryDirectory() as directory:
+        test_prepare_removes_only_number_g_fields_incompatible_with_liftover(
+            pathlib.Path(directory)
+        )
+    print("3 tests passed")

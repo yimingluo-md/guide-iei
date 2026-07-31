@@ -40,6 +40,15 @@ Both the source hg19 FASTA and destination GRCh38 FASTA are supplied. The
 plugin can bridge small chain gaps, recognize allele swaps, and remap GT plus
 Number=A/R/G annotations such as AD and PL.
 
+BCFtools/liftover 1.20 cannot remap non-diploid or String `Number=G` FORMAT
+arrays when the destination reference introduces a new allele. During GRCh37
+intake, the pipeline therefore removes only those incompatible fields on the
+affected record (for example haploid `PL`, `GP`, or `PRI`). It retains `GT`,
+`AD`, `DP`, `GQ`, and every compatible field. Malformed allele-indexed FORMAT
+values are handled with the same record-local policy rather than aborting the
+entire VCF or dropping the tag globally. Counts by field are written to the
+liftover QC and provenance sidecars.
+
 ## Reference-correction policy
 
 For each successfully lifted allele:
@@ -98,8 +107,10 @@ The derived GRCh38 VCF has two JSON sidecars:
 - `*.liftover.provenance.json` — input and reference identities, chain
   SHA-256, exact bcftools version and plugin commit, policy, and artifact paths.
 
-All prepared allele records must reconcile across retained, correction,
-rejected, and unsupported artifacts or conversion fails. Identical conversions
+All prepared source allele records must reconcile across retained, correction,
+rejected, and unsupported artifacts or conversion fails. QC tracks stable
+source-allele identities because introducing a new GRCh38 reference can turn
+one source allele into two normalized destination rows. Identical conversions
 are cached using input, reference, chain, tool, and policy identities.
 
 ## Setup

@@ -137,11 +137,14 @@ def main() -> int:
     correction_count, _ = count_records(args.reference_corrections)
     accepted = lifted_metrics(args.lifted)
     raw_lifted, _ = count_records(args.lifted_all)
+    raw_lifted_source_alleles = classification.get(
+        "raw_lifted_source_allele_records", raw_lifted
+    )
     attempted = pre["total_records"]
     attempted_liftover_alleles = pre.get(
         "supported_allele_records", pre["supported_records"]
     )
-    accounted_liftover_alleles = raw_lifted + rejected
+    accounted_liftover_alleles = raw_lifted_source_alleles + rejected
     all_accounted = (
         accounted_liftover_alleles == attempted_liftover_alleles
         and unsupported == pre["unsupported_records"]
@@ -170,6 +173,21 @@ def main() -> int:
             "Malformed allele-indexed INFO values were removed before "
             "multiallelic splitting; see removed_malformed_info_fields."
         )
+    if pre.get("records_with_removed_malformed_format", 0):
+        warnings.append(
+            "Malformed allele-indexed FORMAT values were removed only from "
+            "affected records before liftover; see "
+            "removed_malformed_format_fields. GT and well-formed sample fields "
+            "were retained."
+        )
+    if pre.get("records_with_removed_liftover_incompatible_format", 0):
+        warnings.append(
+            "Valid non-diploid or String Number=G FORMAT values that "
+            "BCFtools/liftover cannot safely remap were removed only from "
+            "affected records; see "
+            "removed_liftover_incompatible_format_fields. GT, GQ, AD, DP, "
+            "and compatible fields were retained."
+        )
     qc = {
         "source_assembly": "GRCh37/hg19",
         "target_assembly": "GRCh38",
@@ -177,6 +195,7 @@ def main() -> int:
         "attempted_liftover_allele_records": attempted_liftover_alleles,
         **accepted,
         "raw_lifted_allele_records": raw_lifted,
+        "raw_lifted_source_allele_records": raw_lifted_source_alleles,
         "reference_correction_records": correction_count,
         "liftover_rejected_records": rejected,
         "unsupported_records": unsupported,
@@ -191,6 +210,18 @@ def main() -> int:
         ),
         "removed_malformed_info_fields": pre.get(
             "removed_malformed_info_fields", {}
+        ),
+        "records_with_removed_malformed_format": pre.get(
+            "records_with_removed_malformed_format", 0
+        ),
+        "removed_malformed_format_fields": pre.get(
+            "removed_malformed_format_fields", {}
+        ),
+        "records_with_removed_liftover_incompatible_format": pre.get(
+            "records_with_removed_liftover_incompatible_format", 0
+        ),
+        "removed_liftover_incompatible_format_fields": pre.get(
+            "removed_liftover_incompatible_format_fields", {}
         ),
         "classification": classification,
         "warnings": warnings,
@@ -229,6 +260,7 @@ def main() -> int:
             "reference_corrections_are_excluded_from_annotation": True,
             "reference_corrections_are_retained_in_audit_vcf": True,
             "unlifted_records_are_not_interpreted_as_reference": True,
+            "malformed_allele_indexed_fields_are_removed_per_record": True,
         },
         "qc": qc,
     }

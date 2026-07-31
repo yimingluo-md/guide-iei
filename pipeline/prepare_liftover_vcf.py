@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import math
 import re
 from collections import Counter
 from pathlib import Path
@@ -19,6 +20,9 @@ from urllib.parse import quote
 PRIMARY_CONTIG = re.compile(r"^(?:chr)?(?:[1-9]|1[0-9]|2[0-2]|X|Y|M|MT)$", re.I)
 SEQUENCE = re.compile(r"^[ACGTN]+$", re.I)
 INFO_DEFINITION = re.compile(r"^##INFO=<ID=([^,>]+),Number=([^,>]+),")
+FORMAT_DEFINITION = re.compile(
+    r"^##FORMAT=<ID=([^,>]+),Number=([^,>]+),Type=([^,>]+),"
+)
 
 
 def text_open(path: str):
@@ -75,6 +79,106 @@ def remove_malformed_allele_info(
     return ";".join(retained) or ".", removed
 
 
+def genotype_ploidy(raw_gt: str) -> int | None:
+    """Return ploidy encoded by GT, including partially missing genotypes."""
+    if raw_gt in {"", "."}:
+        return None
+    alleles = re.split(r"[/|]", raw_gt)
+    return len(alleles) if alleles else None
+
+
+def expected_format_value_counts(
+    number: str, alternate_count: int, raw_gt: str
+) -> set[int]:
+    allele_count = alternate_count + 1
+    if number == "A":
+        return {alternate_count}
+    if number == "R":
+        return {allele_count}
+    if number != "G":
+        return set()
+    ploidy = genotype_ploidy(raw_gt)
+    if ploidy is not None:
+        return {math.comb(allele_count + ploidy - 1, ploidy)}
+    # A VCF can omit GT while retaining likelihoods. Haploid and diploid are
+    # the common valid cases; do not guess beyond those two representations.
+    return {allele_count, math.comb(allele_count + 1, 2)}
+
+
+def remove_malformed_allele_format(
+    columns: list[str],
+    alternate_count: int,
+    format_definitions: dict[str, tuple[str, str]],
+) -> tuple[list[str], list[str]]:
+    """Remove malformed Number=A/R/G FORMAT fields from one VCF record.
+
+    BCFtools/liftover must remap allele-indexed arrays when an assembly allele
+    changes. A malformed array makes that operation ambiguous and aborts the
+    whole file. We therefore remove only the inconsistent field on the
+    affected record, from every sample, while retaining GT and all other
+    well-formed sample evidence.
+    """
+    if len(columns) < 10 or columns[8] in {"", "."}:
+        return [], []
+    format_keys = columns[8].split(":")
+    gt_index = format_keys.index("GT") if "GT" in format_keys else None
+    malformed_indices: set[int] = set()
+    incompatible_indices: set[int] = set()
+
+    for index, key in enumerate(format_keys):
+        definition = format_definitions.get(key)
+        if not definition or definition[0] not in {"A", "R", "G"}:
+            continue
+        number, value_type = definition
+        encoded_widths: list[int] = []
+        for sample in columns[9:]:
+            values = sample.split(":")
+            raw_value = values[index] if index < len(values) else "."
+            encoded_widths.append(len(raw_value.split(",")))
+            raw_gt = (
+                values[gt_index]
+                if gt_index is not None and gt_index < len(values)
+                else "."
+            )
+            if raw_value in {"", "."}:
+                continue
+            expected = expected_format_value_counts(
+                number, alternate_count, raw_gt
+            )
+            if expected and len(raw_value.split(",")) not in expected:
+                malformed_indices.add(index)
+                break
+
+        if index in malformed_indices or number != "G":
+            continue
+        diploid_width = math.comb(alternate_count + 2, 2)
+        # BCFtools/liftover 1.20 remaps Number=G arrays as diploid when a
+        # target-reference allele must be introduced, and does not support
+        # Number=G String values. Valid haploid (or other-ploidy) arrays can
+        # therefore abort an otherwise safe conversion. Remove only that
+        # field on that record; GT, GQ, AD, DP, and all compatible fields stay.
+        if value_type in {"String", "Character"} or max(encoded_widths) != diploid_width:
+            incompatible_indices.add(index)
+
+    removed_indices = malformed_indices | incompatible_indices
+    if not removed_indices:
+        return [], []
+    retained_indices = [
+        index for index in range(len(format_keys)) if index not in removed_indices
+    ]
+    columns[8] = ":".join(format_keys[index] for index in retained_indices) or "."
+    for sample_index in range(9, len(columns)):
+        values = columns[sample_index].split(":")
+        values.extend(["."] * (len(format_keys) - len(values)))
+        columns[sample_index] = (
+            ":".join(values[index] for index in retained_indices) or "."
+        )
+    return (
+        [format_keys[index] for index in sorted(malformed_indices)],
+        [format_keys[index] for index in sorted(incompatible_indices)],
+    )
+
+
 def ensembl_contig(value: str) -> str:
     normalized = value[3:] if value.lower().startswith("chr") else value
     return "MT" if normalized.upper() in {"M", "MT"} else normalized
@@ -108,8 +212,13 @@ def main() -> int:
     total = supported = unsupported = supported_alleles = 0
     reasons: Counter[str] = Counter()
     removed_info_fields: Counter[str] = Counter()
-    repaired_records = 0
+    removed_format_fields: Counter[str] = Counter()
+    removed_incompatible_format_fields: Counter[str] = Counter()
+    repaired_info_records = 0
+    repaired_format_records = 0
+    repaired_incompatible_format_records = 0
     info_numbers: dict[str, str] = {}
+    format_definitions: dict[str, tuple[str, str]] = {}
     saw_columns = False
 
     with (
@@ -122,6 +231,15 @@ def main() -> int:
                 definition = INFO_DEFINITION.match(line)
                 if definition:
                     info_numbers[definition.group(1)] = definition.group(2)
+                good.write(line)
+                bad.write(line)
+                continue
+            if line.startswith("##FORMAT=<"):
+                definition = FORMAT_DEFINITION.match(line)
+                if definition:
+                    format_definitions[definition.group(1)] = (
+                        definition.group(2), definition.group(3)
+                    )
                 good.write(line)
                 bad.write(line)
                 continue
@@ -197,8 +315,19 @@ def main() -> int:
                 columns[7], alternate_count, info_numbers
             )
             if removed:
-                repaired_records += 1
+                repaired_info_records += 1
                 removed_info_fields.update(removed)
+            removed_format, removed_incompatible_format = remove_malformed_allele_format(
+                columns, alternate_count, format_definitions
+            )
+            if removed_format:
+                repaired_format_records += 1
+                removed_format_fields.update(removed_format)
+            if removed_incompatible_format:
+                repaired_incompatible_format_records += 1
+                removed_incompatible_format_fields.update(
+                    removed_incompatible_format
+                )
             original_alts = ",".join(quote(alt, safe="") for alt in alt_raw.split(","))
             columns[7] = append_info(
                 columns[7],
@@ -222,8 +351,18 @@ def main() -> int:
         "supported_allele_records": supported_alleles,
         "unsupported_records": unsupported,
         "unsupported_reasons": dict(sorted(reasons.items())),
-        "records_with_removed_malformed_info": repaired_records,
+        "records_with_removed_malformed_info": repaired_info_records,
         "removed_malformed_info_fields": dict(sorted(removed_info_fields.items())),
+        "records_with_removed_malformed_format": repaired_format_records,
+        "removed_malformed_format_fields": dict(
+            sorted(removed_format_fields.items())
+        ),
+        "records_with_removed_liftover_incompatible_format": (
+            repaired_incompatible_format_records
+        ),
+        "removed_liftover_incompatible_format_fields": dict(
+            sorted(removed_incompatible_format_fields.items())
+        ),
         "max_allele_length": args.max_allele_length,
     }
     Path(args.stats).write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n")

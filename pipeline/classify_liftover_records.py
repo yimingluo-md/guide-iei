@@ -91,7 +91,9 @@ def main() -> int:
     total = retained = corrections = swaps = new_references = 0
     unavailable_swap_genotypes = 0
     original_records: set[str] = set()
+    source_allele_records: set[tuple[str, str]] = set()
     correction_original_records: set[str] = set()
+    new_reference_source_alleles: set[tuple[str, str]] = set()
     saw_columns = False
 
     with (
@@ -131,6 +133,17 @@ def main() -> int:
             original_record = info.get("IEI_ORIGINAL_RECORD", "")
             if original_record:
                 original_records.add(original_record)
+            source_allele = info.get("SRC_REF_ALT", "")
+            if not source_allele:
+                source_allele = ",".join(
+                    (
+                        info.get("IEI_ORIGINAL_REF", ""),
+                        info.get("IEI_ORIGINAL_ALT", ""),
+                    )
+                )
+            source_identity = (original_record, source_allele)
+            if original_record and source_allele != ",":
+                source_allele_records.add(source_identity)
 
             replacements: dict[str, str | None] = {}
             source = source_alleles(info.get("SRC_REF_ALT", ""))
@@ -170,6 +183,8 @@ def main() -> int:
                     unavailable_swap_genotypes += 1
             elif swap < 0:
                 new_references += 1
+                if original_record and source_allele != ",":
+                    new_reference_source_alleles.add(source_identity)
                 replacements["IEI_LIFTOVER_NEW_REFERENCE"] = None
 
             retained += 1
@@ -178,12 +193,14 @@ def main() -> int:
 
     stats = {
         "raw_lifted_allele_records": total,
+        "raw_lifted_source_allele_records": len(source_allele_records),
         "raw_lifted_original_records": len(original_records),
         "retained_allele_records": retained,
         "reference_correction_allele_records": corrections,
         "reference_correction_original_records": len(correction_original_records),
         "retained_assembly_allele_swap_records": swaps,
         "new_reference_records": new_references,
+        "new_reference_source_allele_records": len(new_reference_source_alleles),
         "swap_records_without_called_genotypes": unavailable_swap_genotypes,
     }
     Path(args.stats).write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n")
