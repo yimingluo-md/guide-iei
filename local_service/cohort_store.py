@@ -9,13 +9,21 @@ to reopen hundreds of source files.
 from __future__ import annotations
 
 import gzip
+import hashlib
+import multiprocessing
+import os
 import re
+import shutil
 import sqlite3
+import subprocess
+import tempfile
 import threading
 import uuid
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable, Iterator
 from urllib.parse import unquote
 
 from pipeline.vcf_assembly import detect_vcf_assembly
@@ -24,6 +32,244 @@ from pipeline.vcf_assembly import detect_vcf_assembly
 EMPTY = {"", ".", "-"}
 IMPACT_ORDER = {"HIGH": 1, "MODERATE": 2, "LOW": 3, "MODIFIER": 4, "UNKNOWN": 5}
 ALLOWED_IMPACTS = set(IMPACT_ORDER)
+DEFAULT_INDEX_READERS = 4
+DEFAULT_STAGE_BATCH_RECORDS = 2_000
+
+
+@dataclass(frozen=True)
+class VcfHeader:
+    samples: tuple[str, ...]
+    csq_fields: tuple[str, ...]
+    contigs: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PreparedVcf:
+    source_path: Path
+    path: Path
+    index_path: Path | None
+    normalized: bool
+    cache_hit: bool
+    warning: str = ""
+
+
+class HtsBackend:
+    """Run bcftools/tabix natively or through the existing HTS container."""
+
+    def __init__(
+        self,
+        *,
+        native_tools: dict[str, str] | None = None,
+        runtime: str | None = None,
+        image: str = "vep-annotate:latest",
+    ):
+        self.native_tools = native_tools or {}
+        self.runtime = runtime
+        self.image = image
+
+    @classmethod
+    def discover(cls) -> "HtsBackend | None":
+        native = {
+            tool: location
+            for tool in ("bcftools", "tabix")
+            if (location := shutil.which(tool))
+        }
+        if len(native) == 2:
+            return cls(native_tools=native)
+        requested = os.environ.get("IEI_COHORT_HTS_RUNTIME") or os.environ.get(
+            "RUNTIME", "docker"
+        )
+        if requested not in {"docker", "podman"} or not shutil.which(requested):
+            return None
+        return cls(
+            runtime=requested,
+            image=os.environ.get("IEI_COHORT_HTS_IMAGE")
+            or os.environ.get("IMAGE", "vep-annotate:latest"),
+        )
+
+    def _command(self, tool: str, arguments: list[str]) -> list[str]:
+        if tool in self.native_tools:
+            return [self.native_tools[tool], *arguments]
+        if not self.runtime:
+            raise RuntimeError(f"{tool} is unavailable")
+
+        hosts: list[Path] = []
+        mapped_arguments = list(arguments)
+        for index, argument in enumerate(mapped_arguments):
+            candidate = Path(argument)
+            if not candidate.is_absolute():
+                continue
+            host_dir = candidate if candidate.is_dir() else candidate.parent
+            host_dir = host_dir.resolve()
+            try:
+                mount_index = hosts.index(host_dir)
+            except ValueError:
+                hosts.append(host_dir)
+                mount_index = len(hosts) - 1
+            mapped = Path(f"/hts_{mount_index + 1}")
+            if not candidate.is_dir():
+                mapped /= candidate.name
+            mapped_arguments[index] = str(mapped)
+
+        command = [self.runtime, "run", "--rm"]
+        for index, host in enumerate(hosts):
+            command.extend(["-v", f"{host}:/hts_{index + 1}:rw"])
+        command.extend(["--entrypoint", tool, self.image, *mapped_arguments])
+        return command
+
+    def run(self, tool: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:
+        process = subprocess.run(
+            self._command(tool, arguments),
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if process.returncode:
+            detail = process.stderr.strip() or process.stdout.strip()
+            raise RuntimeError(detail or f"{tool} exited with {process.returncode}")
+        return process
+
+    def validate_index(self, path: Path) -> Path | None:
+        candidates = [Path(f"{path}.tbi"), Path(f"{path}.csi")]
+        index = next((item for item in candidates if item.is_file()), None)
+        if not index or index.stat().st_mtime_ns < path.stat().st_mtime_ns:
+            return None
+        try:
+            self.run("tabix", ["-l", str(path)])
+        except RuntimeError:
+            return None
+        return index
+
+    def list_contigs(self, path: Path) -> list[str]:
+        return [
+            line.strip()
+            for line in self.run("tabix", ["-l", str(path)]).stdout.splitlines()
+            if line.strip()
+        ]
+
+    def iter_records(self, path: Path, contigs: Iterable[str]) -> Iterator[str]:
+        regions = list(contigs)
+        if not regions:
+            return
+        command = self._command("tabix", [str(path), *regions])
+        process = subprocess.Popen(
+            command,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        assert process.stdout is not None
+        try:
+            yield from process.stdout
+            stderr = process.stderr.read() if process.stderr else ""
+            returncode = process.wait()
+            if returncode:
+                raise RuntimeError(
+                    stderr.strip() or f"tabix exited with {returncode}"
+                )
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait()
+            process.stdout.close()
+            if process.stderr:
+                process.stderr.close()
+
+    def sort_bgzip(self, source: Path, output: Path) -> None:
+        self.run(
+            "bcftools",
+            ["sort", "-O", "z", "-o", str(output), str(source)],
+        )
+
+    def create_index(self, path: Path) -> Path:
+        for suffix in (".tbi", ".csi"):
+            candidate = Path(f"{path}{suffix}")
+            if candidate.exists():
+                candidate.unlink()
+        try:
+            self.run("tabix", ["-f", "-p", "vcf", str(path)])
+        except RuntimeError as tabix_error:
+            try:
+                self.run("bcftools", ["index", "-f", "-c", str(path)])
+            except RuntimeError:
+                raise tabix_error
+        index = self.validate_index(path)
+        if not index:
+            raise RuntimeError("the generated tabix/CSI index could not be validated")
+        return index
+
+
+def is_bgzf(path: Path) -> bool:
+    """Return whether the first gzip member carries the BGZF BC extra field."""
+    try:
+        with path.open("rb") as handle:
+            header = handle.read(12)
+            if (
+                len(header) < 12
+                or header[:3] != b"\x1f\x8b\x08"
+                or not header[3] & 0x04
+            ):
+                return False
+            extra = handle.read(int.from_bytes(header[10:12], "little"))
+    except OSError:
+        return False
+    cursor = 0
+    while cursor + 4 <= len(extra):
+        length = int.from_bytes(extra[cursor + 2:cursor + 4], "little")
+        if extra[cursor:cursor + 2] == b"BC" and length == 2:
+            return cursor + 6 <= len(extra)
+        cursor += 4 + length
+    return False
+
+
+def read_vcf_header(path: Path) -> VcfHeader:
+    opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+    samples: tuple[str, ...] = ()
+    csq_fields: tuple[str, ...] = ()
+    contigs: list[str] = []
+    saw_fileformat = False
+    with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if line.startswith("##fileformat=VCF"):
+                saw_fileformat = True
+            elif line.startswith("##contig=<"):
+                identifier = re.search(r"(?:^|[,<])ID=([^,>]+)", line)
+                if identifier:
+                    contigs.append(identifier.group(1))
+                values = dict(
+                    item.split("=", 1)
+                    for item in line.split("<", 1)[1].rsplit(">", 1)[0].split(",")
+                    if "=" in item
+                )
+                if (
+                    normalize_chromosome(values.get("ID", "")) == "1"
+                    and values.get("length")
+                    and values["length"] != "248956422"
+                ):
+                    raise ValueError(
+                        "VCF chromosome 1 length does not match GRCh38 "
+                        f"(expected 248956422, found {values['length']})"
+                    )
+            elif line.startswith("##INFO=<ID=CSQ"):
+                match = re.search(r"Format:\s*([^\">]+)", line, re.IGNORECASE)
+                if match:
+                    csq_fields = tuple(match.group(1).strip().split("|"))
+            elif line.startswith("#CHROM"):
+                columns = line.rstrip("\r\n").split("\t")
+                samples = tuple(columns[9:])
+                break
+            elif not line.startswith("#"):
+                break
+    if not saw_fileformat:
+        raise ValueError("file does not begin with a VCF fileformat header")
+    if not samples:
+        raise ValueError("cohort VCF must contain at least one sample")
+    if len(samples) != len(set(samples)) or any(not sample for sample in samples):
+        raise ValueError("cohort VCF contains duplicate or empty sample names")
+    if not csq_fields:
+        raise ValueError("VEP CSQ Format header was not found")
+    return VcfHeader(samples=samples, csq_fields=csq_fields, contigs=tuple(contigs))
 
 
 def utc_now() -> str:
@@ -193,7 +439,10 @@ def annotation_from(record: dict[str, str]) -> dict:
             "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax",
             "gnomAD_popmax_AF", "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
         )),
-        "cadd": maximum(record, ("CADD_phred", "CADD_PHRED")),
+        "cadd": maximum(record, (
+            "CADD_phred", "CADD_PHRED", "CADD_WGS_CADD_PHRED",
+            "CADD_WGS_PHRED",
+        )),
         "alpha_missense": maximum(record, ("AlphaMissense_score", "am_pathogenicity")),
         "spliceai": maximum(record, (
             "SpliceAI_pred_DS_AG", "SpliceAI_pred_DS_AL",
@@ -217,12 +466,382 @@ def annotation_from(record: dict[str, str]) -> dict:
     }
 
 
+STAGE_VARIANT_COLUMNS = (
+    "variant_key", "chrom", "pos", "ref", "alt", "rsid",
+    "original_assembly", "original_chrom", "original_pos",
+    "original_ref", "original_alt",
+)
+STAGE_ANNOTATION_COLUMNS = (
+    "variant_key", "gene", "gene_id", "transcript", "hgvsc", "hgvsp",
+    "consequence", "impact", "gnomad_popmax", "cadd", "alpha_missense",
+    "spliceai", "clinvar", "clinvar_conflicting", "loftee", "loftee_50bp",
+    "loftee_50bp_original", "loftee_50bp_changed", "ptc_distance",
+    "ptc_calc_status", "mane", "picked", "repeat_masker", "segdup",
+)
+STAGE_GENOTYPE_COLUMNS = (
+    "variant_key", "sample_name", "genotype", "zygosity", "phased",
+    "dp", "gq", "allele_balance", "qual", "haplotype_frame_status",
+    "haplotype_frame_partners", "haplotype_protein_change",
+    "haplotype_transcript",
+)
+
+
+def _placeholders(columns: tuple[str, ...]) -> str:
+    return ",".join("?" for _ in columns)
+
+
+STAGE_SCHEMA = """
+PRAGMA journal_mode=OFF;
+PRAGMA synchronous=OFF;
+PRAGMA temp_store=MEMORY;
+PRAGMA cache_size=-32768;
+CREATE TABLE stage_variants (
+  variant_key TEXT PRIMARY KEY,
+  chrom TEXT NOT NULL,
+  pos INTEGER NOT NULL,
+  ref TEXT NOT NULL,
+  alt TEXT NOT NULL,
+  rsid TEXT,
+  original_assembly TEXT,
+  original_chrom TEXT,
+  original_pos INTEGER,
+  original_ref TEXT,
+  original_alt TEXT
+) WITHOUT ROWID;
+CREATE TABLE stage_annotations (
+  variant_key TEXT NOT NULL,
+  gene TEXT NOT NULL,
+  gene_id TEXT,
+  transcript TEXT NOT NULL DEFAULT '',
+  hgvsc TEXT NOT NULL DEFAULT '',
+  hgvsp TEXT NOT NULL DEFAULT '',
+  consequence TEXT NOT NULL,
+  impact TEXT NOT NULL,
+  gnomad_popmax REAL,
+  cadd REAL,
+  alpha_missense REAL,
+  spliceai REAL,
+  clinvar TEXT,
+  clinvar_conflicting TEXT,
+  loftee TEXT,
+  loftee_50bp TEXT,
+  loftee_50bp_original TEXT,
+  loftee_50bp_changed INTEGER NOT NULL DEFAULT 0,
+  ptc_distance REAL,
+  ptc_calc_status TEXT,
+  mane INTEGER NOT NULL DEFAULT 0,
+  picked INTEGER NOT NULL DEFAULT 0,
+  repeat_masker INTEGER NOT NULL DEFAULT 0,
+  segdup INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY(variant_key, gene, transcript, hgvsc, hgvsp, consequence)
+) WITHOUT ROWID;
+CREATE TABLE stage_genotypes (
+  variant_key TEXT NOT NULL,
+  sample_name TEXT NOT NULL,
+  genotype TEXT NOT NULL,
+  zygosity TEXT NOT NULL,
+  phased INTEGER NOT NULL DEFAULT 0,
+  dp INTEGER,
+  gq REAL,
+  allele_balance REAL,
+  qual REAL,
+  haplotype_frame_status TEXT,
+  haplotype_frame_partners TEXT,
+  haplotype_protein_change TEXT,
+  haplotype_transcript TEXT,
+  PRIMARY KEY(variant_key, sample_name)
+) WITHOUT ROWID;
+"""
+
+
+def _stage_insert_sql(table: str, columns: tuple[str, ...]) -> str:
+    return (
+        f"INSERT OR REPLACE INTO {table} ({','.join(columns)}) "
+        f"VALUES ({_placeholders(columns)})"
+    )
+
+
+STAGE_VARIANT_INSERT = _stage_insert_sql("stage_variants", STAGE_VARIANT_COLUMNS)
+STAGE_ANNOTATION_INSERT = _stage_insert_sql(
+    "stage_annotations", STAGE_ANNOTATION_COLUMNS
+)
+STAGE_GENOTYPE_INSERT = _stage_insert_sql(
+    "stage_genotypes", STAGE_GENOTYPE_COLUMNS
+)
+
+COHORT_SECONDARY_INDEXES = {
+    "cohort_variants_locus_idx": (
+        "CREATE INDEX cohort_variants_locus_idx "
+        "ON cohort_variants(chrom, pos, ref, alt)"
+    ),
+    "cohort_variants_rsid_idx": (
+        "CREATE INDEX cohort_variants_rsid_idx ON cohort_variants(rsid)"
+    ),
+    "cohort_variants_rsid_nocase_idx": (
+        "CREATE INDEX cohort_variants_rsid_nocase_idx "
+        "ON cohort_variants(rsid COLLATE NOCASE)"
+    ),
+    "cohort_annotations_gene_idx": (
+        "CREATE INDEX cohort_annotations_gene_idx "
+        "ON cohort_annotations(gene, mane, impact)"
+    ),
+    "cohort_annotations_variant_idx": (
+        "CREATE INDEX cohort_annotations_variant_idx "
+        "ON cohort_annotations(variant_id)"
+    ),
+    "cohort_genotypes_variant_idx": (
+        "CREATE INDEX cohort_genotypes_variant_idx ON cohort_genotypes(variant_id)"
+    ),
+    "cohort_genotypes_sample_idx": (
+        "CREATE INDEX cohort_genotypes_sample_idx ON cohort_genotypes(sample_id)"
+    ),
+    "cohort_samples_name_idx": (
+        "CREATE INDEX cohort_samples_name_idx ON cohort_samples(name)"
+    ),
+    "cohort_annotations_preferred_idx": (
+        "CREATE INDEX cohort_annotations_preferred_idx "
+        "ON cohort_annotations(gene, mane, picked, impact)"
+    ),
+}
+
+
+def _stage_vcf_records(
+    lines: Iterable[str],
+    header: VcfHeader,
+    stage_path: Path,
+    *,
+    progress: Callable[[dict], None] | None = None,
+    processed_bytes: Callable[[], int] | None = None,
+    batch_records: int = DEFAULT_STAGE_BATCH_RECORDS,
+) -> dict:
+    """Parse VCF records into one disposable, natural-keyed SQLite stage."""
+    connection = sqlite3.connect(stage_path)
+    connection.executescript(STAGE_SCHEMA)
+    variant_rows: dict[str, tuple] = {}
+    annotation_rows: dict[tuple, tuple] = {}
+    genotype_rows: dict[tuple, tuple] = {}
+    records_processed = 0
+    pass_records = 0
+    excluded_records = 0
+    carrier_count = 0
+
+    def flush() -> None:
+        if variant_rows:
+            connection.executemany(STAGE_VARIANT_INSERT, variant_rows.values())
+        if annotation_rows:
+            connection.executemany(
+                STAGE_ANNOTATION_INSERT, annotation_rows.values()
+            )
+        if genotype_rows:
+            connection.executemany(STAGE_GENOTYPE_INSERT, genotype_rows.values())
+        connection.commit()
+        variant_rows.clear()
+        annotation_rows.clear()
+        genotype_rows.clear()
+
+    try:
+        for line in lines:
+            if not line.strip() or line.startswith("#"):
+                continue
+            records_processed += 1
+            columns = line.rstrip("\r\n").split("\t")
+            if len(columns) < 10:
+                continue
+            (
+                chrom_raw, pos_raw, rsid, ref, alt_raw, qual_raw,
+                filter_value, raw_info, format_value,
+            ) = columns[:9]
+            if filter_value != "PASS":
+                excluded_records += 1
+                continue
+            pass_records += 1
+            chrom = normalize_chromosome(chrom_raw)
+            try:
+                pos = int(pos_raw)
+            except ValueError:
+                continue
+            info = info_map(raw_info)
+            consequences = parse_csq_entries(
+                info.get("CSQ", ""), list(header.csq_fields)
+            )
+            sample_values = columns[9:]
+            qual = parse_number(qual_raw)
+
+            for alt_index, alt in enumerate(alt_raw.split(",")):
+                carriers: list[tuple[str, dict]] = []
+                for sample_index, sample_name in enumerate(header.samples):
+                    genotype = parse_genotype(
+                        format_value,
+                        sample_values[sample_index]
+                        if sample_index < len(sample_values) else "",
+                        alt_index,
+                    )
+                    if genotype["carrier"]:
+                        carriers.append((sample_name, genotype))
+                if not carriers:
+                    continue
+
+                key = variant_key(chrom, pos, ref, alt)
+                original_alts = info.get("IEI_ORIGINAL_ALT", "").split(",")
+                original_pos = (
+                    int(info["IEI_ORIGINAL_POS"])
+                    if info.get("IEI_ORIGINAL_POS", "").isdigit()
+                    else None
+                )
+                variant_rows[key] = (
+                    key, chrom, pos, ref.upper(), alt.upper(),
+                    None if rsid == "." else rsid,
+                    first(info, ("IEI_ORIGINAL_ASSEMBLY",)) or None,
+                    first(info, ("IEI_ORIGINAL_CHROM",)) or None,
+                    original_pos,
+                    first(info, ("IEI_ORIGINAL_REF",)) or None,
+                    decode(
+                        original_alts[alt_index]
+                        if alt_index < len(original_alts)
+                        else (original_alts[0] if original_alts else "")
+                    ) or None,
+                )
+
+                matching = []
+                for consequence in consequences:
+                    allele_number = consequence.get("ALLELE_NUM", "")
+                    if allele_number.isdigit():
+                        if int(allele_number) == alt_index + 1:
+                            matching.append(consequence)
+                    elif (
+                        not consequence.get("Allele")
+                        or consequence.get("Allele") == alt
+                    ):
+                        matching.append(consequence)
+                if not matching:
+                    matching = consequences
+                annotations = [
+                    annotation_from({**info, **consequence})
+                    for consequence in matching
+                ]
+                if "PICK" not in header.csq_fields:
+                    annotations_by_gene: dict[str, list[dict]] = {}
+                    for annotation in annotations:
+                        annotations_by_gene.setdefault(
+                            annotation["gene"], []
+                        ).append(annotation)
+                    for gene_annotations in annotations_by_gene.values():
+                        if (
+                            len(gene_annotations) == 1
+                            and not gene_annotations[0]["mane"]
+                        ):
+                            gene_annotations[0]["picked"] = 1
+
+                for annotation in annotations:
+                    annotation_tuple = (
+                        key,
+                        *(annotation[column] for column in STAGE_ANNOTATION_COLUMNS[1:]),
+                    )
+                    annotation_key = (
+                        key, annotation["gene"], annotation["transcript"],
+                        annotation["hgvsc"], annotation["hgvsp"],
+                        annotation["consequence"],
+                    )
+                    annotation_rows[annotation_key] = annotation_tuple
+
+                for sample_name, genotype in carriers:
+                    haplotype = haplotype_frame_evidence(
+                        info.get("IEI_HAPLOTYPE_FRAME", ""),
+                        f"{chrom_raw}:{pos}:{ref}:{alt}",
+                        sample_name,
+                    )
+                    genotype_rows[(key, sample_name)] = (
+                        key, sample_name, genotype["gt"], genotype["zygosity"],
+                        genotype["phased"], genotype["dp"], genotype["gq"],
+                        genotype["allele_balance"], qual, haplotype["status"],
+                        haplotype["partners"], haplotype["protein"],
+                        haplotype["transcript"],
+                    )
+                    carrier_count += 1
+
+            if records_processed % batch_records == 0:
+                flush()
+            if progress and records_processed % 5_000 == 0:
+                progress({
+                    "processed_bytes": processed_bytes() if processed_bytes else 0,
+                    "records_processed": records_processed,
+                    "pass_records": pass_records,
+                    "carrier_count": carrier_count,
+                })
+        flush()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+    result = {
+        "stage_path": str(stage_path),
+        "records_processed": records_processed,
+        "pass_records": pass_records,
+        "excluded_records": excluded_records,
+        "carrier_count": carrier_count,
+    }
+    if progress:
+        progress({
+            **result,
+            "processed_bytes": processed_bytes() if processed_bytes else 0,
+        })
+    return result
+
+
+def _tabix_stage_worker(
+    backend: HtsBackend,
+    path: Path,
+    contigs: tuple[str, ...],
+    header: VcfHeader,
+    stage_path: Path,
+    batch_records: int,
+) -> dict:
+    """Process-safe indexed reader; each worker owns its staging database."""
+    return _stage_vcf_records(
+        backend.iter_records(path, contigs),
+        header,
+        stage_path,
+        batch_records=batch_records,
+    )
+
+
 class CohortStore:
     """SQLite-backed VCF carrier index."""
 
-    def __init__(self, database_path: Path):
+    def __init__(
+        self,
+        database_path: Path,
+        *,
+        enable_auto_index: bool = False,
+        hts_backend: HtsBackend | None = None,
+        index_readers: int | None = None,
+        stage_batch_records: int = DEFAULT_STAGE_BATCH_RECORDS,
+    ):
         self.database_path = database_path
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        self.prepared_dir = self.database_path.parent / "cohort-vcf-cache"
+        self.staging_dir = self.database_path.parent / "cohort-staging"
+        self.staging_dir.mkdir(parents=True, exist_ok=True)
+        self.enable_auto_index = enable_auto_index
+        self.hts_backend = (
+            hts_backend
+            if hts_backend is not None
+            else (HtsBackend.discover() if enable_auto_index else None)
+        )
+        configured_readers = index_readers
+        if configured_readers is None:
+            try:
+                configured_readers = int(
+                    os.environ.get("IEI_COHORT_INDEX_READERS", DEFAULT_INDEX_READERS)
+                )
+            except ValueError:
+                configured_readers = DEFAULT_INDEX_READERS
+        self.index_readers = max(
+            1, min(configured_readers, os.cpu_count() or configured_readers)
+        )
+        self.stage_batch_records = max(100, stage_batch_records)
         self._import_jobs: dict[str, dict] = {}
         self._import_jobs_lock = threading.Lock()
         self._initialize()
@@ -263,6 +882,11 @@ class CohortStore:
                     carrier_count INTEGER NOT NULL DEFAULT 0
                     ,assembly TEXT NOT NULL DEFAULT 'GRCh38'
                     ,lifted_from_assembly TEXT
+                    ,prepared_path TEXT
+                    ,index_path TEXT
+                    ,import_mode TEXT NOT NULL DEFAULT 'serial'
+                    ,reader_count INTEGER NOT NULL DEFAULT 1
+                    ,preparation_warning TEXT NOT NULL DEFAULT ''
                 );
 
                 CREATE TABLE IF NOT EXISTS cohort_samples (
@@ -360,7 +984,8 @@ class CohortStore:
                     "PRAGMA table_info(cohort_annotations)"
                 ).fetchall()
             }
-            if "picked" not in annotation_columns:
+            picked_column_added = "picked" not in annotation_columns
+            if picked_column_added:
                 connection.execute(
                     "ALTER TABLE cohort_annotations "
                     "ADD COLUMN picked INTEGER NOT NULL DEFAULT 0"
@@ -408,6 +1033,17 @@ class CohortStore:
                 connection.execute(
                     "ALTER TABLE cohort_files ADD COLUMN lifted_from_assembly TEXT"
                 )
+            for column, declaration in (
+                ("prepared_path", "TEXT"),
+                ("index_path", "TEXT"),
+                ("import_mode", "TEXT NOT NULL DEFAULT 'serial'"),
+                ("reader_count", "INTEGER NOT NULL DEFAULT 1"),
+                ("preparation_warning", "TEXT NOT NULL DEFAULT ''"),
+            ):
+                if column not in file_columns:
+                    connection.execute(
+                        f"ALTER TABLE cohort_files ADD COLUMN {column} {declaration}"
+                    )
             variant_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -425,28 +1061,31 @@ class CohortStore:
                     connection.execute(
                         f"ALTER TABLE cohort_variants ADD COLUMN {column} {declaration}"
                     )
-            # Legacy pipeline output used --pick and therefore had one CSQ
-            # consequence but no PICK field. Recover that unambiguous fallback
-            # without labelling multi-transcript external VCF annotations.
-            connection.execute(
-                """
-                UPDATE cohort_annotations AS candidate
-                SET picked = 1
-                WHERE candidate.picked = 0
-                  AND candidate.mane = 0
-                  AND NOT EXISTS (
-                    SELECT 1 FROM cohort_annotations AS mane_row
-                    WHERE mane_row.variant_id = candidate.variant_id
-                      AND mane_row.gene = candidate.gene
-                      AND mane_row.mane = 1
-                  )
-                  AND 1 = (
-                    SELECT COUNT(*) FROM cohort_annotations AS sibling
-                    WHERE sibling.variant_id = candidate.variant_id
-                      AND sibling.gene = candidate.gene
-                  )
-                """
-            )
+            if picked_column_added:
+                # Legacy pipeline output used --pick and therefore had one CSQ
+                # consequence but no PICK field. Recover that unambiguous
+                # fallback once, as part of the PICK column migration. Running
+                # this correlated update on every startup scans the complete
+                # annotation table and is prohibitive for WGS databases.
+                connection.execute(
+                    """
+                    UPDATE cohort_annotations AS candidate
+                    SET picked = 1
+                    WHERE candidate.picked = 0
+                      AND candidate.mane = 0
+                      AND NOT EXISTS (
+                        SELECT 1 FROM cohort_annotations AS mane_row
+                        WHERE mane_row.variant_id = candidate.variant_id
+                          AND mane_row.gene = candidate.gene
+                          AND mane_row.mane = 1
+                      )
+                      AND 1 = (
+                        SELECT COUNT(*) FROM cohort_annotations AS sibling
+                        WHERE sibling.variant_id = candidate.variant_id
+                          AND sibling.gene = candidate.gene
+                      )
+                    """
+                )
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS cohort_annotations_preferred_idx
@@ -548,6 +1187,9 @@ class CohortStore:
                 "records_processed": 0,
                 "pass_records": 0,
                 "carrier_count": 0,
+                "phase": "queued",
+                "reader_count": 1,
+                "prepared_path": "",
                 "result": None,
                 "error": "",
             }
@@ -581,7 +1223,9 @@ class CohortStore:
         self, job_id: str, paths: list[Path], force: bool,
         allow_unknown_assembly: bool,
     ) -> None:
-        self._update_import_job(job_id, status="running", started_at=utc_now())
+        self._update_import_job(
+            job_id, status="running", phase="preparing", started_at=utc_now()
+        )
         results: list[dict] = []
         completed_bytes = 0
         total_records = 0
@@ -598,6 +1242,9 @@ class CohortStore:
                     current_path=str(path),
                     current_file_bytes=0,
                     current_file_size=file_size,
+                    phase="preparing",
+                    reader_count=1,
+                    prepared_path="",
                 )
 
                 def progress(update: dict) -> None:
@@ -608,14 +1255,18 @@ class CohortStore:
                     current_bytes = min(
                         file_size, int(update.get("processed_bytes", 0))
                     )
-                    self._update_import_job(
-                        job_id,
-                        processed_bytes=completed_bytes + current_bytes,
-                        current_file_bytes=current_bytes,
-                        records_processed=total_records + file_records,
-                        pass_records=total_pass + file_pass,
-                        carrier_count=total_carriers + file_carriers,
-                    )
+                    changes = {
+                        "processed_bytes": completed_bytes + current_bytes,
+                        "current_file_bytes": current_bytes,
+                        "records_processed": total_records + file_records,
+                        "pass_records": total_pass + file_pass,
+                        "carrier_count": total_carriers + file_carriers,
+                        "phase": str(update.get("phase") or "indexing"),
+                        "reader_count": int(update.get("reader_count", 1) or 1),
+                    }
+                    if update.get("prepared_path"):
+                        changes["prepared_path"] = str(update["prepared_path"])
+                    self._update_import_job(job_id, **changes)
 
                 try:
                     result = self.import_vcf(
@@ -654,6 +1305,7 @@ class CohortStore:
             self._update_import_job(
                 job_id,
                 status="succeeded",
+                phase="complete",
                 finished_at=utc_now(),
                 current_path="",
                 result=result,
@@ -662,14 +1314,16 @@ class CohortStore:
             self._update_import_job(
                 job_id,
                 status="failed",
+                phase="failed",
                 finished_at=utc_now(),
                 error=str(error),
             )
 
-    def import_vcf(
+    def _import_vcf_rowwise(
         self, path: Path, force: bool = False, allow_unknown_assembly: bool = False,
         progress: Callable[[dict], None] | None = None,
     ) -> dict:
+        """Legacy single-stream importer retained as an explicit fallback."""
         path = path.resolve()
         assembly = detect_vcf_assembly(path)
         if assembly["assembly"] == "conflict":
@@ -1064,6 +1718,521 @@ class CohortStore:
             "variant_count": variant_count,
             "carrier_count": carrier_count,
         }
+
+    def _prepare_indexed_vcf(
+        self, path: Path, progress: Callable[[dict], None] | None = None
+    ) -> PreparedVcf:
+        if not self.enable_auto_index:
+            return PreparedVcf(path, path, None, False, False)
+        if self.hts_backend is None:
+            return PreparedVcf(
+                path,
+                path,
+                None,
+                False,
+                False,
+                "bcftools/tabix and the configured HTS container are unavailable; "
+                "using serial streaming without an index",
+            )
+        if progress:
+            progress({"phase": "preparing_index", "processed_bytes": 0})
+
+        if is_bgzf(path):
+            source_index = self.hts_backend.validate_index(path)
+            if source_index:
+                return PreparedVcf(path, path, source_index, False, False)
+
+        stat = path.stat()
+        fingerprint = hashlib.sha256(
+            f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}".encode()
+        ).hexdigest()[:20]
+        cache_dir = self.prepared_dir / fingerprint
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        source_name = path.name
+        for suffix in (".vcf.gz", ".vcf", ".gz"):
+            if source_name.lower().endswith(suffix):
+                source_name = source_name[:-len(suffix)]
+                break
+        prepared = cache_dir / f"{source_name}.prepared.vcf.gz"
+        cached_index = (
+            self.hts_backend.validate_index(prepared)
+            if prepared.is_file() else None
+        )
+        if cached_index:
+            return PreparedVcf(path, prepared, cached_index, True, True)
+
+        temporary = cache_dir / f".{source_name}.building.vcf.gz"
+        for candidate in (
+            temporary, Path(f"{temporary}.tbi"), Path(f"{temporary}.csi"),
+            prepared, Path(f"{prepared}.tbi"), Path(f"{prepared}.csi"),
+        ):
+            if candidate.exists():
+                candidate.unlink()
+        try:
+            if is_bgzf(path):
+                shutil.copy2(path, prepared)
+                try:
+                    index_path = self.hts_backend.create_index(prepared)
+                except RuntimeError:
+                    self.hts_backend.sort_bgzip(path, temporary)
+                    os.replace(temporary, prepared)
+                    index_path = self.hts_backend.create_index(prepared)
+            else:
+                self.hts_backend.sort_bgzip(path, temporary)
+                os.replace(temporary, prepared)
+                index_path = self.hts_backend.create_index(prepared)
+        except Exception as error:
+            for candidate in (
+                temporary, Path(f"{temporary}.tbi"), Path(f"{temporary}.csi"),
+                prepared, Path(f"{prepared}.tbi"), Path(f"{prepared}.csi"),
+            ):
+                if candidate.exists():
+                    candidate.unlink()
+            return PreparedVcf(
+                path,
+                path,
+                None,
+                False,
+                False,
+                f"automatic BGZF preparation/indexing failed for {path.name}; "
+                f"using serial staged import: {error}",
+            )
+        return PreparedVcf(path, prepared, index_path, True, False)
+
+    def prepare_vcf(
+        self, path: Path, progress: Callable[[dict], None] | None = None
+    ) -> PreparedVcf:
+        """Return an indexed BGZF source or cached working copy when possible."""
+        return self._prepare_indexed_vcf(path.resolve(), progress)
+
+    @staticmethod
+    def _compressed_position(handle, path: Path) -> int:
+        try:
+            if path.name.lower().endswith((".gz", ".bgz")):
+                return int(handle.buffer.fileobj.tell())
+            return int(handle.buffer.tell())
+        except (AttributeError, OSError, ValueError):
+            return 0
+
+    def _serial_stage(
+        self,
+        path: Path,
+        header: VcfHeader,
+        stage_path: Path,
+        progress: Callable[[dict], None] | None,
+    ) -> dict:
+        opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+        with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+            return _stage_vcf_records(
+                handle,
+                header,
+                stage_path,
+                progress=(
+                    (lambda update: progress({**update, "phase": "indexing", "reader_count": 1}))
+                    if progress else None
+                ),
+                processed_bytes=lambda: self._compressed_position(handle, path),
+                batch_records=self.stage_batch_records,
+            )
+
+    def _parallel_stages(
+        self,
+        path: Path,
+        header: VcfHeader,
+        stage_root: Path,
+        progress: Callable[[dict], None] | None,
+    ) -> tuple[list[dict], int]:
+        assert self.hts_backend is not None
+        contigs = self.hts_backend.list_contigs(path)
+        reader_count = min(self.index_readers, len(contigs))
+        if reader_count < 2:
+            stage = stage_root / "reader-0.sqlite3"
+            return [self._serial_stage(path, header, stage, progress)], 1
+        groups = [contigs[index::reader_count] for index in range(reader_count)]
+        file_size = path.stat().st_size
+        results: list[dict] = []
+
+        def collect(executor) -> None:
+            futures = [
+                executor.submit(
+                    _tabix_stage_worker,
+                    self.hts_backend,
+                    path,
+                    tuple(groups[index]),
+                    header,
+                    stage_root / f"reader-{index}.sqlite3",
+                    self.stage_batch_records,
+                )
+                for index in range(reader_count)
+            ]
+            for future in as_completed(futures):
+                results.append(future.result())
+                if progress:
+                    progress({
+                        "records_processed": sum(
+                            result["records_processed"] for result in results
+                        ),
+                        "pass_records": sum(
+                            result["pass_records"] for result in results
+                        ),
+                        "carrier_count": sum(
+                            result["carrier_count"] for result in results
+                        ),
+                        "processed_bytes": int(
+                            file_size * len(results) / reader_count
+                        ),
+                        "phase": "indexing",
+                        "reader_count": reader_count,
+                    })
+
+        context = multiprocessing.get_context("spawn")
+        try:
+            executor = ProcessPoolExecutor(
+                max_workers=reader_count, mp_context=context
+            )
+        except (PermissionError, NotImplementedError):
+            executor = ThreadPoolExecutor(
+                max_workers=reader_count, thread_name_prefix="cohort-reader"
+            )
+        with executor:
+            collect(executor)
+        return results, reader_count
+
+    def _merge_stages(
+        self,
+        *,
+        source_path: Path,
+        prepared: PreparedVcf,
+        assembly: dict,
+        header: VcfHeader,
+        stages: list[dict],
+        existing: sqlite3.Row | None,
+        import_mode: str,
+        reader_count: int,
+    ) -> tuple[int, int]:
+        stat = source_path.stat()
+        aliases = [f"stage_{index}" for index in range(len(stages))]
+        connection = self._connect()
+        try:
+            for alias, stage in zip(aliases, stages):
+                connection.execute(
+                    f"ATTACH DATABASE ? AS {alias}", (stage["stage_path"],)
+                )
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("PRAGMA defer_foreign_keys=ON")
+            other_file_count = connection.execute(
+                "SELECT COUNT(*) FROM cohort_files WHERE path != ?",
+                (str(source_path),),
+            ).fetchone()[0]
+            rebuild_secondary_indexes = other_file_count == 0
+            if rebuild_secondary_indexes:
+                for index_name in COHORT_SECONDARY_INDEXES:
+                    connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+            if existing:
+                connection.execute(
+                    "DELETE FROM cohort_files WHERE id = ?", (existing["id"],)
+                )
+            file_id = connection.execute(
+                """
+                INSERT INTO cohort_files(
+                  path, size_bytes, mtime_ns, imported_at, assembly,
+                  lifted_from_assembly, prepared_path, index_path,
+                  import_mode, reader_count, preparation_warning
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(source_path), stat.st_size, stat.st_mtime_ns, utc_now(),
+                    "GRCh38",
+                    "GRCh37" if assembly["lifted_from_grch37"] else None,
+                    str(prepared.path),
+                    str(prepared.index_path) if prepared.index_path else None,
+                    import_mode, reader_count, prepared.warning,
+                ),
+            ).lastrowid
+            connection.executemany(
+                "INSERT INTO cohort_samples(file_id, name) VALUES (?, ?)",
+                ((file_id, sample) for sample in header.samples),
+            )
+
+            for alias in aliases:
+                connection.execute(f"""
+                    INSERT INTO cohort_variants(
+                      variant_key, chrom, pos, ref, alt, rsid,
+                      original_assembly, original_chrom, original_pos,
+                      original_ref, original_alt
+                    )
+                    SELECT variant_key, chrom, pos, ref, alt, rsid,
+                           original_assembly, original_chrom, original_pos,
+                           original_ref, original_alt
+                    FROM {alias}.stage_variants WHERE 1
+                    ON CONFLICT(variant_key) DO UPDATE SET
+                      rsid=CASE
+                        WHEN excluded.rsid IS NOT NULL AND excluded.rsid != '.'
+                        THEN excluded.rsid ELSE cohort_variants.rsid END,
+                      original_assembly=COALESCE(
+                        cohort_variants.original_assembly, excluded.original_assembly),
+                      original_chrom=COALESCE(
+                        cohort_variants.original_chrom, excluded.original_chrom),
+                      original_pos=COALESCE(
+                        cohort_variants.original_pos, excluded.original_pos),
+                      original_ref=COALESCE(
+                        cohort_variants.original_ref, excluded.original_ref),
+                      original_alt=COALESCE(
+                        cohort_variants.original_alt, excluded.original_alt)
+                """)
+                connection.execute(f"""
+                    INSERT INTO cohort_annotations(
+                      variant_id, gene, gene_id, transcript, hgvsc, hgvsp,
+                      consequence, impact, gnomad_popmax, cadd, alpha_missense,
+                      spliceai, clinvar, clinvar_conflicting, loftee, loftee_50bp,
+                      loftee_50bp_original, loftee_50bp_changed, ptc_distance,
+                      ptc_calc_status, mane, picked, repeat_masker, segdup
+                    )
+                    SELECT variant.id, annotation.gene, annotation.gene_id,
+                           annotation.transcript, annotation.hgvsc, annotation.hgvsp,
+                           annotation.consequence, annotation.impact,
+                           annotation.gnomad_popmax, annotation.cadd,
+                           annotation.alpha_missense, annotation.spliceai,
+                           annotation.clinvar, annotation.clinvar_conflicting,
+                           annotation.loftee, annotation.loftee_50bp,
+                           annotation.loftee_50bp_original,
+                           annotation.loftee_50bp_changed, annotation.ptc_distance,
+                           annotation.ptc_calc_status, annotation.mane,
+                           annotation.picked, annotation.repeat_masker,
+                           annotation.segdup
+                    FROM {alias}.stage_annotations AS annotation
+                    JOIN cohort_variants AS variant
+                      ON variant.variant_key = annotation.variant_key
+                    WHERE 1
+                    ON CONFLICT(
+                      variant_id, gene, transcript, hgvsc, hgvsp, consequence
+                    ) DO UPDATE SET
+                      impact=excluded.impact,
+                      gnomad_popmax=COALESCE(excluded.gnomad_popmax, cohort_annotations.gnomad_popmax),
+                      cadd=COALESCE(excluded.cadd, cohort_annotations.cadd),
+                      alpha_missense=COALESCE(excluded.alpha_missense, cohort_annotations.alpha_missense),
+                      spliceai=COALESCE(excluded.spliceai, cohort_annotations.spliceai),
+                      clinvar=COALESCE(NULLIF(excluded.clinvar, ''), cohort_annotations.clinvar),
+                      clinvar_conflicting=COALESCE(NULLIF(excluded.clinvar_conflicting, ''), cohort_annotations.clinvar_conflicting),
+                      loftee=COALESCE(NULLIF(excluded.loftee, ''), cohort_annotations.loftee),
+                      loftee_50bp=COALESCE(NULLIF(excluded.loftee_50bp, ''), cohort_annotations.loftee_50bp),
+                      loftee_50bp_original=COALESCE(NULLIF(excluded.loftee_50bp_original, ''), cohort_annotations.loftee_50bp_original),
+                      loftee_50bp_changed=MAX(excluded.loftee_50bp_changed, cohort_annotations.loftee_50bp_changed),
+                      ptc_distance=COALESCE(excluded.ptc_distance, cohort_annotations.ptc_distance),
+                      ptc_calc_status=COALESCE(NULLIF(excluded.ptc_calc_status, ''), cohort_annotations.ptc_calc_status),
+                      mane=MAX(excluded.mane, cohort_annotations.mane),
+                      picked=MAX(excluded.picked, cohort_annotations.picked),
+                      repeat_masker=MAX(excluded.repeat_masker, cohort_annotations.repeat_masker),
+                      segdup=MAX(excluded.segdup, cohort_annotations.segdup)
+                """)
+                connection.execute(f"""
+                    INSERT INTO cohort_genotypes(
+                      variant_id, sample_id, genotype, zygosity, phased,
+                      dp, gq, allele_balance, qual, haplotype_frame_status,
+                      haplotype_frame_partners, haplotype_protein_change,
+                      haplotype_transcript
+                    )
+                    SELECT variant.id, sample.id, genotype.genotype,
+                           genotype.zygosity, genotype.phased, genotype.dp,
+                           genotype.gq, genotype.allele_balance, genotype.qual,
+                           genotype.haplotype_frame_status,
+                           genotype.haplotype_frame_partners,
+                           genotype.haplotype_protein_change,
+                           genotype.haplotype_transcript
+                    FROM {alias}.stage_genotypes AS genotype
+                    JOIN cohort_variants AS variant
+                      ON variant.variant_key = genotype.variant_key
+                    JOIN cohort_samples AS sample
+                      ON sample.file_id = {int(file_id)}
+                     AND sample.name = genotype.sample_name
+                    WHERE 1
+                    ON CONFLICT(variant_id, sample_id) DO UPDATE SET
+                      genotype=excluded.genotype,
+                      zygosity=excluded.zygosity,
+                      phased=excluded.phased,
+                      dp=excluded.dp,
+                      gq=excluded.gq,
+                      allele_balance=excluded.allele_balance,
+                      qual=excluded.qual,
+                      haplotype_frame_status=excluded.haplotype_frame_status,
+                      haplotype_frame_partners=excluded.haplotype_frame_partners,
+                      haplotype_protein_change=excluded.haplotype_protein_change,
+                      haplotype_transcript=excluded.haplotype_transcript
+                """)
+
+            pass_records = sum(stage["pass_records"] for stage in stages)
+            excluded_records = sum(stage["excluded_records"] for stage in stages)
+            carrier_count = sum(stage["carrier_count"] for stage in stages)
+            variant_count = connection.execute(
+                """
+                SELECT COUNT(DISTINCT genotype.variant_id)
+                FROM cohort_genotypes AS genotype
+                JOIN cohort_samples AS sample ON sample.id = genotype.sample_id
+                WHERE sample.file_id = ?
+                """,
+                (file_id,),
+            ).fetchone()[0]
+            connection.execute(
+                """
+                UPDATE cohort_files SET
+                  sample_count=?, pass_records=?, excluded_records=?,
+                  variant_count=?, carrier_count=?
+                WHERE id=?
+                """,
+                (
+                    len(header.samples), pass_records, excluded_records,
+                    variant_count, carrier_count, file_id,
+                ),
+            )
+            if existing:
+                connection.execute(
+                    """
+                    DELETE FROM cohort_variants
+                    WHERE id NOT IN (SELECT DISTINCT variant_id FROM cohort_genotypes)
+                    """
+                )
+            if rebuild_secondary_indexes:
+                for statement in COHORT_SECONDARY_INDEXES.values():
+                    connection.execute(
+                        statement.replace(
+                            "CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1
+                        )
+                    )
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            for alias in aliases:
+                try:
+                    connection.execute(f"DETACH DATABASE {alias}")
+                except sqlite3.Error:
+                    pass
+            connection.close()
+        with self._session() as checkpoint_connection:
+            checkpoint_connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
+        return file_id, variant_count
+
+    def import_vcf(
+        self, path: Path, force: bool = False, allow_unknown_assembly: bool = False,
+        progress: Callable[[dict], None] | None = None,
+    ) -> dict:
+        if os.environ.get("IEI_COHORT_LEGACY_IMPORT") == "1":
+            return self._import_vcf_rowwise(
+                path, force=force,
+                allow_unknown_assembly=allow_unknown_assembly,
+                progress=progress,
+            )
+        path = path.resolve()
+        assembly = detect_vcf_assembly(path)
+        if assembly["assembly"] == "conflict":
+            raise ValueError("VCF header contains conflicting assembly evidence")
+        if assembly["assembly"] == "GRCh37":
+            raise ValueError(
+                "cohort indexing is GRCh38-only; liftover and re-annotate this GRCh37 VCF first"
+            )
+        if assembly["assembly"] == "unknown" and not allow_unknown_assembly:
+            raise ValueError(
+                "VCF assembly is ambiguous; confirm it is GRCh38 to index it"
+            )
+        stat = path.stat()
+        with self._session() as connection:
+            existing = connection.execute(
+                "SELECT * FROM cohort_files WHERE path = ?", (str(path),)
+            ).fetchone()
+            if (
+                existing and not force
+                and existing["size_bytes"] == stat.st_size
+                and existing["mtime_ns"] == stat.st_mtime_ns
+            ):
+                result = dict(existing)
+                result.update({"status": "unchanged"})
+                if progress:
+                    progress({
+                        "phase": "complete",
+                        "processed_bytes": stat.st_size,
+                        "reader_count": result.get("reader_count", 1),
+                    })
+                return result
+
+        prepared = self._prepare_indexed_vcf(path, progress)
+        header = read_vcf_header(prepared.path)
+        if progress:
+            progress({
+                "phase": "indexing",
+                "prepared_path": str(prepared.path),
+                "reader_count": 1,
+            })
+        with tempfile.TemporaryDirectory(
+            prefix="cohort-import-", dir=self.staging_dir
+        ) as stage_directory:
+            stage_root = Path(stage_directory)
+            if (
+                prepared.index_path is not None
+                and self.hts_backend is not None
+                and self.index_readers > 1
+            ):
+                stages, reader_count = self._parallel_stages(
+                    prepared.path, header, stage_root, progress
+                )
+            else:
+                reader_count = 1
+                stages = [self._serial_stage(
+                    prepared.path, header, stage_root / "reader-0.sqlite3", progress
+                )]
+            import_mode = (
+                "parallel_tabix_staged" if reader_count > 1 else "serial_staged"
+            )
+            if progress:
+                progress({
+                    "phase": "merging",
+                    "processed_bytes": stat.st_size,
+                    "records_processed": sum(
+                        stage["records_processed"] for stage in stages
+                    ),
+                    "pass_records": sum(stage["pass_records"] for stage in stages),
+                    "carrier_count": sum(stage["carrier_count"] for stage in stages),
+                    "reader_count": reader_count,
+                })
+            file_id, variant_count = self._merge_stages(
+                source_path=path,
+                prepared=prepared,
+                assembly=assembly,
+                header=header,
+                stages=stages,
+                existing=existing,
+                import_mode=import_mode,
+                reader_count=reader_count,
+            )
+
+        pass_records = sum(stage["pass_records"] for stage in stages)
+        excluded_records = sum(stage["excluded_records"] for stage in stages)
+        carrier_count = sum(stage["carrier_count"] for stage in stages)
+        records_processed = sum(stage["records_processed"] for stage in stages)
+        result = {
+            "id": file_id,
+            "path": str(path),
+            "status": "imported",
+            "sample_count": len(header.samples),
+            "pass_records": pass_records,
+            "excluded_records": excluded_records,
+            "variant_count": variant_count,
+            "carrier_count": carrier_count,
+            "records_processed": records_processed,
+            "prepared_path": str(prepared.path),
+            "index_path": str(prepared.index_path) if prepared.index_path else None,
+            "import_mode": import_mode,
+            "reader_count": reader_count,
+            "preparation_warning": prepared.warning,
+            "cache_hit": prepared.cache_hit,
+        }
+        if progress:
+            progress({
+                **result,
+                "phase": "complete",
+                "processed_bytes": stat.st_size,
+            })
+        return result
 
     @staticmethod
     def _parse_variant_query(value: str) -> tuple[str, list] | None:

@@ -34,15 +34,23 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /const VCF_FILE_ACCEPT = "[^"]*\.gz[^"]*application\/gzip/);
   assert.match(source, /accept=\{VCF_FILE_ACCEPT\}/);
   assert.match(source, /Annotation datasets/);
-  assert.match(source, /Check label="Exome only"/);
-  assert.match(source, /InfoTip label="What does Exome only include\?"/);
-  assert.match(source, /aria-expanded/);
-  assert.match(source, /Protein-coding regions and essential splice sites/);
-  assert.match(source, /high-performance computing \(HPC\)/);
+  assert.match(source, /Exome region only/);
+  assert.match(source, /Whole genome/);
+  assert.match(source, /analysisScope === "whole_genome"/);
+  assert.match(source, /Indexing and prefiltering WGS/);
+  assert.match(source, /Whole-genome indexing and prefiltering progress/);
+  assert.match(source, /every PASS variant in the configured coding\+splice exome BED is retained first/);
+  assert.match(source, /wgsImportJob\.records_scanned/);
+  assert.match(await readFile(new URL("app/vcf.ts", root), "utf8"), /async function\* fileLines/);
+  assert.doesNotMatch(await readFile(new URL("app/vcf.ts", root), "utf8"), /decoded\.join/);
+  assert.match(source, /gnomAD popmax </);
+  assert.match(source, /\|promoterAI\| ≥/);
+  assert.match(source, /leaving CADD blank disables CADD/);
   assert.match(source, /PASS records only/);
   assert.match(source, /not read yet/);
   assert.match(source, /Import and review variants/);
-  assert.match(source, /onClick=\{\(\) => onImportFiles\(pendingFiles\)\}/);
+  assert.match(source, /onImportFiles\(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths\)/);
+  assert.match(source, /Recommended for very large files: use existing workstation paths/);
   assert.match(source, /Input genome build/);
   assert.match(source, /useState<"GRCh38" \| "GRCh37" \| "auto">\("auto"\)/);
   assert.match(source, /Detected .* logical CPU threads/);
@@ -54,6 +62,8 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.doesNotMatch(source, /Annotation config/);
   assert.match(service, /annotation_options/);
   assert.match(service, /annotation-files\/stage/);
+  assert.match(service, /\/api\/wgs-review/);
+  assert.match(service, /getWgsReviewJob/);
   assert.match(service, /http:\/\/127\.0\.0\.1:43117/);
 });
 

@@ -27,13 +27,15 @@ from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from local_service.cohort_store import CohortStore
 from local_service.phenotype_store import PhenotypeStore
+from local_service.wgs_review import WgsPrefilterOptions, WgsReviewStore
 
 
-SERVICE_VERSION = "0.8.0"
+SERVICE_VERSION = "0.9.0"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 ALLOWED_PROFILES = {"local", "wsl-local"}
 ANNOTATION_SOURCE_PATHS = {
@@ -43,6 +45,7 @@ ANNOTATION_SOURCE_PATHS = {
     "repeatmasker": ("custom_tracks", "RepeatMasker"),
     "segdup": ("custom_tracks", "SegDup"),
     "promoterai": ("custom_tracks", "promoterAI"),
+    "cadd_wgs": ("custom_tracks", "CADD_WGS"),
     "logofunc": ("custom_tracks", "LoGoFunc"),
     "clinvar": ("custom_tracks", "ClinVar"),
     "loftee_ptc_50bp": ("post_processing", "loftee_ptc_50bp"),
@@ -142,12 +145,27 @@ ANNOTATION_SOURCE_SETUP = {
         ],
     },
     "promoterai": {
-        "setup_mode": "deferred",
-        "reference_url": "",
-        "reference_label": "",
-        "size_hint": "",
+        "setup_mode": "manual",
+        "reference_url": "https://github.com/Illumina/PromoterAI",
+        "reference_label": "Illumina promoterAI",
+        "size_hint": "licensed bring-your-own track",
         "instructions": [
-            "promoterAI setup is intentionally deferred in this release.",
+            "Obtain the promoterAI score resource under its applicable license.",
+            "Prepare a coordinate-sorted GRCh38 VCF with a promoterAI INFO field.",
+            "BGZF-compress and tabix-index it at references/custom/promoterAI_tss500.vcf.gz.",
+            "promoterAI is offered only in the whole-genome annotation profile.",
+        ],
+    },
+    "cadd_wgs": {
+        "setup_mode": "manual",
+        "reference_url": "https://cadd.gs.washington.edu/download",
+        "reference_label": "CADD v1.7 downloads",
+        "size_hint": "large whole-genome SNV and indel resource",
+        "instructions": [
+            "Download the CADD v1.7 GRCh38 whole-genome SNV and indel scores separately.",
+            "Combine or convert them to the configured coordinate-sorted VCF representation.",
+            "BGZF-compress and tabix-index the configured CADD_WGS file.",
+            "This workbench does not download CADD automatically.",
         ],
     },
     "logofunc": {
@@ -264,6 +282,7 @@ class JobStore:
                     finished_at TEXT,
                     status TEXT NOT NULL,
                     profile TEXT NOT NULL,
+                    analysis_scope TEXT NOT NULL DEFAULT 'exome',
                     input_assembly TEXT NOT NULL DEFAULT 'GRCh38',
                     input_path TEXT NOT NULL,
                     output_path TEXT NOT NULL,
@@ -294,6 +313,11 @@ class JobStore:
                 connection.execute(
                     "ALTER TABLE annotation_jobs "
                     "ADD COLUMN input_assembly TEXT NOT NULL DEFAULT 'GRCh38'"
+                )
+            if "analysis_scope" not in job_columns:
+                connection.execute(
+                    "ALTER TABLE annotation_jobs "
+                    "ADD COLUMN analysis_scope TEXT NOT NULL DEFAULT 'exome'"
                 )
             now = utc_now()
             connection.execute(
@@ -368,7 +392,15 @@ class AnnotationJobService:
         self.resource_logs_dir = self.state_dir / "resource-logs"
         self.resource_logs_dir.mkdir(parents=True, exist_ok=True)
         self.store = JobStore(self.state_dir / "workbench.sqlite3")
-        self.cohort = CohortStore(self.state_dir / "cohort.sqlite3")
+        self.cohort = CohortStore(
+            self.state_dir / "cohort.sqlite3",
+            enable_auto_index=True,
+        )
+        self.wgs_review = WgsReviewStore(self.state_dir, self.cohort)
+        self._wgs_review_files: dict[str, Path] = {}
+        self._wgs_review_jobs: dict[str, dict] = {}
+        self._wgs_review_threads: dict[str, threading.Thread] = {}
+        self._wgs_review_lock = threading.Lock()
         self.phenotypes = PhenotypeStore(self.state_dir / "cohort.sqlite3")
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._processes: dict[str, subprocess.Popen] = {}
@@ -430,6 +462,7 @@ class AnnotationJobService:
             ],
             "defaults": {
                 "config_path": str(self.pipeline_root / "config" / "annotation.config.yaml"),
+                "analysis_scope": "exome",
                 "coding_only": True,
                 "include_filtered": False,
                 "use_clinvar": True,
@@ -596,6 +629,164 @@ class AnnotationJobService:
             raise ValueError("job output is not a VCF")
         return candidate
 
+    def prefilter_wgs_review(
+        self, payload: dict, progress: Callable[[dict], None] | None = None
+    ) -> dict:
+        """Create a cached, indexed WGS review VCF using chromosome readers."""
+        source = self._required_path(payload, "path", must_exist=True)
+        if not re.search(r"\.vcf(?:\.gz)?$", source.name, re.IGNORECASE):
+            raise ValueError("path must end in .vcf or .vcf.gz")
+        filters = payload.get("filters") or {}
+        if not isinstance(filters, dict):
+            raise ValueError("filters must be an object")
+        options = WgsPrefilterOptions.from_payload(filters)
+        config_value = payload.get("config_path") or (
+            self.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        config_path = Path(config_value).expanduser().resolve()
+        config = self._load_config(config_path)
+        gtf_value = (
+            ((config.get("post_processing") or {}).get("loftee_ptc_50bp") or {})
+            .get("gtf")
+        )
+        gtf_path = self._resolved_reference_path(gtf_value) if gtf_value else None
+        if options.genes and gtf_path is None:
+            raise ValueError("the annotation config does not define a GRCh38 GTF")
+        region = config.get("region") or {}
+        exome_bed_value = region.get("custom_bed") or region.get("bed")
+        exome_bed_path = self._resolved_reference_path(exome_bed_value)
+        if exome_bed_path is None or not exome_bed_path.is_file():
+            raise ValueError(
+                "the annotation config must provide an existing GRCh38 "
+                "coding+splice BED so exome-region variants can be retained"
+            )
+        result = self.wgs_review.prefilter(
+            source,
+            options,
+            gtf_path or self.pipeline_root / "references" / "regions" / "unused.gtf",
+            exome_bed_path,
+            progress,
+        )
+        review_id = uuid.uuid4().hex
+        output_path = Path(result["path"]).resolve()
+        with self._wgs_review_lock:
+            self._wgs_review_files[review_id] = output_path
+            for stale_id in list(self._wgs_review_files)[:-30]:
+                self._wgs_review_files.pop(stale_id, None)
+        return {
+            **{key: value for key, value in result.items() if key != "path"},
+            "id": review_id,
+            "filename": output_path.name,
+        }
+
+    def start_wgs_review(self, payload: dict) -> dict:
+        """Run indexed WGS preparation in the background for progress polling."""
+        with self._wgs_review_lock:
+            if any(
+                job["status"] in {"queued", "running"}
+                for job in self._wgs_review_jobs.values()
+            ):
+                raise ValueError("another whole-genome prefilter is already running")
+            job_id = uuid.uuid4().hex
+            job = {
+                "id": job_id,
+                "status": "queued",
+                "phase": "queued",
+                "progress": 0.0,
+                "message": "Queued whole-genome indexing and prefiltering.",
+                "created_at": utc_now(),
+                "started_at": None,
+                "finished_at": None,
+                "records_scanned": 0,
+                "records_retained": 0,
+                "reader_count": 1,
+                "result": None,
+                "error": "",
+            }
+            self._wgs_review_jobs[job_id] = job
+            terminal = [
+                key for key, value in self._wgs_review_jobs.items()
+                if value["status"] in {"succeeded", "failed"}
+            ]
+            for key in terminal[:-20]:
+                self._wgs_review_jobs.pop(key, None)
+                self._wgs_review_threads.pop(key, None)
+            thread = threading.Thread(
+                target=self._run_wgs_review,
+                args=(job_id, dict(payload)),
+                name=f"wgs-review-{job_id[:8]}",
+                daemon=True,
+            )
+            self._wgs_review_threads[job_id] = thread
+            thread.start()
+            return dict(job)
+
+    def get_wgs_review_job(self, job_id: str) -> dict | None:
+        with self._wgs_review_lock:
+            job = self._wgs_review_jobs.get(job_id)
+            return dict(job) if job else None
+
+    def _update_wgs_review_job(self, job_id: str, **changes) -> None:
+        with self._wgs_review_lock:
+            if job_id in self._wgs_review_jobs:
+                self._wgs_review_jobs[job_id].update(changes)
+
+    def _run_wgs_review(self, job_id: str, payload: dict) -> None:
+        self._update_wgs_review_job(
+            job_id,
+            status="running",
+            phase="preparing_index",
+            started_at=utc_now(),
+        )
+
+        def report(update: dict) -> None:
+            allowed = {
+                key: update[key]
+                for key in (
+                    "phase", "progress", "message", "records_scanned",
+                    "records_retained", "reader_count",
+                )
+                if key in update
+            }
+            self._update_wgs_review_job(job_id, **allowed)
+
+        try:
+            result = self.prefilter_wgs_review(payload, progress=report)
+            self._update_wgs_review_job(
+                job_id,
+                status="succeeded",
+                phase="complete",
+                progress=100.0,
+                message="WGS indexing and prefiltering complete.",
+                finished_at=utc_now(),
+                records_scanned=result["records_scanned"],
+                records_retained=result["records_retained"],
+                reader_count=result["reader_count"],
+                result=result,
+            )
+        except Exception as error:
+            self._update_wgs_review_job(
+                job_id,
+                status="failed",
+                phase="failed",
+                message="Whole-genome indexing or prefiltering failed.",
+                finished_at=utc_now(),
+                error=str(error),
+            )
+
+    def wgs_review_file(self, review_id: str) -> Path:
+        with self._wgs_review_lock:
+            candidate = self._wgs_review_files.get(review_id)
+        if candidate is None:
+            raise KeyError("WGS review file not found")
+        candidate = candidate.resolve()
+        cache_root = self.wgs_review.cache_dir.resolve()
+        if cache_root not in candidate.parents:
+            raise ValueError("WGS review output path is invalid")
+        if not candidate.is_file():
+            raise FileNotFoundError("prefiltered WGS review VCF is no longer available")
+        return candidate
+
     @staticmethod
     def _hardware_profile() -> dict:
         logical_cpus = max(1, int(os.cpu_count() or 1))
@@ -674,15 +865,22 @@ class AnnotationJobService:
         input_assembly = str(payload.get("input_assembly") or "auto")
         if input_assembly not in {"GRCh38", "GRCh37", "auto"}:
             raise ValueError("input_assembly must be GRCh38, GRCh37, or auto")
+        default_scope = (
+            "exome" if bool(payload.get("coding_only", True)) else "whole_genome"
+        )
+        analysis_scope = str(payload.get("analysis_scope") or default_scope)
+        if analysis_scope not in {"exome", "whole_genome"}:
+            raise ValueError("analysis_scope must be exome or whole_genome")
+        coding_only = analysis_scope == "exome"
 
         job_id = uuid.uuid4().hex
-        annotation_options = payload.get("annotation_options")
-        if annotation_options is not None:
-            if not isinstance(annotation_options, dict):
-                raise ValueError("annotation_options must be an object")
-            config_path = self._write_job_config(
-                job_id, config_path, annotation_options
-            )
+        annotation_options = payload.get("annotation_options") or {}
+        if not isinstance(annotation_options, dict):
+            raise ValueError("annotation_options must be an object")
+        annotation_options = {**annotation_options, "analysis_scope": analysis_scope}
+        config_path = self._write_job_config(
+            job_id, config_path, annotation_options
+        )
         now = utc_now()
         job = self.store.create(
             {
@@ -691,11 +889,12 @@ class AnnotationJobService:
                 "updated_at": now,
                 "status": "queued",
                 "profile": profile,
+                "analysis_scope": analysis_scope,
                 "input_assembly": input_assembly,
                 "input_path": str(input_path),
                 "output_path": str(output_path),
                 "config_path": str(config_path),
-                "coding_only": int(bool(payload.get("coding_only", True))),
+                "coding_only": int(coding_only),
                 "include_filtered": int(bool(payload.get("include_filtered", False))),
                 "use_clinvar": int(bool(payload.get("use_clinvar", True))),
                 "log_path": str(self.logs_dir / f"{job_id}.log"),
@@ -822,6 +1021,7 @@ class AnnotationJobService:
             "repeatmasker": ("RepeatMasker", "Repeat-region overlap flag"),
             "segdup": ("Segmental duplications", "SegDup overlap flag"),
             "promoterai": ("promoterAI", "Optional licensed promoter score track"),
+            "cadd_wgs": ("CADD v1.7 whole genome", "Precomputed genome-wide SNV and indel scores"),
             "logofunc": ("LoGoFunc", "Optional functional-mechanism predictions"),
             "clinvar": ("ClinVar", "Clinical assertions; refreshed per run by default"),
             "loftee_ptc_50bp": ("Frameshift PTC 50-bp rule", "Pipeline recomputation using local GTF and FASTA"),
@@ -905,6 +1105,11 @@ class AnnotationJobService:
             available = auto_fetch or installed
             label, description = labels[source_id]
             setup = ANNOTATION_SOURCE_SETUP[source_id]
+            available_in = (
+                ["whole_genome"]
+                if source_id in {"promoterai", "cadd_wgs"}
+                else ["exome", "whole_genome"]
+            )
             sources.append({
                 "id": source_id,
                 "label": label,
@@ -915,6 +1120,7 @@ class AnnotationJobService:
                 "installed": installed,
                 "configured_paths": [str(path) for path in paths],
                 "version": str(block.get("version") or ""),
+                "available_in": available_in,
                 **setup,
                 "status": (
                     "ready" if installed else
@@ -989,6 +1195,25 @@ class AnnotationJobService:
         self, job_id: str, base_config_path: Path, options: dict
     ) -> Path:
         config = self._load_config(base_config_path)
+        analysis_scope = str(options.get("analysis_scope") or "exome")
+        if analysis_scope not in {"exome", "whole_genome"}:
+            raise ValueError("analysis_scope must be exome or whole_genome")
+        if analysis_scope == "exome":
+            unavailable = [
+                source_id for source_id in ("promoterai", "cadd_wgs")
+                if options.get(source_id) is True
+            ]
+            if unavailable:
+                raise ValueError(
+                    "annotation source is available only for whole-genome analysis: "
+                    + ", ".join(unavailable)
+                )
+            for source_id in ("promoterai", "cadd_wgs"):
+                location = ANNOTATION_SOURCE_PATHS[source_id]
+                config.setdefault(location[0], {}).setdefault(
+                    location[1], {}
+                )["enabled"] = False
+        config.setdefault("region", {})["coding_only"] = analysis_scope == "exome"
         for source_id in REQUIRED_DIAGNOSTIC_SOURCES:
             if options.get(source_id) is False:
                 raise ValueError(
@@ -999,7 +1224,10 @@ class AnnotationJobService:
                 continue
             parent = config.setdefault(location[0], {})
             block = parent.setdefault(location[1], {})
-            block["enabled"] = bool(options[source_id])
+            block["enabled"] = bool(options[source_id]) and (
+                analysis_scope == "whole_genome"
+                or source_id not in {"promoterai", "cadd_wgs"}
+            )
         if "fork" in options:
             try:
                 fork = int(options["fork"])
@@ -1351,6 +1579,23 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             except ValueError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        elif path.startswith("/api/wgs-review/") and path.endswith("/file"):
+            review_id = path.split("/")[3]
+            try:
+                self._file(self.service.wgs_review_file(review_id))
+            except KeyError:
+                self._json({"error": "WGS review file not found"}, HTTPStatus.NOT_FOUND)
+            except FileNotFoundError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        elif path.startswith("/api/wgs-review/"):
+            job_id = path.removeprefix("/api/wgs-review/")
+            job = self.service.get_wgs_review_job(job_id)
+            self._json(
+                job if job else {"error": "WGS review job not found"},
+                HTTPStatus.OK if job else HTTPStatus.NOT_FOUND,
+            )
         elif path.startswith("/api/jobs/"):
             job_id = path.split("/")[3]
             job = self.service.store.get(job_id)
@@ -1377,6 +1622,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/jobs":
                 self._json(self.service.submit(self._body()), HTTPStatus.CREATED)
+                return
+            if path == "/api/wgs-review":
+                self._json(
+                    self.service.start_wgs_review(self._body()),
+                    HTTPStatus.ACCEPTED,
+                )
                 return
             if path.startswith("/api/resource-downloads/"):
                 resource_id = unquote(

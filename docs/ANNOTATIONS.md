@@ -20,7 +20,7 @@ work whether or not you have the large/custom datasets on hand.
 |------|---------|------------------|
 | **auto** | VEP cache, reference FASTA, LOFTEE GRCh38 data, SpliceAI masked MANE SNVs, RepeatMasker, SegDup | `scripts/download_references.sh` (SpliceAI is fetched from Ensembl; RepeatMasker/SegDup are fetched from UCSC and cleaned for VEP automatically) |
 | **auto, per-run** | ClinVar | fetched fresh from NCBI on every run by `scripts/fetch_clinvar.sh` |
-| **bring-your-own (large)** | dbNSFP | large download — place the file and point the config at it. dbNSFP needs a one-time rebuild (`scripts/prepare_dbnsfp.sh`). |
+| **bring-your-own (large)** | dbNSFP; CADD v1.7 whole genome (WGS only) | large downloads — place the files and point the config at them. dbNSFP needs a one-time rebuild (`scripts/prepare_dbnsfp.sh`); CADD is not downloaded by this software. |
 | **bring-your-own (custom)** | promoterAI, LoGoFunc | license-gated / lab-generated tracks — not scriptable; auto-skipped if absent |
 | **auto (region)** | coding+splice BED | built once from the release-matched Ensembl GTF by `scripts/build_coding_bed.sh`; used to pre-filter the input VCF |
 
@@ -68,6 +68,7 @@ VEP.
 | RepeatMasker | `custom_tracks.RepeatMasker` | bed | overlap flag — **auto** from UCSC hg38 `rmsk`, cleaned (see below) |
 | SegmentalDups | `custom_tracks.SegDup` | bed | overlap flag — **auto** from UCSC hg38 `genomicSuperDups`, cleaned |
 | promoterAI | `custom_tracks.promoterAI` | vcf (type=exact) | `promoterAI` — **license-gated** (see below) |
+| CADD v1.7 whole genome | `custom_tracks.CADD_WGS` | vcf (type=exact) | `CADD_RAW`, `CADD_PHRED` — **WGS profile only; manual download/preparation** |
 | ClinVar | `custom_tracks.ClinVar` | vcf (type=exact, coords=0) | `CLNSIG`, `CLNSIGCONF`, `CLNREVSTAT`, `CLNDN` |
 | LoGoFunc | `custom_tracks.LoGoFunc` | vcf (type=exact, coords=0) | `LoGoFunc_GOF`, `LoGoFunc_LOF` — **lab custom track** |
 
@@ -151,6 +152,32 @@ form** (not a direct download). Request access at Illumina's PromoterAI page;
 they email a link to the precomputed scores. Convert to a bgzipped,
 tabix-indexed VCF exposing a `promoterAI` INFO field and point
 `custom_tracks.promoterAI.file` at it. Auto-skipped until present.
+The Import page makes this source unavailable for exome-region jobs.
+
+### CADD v1.7 whole genome
+
+The WGS annotation profile offers a separate, optional full-genome CADD v1.7
+track. Download the GRCh38 whole-genome SNV and indel resources from the
+official CADD site, combine or convert them into the configured
+coordinate-sorted VCF representation, and create a tabix/CSI index. The UI only
+registers and validates this bring-your-own file; it intentionally does not
+download it. This is distinct from the coding-region CADD columns already
+provided through dbNSFP.
+
+### Whole-genome review prefilter
+
+The Import page prepares annotated WGS VCFs as BGZF/tabix input and filters
+chromosome shards with four concurrent readers. The work is a background job;
+the page displays its current phase, percentage, scanned variants, retained
+variants, and active reader count. PASS variants overlapping the configured
+coding+splice BED are always retained before any WGS thresholds are evaluated.
+The derived browser-review VCF keeps every retained site while reducing
+redundant CSQ entries to MANE, then PICK, then one fallback per allele/gene.
+Browser intake streams BGZF lines with bounded decompression memory.
+For variants outside that exome region, gnomAD frequency and an optional gene
+interval are AND restrictions, while enabled SpliceAI, absolute promoterAI,
+and CADD thresholds form an OR evidence group. Missing scores remain
+conservatively retained.
 
 ## Region restriction — coding + splice BED (default)
 

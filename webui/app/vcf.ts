@@ -643,55 +643,103 @@ async function decompressMember(bytes: Uint8Array) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function decompressBgzf(file: File) {
+async function* streamChunks(stream: ReadableStream<Uint8Array>) {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (value?.byteLength) yield value;
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+async function* bgzfChunks(file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer());
-  const decoded: string[] = [];
-  const decoder = new TextDecoder();
   let offset = 0;
 
   while (offset < bytes.length) {
-    const blockSize = bgzfBlockSize(bytes, offset);
-    if (!blockSize || offset + blockSize > bytes.length) {
-      throw new Error("invalid or truncated BGZF block");
+    const batch: Uint8Array[] = [];
+    while (offset < bytes.length && batch.length < 32) {
+      const blockSize = bgzfBlockSize(bytes, offset);
+      if (!blockSize || offset + blockSize > bytes.length) {
+        throw new Error(`invalid or truncated BGZF block at byte ${offset}`);
+      }
+      batch.push(bytes.subarray(offset, offset + blockSize));
+      offset += blockSize;
     }
-    const inflated = await decompressMember(bytes.subarray(offset, offset + blockSize));
-    decoded.push(decoder.decode(inflated, { stream: true }));
-    offset += blockSize;
+    const inflated = await Promise.all(batch.map(decompressMember));
+    for (const chunk of inflated) yield chunk;
   }
-  decoded.push(decoder.decode());
-  return decoded.join("");
 }
 
-async function fileText(file: File) {
+async function* decodedLines(chunks: AsyncIterable<Uint8Array>) {
+  const decoder = new TextDecoder();
+  let pending = "";
+  let firstLine = true;
+  for await (const chunk of chunks) {
+    pending += decoder.decode(chunk, { stream: true });
+    let newline = pending.indexOf("\n");
+    while (newline >= 0) {
+      let line = pending.slice(0, newline).replace(/\r$/, "");
+      pending = pending.slice(newline + 1);
+      if (firstLine) {
+        line = line.replace(/^\uFEFF/, "");
+        firstLine = false;
+      }
+      yield line;
+      newline = pending.indexOf("\n");
+    }
+  }
+  pending += decoder.decode();
+  if (pending) {
+    yield firstLine ? pending.replace(/^\uFEFF/, "") : pending;
+  }
+}
+
+async function* fileLines(file: File) {
   const signature = new Uint8Array(await file.slice(0, 64).arrayBuffer());
   const hasGzipMagic = signature[0] === 0x1f && signature[1] === 0x8b;
   const isBgzf = bgzfBlockSize(signature) !== null;
   const namedAsGzip = file.name.toLowerCase().endsWith(".gz");
-  let text: string;
 
-  if (hasGzipMagic || namedAsGzip) {
-    if (!("DecompressionStream" in globalThis)) {
-      throw new Error(`${file.name}: this browser cannot decompress .vcf.gz files`);
-    }
-    try {
+  try {
+    if (hasGzipMagic || namedAsGzip) {
+      if (!("DecompressionStream" in globalThis)) {
+        throw new Error("this browser does not provide DecompressionStream");
+      }
       if (isBgzf) {
-        text = await decompressBgzf(file);
+        yield* decodedLines(bgzfChunks(file));
       } else {
         const stream = file.stream().pipeThrough(new DecompressionStream("gzip"));
-        text = await new Response(stream).text();
+        yield* decodedLines(streamChunks(stream));
       }
-    } catch {
-      throw new Error(`${file.name}: the file is not a readable gzip/BGZF-compressed VCF`);
+    } else {
+      yield* decodedLines(streamChunks(file.stream()));
     }
-  } else {
-    text = await file.text();
+  } catch (error) {
+    const detail = error instanceof Error && error.message ? `: ${error.message}` : "";
+    throw new Error(`${file.name}: gzip/BGZF decompression failed${detail}`);
   }
+}
 
-  text = text.replace(/^\uFEFF/, "");
-  if (!text.startsWith("##fileformat=VCF")) {
-    throw new Error(`${file.name}: decompressed content does not begin with a VCF fileformat header`);
+async function vcfHeaderLines(file: File) {
+  const lines: string[] = [];
+  for await (const line of fileLines(file)) {
+    if (!lines.length && !line.startsWith("##fileformat=VCF")) {
+      throw new Error(
+        `${file.name}: decompressed content does not begin with a VCF fileformat header`,
+      );
+    }
+    if (!line.startsWith("#")) {
+      throw new Error(`${file.name}: VCF header is incomplete`);
+    }
+    lines.push(line);
+    if (line.startsWith("#CHROM\t")) return lines;
   }
-  return text;
+  throw new Error(`${file.name}: VCF header is incomplete`);
 }
 
 export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
@@ -710,8 +758,7 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
     if (file.size > 300 * 1024 * 1024) {
       warnings.push(`${file.name}: larger than 300 MB; use a PASS-prefiltered VCF for this browser MVP.`);
     }
-    const text = await fileText(file);
-    const lines = text.split(/\r?\n/);
+    const lines = await vcfHeaderLines(file);
     const assembly = assemblyFromHeader(lines);
     if (assembly.assembly === "GRCh37") {
       throw new Error(
@@ -765,7 +812,7 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
     let previousChrom = "";
     let previousPosition = -1;
 
-    for (const line of lines) {
+    for await (const line of fileLines(file)) {
       if (line.startsWith("##INFO=<ID=CSQ")) {
         const match = line.match(/Format:\s*([^">]+)/i);
         if (match) csqFields = match[1].trim().split("|");
@@ -988,8 +1035,12 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
               gnomadPopmax: popmax,
               gnomadPopmaxPopulation: first(combined, ["MAX_AF_POPS", "gnomAD_AF_popmax_population"]),
               gnomadFrequencies: populationFrequencies,
-              cadd: maximum(combined, ["CADD_phred", "CADD_PHRED"]),
-              caddRaw: maximum(combined, ["CADD_raw"]),
+              cadd: maximum(combined, [
+                "CADD_phred", "CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED",
+              ]),
+              caddRaw: maximum(combined, [
+                "CADD_raw", "CADD_WGS_CADD_RAW", "CADD_WGS_RAW",
+              ]),
               alphaMissense: maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]),
               alphaPrediction: uniqueValues(first(combined, ["AlphaMissense_pred", "am_class"])).join(" / "),
               revel,

@@ -10,7 +10,7 @@ import unittest
 import urllib.request
 from pathlib import Path
 
-from local_service.test_cohort_store import write_vcf
+from local_service.test_cohort_store import FakeHtsBackend, write_parallel_vcf, write_vcf
 from local_service.workbench_service import AnnotationJobService, JobStore, create_server
 
 
@@ -25,7 +25,13 @@ class AnnotationJobServiceTests(unittest.TestCase):
             "reference:\n  species: homo_sapiens\n"
             "  vep_cache_dir: references/vep_cache\n"
             "region:\n  coding_only: true\n"
+            "  bed: references/regions/coding.bed.gz\n"
         )
+        (self.root / "references" / "regions").mkdir(parents=True)
+        with gzip.open(
+            self.root / "references" / "regions" / "coding.bed.gz", "wt"
+        ) as handle:
+            handle.write("1\t0\t1000000\n")
         (self.root / "references" / "vep_cache" / "homo_sapiens" / "113_GRCh38").mkdir(
             parents=True
         )
@@ -224,6 +230,87 @@ class AnnotationJobServiceTests(unittest.TestCase):
                     "dbnsfp_predictors": ["not_a_predictor"],
                 },
             })
+
+    def test_annotation_scope_controls_wgs_only_sources(self):
+        sources = {
+            source["id"]: source
+            for source in self.service.capabilities()["annotation_profile"]["sources"]
+        }
+        self.assertEqual(sources["promoterai"]["available_in"], ["whole_genome"])
+        self.assertEqual(sources["cadd_wgs"]["available_in"], ["whole_genome"])
+        with self.assertRaisesRegex(ValueError, "only for whole-genome"):
+            self.service.submit({
+                "input_path": str(self.input),
+                "output_path": str(self.output),
+                "analysis_scope": "exome",
+                "annotation_options": {"promoterai": True},
+            })
+
+        job = self.service.submit({
+            "input_path": str(self.input),
+            "output_path": str(self.output),
+            "analysis_scope": "whole_genome",
+            "annotation_options": {
+                "promoterai": False,
+                "cadd_wgs": False,
+            },
+        })
+        self.assertEqual(job["analysis_scope"], "whole_genome")
+        self.assertFalse(job["coding_only"])
+        generated = Path(job["config_path"]).read_text()
+        self.assertIn("coding_only: false", generated)
+
+    def test_wgs_review_service_prepares_filters_and_registers_output(self):
+        source = self.root / "annotated-wgs.vcf"
+        write_parallel_vcf(source)
+        self.service.cohort.hts_backend = FakeHtsBackend()
+        self.service.cohort.index_readers = 4
+
+        progress_updates = []
+        result = self.service.prefilter_wgs_review({
+            "path": str(source),
+            "filters": {
+                "max_gnomad_popmax": 0.01,
+                "min_spliceai": 0.5,
+                "min_promoterai_abs": 0.5,
+                "min_cadd": None,
+                "genes": [],
+                "gene_window_bp": 0,
+            },
+        }, progress=progress_updates.append)
+
+        self.assertEqual(result["reader_count"], 4)
+        self.assertEqual(result["records_scanned"], 4)
+        self.assertEqual(result["records_retained"], 4)
+        output = self.service.wgs_review_file(result["id"])
+        self.assertTrue(output.is_file())
+        self.assertTrue(Path(result["index_path"]).is_file())
+        phases = {update["phase"] for update in progress_updates}
+        self.assertTrue({
+            "preparing_index", "filtering", "merging", "compressing",
+            "indexing_output", "complete",
+        }.issubset(phases))
+        self.assertEqual(progress_updates[-1]["progress"], 100.0)
+        cached = self.service.prefilter_wgs_review({
+            "path": str(source),
+            "filters": {},
+        })
+        self.assertTrue(cached["cache_hit"])
+        self.assertEqual(cached["records_retained"], 4)
+
+        job = self.service.start_wgs_review({
+            "path": str(source),
+            "filters": {},
+        })
+        deadline = time.time() + 5
+        while job["status"] in {"queued", "running"} and time.time() < deadline:
+            time.sleep(0.02)
+            job = self.service.get_wgs_review_job(job["id"])
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["phase"], "complete")
+        self.assertEqual(job["progress"], 100.0)
+        self.assertEqual(job["records_scanned"], 4)
+        self.assertIsNotNone(job["result"])
 
     def test_resource_download_jobs_are_constrained_and_report_progress(self):
         first = self.service.start_resource_download("spliceai")

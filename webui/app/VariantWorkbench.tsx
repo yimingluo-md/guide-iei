@@ -8,6 +8,7 @@ import {
   getJobLog,
   getJobs,
   getResourceDownloads,
+  getWgsReviewJob,
   getPhenotypeIndividuals,
   getPhenotypeProfiles,
   getPhenotypeStats,
@@ -15,6 +16,8 @@ import {
   getCohortImportJob,
   importPhenotypeInput,
   openJobReviewFile,
+  openWgsReviewFile,
+  prefilterWgsReview,
   previewPhenotypeInput,
   queryCohort,
   savePhenotypeIndividual,
@@ -38,6 +41,8 @@ import {
   type ResourceDownloadJob,
   type ServiceCapabilities,
   type StagedAnnotationFile,
+  type WgsPrefilterOptions,
+  type WgsReviewJob,
 } from "./local-service";
 import {
   ADDITIONAL_DBNSFP_PREDICTORS,
@@ -72,6 +77,7 @@ import {
 } from "./reference-data";
 
 type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "phenotypes" | "gene_lists" | "import";
+type AnalysisScope = "exome" | "whole_genome";
 type Zygosity = "all" | "hom" | "compound" | "de_novo";
 type DisplayItem =
   | "quality" | "population" | "gnomadPopulations" | "clinvar" | "transcript" | "geneConstraint"
@@ -105,6 +111,14 @@ type CustomGeneList = {
 // `.gz` suffix. Keep `.vcf.gz` for descriptive browsers, but include `.gz`
 // and gzip MIME types so the native chooser does not disable valid VCFs.
 const VCF_FILE_ACCEPT = ".vcf,.vcf.gz,.gz,application/gzip,application/x-gzip,application/bgzip,application/vnd.1000genomes.vcf";
+const DEFAULT_WGS_PREFILTER: WgsPrefilterOptions = {
+  max_gnomad_popmax: 0.01,
+  min_spliceai: 0.5,
+  min_promoterai_abs: 0.5,
+  min_cadd: null,
+  genes: [],
+  gene_window_bp: 0,
+};
 
 function Icon({ name }: { name: "dna" | "upload" | "search" | "filter" | "star" | "chevron" | "file" }) {
   const paths: Record<typeof name, React.ReactNode> = {
@@ -310,6 +324,8 @@ export default function VariantWorkbench() {
   const [selected, setSelected] = useState<VariantRow | null>(null);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState("");
+  const [wgsImportJob, setWgsImportJob] = useState<WgsReviewJob | null>(null);
   const [importError, setImportError] = useState("");
   const [pendingReviewFiles, setPendingReviewFiles] = useState<File[]>([]);
   const [ieiGenes, setIeiGenes] = useState<Set<string>>(STARTER_IEI);
@@ -480,14 +496,74 @@ export default function VariantWorkbench() {
     return [...counts.entries()].sort((a, b) => b[1] - a[1]);
   }, [filtered]);
 
-  async function importFiles(list: FileList | File[] | null) {
-    if (!list?.length) return;
+  async function importFiles(
+    list: FileList | File[] | null,
+    analysisScope: AnalysisScope = "exome",
+    wgsFilters?: WgsPrefilterOptions,
+    workstationPaths: string[] = [],
+  ) {
+    if (!list?.length && !workstationPaths.length) return;
     setImporting(true);
     setImportError("");
+    setWgsImportJob(null);
     try {
-      const result = await parseVcfFiles(Array.from(list));
+      let reviewFiles = Array.from(list ?? []);
+      const wgsMessages: string[] = [];
+      if (analysisScope === "whole_genome") {
+        if (!wgsFilters) throw new Error("Whole-genome prefilter settings are required.");
+        const batch = `wgs-review-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const sources = workstationPaths.map((path) => ({ path, name: fileName(path) }));
+        for (let index = 0; index < reviewFiles.length; index += 1) {
+          const file = reviewFiles[index];
+          setImportProgress(`Staging WGS ${index + 1} of ${reviewFiles.length}: ${file.name}`);
+          const staged = await stageAnnotationFile(file, batch);
+          sources.push({ path: staged.path, name: file.name });
+        }
+        const filteredFiles: File[] = [];
+        for (let index = 0; index < sources.length; index += 1) {
+          const source = sources[index];
+          setImportProgress(`Indexing and prefiltering WGS ${index + 1} of ${sources.length} with four readers…`);
+          let job = await prefilterWgsReview(source.path, wgsFilters);
+          setWgsImportJob(job);
+          while (job.status === "queued" || job.status === "running") {
+            setImportProgress(`WGS ${index + 1} of ${sources.length}: ${job.message}`);
+            await new Promise((resolve) => window.setTimeout(resolve, 500));
+            job = await getWgsReviewJob(job.id);
+            setWgsImportJob(job);
+          }
+          if (job.status === "failed") {
+            throw new Error(job.error || "Whole-genome indexing or prefiltering failed.");
+          }
+          if (!job.result) {
+            throw new Error("Whole-genome prefilter completed without a review file.");
+          }
+          const filtered = job.result;
+          setImportProgress(`Opening ${filtered.records_retained.toLocaleString()} retained records…`);
+          filteredFiles.push(await openWgsReviewFile(filtered.id, filtered.filename));
+          wgsMessages.push(
+            `${source.name}: WGS prefilter retained ${filtered.records_retained.toLocaleString()} of ${filtered.records_scanned.toLocaleString()} records using ${filtered.reader_count} reader${filtered.reader_count === 1 ? "" : "s"}${filtered.cache_hit ? " (cache reused)" : ""}.`,
+          );
+          wgsMessages.push(`${source.name}: all PASS variants in the configured coding+splice exome region were retained before WGS thresholds.`);
+          if (filtered.annotations_scanned > filtered.annotations_retained) {
+            wgsMessages.push(
+              `${source.name}: compacted ${filtered.annotations_scanned.toLocaleString()} transcript annotations to ${filtered.annotations_retained.toLocaleString()} MANE, PICK, or per-gene fallback rows without removing retained variant sites.`,
+            );
+          }
+          if (filtered.missing_genes.length) {
+            wgsMessages.push(`${source.name}: genes not found in the configured GRCh38 GTF: ${filtered.missing_genes.join(", ")}.`);
+          }
+        }
+        reviewFiles = filteredFiles;
+      }
+      setImportProgress("Parsing retained annotations…");
+      const result = await parseVcfFiles(reviewFiles);
+      result.summary.warnings.unshift(...wgsMessages);
       setRows(result.rows);
       setSummary(result.summary);
+      if (analysisScope === "whole_genome") {
+        setImpacts(new Set(IMPACTS));
+        setManeOnly(false);
+      }
       setView("variants");
       setSelected(null);
       setSamples(new Set());
@@ -496,6 +572,8 @@ export default function VariantWorkbench() {
       setImportError(error instanceof Error ? error.message : "Could not parse the selected VCF files.");
     } finally {
       setImporting(false);
+      setImportProgress("");
+      setWgsImportJob(null);
     }
   }
 
@@ -639,7 +717,7 @@ export default function VariantWorkbench() {
               referenceError={referenceError}
             />
           ) : view === "import" ? (
-            <ImportPanel importing={importing} error={importError} summary={summary} pendingFiles={pendingReviewFiles} onStageFiles={stageReviewFiles} onImportFiles={importFiles} qcSettings={qcSettings} setQcSettings={setQcSettings} qcPreset={qcPreset} setQcPreset={setQcPreset} includeQcFailing={includeQcFailing} setIncludeQcFailing={setIncludeQcFailing} />
+            <ImportPanel importing={importing} importProgress={importProgress} wgsImportJob={wgsImportJob} error={importError} summary={summary} pendingFiles={pendingReviewFiles} onStageFiles={stageReviewFiles} onImportFiles={importFiles} qcSettings={qcSettings} setQcSettings={setQcSettings} qcPreset={qcPreset} setQcPreset={setQcPreset} includeQcFailing={includeQcFailing} setIncludeQcFailing={setIncludeQcFailing} />
           ) : view === "family" ? (
             <FamilyPanel
               rows={eligibleRows}
@@ -699,14 +777,6 @@ function FilterSection({ title, count, children }: { title: string; count?: numb
 
 function Check({ label, checked, onChange, note }: { label: string; checked: boolean; onChange: (value: boolean) => void; note?: string }) {
   return <label className="check-row"><input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} /><span className="custom-check" /><span>{label}{note && <small>{note}</small>}</span></label>;
-}
-
-function InfoTip({ label, children }: { label: string; children: React.ReactNode }) {
-  const [open, setOpen] = useState(false);
-  return <span className={`info-tip ${open ? "open" : ""}`} onMouseLeave={() => setOpen(false)}>
-    <button type="button" aria-label={label} aria-expanded={open} onClick={() => setOpen((value) => !value)} onMouseEnter={() => setOpen(true)} onFocus={() => setOpen(true)}>i</button>
-    <span className="info-tip-panel" role="tooltip">{children}</span>
-  </span>;
 }
 
 function Threshold({ label, value, placeholder, onChange }: { label: string; value: number | null; placeholder: string; onChange: (value: number | null) => void }) {
@@ -1484,8 +1554,8 @@ function CohortPanel() {
         <p>Enter GRCh38 VEP-annotated <span className="mono">.vcf</span> or <span className="mono">.vcf.gz</span> files. The local SQLite index retains non-reference carriers rather than every reference call, allowing hundreds of samples when workstation memory and disk are adequate. Lifted GRCh37 calls retain their original locus.</p>
         <label className="form-field"><span>VCF file or directory path(s)</span><textarea rows={4} value={sourcePaths} onChange={(event) => setSourcePaths(event.target.value)} placeholder={"/absolute/path/annotated-vcfs\n/absolute/path/cohort.vcf.gz"} /></label>
         <div className="cohort-actions"><div><Check label="Search subdirectories" checked={recursive} onChange={setRecursive}/><Check label="I confirm header-ambiguous VCFs are GRCh38" checked={allowUnknownAssembly} onChange={setAllowUnknownAssembly}/></div><button className="primary-button dark" disabled={indexing} onClick={indexSources}>{indexing ? "Indexing VCFs…" : "Add or refresh cohort"}</button></div>
-        {importJob && (indexing || importJob.status === "failed") && <div className={`cohort-import-progress ${importJob.status}`}><div><strong>{importJob.status === "queued" ? "Preparing cohort import" : importJob.status === "failed" ? "Import stopped" : `Indexing ${fileName(importJob.current_path) || "VCFs"}`}</strong><span>{importPercent.toFixed(1)}% · {importJob.completed_files}/{importJob.total_files} files · {importJob.records_processed.toLocaleString()} records scanned</span></div><div className="progress-track" role="progressbar" aria-label="Cohort VCF import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(importPercent)}><span style={{ width: `${importPercent}%` }} /></div><small>{compactFileSize(importJob.processed_bytes)} of {compactFileSize(importJob.total_bytes)} · {importJob.pass_records.toLocaleString()} PASS records · {importJob.carrier_count.toLocaleString()} carrier calls</small></div>}
-        {importResult && <div className="cohort-import-result"><strong>{importResult.imported} indexed · {importResult.skipped} unchanged · {importResult.failed} failed</strong>{importResult.files.slice(0, 6).map((item) => <span key={item.path} className={item.status === "failed" ? "failed" : ""}>{fileName(item.path)} — {item.status}{item.error ? `: ${item.error}` : ""}</span>)}{importResult.files.length > 6 && <span>+ {importResult.files.length - 6} more files</span>}</div>}
+        {importJob && (indexing || importJob.status === "failed") && <div className={`cohort-import-progress ${importJob.status}`}><div><strong>{importJob.status === "queued" ? "Preparing cohort import" : importJob.status === "failed" ? "Import stopped" : importJob.phase === "preparing_index" ? `Preparing BGZF index for ${fileName(importJob.current_path) || "VCF"}` : importJob.phase === "merging" ? `Merging staged records for ${fileName(importJob.current_path) || "VCF"}` : `Indexing ${fileName(importJob.current_path) || "VCFs"}`}</strong><span>{importPercent.toFixed(1)}% · {importJob.completed_files}/{importJob.total_files} files · {importJob.records_processed.toLocaleString()} records scanned</span></div><div className="progress-track" role="progressbar" aria-label="Cohort VCF import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(importPercent)}><span style={{ width: `${importPercent}%` }} /></div><small>{compactFileSize(importJob.processed_bytes)} of {compactFileSize(importJob.total_bytes)} · {importJob.pass_records.toLocaleString()} PASS records · {importJob.carrier_count.toLocaleString()} carrier calls · {importJob.reader_count} reader{importJob.reader_count === 1 ? "" : "s"}</small></div>}
+        {importResult && <div className="cohort-import-result"><strong>{importResult.imported} indexed · {importResult.skipped} unchanged · {importResult.failed} failed</strong>{importResult.files.slice(0, 6).map((item) => <span key={item.path} className={item.status === "failed" ? "failed" : ""}>{fileName(item.path)} — {item.status}{item.reader_count ? ` · ${item.reader_count} reader${item.reader_count === 1 ? "" : "s"}` : ""}{item.cache_hit ? " · prepared cache reused" : ""}{item.preparation_warning ? ` · ${item.preparation_warning}` : ""}{item.error ? `: ${item.error}` : ""}</span>)}{importResult.files.length > 6 && <span>+ {importResult.files.length - 6} more files</span>}</div>}
       </section>
 
       <section className="cohort-card query-card">
@@ -1605,10 +1675,14 @@ function CustomGeneSet({ list, onChange, onDelete }: { list: CustomGeneList; onC
   return <article className="custom-gene-list-card"><header><div><strong>{list.name}</strong><span>{list.genes.size} gene{list.genes.size === 1 ? "" : "s"}</span></div><div><button className="secondary-button" onClick={beginEditing}>Edit</button><button className="secondary-button" onClick={() => uploadRef.current?.click()}>Replace file</button><button className="danger-text-button" onClick={onDelete}>Delete</button><input ref={uploadRef} className="sr-only" type="file" accept=".txt,.csv,.tsv" onChange={(event) => { const file = event.target.files?.[0]; if (file) file.text().then((text) => onChange({ ...list, genes: parseGeneList(text) })); event.target.value = ""; }} /></div></header>{editing ? <div className="custom-gene-list-editor"><label className="form-field"><span>List name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label className="form-field"><span>Gene symbols</span><textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={9} spellCheck={false} /></label><div><span>{parseGeneList(draft).size} unique genes</span><button className="secondary-button" onClick={() => setEditing(false)}>Cancel</button><button className="primary-button dark" onClick={save}>Apply changes</button></div></div> : <p>{[...list.genes].sort().slice(0, 18).join(", ")}{list.genes.size > 18 ? `, +${list.genes.size - 18} more` : ""}{!list.genes.size ? "No genes have been added." : ""}</p>}</article>;
 }
 
-function ImportPanel({ importing, error, summary, pendingFiles, onStageFiles, onImportFiles, qcSettings, setQcSettings, qcPreset, setQcPreset, includeQcFailing, setIncludeQcFailing }: { importing: boolean; error: string; summary: ImportSummary | null; pendingFiles: File[]; onStageFiles: (files: File[]) => void; onImportFiles: (files: File[]) => void; qcSettings: VariantQcSettings; setQcSettings: React.Dispatch<React.SetStateAction<VariantQcSettings>>; qcPreset: "standard" | "none" | "custom"; setQcPreset: (value: "standard" | "none" | "custom") => void; includeQcFailing: boolean; setIncludeQcFailing: (value: boolean) => void }) {
+function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, pendingFiles, onStageFiles, onImportFiles, qcSettings, setQcSettings, qcPreset, setQcPreset, includeQcFailing, setIncludeQcFailing }: { importing: boolean; importProgress: string; wgsImportJob: WgsReviewJob | null; error: string; summary: ImportSummary | null; pendingFiles: File[]; onStageFiles: (files: File[]) => void; onImportFiles: (files: File[], analysisScope: AnalysisScope, filters: WgsPrefilterOptions, workstationPaths: string[]) => void; qcSettings: VariantQcSettings; setQcSettings: React.Dispatch<React.SetStateAction<VariantQcSettings>>; qcPreset: "standard" | "none" | "custom"; setQcPreset: (value: "standard" | "none" | "custom") => void; includeQcFailing: boolean; setIncludeQcFailing: (value: boolean) => void }) {
   const [mode, setMode] = useState<"review" | "annotate">(
     pendingFiles.length ? "review" : "annotate",
   );
+  const [analysisScope, setAnalysisScope] = useState<AnalysisScope>("exome");
+  const [wgsFilters, setWgsFilters] = useState<WgsPrefilterOptions>({ ...DEFAULT_WGS_PREFILTER });
+  const [wgsGeneDraft, setWgsGeneDraft] = useState("");
+  const [wgsWorkstationPaths, setWgsWorkstationPaths] = useState("");
   const reviewPicker = useRef<HTMLInputElement>(null);
   const reviewFolder = useRef<HTMLInputElement>(null);
 
@@ -1623,11 +1697,26 @@ function ImportPanel({ importing, error, summary, pendingFiles, onStageFiles, on
     if (files.length) onStageFiles(files);
   }
 
+  const submittedWgsFilters: WgsPrefilterOptions = {
+    ...wgsFilters,
+    genes: [...parseGeneList(wgsGeneDraft)],
+  };
+  const submittedWgsPaths = wgsWorkstationPaths
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
+  const activeWgsPaths = analysisScope === "whole_genome" ? submittedWgsPaths : [];
+  const wgsPercent = Math.max(0, Math.min(100, wgsImportJob?.progress ?? 0));
+
   return <div className="import-page">
     <div className="intake-welcome">
       <p className="eyebrow">Start here</p>
       <h1>Import VCF files</h1>
       <p>Choose the route that matches your files. Everything stays on this workstation.</p>
+      <div className="analysis-scope-switch" role="radiogroup" aria-label="Analysis region">
+        <button role="radio" aria-checked={analysisScope === "exome"} className={analysisScope === "exome" ? "active" : ""} onClick={() => setAnalysisScope("exome")}><strong>Exome region only</strong><span>Coding exons and splice-region padding</span></button>
+        <button role="radio" aria-checked={analysisScope === "whole_genome"} className={analysisScope === "whole_genome" ? "active" : ""} onClick={() => setAnalysisScope("whole_genome")}><strong>Whole genome</strong><span>Indexed server-side intake and conservative prefiltering</span></button>
+      </div>
       <div className="intake-mode-switch" role="tablist" aria-label="VCF intake route">
         <button role="tab" aria-selected={mode === "annotate"} className={mode === "annotate" ? "active" : ""} onClick={() => setMode("annotate")}><strong>Run VEP first</strong><span>Start with a raw or hard-filtered VCF</span></button>
         <button role="tab" aria-selected={mode === "review"} className={mode === "review" ? "active" : ""} onClick={() => setMode("review")}><strong>Review annotated VCF</strong><span>My VCF already has VEP annotations</span></button>
@@ -1646,17 +1735,24 @@ function ImportPanel({ importing, error, summary, pendingFiles, onStageFiles, on
       <input ref={reviewPicker} className="sr-only" type="file" accept={VCF_FILE_ACCEPT} multiple onChange={(event) => { if (event.target.files) onStageFiles(Array.from(event.target.files)); event.target.value = ""; }} />
       <input ref={configureFolderInput} className="sr-only" type="file" accept={VCF_FILE_ACCEPT} multiple onChange={(event) => { if (event.target.files) onStageFiles(Array.from(event.target.files)); event.target.value = ""; }} />
       {pendingFiles.length > 0 && <div className="pending-review-files"><div className="pending-review-head"><div><strong>{pendingFiles.length} file{pendingFiles.length === 1 ? "" : "s"} selected</strong><span>{compactFileSize(pendingFiles.reduce((total, file) => total + file.size, 0))} total · not read yet</span></div><button onClick={() => onStageFiles([])}>Clear all</button></div>{pendingFiles.map((file, index) => <div className="pending-review-row" key={`${file.name}:${file.size}:${file.lastModified}:${index}`}><span className="file-badge"><Icon name="file" /></span><div><strong>{file.name}</strong><span>{compactFileSize(file.size)}</span></div><button aria-label={`Remove ${file.name}`} onClick={() => onStageFiles(pendingFiles.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}</div>}
+      {analysisScope === "whole_genome" && <section className="wgs-prefilter-panel"><div className="settings-section-head"><div><h3>Whole-genome prefilter</h3><p>The local service creates or reuses BGZF/tabix indexes and filters chromosome shards with four readers before browser review.</p></div><span className="readiness ready">Exome + missing scores retained</span></div><div className="qc-field-grid">
+        <QcNumberField label="gnomAD popmax <" value={wgsFilters.max_gnomad_popmax} step="0.001" onChange={(value) => setWgsFilters((current) => ({ ...current, max_gnomad_popmax: value }))}/>
+        <QcNumberField label="SpliceAI ≥" value={wgsFilters.min_spliceai} step="0.05" onChange={(value) => setWgsFilters((current) => ({ ...current, min_spliceai: value }))}/>
+        <QcNumberField label="|promoterAI| ≥" value={wgsFilters.min_promoterai_abs} step="0.05" onChange={(value) => setWgsFilters((current) => ({ ...current, min_promoterai_abs: value }))}/>
+        <QcNumberField label="CADD phred ≥" value={wgsFilters.min_cadd} step="1" onChange={(value) => setWgsFilters((current) => ({ ...current, min_cadd: value }))}/>
+      </div><div className="wgs-gene-filter"><label className="form-field"><span>Optional gene list</span><textarea rows={4} value={wgsGeneDraft} onChange={(event) => setWgsGeneDraft(event.target.value)} placeholder={"NFKB1\nSTAT3\nCTLA4"}/><small>{parseGeneList(wgsGeneDraft).size} unique genes · outside the exome, variants must lie within a selected gene interval when this list is used</small></label><label className="form-field"><span>Gene window (bp)</span><input type="number" min={0} max={1000000} step={100} value={wgsFilters.gene_window_bp} onChange={(event) => setWgsFilters((current) => ({ ...current, gene_window_bp: Math.max(0, Number(event.target.value) || 0) }))}/><small>Extends both sides of each GRCh38 GTF gene interval.</small></label></div><details className="advanced-paths wgs-local-paths"><summary>Recommended for very large files: use existing workstation paths</summary><label className="form-field"><span>Annotated WGS VCF path(s), one per line</span><textarea rows={3} value={wgsWorkstationPaths} onChange={(event) => setWgsWorkstationPaths(event.target.value)} placeholder={"/absolute/path/case.annotated.vcf.gz"}/><small>A direct path avoids copying a multi-gigabyte browser-selected file into local staging.</small></label></details><p className="wgs-filter-logic"><strong>Logic:</strong> every PASS variant in the configured coding+splice exome BED is retained first. Outside that region, gnomAD frequency and the optional gene interval are AND gates; enabled SpliceAI, absolute promoterAI, and CADD thresholds are OR gates. A missing annotation passes its enabled gate, and leaving CADD blank disables CADD as a reason to retain a variant.</p></section>}
       <div className="plain-defaults"><span>PASS records only</span><span>MANE + clinical transcript fallback</span><span>Repeat/SegDup excluded by default</span></div>
       <QcSettingsPanel settings={qcSettings} setSettings={setQcSettings} preset={qcPreset} setPreset={setQcPreset} includeFailing={includeQcFailing} setIncludeFailing={setIncludeQcFailing} />
       {error && <div className="alert error">{error}</div>}
-      <div className="review-import-actions"><span>{pendingFiles.length ? "The selected files will be read using the thresholds above." : "Select one or more annotated VCFs to continue."}</span><button className="primary-button dark" disabled={importing || pendingFiles.length === 0} onClick={() => onImportFiles(pendingFiles)}>{importing ? "Importing annotations…" : "Import and review variants"}</button></div>
-    </section><RecentReviewFiles onStageFiles={onStageFiles}/></> : <AnnotationPanel onReviewFile={(files) => { onStageFiles(files); setMode("review"); }} />}
+      {analysisScope === "whole_genome" && importing && <div className={`cohort-import-progress wgs-import-progress ${wgsImportJob?.status === "failed" ? "failed" : ""}`}><div><strong>{wgsImportJob?.message || importProgress || "Preparing whole-genome input…"}</strong><span>{wgsPercent.toFixed(1)}%</span></div><div className="progress-track" role="progressbar" aria-label="Whole-genome indexing and prefiltering progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(wgsPercent)}><span style={{ width: `${wgsPercent}%` }} /></div><small>{wgsImportJob ? `${wgsImportJob.records_scanned.toLocaleString()} records scanned · ${wgsImportJob.records_retained.toLocaleString()} retained · ${wgsImportJob.reader_count} reader${wgsImportJob.reader_count === 1 ? "" : "s"}` : "Staging the selected WGS VCF on this workstation"}</small></div>}
+      <div className="review-import-actions"><span>{importing && importProgress ? importProgress : pendingFiles.length || activeWgsPaths.length ? analysisScope === "whole_genome" ? "The indexed WGS prefilter runs locally before browser review." : "The selected files will be read using the thresholds above." : "Select one or more annotated VCFs to continue."}</span><button className="primary-button dark" disabled={importing || (pendingFiles.length === 0 && activeWgsPaths.length === 0)} onClick={() => onImportFiles(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths)}>{importing ? analysisScope === "whole_genome" ? "Preparing WGS…" : "Importing annotations…" : "Import and review variants"}</button></div>
+    </section><RecentReviewFiles onStageFiles={onStageFiles} onWgsPath={(path) => { onStageFiles([]); setAnalysisScope("whole_genome"); setWgsWorkstationPaths(path); setMode("review"); }}/></> : <AnnotationPanel analysisScope={analysisScope} onReviewPath={(path) => { onStageFiles([]); setAnalysisScope("whole_genome"); setWgsWorkstationPaths(path); setMode("review"); }} onReviewFile={(files) => { onStageFiles(files); setMode("review"); }} />}
 
     {summary && <div className="import-summary"><h2>Last review import</h2><div className="stat-grid"><Stat value={summary.files} label="files"/><Stat value={summary.samples} label="samples"/><Stat value={summary.rows} label="transcript rows"/></div><div className="intake-check-grid">{summary.intakeQc.map((check) => <div className={`intake-check ${check.status}`} key={check.id}><span>{check.status === "pass" ? "✓" : "!"}</span><div><strong>{check.label}</strong><small>{check.detail}</small></div></div>)}</div>{summary.warnings.map((warning) => <div className="alert" key={warning}>{warning}</div>)}</div>}
   </div>;
 }
 
-function RecentReviewFiles({ onStageFiles }: { onStageFiles: (files: File[]) => void }) {
+function RecentReviewFiles({ onStageFiles, onWgsPath }: { onStageFiles: (files: File[]) => void; onWgsPath: (path: string) => void }) {
   const [jobs, setJobs] = useState<AnnotationJob[]>([]);
   const [opening, setOpening] = useState("");
   const [error, setError] = useState("");
@@ -1673,6 +1769,10 @@ function RecentReviewFiles({ onStageFiles }: { onStageFiles: (files: File[]) => 
     setError("");
     try {
       const path = job.final_output_path || job.output_path;
+      if (job.analysis_scope === "whole_genome") {
+        onWgsPath(path);
+        return;
+      }
       onStageFiles([await openJobReviewFile(job.id, fileName(path))]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Could not reopen the annotated VCF.");
@@ -1729,17 +1829,20 @@ type AnnotationSource = ServiceCapabilities["annotation_profile"]["sources"][num
 
 function DatasetSetupCard({
   source,
+  analysisScope,
   enabled,
   onEnabled,
   downloadJob,
   onDownload,
 }: {
   source: AnnotationSource;
+  analysisScope: AnalysisScope;
   enabled: boolean;
   onEnabled: (value: boolean) => void;
   downloadJob?: ResourceDownloadJob;
   onDownload: (resourceId: "spliceai" | "clinvar" | "liftover") => void;
 }) {
+  const supported = (source.available_in ?? ["exome", "whole_genome"]).includes(analysisScope);
   const activeDownload = downloadJob?.status === "queued" || downloadJob?.status === "running";
   const setupLabels = {
     manual: "Manual registration",
@@ -1747,22 +1850,24 @@ function DatasetSetupCard({
     bundled: "Bundled",
     deferred: "Deferred",
   };
-  const status = activeDownload
+  const status = !supported
+    ? analysisScope === "exome" ? "Whole-genome only" : "Exome only"
+    : activeDownload
     ? downloadJob?.status === "queued" ? "Queued" : "Downloading"
     : downloadJob?.status === "failed" ? "Download failed"
     : source.installed ? "Installed"
     : source.setup_mode === "deferred" ? "Not configured in this release"
     : source.required ? "Required · missing" : "Optional · not installed";
-  const canToggle = source.id !== "liftover" && !source.required && source.available && source.setup_mode !== "deferred";
+  const canToggle = supported && source.id !== "liftover" && !source.required && source.available && source.setup_mode !== "deferred";
   const downloadId = source.download_id as "spliceai" | "clinvar" | "liftover" | undefined;
   const buttonLabel = source.id === "clinvar"
     ? "Download latest"
     : source.id === "liftover" ? source.installed ? "Verify hg19 bundle" : "Download hg19 bundle"
     : source.installed ? "Verify files" : "Download / resume";
-  return <article className={`dataset-card ${source.installed ? "installed" : "missing"} ${source.setup_mode}`}>
+  return <article className={`dataset-card ${source.installed ? "installed" : "missing"} ${source.setup_mode} ${supported ? "" : "profile-unavailable"}`}>
     <div className="dataset-card-top">
       <label className="dataset-enable">
-        <input type="checkbox" checked={enabled} disabled={!canToggle} onChange={(event) => onEnabled(event.target.checked)}/>
+        <input type="checkbox" checked={supported && enabled} disabled={!canToggle} onChange={(event) => onEnabled(event.target.checked)}/>
         <span className="custom-check"/>
       </label>
       <div className="dataset-card-title"><strong>{source.label}{source.version ? ` ${source.version}` : ""}</strong><small>{source.description}</small></div>
@@ -1779,7 +1884,7 @@ function DatasetSetupCard({
   </article>;
 }
 
-function AnnotationPanel({ onReviewFile }: { onReviewFile: (files: File[]) => void }) {
+function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analysisScope: AnalysisScope; onReviewFile: (files: File[]) => void; onReviewPath: (path: string) => void }) {
   const [capabilities, setCapabilities] = useState<ServiceCapabilities | null>(null);
   const [jobs, setJobs] = useState<AnnotationJob[]>([]);
   const [resourceJobs, setResourceJobs] = useState<ResourceDownloadJob[]>([]);
@@ -1791,7 +1896,6 @@ function AnnotationPanel({ onReviewFile }: { onReviewFile: (files: File[]) => vo
   const [outputDirectory, setOutputDirectory] = useState("");
   const [profile, setProfile] = useState("local");
   const [inputAssembly, setInputAssembly] = useState<"GRCh38" | "GRCh37" | "auto">("auto");
-  const [codingOnly, setCodingOnly] = useState(true);
   const [passOnly, setPassOnly] = useState(true);
   const [useClinvar, setUseClinvar] = useState(true);
   const [sourceEnabled, setSourceEnabled] = useState<Record<string, boolean>>({});
@@ -1894,12 +1998,20 @@ function AnnotationPanel({ onReviewFile }: { onReviewFile: (files: File[]) => vo
           input_path: inputPath,
           output_path: outputs[index],
           profile,
+          analysis_scope: analysisScope,
           input_assembly: inputAssembly,
-          coding_only: codingOnly,
+          coding_only: analysisScope === "exome",
           include_filtered: !passOnly,
           use_clinvar: useClinvar,
           annotation_options: {
-            ...sourceEnabled,
+            ...Object.fromEntries(
+              (capabilities.annotation_profile.sources ?? []).map((source) => [
+                source.id,
+                (source.available_in ?? ["exome", "whole_genome"]).includes(analysisScope)
+                  && Boolean(sourceEnabled[source.id]),
+              ]),
+            ),
+            analysis_scope: analysisScope,
             fork,
             dbnsfp_predictors: [...selectedDbnsfpPredictors],
           },
@@ -1952,6 +2064,10 @@ function AnnotationPanel({ onReviewFile }: { onReviewFile: (files: File[]) => vo
   async function reviewJob(job: AnnotationJob) {
     try {
       const path = job.final_output_path || job.output_path;
+      if (job.analysis_scope === "whole_genome") {
+        onReviewPath(path);
+        return;
+      }
       onReviewFile([await openJobReviewFile(job.id, fileName(path))]);
     } catch (error) {
       setServiceError(error instanceof Error ? error.message : "Could not reopen the annotated VCF.");
@@ -1985,15 +2101,15 @@ function AnnotationPanel({ onReviewFile }: { onReviewFile: (files: File[]) => vo
       <details className="advanced-paths"><summary>Advanced: use existing workstation paths</summary><label className="form-field"><span>VCF path(s), one per line</span><textarea rows={3} value={inputPaths} onChange={(event) => setInputPaths(event.target.value)} placeholder={"/absolute/path/patient.vcf.gz\n/absolute/path/folder/another.vcf.gz"} /></label><button className="secondary-button" onClick={() => setStep(2)} disabled={!inputPaths.trim()}>Continue to settings</button></details>
     </> : <>
       {!setupOnly && <div className="wizard-selection"><div><strong>{selectedFiles.length || inputPaths.split(/\r?\n/).filter(Boolean).length} VCF file{(selectedFiles.length || inputPaths.split(/\r?\n/).filter(Boolean).length) === 1 ? "" : "s"} selected</strong><span>{selectedFiles.slice(0, 3).map((file) => file.name).join(", ") || "Existing workstation paths"}{selectedFiles.length > 3 ? ` and ${selectedFiles.length - 3} more` : ""}</span></div><button onClick={() => setStep(1)}>Change</button></div>}
-      {!setupOnly && <section className="settings-section"><div className="settings-section-head"><div><h3>Recommended diagnostic defaults</h3><p>These settings are suitable for routine coding-region review.</p></div></div>
-        <div className="run-defaults"><div className="check-with-help"><Check label="Exome only" checked={codingOnly} onChange={setCodingOnly} /><InfoTip label="What does Exome only include?">Protein-coding regions and essential splice sites. Recommended for a local desktop or workstation. Whole-genome analysis is recommended on high-performance computing (HPC).</InfoTip></div><Check label="PASS records only" checked={passOnly} onChange={setPassOnly} /><Check label="Refresh ClinVar before run" checked={useClinvar} onChange={setUseClinvar} /></div>
+      {!setupOnly && <section className="settings-section"><div className="settings-section-head"><div><h3>{analysisScope === "exome" ? "Exome-region annotation" : "Whole-genome annotation"}</h3><p>{analysisScope === "exome" ? "Coding exons and splice-region padding are selected before VEP." : "The input is automatically prepared as sorted BGZF with tabix/CSI indexing before parallel VEP annotation."}</p></div></div>
+        <div className="run-defaults"><div className="scope-run-summary"><strong>{analysisScope === "exome" ? "Exome region only" : "Whole genome"}</strong><span>{analysisScope === "exome" ? "promoterAI and full-genome CADD unavailable" : "indexed WGS intake"}</span></div><Check label="PASS records only" checked={passOnly} onChange={setPassOnly} /><Check label="Refresh ClinVar before run" checked={useClinvar} onChange={setUseClinvar} /></div>
         <div className="form-pair simple"><label className="form-field"><span>Input genome build</span><select value={inputAssembly} onChange={(event) => setInputAssembly(event.target.value as typeof inputAssembly)}>{capabilities?.input_assemblies.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option value="GRCh38">GRCh38 / hg38</option>}</select></label><label className="form-field worker-field"><span>VEP workers <small>{workerMode === "automatic" ? "Automatic" : "Custom"}</small></span><div className="worker-value"><strong>{fork}</strong><span>worker{fork === 1 ? "" : "s"}</span>{workerMode === "custom" && <button type="button" onClick={() => { const recommended = capabilities?.hardware.recommended_vep_workers ?? 1; setFork(recommended); setWorkerMode("automatic"); }}>Use automatic</button>}</div><input className="worker-range" type="range" min={1} max={capabilities?.hardware.max_vep_workers ?? 8} step={1} value={fork} onChange={(event) => { setFork(Number(event.target.value)); setWorkerMode("custom"); }} /><small>Detected {capabilities?.hardware.logical_cpus ?? "—"} logical CPU threads · recommended {capabilities?.hardware.recommended_vep_workers ?? "—"}.</small></label></div>
       </section>}
       <section className="settings-section"><div className="settings-section-head"><div><h3>Annotation datasets</h3><p>Availability and indexes are checked automatically. Open each dataset for sources and setup instructions.</p></div><span className={`readiness ${profileReady ? "ready" : "missing"}`}>{profileReady ? "Ready to run" : "Setup needed"}</span></div>
         {capabilities?.annotation_profile.error && <div className="alert error">{capabilities.annotation_profile.error}</div>}
         {capabilities?.annotation_profile.foundations.map((item) => <div className="foundation-row" key={item.id}><span className={`availability-dot ${item.available ? "ready" : "missing"}`} /><strong>{item.label}</strong><span>{item.available ? `Available${item.version ? ` · release ${item.version}` : ""}` : "Missing"}</span></div>)}
         <div className="pinned-bundle-note"><strong>Validated annotation bundle · VEP 113 / GRCh38</strong><span>This workstation profile is intentionally pinned. Annotation resource changes are installed only through a tested software release.</span></div>
-        <div className="dataset-grid">{capabilities?.annotation_profile.sources.map((source) => <DatasetSetupCard key={source.id} source={source} enabled={sourceEnabled[source.id] ?? source.enabled} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource}/>)}</div>
+        <div className="dataset-grid">{capabilities?.annotation_profile.sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={sourceEnabled[source.id] ?? source.enabled} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource}/>)}</div>
         {!setupOnly && <details className="dbnsfp-options"><summary><span><strong>Additional dbNSFP predictors</strong><small>Optional; core AlphaMissense, CADD, REVEL and commonly used predictors remain included.</small></span><em>{selectedDbnsfpPredictors.size} selected</em></summary><div className="dbnsfp-options-body"><div className="dbnsfp-option-actions"><p>Select only predictors useful to your analysis. More columns increase output size and annotation work.</p><div><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set(availableDbnsfpOptions.filter((item) => item.recommended).map((item) => item.id)))}>Recommended extended</button><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set(availableDbnsfpOptions.map((item) => item.id)))}>Select all available</button><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set())}>Clear</button></div></div><div className="dbnsfp-predictor-grid">{dbnsfpOptions.map((item) => <label className={!item.available ? "unavailable" : ""} key={item.id}><input type="checkbox" checked={selectedDbnsfpPredictors.has(item.id)} disabled={!item.available} onChange={(event) => setSelectedDbnsfpPredictors((current) => toggleSet(current, item.id, event.target.checked))}/><span className="custom-check"/><span><strong>{item.label}</strong><small>{item.category}{item.recommended ? " · recommended extended" : ""}</small></span></label>)}</div>{dbnsfpOptions.some((item) => !item.available) && <p className="dbnsfp-unavailable-note">Unavailable choices are not present in the installed dbNSFP header and cannot be queued.</p>}</div></details>}
       </section>
       {!setupOnly && <details className="advanced-paths"><summary>Output and execution</summary><div className="form-pair simple"><label className="form-field"><span>Output folder</span><input value={outputDirectory} onChange={(event) => setOutputDirectory(event.target.value)} /></label><label className="form-field"><span>Execution</span><select value={profile} onChange={(event) => setProfile(event.target.value)} disabled={!capabilities}>{capabilities?.profiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option>Local workstation</option>}</select></label></div></details>}

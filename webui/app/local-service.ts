@@ -8,6 +8,7 @@ export type AnnotationJob = {
   finished_at: string | null;
   status: JobStatus;
   profile: string;
+  analysis_scope: "exome" | "whole_genome";
   input_assembly: "GRCh38" | "GRCh37" | "auto";
   input_path: string;
   output_path: string;
@@ -44,6 +45,7 @@ export type ServiceCapabilities = {
   }[];
   defaults: {
     config_path: string;
+    analysis_scope: "exome" | "whole_genome";
     coding_only: boolean;
     include_filtered: boolean;
     use_clinvar: boolean;
@@ -69,6 +71,7 @@ export type ServiceCapabilities = {
       installed: boolean;
       configured_paths: string[];
       version: string;
+      available_in: ("exome" | "whole_genome")[];
       status: "ready" | "required_missing" | "optional_missing";
       setup_mode: "manual" | "download" | "bundled" | "deferred";
       download_id?: string;
@@ -91,7 +94,7 @@ export type ServiceCapabilities = {
   };
 };
 
-export type AnnotationOptions = Record<string, boolean | number | string[]>;
+export type AnnotationOptions = Record<string, boolean | number | string | string[]>;
 
 export type ResourceDownloadJob = {
   id: string;
@@ -112,11 +115,52 @@ export type SubmitJob = {
   output_path: string;
   config_path?: string;
   profile: string;
+  analysis_scope: "exome" | "whole_genome";
   input_assembly: "GRCh38" | "GRCh37" | "auto";
   coding_only: boolean;
   include_filtered: boolean;
   use_clinvar: boolean;
   annotation_options?: AnnotationOptions;
+};
+
+export type WgsPrefilterOptions = {
+  max_gnomad_popmax: number | null;
+  min_spliceai: number | null;
+  min_promoterai_abs: number | null;
+  min_cadd: number | null;
+  genes: string[];
+  gene_window_bp: number;
+};
+
+export type WgsReviewResult = {
+  id: string;
+  filename: string;
+  index_path: string;
+  cache_hit: boolean;
+  prepared_cache_hit: boolean;
+  reader_count: number;
+  records_scanned: number;
+  records_retained: number;
+  annotations_scanned: number;
+  annotations_retained: number;
+  missing_genes: string[];
+  preparation_warning: string;
+};
+
+export type WgsReviewJob = {
+  id: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  phase: "queued" | "preparing_index" | "filtering" | "merging" | "compressing" | "indexing_output" | "complete" | "failed";
+  progress: number;
+  message: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  records_scanned: number;
+  records_retained: number;
+  reader_count: number;
+  result: WgsReviewResult | null;
+  error: string;
 };
 
 export type StagedAnnotationFile = {
@@ -142,6 +186,13 @@ export type CohortImportFile = {
   excluded_records?: number;
   variant_count?: number;
   carrier_count?: number;
+  records_processed?: number;
+  prepared_path?: string;
+  index_path?: string | null;
+  import_mode?: "serial_staged" | "parallel_tabix_staged";
+  reader_count?: number;
+  preparation_warning?: string;
+  cache_hit?: boolean;
   error?: string;
 };
 
@@ -169,6 +220,9 @@ export type CohortImportJob = {
   records_processed: number;
   pass_records: number;
   carrier_count: number;
+  phase: "queued" | "preparing" | "preparing_index" | "indexing" | "merging" | "complete" | "failed";
+  reader_count: number;
+  prepared_path: string;
   result: CohortImportResult | null;
   error: string;
 };
@@ -397,6 +451,35 @@ export async function getJobLog(jobId: string) {
 
 export async function openJobReviewFile(jobId: string, fallbackName: string) {
   const response = await fetch(`${SERVICE_URL}/api/jobs/${encodeURIComponent(jobId)}/review-file`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error ?? `Local service returned ${response.status}`);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+  return new File([await response.blob()], name, {
+    type: response.headers.get("Content-Type") || "application/octet-stream",
+  });
+}
+
+export async function prefilterWgsReview(
+  path: string,
+  filters: WgsPrefilterOptions,
+) {
+  return request<WgsReviewJob>("/api/wgs-review", {
+    method: "POST",
+    body: JSON.stringify({ path, filters }),
+  });
+}
+
+export async function getWgsReviewJob(jobId: string) {
+  return request<WgsReviewJob>(`/api/wgs-review/${encodeURIComponent(jobId)}`);
+}
+
+export async function openWgsReviewFile(reviewId: string, fallbackName: string) {
+  const response = await fetch(
+    `${SERVICE_URL}/api/wgs-review/${encodeURIComponent(reviewId)}/file`,
+  );
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error ?? `Local service returned ${response.status}`);

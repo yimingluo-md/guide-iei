@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import gzip
+import os
 import tempfile
 import time
 import unittest
@@ -101,6 +102,84 @@ def write_vcf(path: Path):
             handle.write(text)
     else:
         path.write_text(text)
+
+
+class FakeHtsBackend:
+    """Small deterministic stand-in for bcftools/tabix integration tests."""
+
+    def __init__(self):
+        self.sort_calls = 0
+
+    def validate_index(self, path: Path):
+        index = Path(f"{path}.tbi")
+        return index if path.is_file() and index.is_file() else None
+
+    def sort_bgzip(self, source: Path, output: Path):
+        self.sort_calls += 1
+        opener = gzip.open if source.name.endswith(".gz") else open
+        with opener(source, "rt", encoding="utf-8") as source_handle:
+            lines = source_handle.readlines()
+        headers = [line for line in lines if line.startswith("#")]
+        records = sorted(
+            (line for line in lines if line and not line.startswith("#")),
+            key=lambda line: (line.split("\t", 2)[0], int(line.split("\t", 2)[1])),
+        )
+        with gzip.open(output, "wt", encoding="utf-8") as output_handle:
+            output_handle.writelines([*headers, *records])
+
+    def create_index(self, path: Path):
+        index = Path(f"{path}.tbi")
+        index.write_text("fake tabix index")
+        return index
+
+    def list_contigs(self, path: Path):
+        opener = gzip.open if path.name.endswith(".gz") else open
+        contigs = []
+        with opener(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                if line.startswith("##contig=<"):
+                    contigs.append(line.split("ID=", 1)[1].split(",", 1)[0].rstrip(">\n"))
+        return contigs
+
+    def iter_records(self, path: Path, contigs):
+        selected = set(contigs)
+        opener = gzip.open if path.name.endswith(".gz") else open
+        with opener(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                if not line.startswith("#") and line.split("\t", 1)[0] in selected:
+                    yield line
+
+
+class UnavailableHtsBackend(FakeHtsBackend):
+    def sort_bgzip(self, source: Path, output: Path):
+        raise RuntimeError("container runtime is unavailable")
+
+
+def write_parallel_vcf(path: Path):
+    consequence = csq(
+        "G", 1, "missense_variant", "MODERATE", "NFKB1",
+        "c.100A>G", "p.Lys34Arg", 0.0001, 25, 0.8, 0.01,
+    )
+    path.write_text(
+        "##fileformat=VCFv4.2\n"
+        + "".join(
+            f"##contig=<ID={chrom},length={248956422 if chrom == 1 else 1000000}>\n"
+            for chrom in range(1, 5)
+        )
+        + '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(CSQ_FIELDS)
+        + '">\n'
+        + '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        + '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\n'
+        + '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
+        + '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">\n'
+        + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
+        + "".join(
+            f"{chrom}\t100\t.\tA\tG\t99\tPASS\tCSQ={consequence}"
+            "\tGT:AD:DP:GQ\t0/1:10,10:20:99\n"
+            for chrom in range(1, 5)
+        )
+    )
 
 
 class CohortStoreTests(unittest.TestCase):
@@ -291,6 +370,33 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(result["total"], 1)
         self.assertTrue(result["rows"][0]["picked"])
 
+    def test_startup_does_not_repeat_legacy_pick_migration(self):
+        self.store.import_paths([str(self.vcf)])
+        database = self.store.database_path
+        with self.store._session() as connection:
+            annotation_id = connection.execute(
+                """
+                SELECT MIN(id)
+                FROM cohort_annotations
+                GROUP BY variant_id, gene
+                HAVING COUNT(*) = 1
+                LIMIT 1
+                """
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE cohort_annotations SET mane = 0, picked = 0 WHERE id = ?",
+                (annotation_id,),
+            )
+
+        reopened = CohortStore(database)
+
+        with reopened._session() as connection:
+            picked = connection.execute(
+                "SELECT picked FROM cohort_annotations WHERE id = ?",
+                (annotation_id,),
+            ).fetchone()[0]
+        self.assertEqual(picked, 0)
+
     def test_directory_import_finds_plain_and_gzipped_vcfs(self):
         plain = self.root / "second.vcf"
         write_vcf(plain)
@@ -298,6 +404,85 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(result["imported"], 2)
         self.assertEqual(result["stats"]["files"], 2)
         self.assertEqual(result["stats"]["sample_entries"], 4)
+
+    def test_auto_prepares_indexes_and_reads_four_contigs_in_parallel(self):
+        source = self.root / "parallel.vcf"
+        write_parallel_vcf(source)
+        backend = FakeHtsBackend()
+        store = CohortStore(
+            self.root / "parallel.sqlite3",
+            enable_auto_index=True,
+            hts_backend=backend,
+            index_readers=4,
+        )
+
+        imported = store.import_vcf(source)
+        self.assertEqual(imported["import_mode"], "parallel_tabix_staged")
+        self.assertEqual(imported["reader_count"], 4)
+        self.assertEqual(imported["variant_count"], 4)
+        self.assertEqual(imported["records_processed"], 4)
+        self.assertEqual(backend.sort_calls, 1)
+        self.assertTrue(Path(imported["prepared_path"]).is_file())
+        self.assertTrue(Path(imported["index_path"]).is_file())
+
+        refreshed = store.import_vcf(source, force=True)
+        self.assertTrue(refreshed["cache_hit"])
+        self.assertEqual(backend.sort_calls, 1)
+
+    def test_background_job_supports_spawned_parallel_readers(self):
+        source = self.root / "parallel-background.vcf"
+        write_parallel_vcf(source)
+        store = CohortStore(
+            self.root / "parallel-background.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=4,
+        )
+        job = store.start_import_paths([str(source)])
+        for _ in range(400):
+            job = store.get_import_job(job["id"])
+            if job["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["phase"], "complete")
+        self.assertEqual(job["result"]["files"][0]["reader_count"], 4)
+        self.assertEqual(job["result"]["files"][0]["variant_count"], 4)
+
+    def test_auto_prepare_failure_falls_back_to_serial_staging(self):
+        source = self.root / "fallback.vcf"
+        write_vcf(source)
+        store = CohortStore(
+            self.root / "fallback.sqlite3",
+            enable_auto_index=True,
+            hts_backend=UnavailableHtsBackend(),
+            index_readers=4,
+        )
+
+        imported = store.import_vcf(source)
+
+        self.assertEqual(imported["import_mode"], "serial_staged")
+        self.assertEqual(imported["reader_count"], 1)
+        self.assertEqual(imported["variant_count"], 5)
+        self.assertIn("using serial staged import", imported["preparation_warning"])
+
+    @unittest.skipUnless(
+        os.environ.get("IEI_RUN_HTS_INTEGRATION") == "1",
+        "set IEI_RUN_HTS_INTEGRATION=1 to exercise real bcftools/tabix",
+    )
+    def test_real_hts_backend_prepares_and_parallelizes(self):
+        source = self.root / "real-parallel.vcf"
+        write_parallel_vcf(source)
+        store = CohortStore(
+            self.root / "real-parallel.sqlite3",
+            enable_auto_index=True,
+            index_readers=4,
+        )
+        imported = store.import_vcf(source)
+        self.assertFalse(imported["preparation_warning"])
+        self.assertEqual(imported["import_mode"], "parallel_tabix_staged")
+        self.assertEqual(imported["reader_count"], 4)
+        self.assertEqual(imported["variant_count"], 4)
 
     def test_rejects_explicit_non_grch38_contig_length(self):
         wrong = self.root / "wrong-build.vcf"

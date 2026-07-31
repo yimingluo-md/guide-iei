@@ -5,6 +5,12 @@ set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 SERVICE_PORT="${IEI_SERVICE_PORT:-43117}"
+SERVICE_START_TIMEOUT="${IEI_SERVICE_START_TIMEOUT:-120}"
+
+if [[ ! "$SERVICE_START_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: IEI_SERVICE_START_TIMEOUT must be a positive number of seconds." >&2
+    exit 2
+fi
 
 # npm is not always on PATH in macOS GUI/managed shells. Find a compatible
 # Node runtime first; the Codex desktop runtime is a useful last-resort fallback
@@ -57,7 +63,8 @@ stop_service() {
 trap stop_service EXIT INT TERM
 
 SERVICE_READY=0
-for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+SERVICE_START_DEADLINE=$((SECONDS + SERVICE_START_TIMEOUT))
+while (( SECONDS < SERVICE_START_DEADLINE )); do
     if ! kill -0 "$SERVICE_PID" 2>/dev/null; then
         wait "$SERVICE_PID" || true
         echo "ERROR: The annotation service could not start on 127.0.0.1:${SERVICE_PORT}." >&2
@@ -68,10 +75,11 @@ for _attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         SERVICE_READY=1
         break
     fi
-    sleep 0.1
+    sleep 0.25
 done
 if [[ "$SERVICE_READY" != "1" ]]; then
-    echo "ERROR: The annotation service did not become ready on 127.0.0.1:${SERVICE_PORT}." >&2
+    echo "ERROR: The annotation service did not become ready on 127.0.0.1:${SERVICE_PORT} within ${SERVICE_START_TIMEOUT} seconds." >&2
+    echo "Increase IEI_SERVICE_START_TIMEOUT if a one-time database migration is still running." >&2
     exit 1
 fi
 

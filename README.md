@@ -195,6 +195,21 @@ query every carrier of an exact variant/rsID or carriers of qualifying variants
 in a gene. The indexed variant, annotation, and non-reference genotype records
 stay in `~/.iei-variant-review/cohort.sqlite3`; raw VCF files remain in place.
 
+Cohort intake validates an existing `.tbi`/`.csi` for coordinate-sorted BGZF
+VCFs. A missing index, ordinary gzip stream, uncompressed VCF, or unsorted VCF
+is automatically converted to a sorted BGZF working copy under
+`~/.iei-variant-review/cohort-vcf-cache/` and indexed there; the source file is
+never modified. Prepared copies are fingerprinted by source path, size, and
+modification time and reused on later forced imports. Indexed files are read by
+four chromosome-sharded worker processes by default. Each worker writes
+batched natural-key records to a disposable staging database, after which one
+transaction merges the stages into the cohort database. Set
+`IEI_COHORT_INDEX_READERS=1` for serial troubleshooting or another positive
+integer to tune the reader count. When native `bcftools`/`tabix` are absent,
+the workbench uses the configured Docker/Podman image; if neither backend is
+available, or a discovered runtime cannot complete preparation, it reports a
+warning and retains the serial staged-import fallback.
+
 The workbench includes compact, versioned gnomAD v4.1.1 gene-constraint and
 IUIS October 2024 IEI resources. It joins pLI/LOEUF and related gene metrics by
 gene symbol and loads the IUIS IEI/dominant filters automatically; these
@@ -277,12 +292,36 @@ is variant count, not genome size:
 - So the coding+splice subset (typically **1–2%** of a WGS callset) is what
   turns a multi-hour, large-RAM HPC job into **minutes** on a laptop/workstation.
 
-**Whole-genome / non-coding annotation is not recommended without HPC.** It is
-supported — pass `--all-variants` or set `region.coding_only: false` — but on a
-workstation expect long walltimes, and note that several of the most useful
-non-coding signals (SpliceAI genome-wide, precomputed regulatory tracks) require
-large reference files and, for full genome recompute, their own GPU/CPU
-pipelines. Run those on a cluster.
+**Whole-genome / non-coding annotation remains substantially more expensive.**
+It is supported from the Import page or with `--all-variants`. WGS intake
+validates an existing BGZF/tabix or CSI pair and otherwise creates a sorted,
+indexed working copy without changing the submitted VCF. VEP then uses the
+configured parallel workers. Expect long annotation walltimes on a workstation;
+full-genome score generation still belongs on suitable HPC/GPU infrastructure.
+
+Annotated WGS review uses a separate workstation-safe intake path. Four
+chromosome readers conservatively prefilter the indexed VCF before the reduced
+result is opened in the browser. The Import page polls this background task and
+shows live preparation, chromosome-filtering, merge, compression, and indexing
+progress with scanned/retained record counts. Every PASS variant overlapping
+the configured coding+splice BED is retained unconditionally, preserving the
+complete diagnostic exome subset. Outside that BED, defaults are gnomAD popmax `< 0.01`, SpliceAI
+`>= 0.5`, absolute promoterAI `>= 0.5`, and no CADD retention threshold. An
+optional gene list plus symmetric GTF window is an AND restriction. Frequency
+and gene restrictions are ANDed with the evidence group; enabled SpliceAI,
+promoterAI, and CADD thresholds are ORed. Missing annotation values are retained
+rather than treated as negative evidence. The indexed input and filtered result
+are fingerprinted and reused when the source and settings are unchanged. The
+review copy preserves every retained site but compacts redundant transcript
+annotations to MANE, then VEP PICK, then one fallback per allele/gene. The
+browser reads BGZF incrementally instead of materializing the complete
+decompressed WGS VCF as one large string.
+For multi-gigabyte inputs, enter the existing absolute workstation path in the
+WGS review panel to avoid making an additional browser-upload copy.
+
+promoterAI and the optional full CADD v1.7 whole-genome track are exposed only
+for WGS jobs. Both are bring-your-own resources; the software does not download
+the CADD dataset.
 
 **Targeted panels / custom exome capture:** point `region.custom_bed` at your
 own BED (gene panel, capture kit) and it is used verbatim instead of the

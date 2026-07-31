@@ -102,9 +102,12 @@ fi
 CODING_ONLY="$(yaml_get "$CONFIG" region.coding_only)"
 PASS_ONLY="$(yaml_get "$CONFIG" run.pass_only)"; PASS_ONLY="${PASS_ONLY:-true}"
 REGION_BED=""
+WGS_MODE=0
 if [[ "$ALL_VARIANTS" == "1" ]]; then
+    WGS_MODE=1
     log "--all-variants: region restriction OFF (annotating every variant)."
 elif [[ "$CODING_ONLY" == "false" ]]; then
+    WGS_MODE=1
     log "region.coding_only:false — region restriction OFF (annotating every variant)."
 else
     # Which BED: user-supplied custom_bed wins; else the built coding+splice BED.
@@ -123,6 +126,27 @@ else
         log "region restriction ON (coding+splice BED: $REGION_BED)"
     fi
 
+fi
+
+# Whole-genome intake always enters VEP through a validated coordinate-sorted
+# BGZF + tabix/CSI source. Reuse a valid source index; otherwise create an
+# indexed working copy without changing the submitted VCF.
+if [[ "$WGS_MODE" == "1" ]]; then
+    if [[ "$DRY" == "1" ]]; then
+        log "--dry-run: would validate or create a sorted BGZF/tabix WGS working copy"
+    elif hts bcftools index -s "$INPUT" >/dev/null 2>&1; then
+        log "whole-genome input index validated and reused: $INPUT"
+    else
+        WGS_INDEXED="${WORKDIR}/${INPUT_BASE}.wgs-indexed.vcf.gz"
+        log "whole-genome input is not queryable; creating sorted BGZF working copy"
+        hts bcftools sort -O z -o "$WGS_INDEXED" "$INPUT" \
+            || die "whole-genome BGZF preparation failed"
+        hts tabix -p vcf -f "$WGS_INDEXED" 2>/dev/null \
+            || hts bcftools index -f -c "$WGS_INDEXED" \
+            || die "whole-genome tabix/CSI indexing failed"
+        INPUT="$WGS_INDEXED"
+        log "whole-genome indexed working copy ready: $INPUT"
+    fi
 fi
 
 VIEW_ARGS=()

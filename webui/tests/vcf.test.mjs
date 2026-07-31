@@ -199,7 +199,7 @@ test("reports an invalid file named .vcf.gz", async () => {
   const file = new File(["not gzip"], "broken.vcf.gz", { type: "application/gzip" });
   await assert.rejects(
     parseVcfFiles([file]),
-    /not a readable gzip\/BGZF-compressed VCF/,
+    /gzip\/BGZF decompression failed/,
   );
 });
 
@@ -419,4 +419,18 @@ test("accepts arbitrary contiguous chromosome-block order but rejects reappearin
     parseVcfFiles([new File([reappearing], "reappearing-contig.vcf")]),
     /contig 1 reappears/,
   );
+});
+
+test("streams a full WGS review BGZF without materializing decompressed text", {
+  skip: !process.env.IEI_REAL_WGS_REVIEW,
+}, async () => {
+  const path = process.env.IEI_REAL_WGS_REVIEW;
+  const compressed = await readFile(path);
+  const result = await parseVcfFiles([
+    new File([compressed], "real-wgs.review.prefiltered.vcf.gz", {
+      type: "application/gzip",
+    }),
+  ]);
+  assert.ok(result.summary.passRecords > 100000);
+  assert.ok(result.rows.length >= result.summary.passRecords);
 });
