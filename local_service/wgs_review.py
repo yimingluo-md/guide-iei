@@ -35,21 +35,20 @@ SPLICEAI_FIELDS = {
     "ds_ag", "ds_al", "ds_dg", "ds_dl",
 }
 PROMOTERAI_FIELDS = {
-    "promoterai", "promoterai_promoterai",
+    "promoterai", "promoterai_promoterai", "promoterai_score",
 }
-CADD_FIELDS = {
-    "cadd_phred", "cadd_wgs_cadd_phred", "cadd_wgs_phred", "phred",
-}
+NONCODING_MODES = {"ccre", "all", "none"}
+UNSCORED_SPLICEAI_INTRONIC = "SpliceAI_intronic"
+UNSCORED_PROMOTERAI_PROMOTER = "PromoterAI_promoter"
+PROMOTERAI_WINDOW_BP = 500
 
 
 @dataclass(frozen=True)
 class WgsPrefilterOptions:
     max_gnomad_popmax: float | None = 0.01
     min_spliceai: float | None = 0.5
-    min_promoterai_abs: float | None = 0.5
-    min_cadd: float | None = None
-    genes: tuple[str, ...] = ()
-    gene_window_bp: int = 0
+    min_promoterai_abs: float | None = 0.8
+    noncoding_mode: str = "ccre"
 
     @classmethod
     def from_payload(cls, payload: dict) -> "WgsPrefilterOptions":
@@ -76,25 +75,9 @@ class WgsPrefilterOptions:
                 raise ValueError(f"{key} must be between {minimum}{upper}")
             return parsed
 
-        raw_genes = payload.get("genes") or []
-        if not isinstance(raw_genes, list) or not all(
-            isinstance(gene, str) for gene in raw_genes
-        ):
-            raise ValueError("genes must be a list of gene symbols")
-        genes = tuple(dict.fromkeys(
-            gene.strip().upper() for gene in raw_genes if gene.strip()
-        ))
-        if len(genes) > 5_000:
-            raise ValueError("the WGS prefilter is limited to 5,000 gene symbols")
-        invalid = [gene for gene in genes if not re.fullmatch(r"[A-Z0-9._-]+", gene)]
-        if invalid:
-            raise ValueError("invalid gene symbol: " + invalid[0])
-        try:
-            window = int(payload.get("gene_window_bp", 0) or 0)
-        except (TypeError, ValueError) as exc:
-            raise ValueError("gene_window_bp must be a whole number") from exc
-        if window < 0 or window > 1_000_000:
-            raise ValueError("gene_window_bp must be between 0 and 1,000,000")
+        noncoding_mode = str(payload.get("noncoding_mode") or "ccre").lower()
+        if noncoding_mode not in NONCODING_MODES:
+            raise ValueError("noncoding_mode must be ccre, all, or none")
         return cls(
             max_gnomad_popmax=optional_number(
                 "max_gnomad_popmax", default=0.01, minimum=0, maximum=1
@@ -103,11 +86,9 @@ class WgsPrefilterOptions:
                 "min_spliceai", default=0.5, minimum=0, maximum=1
             ),
             min_promoterai_abs=optional_number(
-                "min_promoterai_abs", default=0.5, minimum=0
+                "min_promoterai_abs", default=0.8, minimum=0
             ),
-            min_cadd=optional_number("min_cadd", default=None, minimum=0),
-            genes=genes,
-            gene_window_bp=window,
+            noncoding_mode=noncoding_mode,
         )
 
 
@@ -132,83 +113,35 @@ def _header_lines(path: Path) -> list[str]:
 
 
 def _filter_header(
-    options: WgsPrefilterOptions, retain_exome_regions: bool
+    options: WgsPrefilterOptions, retain_exome_regions: bool,
+    ccre_bed_path: Path | None, promoter_map_path: Path | None,
 ) -> str:
     def value(item: float | None) -> str:
         return "Disabled" if item is None else str(item)
 
     return (
+        "##INFO=<ID=IEI_UNSCORED_INDEL,Number=A,Type=String,"
+        "Description=\"Precomputed score unavailable for an applicable "
+        "sequence-resolved indel; ampersand joins reasons and dot means not "
+        "applicable. Values: SpliceAI_intronic,PromoterAI_promoter\">\n"
         "##IEI_WGS_PREFILTER=<"
         f"MaxGnomadPopmax={value(options.max_gnomad_popmax)},"
         f"MinSpliceAI={value(options.min_spliceai)},"
         f"MinPromoterAIAbs={value(options.min_promoterai_abs)},"
-        f"MinCADD={value(options.min_cadd)},"
-        f"GeneCount={len(options.genes)},GeneWindowBP={options.gene_window_bp},"
-        "SiteFilter=PASS,MissingValues=Retain,"
-        f"ExomeRegions={'AlwaysRetain' if retain_exome_regions else 'Disabled'},"
+        f"NoncodingMode={options.noncoding_mode},"
+        "SiteFilter=PASS,PopulationMissing=Retain,EvidenceMissing=DoesNotQualify,"
+        f"ExomeRegions={'CandidateRoute' if retain_exome_regions else 'Disabled'},"
+        f"CCREResource={ccre_bed_path.name if ccre_bed_path else 'Unavailable'},"
+        f"PromoterMap={promoter_map_path.name if promoter_map_path else 'Unavailable'},"
+        "UnscoredIndelSafety=Enabled,"
         "Transcripts=MANEThenPICKThenOnePerGene>\n"
     )
-
-
-def _attribute(attributes: str, key: str) -> str:
-    match = re.search(rf'(?:^|;\s*){re.escape(key)}\s+"([^"]+)"', attributes)
-    return match.group(1) if match else ""
-
-
-def gene_intervals(
-    gtf_path: Path, genes: tuple[str, ...], window_bp: int
-) -> tuple[dict[str, tuple[tuple[int, int], ...]], tuple[str, ...]]:
-    """Return merged GRCh38 intervals for selected GTF gene names or IDs."""
-    if not genes:
-        return {}, ()
-    if not gtf_path.is_file():
-        raise ValueError(
-            "a configured GRCh38 GTF is required for the gene-list WGS prefilter"
-        )
-    requested = set(genes)
-    found: set[str] = set()
-    raw: dict[str, list[tuple[int, int]]] = {}
-    with _open_text(gtf_path) as handle:
-        for line in handle:
-            if not line or line.startswith("#"):
-                continue
-            columns = line.rstrip("\r\n").split("\t")
-            if len(columns) != 9 or columns[2] != "gene":
-                continue
-            symbols = {
-                _attribute(columns[8], "gene_name").upper(),
-                _attribute(columns[8], "gene_id").split(".", 1)[0].upper(),
-            } - {""}
-            matched = symbols & requested
-            if not matched:
-                continue
-            try:
-                start = max(1, int(columns[3]) - window_bp)
-                end = int(columns[4]) + window_bp
-            except ValueError:
-                continue
-            chrom = normalize_chromosome(columns[0])
-            raw.setdefault(chrom, []).append((start, end))
-            found.update(matched)
-    if not found:
-        raise ValueError("none of the requested genes were found in the configured GRCh38 GTF")
-
-    merged: dict[str, tuple[tuple[int, int], ...]] = {}
-    for chrom, values in raw.items():
-        combined: list[list[int]] = []
-        for start, end in sorted(values):
-            if combined and start <= combined[-1][1] + 1:
-                combined[-1][1] = max(combined[-1][1], end)
-            else:
-                combined.append([start, end])
-        merged[chrom] = tuple((start, end) for start, end in combined)
-    return merged, tuple(sorted(requested - found))
 
 
 def bed_intervals(path: Path) -> dict[str, tuple[tuple[int, int], ...]]:
     """Load and merge a BED as 1-based closed intervals by normalized contig."""
     if not path.is_file():
-        raise ValueError(f"configured coding+splice BED was not found: {path}")
+        raise ValueError(f"configured BED was not found: {path}")
     raw: dict[str, list[tuple[int, int]]] = {}
     with _open_text(path) as handle:
         for line in handle:
@@ -228,7 +161,46 @@ def bed_intervals(path: Path) -> dict[str, tuple[tuple[int, int], ...]]:
             raw.setdefault(normalize_chromosome(columns[0]), []).append((start, end))
 
     if not raw:
-        raise ValueError(f"configured coding+splice BED contains no intervals: {path}")
+        raise ValueError(f"configured BED contains no intervals: {path}")
+    merged: dict[str, tuple[tuple[int, int], ...]] = {}
+    for chrom, values in raw.items():
+        combined: list[list[int]] = []
+        for start, end in sorted(values):
+            if combined and start <= combined[-1][1] + 1:
+                combined[-1][1] = max(combined[-1][1], end)
+            else:
+                combined.append([start, end])
+        merged[chrom] = tuple((start, end) for start, end in combined)
+    return merged
+
+
+def promoterai_intervals(
+    path: Path,
+    window_bp: int = PROMOTERAI_WINDOW_BP,
+) -> dict[str, tuple[tuple[int, int], ...]]:
+    """Build merged TSS +/- window intervals from the prepared PromoterAI map."""
+    if not path.is_file():
+        raise ValueError(f"configured PromoterAI transcript map was not found: {path}")
+    raw: dict[str, list[tuple[int, int]]] = {}
+    with _open_text(path) as handle:
+        header = next(handle, "").rstrip("\r\n").split("\t")
+        columns = {name: index for index, name in enumerate(header)}
+        if "chrom" not in columns or "tss_pos" not in columns:
+            raise ValueError(
+                f"PromoterAI transcript map lacks chrom/tss_pos columns: {path}"
+            )
+        for line in handle:
+            values = line.rstrip("\r\n").split("\t")
+            try:
+                chrom = normalize_chromosome(values[columns["chrom"]])
+                tss_pos = int(values[columns["tss_pos"]])
+            except (IndexError, ValueError):
+                continue
+            raw.setdefault(chrom, []).append((
+                max(1, tss_pos - window_bp), tss_pos + window_bp,
+            ))
+    if not raw:
+        raise ValueError(f"PromoterAI transcript map contains no TSS records: {path}")
     merged: dict[str, tuple[tuple[int, int], ...]] = {}
     for chrom, values in raw.items():
         combined: list[list[int]] = []
@@ -255,59 +227,67 @@ def _numbers(records: Iterable[dict[str, str]], names: set[str]) -> list[float]:
     return values
 
 
-def _position_overlaps(
+def _range_overlaps(
     chrom: str,
-    pos: int,
+    start: int,
+    end: int,
     intervals: dict[str, tuple[tuple[int, int], ...]],
 ) -> bool:
+    """Return whether a one-based closed variant span intersects merged BED."""
     values = intervals.get(chrom, ())
     low = 0
     high = len(values)
     while low < high:
         middle = (low + high) // 2
-        if values[middle][0] <= pos:
+        if values[middle][0] <= end:
             low = middle + 1
         else:
             high = middle
-    return low > 0 and pos <= values[low - 1][1]
+    return low > 0 and values[low - 1][1] >= start
 
 
-def _position_selected(
-    chrom: str,
-    pos: int,
-    intervals: dict[str, tuple[tuple[int, int], ...]],
-) -> bool:
-    return not intervals or _position_overlaps(chrom, pos, intervals)
-
-
-def record_passes(
+def evaluate_record(
     line: str,
     header: VcfHeader,
     options: WgsPrefilterOptions,
-    intervals: dict[str, tuple[tuple[int, int], ...]],
+    ccre_intervals: dict[str, tuple[tuple[int, int], ...]],
     exome_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
-) -> bool:
+    promoter_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
+) -> tuple[bool, tuple[tuple[str, ...], ...]]:
     columns = line.rstrip("\r\n").split("\t")
     if len(columns) < 8:
         raise ValueError("encountered a structurally invalid VCF record")
     if columns[6] != "PASS":
-        return False
+        return False, ()
     chrom = normalize_chromosome(columns[0])
     try:
         pos = int(columns[1])
     except ValueError as exc:
         raise ValueError(f"invalid VCF position: {columns[1]}") from exc
-    # Whole-genome review must never lose the conventional diagnostic exome.
-    # PASS variants in the configured coding+splice BED bypass every optional
-    # frequency, evidence, and custom-gene prefilter below.
-    if exome_intervals and _position_overlaps(chrom, pos, exome_intervals):
-        return True
-    if not _position_selected(chrom, pos, intervals):
-        return False
+    record_end = pos + max(1, len(columns[3])) - 1
+    in_exome = bool(
+        exome_intervals
+        and _range_overlaps(chrom, pos, record_end, exome_intervals)
+    )
+    in_ccre = bool(
+        ccre_intervals
+        and _range_overlaps(chrom, pos, record_end, ccre_intervals)
+    )
+    in_promoter = bool(
+        promoter_intervals
+        and _range_overlaps(chrom, pos, record_end, promoter_intervals)
+    )
 
     info = info_map(columns[7])
     consequences = parse_csq_entries(info.get("CSQ", ""), list(header.csq_fields))
+    available_fields = {
+        field.lower() for field in (*header.csq_fields, *header.info_fields)
+    }
+    spliceai_dataset_available = bool(available_fields & SPLICEAI_FIELDS)
+    promoterai_dataset_available = bool(available_fields & PROMOTERAI_FIELDS)
     alts = columns[4].split(",")
+    reasons_by_alt: list[tuple[str, ...]] = []
+    retain_record = False
     for alt_index, alt in enumerate(alts):
         matched: list[dict[str, str]] = []
         for consequence in consequences:
@@ -325,29 +305,100 @@ def record_passes(
         if (
             options.max_gnomad_popmax is not None
             and frequencies
-            and max(frequencies) >= options.max_gnomad_popmax
+            and max(frequencies) > options.max_gnomad_popmax
         ):
+            reasons_by_alt.append(())
             continue
 
-        evidence: list[bool] = []
-        for threshold, fields, absolute in (
-            (options.min_spliceai, SPLICEAI_FIELDS, False),
-            (options.min_promoterai_abs, PROMOTERAI_FIELDS, True),
-            (options.min_cadd, CADD_FIELDS, False),
+        splice_values = _numbers(records, SPLICEAI_FIELDS)
+        promoter_values = _numbers(records, PROMOTERAI_FIELDS)
+        splice_qualifies = bool(
+            options.min_spliceai is not None
+            and splice_values
+            and max(splice_values) >= options.min_spliceai
+        )
+        promoter_qualifies = bool(
+            options.min_promoterai_abs is not None
+            and promoter_values
+            and max(abs(value) for value in promoter_values)
+            >= options.min_promoterai_abs
+        )
+        sequence_indel = bool(
+            re.fullmatch(r"[ACGTNacgtn]+", columns[3])
+            and re.fullmatch(r"[ACGTNacgtn]+", alt)
+            and len(columns[3]) != len(alt)
+        )
+        consequence_terms = {
+            term
+            for consequence in matched
+            for term in consequence.get("Consequence", "").split("&")
+            if term
+        }
+        unscored_reasons: list[str] = []
+        if (
+            sequence_indel
+            and options.min_spliceai is not None
+            and spliceai_dataset_available
+            and not splice_values
+            and "intron_variant" in consequence_terms
         ):
-            if threshold is None:
-                continue
-            values = _numbers(records, fields)
-            # Conservative missing-data policy: an enabled evidence source
-            # never removes an allele when that source has no value for it.
-            evidence.append(
-                not values
-                or max(abs(value) if absolute else value for value in values)
-                >= threshold
-            )
-        if not evidence or any(evidence):
-            return True
-    return False
+            unscored_reasons.append(UNSCORED_SPLICEAI_INTRONIC)
+        if (
+            sequence_indel
+            and options.min_promoterai_abs is not None
+            and promoterai_dataset_available
+            and not promoter_values
+            and in_promoter
+        ):
+            unscored_reasons.append(UNSCORED_PROMOTERAI_PROMOTER)
+        reasons_by_alt.append(tuple(unscored_reasons))
+        noncoding_qualifies = (
+            (options.noncoding_mode == "ccre" and in_ccre)
+            or (options.noncoding_mode == "all" and not in_exome)
+        )
+        if (
+            in_exome
+            or splice_qualifies
+            or promoter_qualifies
+            or noncoding_qualifies
+            or unscored_reasons
+        ):
+            retain_record = True
+    return retain_record, tuple(reasons_by_alt)
+
+
+def record_passes(
+    line: str,
+    header: VcfHeader,
+    options: WgsPrefilterOptions,
+    ccre_intervals: dict[str, tuple[tuple[int, int], ...]],
+    exome_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
+    promoter_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
+) -> bool:
+    return evaluate_record(
+        line, header, options, ccre_intervals, exome_intervals,
+        promoter_intervals,
+    )[0]
+
+
+def add_unscored_indel_info(
+    line: str,
+    reasons_by_alt: tuple[tuple[str, ...], ...],
+) -> str:
+    """Add an allele-specific INFO flag without changing any source annotation."""
+    if not any(reasons_by_alt):
+        return line if line.endswith("\n") else line + "\n"
+    columns = line.rstrip("\r\n").split("\t")
+    if len(columns) < 8:
+        raise ValueError("encountered a structurally invalid VCF record")
+    values = ["&".join(reasons) if reasons else "." for reasons in reasons_by_alt]
+    parts = [
+        part for part in columns[7].split(";")
+        if part and not part.startswith("IEI_UNSCORED_INDEL=")
+    ]
+    parts.append("IEI_UNSCORED_INDEL=" + ",".join(values))
+    columns[7] = ";".join(parts) if parts else "."
+    return "\t".join(columns) + "\n"
 
 
 def compact_review_transcripts(line: str, header: VcfHeader) -> tuple[str, int, int]:
@@ -407,33 +458,49 @@ def _filter_group_worker(
     contigs: tuple[str, ...],
     header: VcfHeader,
     options: WgsPrefilterOptions,
-    intervals: dict[str, tuple[tuple[int, int], ...]],
+    ccre_intervals: dict[str, tuple[tuple[int, int], ...]],
     exome_intervals: dict[str, tuple[tuple[int, int], ...]],
+    promoter_intervals: dict[str, tuple[tuple[int, int], ...]],
     destination: Path,
 ) -> dict:
     scanned = 0
     retained = 0
     annotations_scanned = 0
     annotations_retained = 0
+    unscored_intronic_indels = 0
+    unscored_promoter_indels = 0
     with destination.open("wt", encoding="utf-8") as output:
         for line in backend.iter_records(source, contigs):
             scanned += 1
-            if record_passes(
-                line, header, options, intervals, exome_intervals
-            ):
+            retain, reasons_by_alt = evaluate_record(
+                line, header, options, ccre_intervals, exome_intervals,
+                promoter_intervals,
+            )
+            if retain:
+                flagged = add_unscored_indel_info(line, reasons_by_alt)
                 compacted, input_count, output_count = compact_review_transcripts(
-                    line, header
+                    flagged, header
                 )
                 output.write(compacted)
                 retained += 1
                 annotations_scanned += input_count
                 annotations_retained += output_count
+                unscored_intronic_indels += sum(
+                    UNSCORED_SPLICEAI_INTRONIC in reasons
+                    for reasons in reasons_by_alt
+                )
+                unscored_promoter_indels += sum(
+                    UNSCORED_PROMOTERAI_PROMOTER in reasons
+                    for reasons in reasons_by_alt
+                )
     return {
         "path": str(destination),
         "records_scanned": scanned,
         "records_retained": retained,
         "annotations_scanned": annotations_scanned,
         "annotations_retained": annotations_retained,
+        "unscored_intronic_indels": unscored_intronic_indels,
+        "unscored_promoter_indels": unscored_promoter_indels,
     }
 
 
@@ -450,12 +517,17 @@ class WgsReviewStore:
         self,
         source: Path,
         options: WgsPrefilterOptions,
-        gtf_path: Path,
         exome_bed_path: Path | None = None,
+        ccre_bed_path: Path | None = None,
+        promoter_map_path: Path | None = None,
         progress: Callable[[dict], None] | None = None,
     ) -> dict:
         source = source.resolve()
         exome_bed_path = exome_bed_path.resolve() if exome_bed_path else None
+        ccre_bed_path = ccre_bed_path.resolve() if ccre_bed_path else None
+        promoter_map_path = (
+            promoter_map_path.resolve() if promoter_map_path else None
+        )
         if progress:
             progress({
                 "phase": "preparing_index",
@@ -473,14 +545,50 @@ class WgsReviewStore:
                 or "whole-genome review requires bcftools/tabix or the configured HTS container"
             )
         header = read_vcf_header(prepared.path)
+        available_fields = {
+            field.lower() for field in (*header.csq_fields, *header.info_fields)
+        }
+        if options.max_gnomad_popmax is not None and not (
+            available_fields & AF_FIELDS
+        ):
+            raise ValueError(
+                "gnomAD popmax filtering is enabled, but this VCF does not "
+                "declare a recognized population-frequency field; per-variant "
+                "missing values may pass, but a missing dataset cannot"
+            )
         contigs = backend.list_contigs(prepared.path)
         if not contigs:
             raise ValueError("the indexed WGS VCF contains no queryable contigs")
-        intervals, missing_genes = gene_intervals(
-            gtf_path, options.genes, options.gene_window_bp
-        )
         exome_intervals = (
             bed_intervals(exome_bed_path) if exome_bed_path else {}
+        )
+        if options.noncoding_mode == "ccre" and (
+            ccre_bed_path is None or not ccre_bed_path.is_file()
+        ):
+            raise ValueError(
+                "ENCODE cCRE is the selected noncoding mode, but the configured "
+                "SCREEN cCRE BED is not installed"
+            )
+        active_ccre_path = (
+            ccre_bed_path if options.noncoding_mode == "ccre" else None
+        )
+        ccre_intervals = (
+            bed_intervals(active_ccre_path)
+            if active_ccre_path is not None and active_ccre_path.is_file()
+            else {}
+        )
+        active_promoter_map_path = (
+            promoter_map_path
+            if (
+                options.min_promoterai_abs is not None
+                and promoter_map_path is not None
+                and promoter_map_path.is_file()
+            )
+            else None
+        )
+        promoter_intervals = (
+            promoterai_intervals(active_promoter_map_path)
+            if active_promoter_map_path else {}
         )
         if progress:
             progress({
@@ -493,17 +601,12 @@ class WgsReviewStore:
             })
 
         stat = source.stat()
-        gtf_stat = gtf_path.stat() if options.genes else None
         fingerprint_value = {
-            "review_format_version": 2,
+            "review_format_version": 4,
             "source": str(source),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
             "filters": asdict(options),
-            "gtf": (
-                [str(gtf_path), gtf_stat.st_size, gtf_stat.st_mtime_ns]
-                if gtf_stat else None
-            ),
             "exome_bed": (
                 [
                     str(exome_bed_path),
@@ -511,6 +614,22 @@ class WgsReviewStore:
                     exome_bed_path.stat().st_mtime_ns,
                 ]
                 if exome_bed_path else None
+            ),
+            "ccre_bed": (
+                [
+                    str(active_ccre_path),
+                    active_ccre_path.stat().st_size,
+                    active_ccre_path.stat().st_mtime_ns,
+                ]
+                if active_ccre_path and active_ccre_path.is_file() else None
+            ),
+            "promoter_map": (
+                [
+                    str(active_promoter_map_path),
+                    active_promoter_map_path.stat().st_size,
+                    active_promoter_map_path.stat().st_mtime_ns,
+                ]
+                if active_promoter_map_path else None
             ),
         }
         fingerprint = hashlib.sha256(
@@ -560,10 +679,17 @@ class WgsReviewStore:
                         (contig,),
                         header,
                         options,
-                        ({contig: intervals[contig]} if contig in intervals else {}),
+                        (
+                            {contig: ccre_intervals[contig]}
+                            if contig in ccre_intervals else {}
+                        ),
                         (
                             {contig: exome_intervals[contig]}
                             if contig in exome_intervals else {}
+                        ),
+                        (
+                            {contig: promoter_intervals[contig]}
+                            if contig in promoter_intervals else {}
                         ),
                         temporary_root / f"shard-{index:04d}.vcf",
                     ): index
@@ -622,9 +748,15 @@ class WgsReviewStore:
             with merged.open("wt", encoding="utf-8") as destination:
                 raw_header = _header_lines(prepared.path)
                 for line in raw_header:
+                    if (
+                        line.startswith("##IEI_WGS_PREFILTER=<")
+                        or line.startswith("##INFO=<ID=IEI_UNSCORED_INDEL,")
+                    ):
+                        continue
                     if line.startswith("#CHROM\t"):
                         destination.write(_filter_header(
-                            options, bool(exome_bed_path)
+                            options, bool(exome_bed_path), active_ccre_path,
+                            active_promoter_map_path,
                         ))
                     destination.write(line)
                 for result in sorted(results, key=lambda item: item["path"]):
@@ -667,7 +799,22 @@ class WgsReviewStore:
             "annotations_retained": sum(
                 result["annotations_retained"] for result in results
             ),
-            "missing_genes": list(missing_genes),
+            "unscored_intronic_indels": sum(
+                result["unscored_intronic_indels"] for result in results
+            ),
+            "unscored_promoter_indels": sum(
+                result["unscored_promoter_indels"] for result in results
+            ),
+            "noncoding_mode": options.noncoding_mode,
+            "ccre_resource": str(active_ccre_path) if active_ccre_path else "",
+            "promoter_map_resource": (
+                str(active_promoter_map_path) if active_promoter_map_path else ""
+            ),
+            "promoter_indel_safety": (
+                "enabled" if active_promoter_map_path
+                else "disabled" if options.min_promoterai_abs is None
+                else "unavailable"
+            ),
             "preparation_warning": prepared.warning,
         }
         metadata_path.write_text(

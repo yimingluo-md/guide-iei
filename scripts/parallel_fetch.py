@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import concurrent.futures
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -41,6 +42,14 @@ def bsd_sum(path: Path) -> tuple[int, int]:
     return int(fields[0]), int(fields[1])
 
 
+def md5(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as handle:
+        while block := handle.read(8 * 1024 * 1024):
+            digest.update(block)
+    return digest.hexdigest()
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("url")
@@ -52,6 +61,12 @@ def main() -> int:
         metavar="CHECKSUM:BLOCKS",
         help="verify the completed file against an Ensembl CHECKSUMS entry",
     )
+    parser.add_argument(
+        "--md5",
+        help="verify the completed file against this hexadecimal MD5 digest",
+    )
+    parser.add_argument("--progress-start", type=float, default=0.0)
+    parser.add_argument("--progress-scale", type=float, default=100.0)
     args = parser.parse_args()
 
     output = Path(args.output)
@@ -63,6 +78,12 @@ def main() -> int:
             expected_sum = int(checksum), int(blocks)
         except ValueError as error:
             raise SystemExit("--sum-check must be CHECKSUM:BLOCKS") from error
+    expected_md5 = (args.md5 or "").strip().lower()
+    if expected_md5 and not re.fullmatch(r"[0-9a-f]{32}", expected_md5):
+        raise SystemExit("--md5 must be a 32-character hexadecimal digest")
+
+    def display_progress(percent: float) -> float:
+        return args.progress_start + (args.progress_scale * percent / 100.0)
 
     # A file lock prevents two invocations from sharing the .parallel file.
     # The lock file may remain on disk safely; flock itself is process-scoped.
@@ -82,8 +103,16 @@ def main() -> int:
             raise RuntimeError(
                 f"existing file has the expected size but failed checksum: {output}"
             )
-        print(f"complete: {output} ({total} bytes)", flush=True)
+        if expected_md5 and md5(output) != expected_md5:
+            raise RuntimeError(
+                f"existing file has the expected size but failed MD5: {output}"
+            )
+        print(
+            f"{display_progress(100):5.1f}%  verified {output} ({total} bytes)",
+            flush=True,
+        )
         os.close(lock_descriptor)
+        lock_path.unlink(missing_ok=True)
         return 0
 
     partial = Path(f"{output}.parallel")
@@ -181,7 +210,7 @@ def main() -> int:
                     completed_bytes += end - start + 1
                     save_state()
                     elapsed = max(time.monotonic() - started, 0.001)
-                    percent = 100 * completed_bytes / total
+                    percent = display_progress(100 * completed_bytes / total)
                     speed = (completed_bytes - sum(chunks[i][1] - chunks[i][0] + 1 for i in completed if i not in pending)) / elapsed
                     print(f"{percent:5.1f}%  {completed_bytes / 1024**3:5.1f} GiB  {speed / 1024**2:5.1f} MiB/s", flush=True)
     finally:
@@ -195,9 +224,17 @@ def main() -> int:
             raise RuntimeError(
                 f"completed download failed checksum: expected {expected_sum}, received {actual_sum}"
             )
+    if expected_md5:
+        actual_md5 = md5(partial)
+        if actual_md5 != expected_md5:
+            raise RuntimeError(
+                "completed download failed MD5: "
+                f"expected {expected_md5}, received {actual_md5}"
+            )
     partial.replace(output)
     state_path.unlink(missing_ok=True)
     os.close(lock_descriptor)
+    lock_path.unlink(missing_ok=True)
     print(f"complete: {output}", flush=True)
     return 0
 

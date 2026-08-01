@@ -26,7 +26,7 @@ const CSQ_FIELDS = [
   "phyloP100way_vertebrate", "phastCons100way_vertebrate",
   "gnomADe_AF", "gnomADe_AFR_AF", "gnomADg_AF", "gnomADg_NFE_AF",
   "MAX_AF_POPS", "ClinVar_CLNREVSTAT", "ClinVar_CLNDN",
-  "pLI", "LOEUF", "MPC_score", "ESM1b_score", "ESM1b_pred",
+  "pLI", "LOEUF", "MPC_score", "ESM1b_score", "ESM1b_pred", "PromoterAI_score",
 ];
 const PASS_CSQ = [
   "G", "missense_variant", "MODERATE", "NFKB1", "ENST:c.1A>G", "ENSP:p.Lys1Arg",
@@ -35,7 +35,7 @@ const PASS_CSQ = [
   "2.3", "D", "D", "D", "D", "5.1", "2.4", "0.98",
   "0.0002", "0.0003", "0.0001", "0.00015", "AFR",
   "reviewed_by_expert_panel", "immunodeficiency", "0.997", "0.21",
-  "2.1", "0.73", "D",
+  "2.1", "0.73", "D", "-0.91",
 ].join("|");
 const VCF = [
   "##fileformat=VCFv4.2",
@@ -43,7 +43,7 @@ const VCF = [
   "##contig=<ID=1,length=248956422>",
   `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">`,
   "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
-  `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t0/1:40:99:20,20`,
+  `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ};IEI_UNSCORED_INDEL=SpliceAI_intronic&PromoterAI_promoter\tGT:DP:GQ:AD\t0/1:40:99:20,20`,
   "1\t200\t.\tC\tT\t20\tLowQual\tCSQ=T|missense_variant|MODERATE|NFKB1||||\tGT:DP:GQ:AD\t0/1:20:30:10,10",
   "",
 ].join("\n");
@@ -110,6 +110,10 @@ test("imports a real gzip-compressed .vcf.gz file", async () => {
   assert.equal(result.rows[0].clinvarReviewStatus, "reviewed_by_expert_panel");
   assert.equal(result.rows[0].pLi, 0.997);
   assert.equal(result.rows[0].loeuf, 0.21);
+  assert.equal(result.rows[0].promoterAI, -0.91);
+  assert.deepEqual(result.rows[0].unscoredIndelReasons, [
+    "SpliceAI_intronic", "PromoterAI_promoter",
+  ]);
   assert.deepEqual(result.rows[0].availableDbnsfpPredictors, ["mpc", "esm1b"]);
   assert.deepEqual(result.rows[0].dbnsfpPredictors.mpc, {
     score: 2.1,
@@ -121,6 +125,76 @@ test("imports a real gzip-compressed .vcf.gz file", async () => {
   });
   assert.equal(result.summary.intakeQc.length, 10);
   assert.equal(result.summary.intakeQc.every((check) => check.status === "pass"), true);
+});
+
+test("prefers the selected WGS CADD plugin over a duplicate dbNSFP value", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL",
+    "CADD_phred", "CADD_PHRED", "CADD_raw", "CADD_RAW",
+  ];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t1000000\t.\tG\tA\t99\tPASS\tCSQ=A|intergenic_variant|MODIFIER|—|35|21.5|7|2.1\tGT\t0/1",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "cadd-wgs.vcf")]);
+  assert.equal(result.rows[0].cadd, 21.5);
+  assert.equal(result.rows[0].caddRaw, 2.1);
+});
+
+test("optionally retains populated INFO, CSQ, and FORMAT fields for on-demand review", async () => {
+  const result = await parseVcfFiles(
+    [new File([VCF], "cohort-source.vcf")],
+    { retainRawAnnotations: true },
+  );
+  const row = result.rows[0];
+  assert.equal(row.rawVcfEvidence.info.CSQ, undefined);
+  assert.equal(row.rawVcfEvidence.consequence.gnomADe_AFR_AF, "0.0003");
+  assert.equal(row.rawVcfEvidence.consequence.CADD_phred, "24.6");
+  assert.equal(row.rawVcfEvidence.format.GT, "0/1");
+  assert.equal(row.rawVcfEvidence.format.AD, "20,20");
+});
+
+test("parses strict LoGoFunc evidence and exposes it beside the MANE transcript", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature",
+    "HGVSp", "MANE_SELECT", "PICK", "LoGoFunc_prediction",
+    "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF",
+    "LoGoFunc_allele_available", "LoGoFunc_source_transcript",
+    "LoGoFunc_source_HGVSp", "LoGoFunc_match",
+  ];
+  const mane = [
+    "G", "missense_variant", "MODERATE", "GENE1", "ENSG1", "ENST_MANE",
+    "ENSP_MANE:p.Lys1Arg", "NM_1", "1", "", "", "", "", "1",
+    "ENST_SOURCE", "ENSP_SOURCE:p.Lys1Arg", "allele_only",
+  ].join("|");
+  const sourceMatch = [
+    "G", "missense_variant", "MODERATE", "GENE1", "ENSG1", "ENST_SOURCE",
+    "ENSP_SOURCE:p.Lys1Arg", "", "", "GOF", "0.05", "0.9", "0.05", "1",
+    "ENST_SOURCE", "ENSP_SOURCE:p.Lys1Arg", "allele_transcript_protein",
+  ].join("|");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t150\t.\tA\tG\t99\tPASS\tCSQ=${mane},${sourceMatch}\tGT:DP:GQ:AD\t0/1:30:99:15,15`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "logofunc.vcf")]);
+  const maneRow = result.rows.find((row) => row.transcript === "ENST_MANE");
+  const sourceRow = result.rows.find((row) => row.transcript === "ENST_SOURCE");
+
+  assert.equal(sourceRow.loGoFuncMatch, "allele_transcript_protein");
+  assert.equal(sourceRow.loGoFuncPrediction, "GOF");
+  assert.equal(sourceRow.loGoFuncGof, 0.9);
+  assert.equal(maneRow.loGoFuncPrediction, "GOF");
+  assert.equal(maneRow.loGoFuncSourceTranscript, "ENST_SOURCE");
+  assert.equal(maneRow.loGoFuncMatch, "source_transcript_match_elsewhere");
 });
 
 test("retains reference parental genotypes and uses allele-specific GT and AD", async () => {

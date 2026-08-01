@@ -43,10 +43,15 @@ SPLICEAI_FIELDS = (
 )
 DEFAULT_CRITICAL_DBNSFP = ("CADD_phred", "AlphaMissense_score")
 PROMOTERAI_FIELDS = (
+    "PromoterAI_score",
+    "promoterAI_score",
     "promoterAI_promoterAI",
     "PromoterAI_promoterAI",
     "promoterAI",
     "PromoterAI",
+)
+LOGOFUNC_SCORE_FIELDS = (
+    "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF",
 )
 
 
@@ -206,6 +211,31 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                     if not any(present(entry.get(field)) for entry in missense):
                         note_missing(field, key)
 
+            snv = len(columns[3]) == 1 and all(
+                len(alt) == 1 for alt in columns[4].split(",")
+            )
+            if snv and missense:
+                counters["logofunc_missense_snv_eligible"] += 1
+                allele_available = any(
+                    entry.get("LoGoFunc_allele_available") == "1"
+                    for entry in missense
+                )
+                exact_matches = [
+                    entry for entry in missense
+                    if entry.get("LoGoFunc_match") == "allele_transcript_protein"
+                    and present(entry.get("LoGoFunc_prediction"))
+                    and all(present(entry.get(field)) for field in LOGOFUNC_SCORE_FIELDS)
+                ]
+                if allele_available:
+                    counters["logofunc_allele_available"] += 1
+                if exact_matches:
+                    counters["logofunc_exact_match"] += 1
+                    counters[
+                        "logofunc_class:" + exact_matches[0]["LoGoFunc_prediction"]
+                    ] += 1
+                elif allele_available:
+                    note_missing("LoGoFunc_transcript_protein_match", key)
+
             plof = [e for e in entries if has_consequence(e, PLOF_CONSEQUENCES)]
             if plof:
                 counters["plof_eligible"] += 1
@@ -241,7 +271,6 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 if any(entry.get("LoF_50_BP_RULE_changed") == "1" for entry in frameshift):
                     counters["ptc50_changed"] += 1
 
-            snv = len(columns[3]) == 1 and all(len(alt) == 1 for alt in columns[4].split(","))
             # The bundled MANE SpliceAI table is a transcript/splice resource,
             # not a promoter/intergenic resource. A MANE-labelled upstream or
             # downstream consequence therefore must not inflate its denominator.
@@ -312,6 +341,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     dbnsfp_config = plugins.get("dbNSFP") or {}
     loftee_config = plugins.get("LoF") or {}
     spliceai_config = plugins.get("SpliceAI") or {}
+    logofunc_config = plugins.get("LoGoFunc") or {}
     missense_n = counters["missense_eligible"]
     db_threshold = float(thresholds.get("dbnsfp_missense", 0.80))
     for field in names["critical_dbnsfp"]:
@@ -417,6 +447,42 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         )
     metrics.append(splice_metric)
 
+    logofunc_schema = all(
+        field in csq_fields
+        for field in (
+            "LoGoFunc_allele_available", "LoGoFunc_match",
+            "LoGoFunc_prediction", *LOGOFUNC_SCORE_FIELDS,
+        )
+    )
+    logofunc_eligible = counters["logofunc_missense_snv_eligible"]
+    logofunc_allele_metric = metric(
+        "LoGoFunc allele availability on missense SNV records",
+        logofunc_eligible,
+        counters["logofunc_allele_available"],
+        0.0,
+    )
+    logofunc_allele_metric["schema_present"] = logofunc_schema
+    logofunc_exact_metric = metric(
+        "LoGoFunc exact transcript and protein-change matches",
+        counters["logofunc_allele_available"],
+        counters["logofunc_exact_match"],
+        0.0,
+    )
+    logofunc_exact_metric["schema_present"] = logofunc_schema
+    for item in (logofunc_allele_metric, logofunc_exact_metric):
+        if not logofunc_config.get("enabled"):
+            item["status"] = "SKIPPED_DISABLED"
+        elif not logofunc_schema:
+            item["status"] = "SKIPPED_NOT_INSTALLED"
+    if (
+        logofunc_config.get("enabled")
+        and logofunc_schema
+        and counters["logofunc_allele_available"]
+        and not counters["logofunc_exact_match"]
+    ):
+        logofunc_exact_metric["status"] = "WARN"
+    metrics.extend((logofunc_allele_metric, logofunc_exact_metric))
+
     statuses = {item["status"] for item in metrics}
     overall = "FAIL" if "FAIL" in statuses else "WARN" if "WARN" in statuses else "PASS"
     promoter_schema = any(field in csq_fields for field in PROMOTERAI_FIELDS)
@@ -451,6 +517,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             "SpliceAI_required": bool(
                 ((config.get("plugins") or {}).get("SpliceAI") or {}).get("required")
             ),
+            "LoGoFunc_version": logofunc_config.get("version"),
             "LOFTEE_PTC_50BP_required": bool(
                 (
                     (config.get("post_processing") or {}).get(
@@ -550,6 +617,21 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 "schema_present": promoter_schema,
                 "annotated_records": counters["promoterai_annotated_records"],
             },
+            "logofunc": {
+                "schema_present": logofunc_schema,
+                "eligible_missense_snv_records": logofunc_eligible,
+                "allele_available_records": counters["logofunc_allele_available"],
+                "exact_transcript_protein_match_records": counters["logofunc_exact_match"],
+                "prediction_class_counts": {
+                    key.removeprefix("logofunc_class:"): value
+                    for key, value in sorted(counters.items())
+                    if key.startswith("logofunc_class:")
+                },
+                "interpretation": (
+                    "Exact matches require genomic allele, Ensembl transcript stable ID, "
+                    "residue position, and amino-acid substitution agreement. Missing is not neutral."
+                ),
+            },
             "missing_examples": missing_examples,
         },
     }
@@ -594,6 +676,7 @@ details pre {{ white-space: pre-wrap; background: #f7f9f9; padding: 1rem }}
 <table><thead><tr><th>Check</th><th>Eligible</th><th>Annotated</th>
 <th>Coverage</th><th>Status</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
 <p>promoterAI: {html.escape(report['details']['promoterAI']['status'])}</p>
+<p>LoGoFunc exact transcript/protein matches: {report['details']['logofunc']['exact_transcript_protein_match_records']}</p>
 <details><summary>Full details</summary><pre>{details}</pre></details>
 <p>Created {html.escape(report['created_utc'])}</p>
 </body></html>

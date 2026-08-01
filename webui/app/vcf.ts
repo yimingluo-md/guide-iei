@@ -15,6 +15,13 @@ export type GenotypeEvidence = {
   phaseHaplotype: 0 | 1 | null;
   genotypeClass: "heterozygous" | "homozygous_alt" | "hemizygous" | "other";
   genotypeFilter: string;
+  rawFields?: Record<string, string>;
+};
+
+export type RawVcfEvidence = {
+  info: Record<string, string>;
+  consequence: Record<string, string>;
+  format: Record<string, string>;
 };
 
 export type VariantQcSettings = {
@@ -131,6 +138,7 @@ export type VariantRow = {
   alt: string;
   liftedFromGrch37?: boolean;
   assemblyAlleleSwap?: boolean;
+  unscoredIndelReasons?: string[];
   originalAssembly?: string;
   originalChrom?: string;
   originalPos?: number | null;
@@ -183,6 +191,14 @@ export type VariantRow = {
   haplotypeProteinChange?: string;
   spliceAI: number | null;
   promoterAI: number | null;
+  loGoFuncPrediction: string;
+  loGoFuncNeutral: number | null;
+  loGoFuncGof: number | null;
+  loGoFuncLof: number | null;
+  loGoFuncAlleleAvailable: boolean;
+  loGoFuncSourceTranscript: string;
+  loGoFuncSourceHgvsp: string;
+  loGoFuncMatch: string;
   pLi?: number | null;
   loeuf?: number | null;
   missenseZ?: number | null;
@@ -227,6 +243,7 @@ export type VariantRow = {
   segdup: boolean;
   phase: "phased" | "unknown";
   otherPredictors: string[];
+  rawVcfEvidence?: RawVcfEvidence;
 };
 
 export type ImportSummary = {
@@ -397,6 +414,23 @@ function infoMap(raw: string) {
   return map;
 }
 
+function alleleInfoReasons(
+  info: Record<string, string>, key: string, altIndex: number,
+) {
+  const value = (info[key] ?? "").split(",")[altIndex] ?? "";
+  if (!value || EMPTY.has(value)) return [];
+  return value.split("&").map(decode).filter((item) => item && !EMPTY.has(item));
+}
+
+function populatedFields(record: Record<string, string>, exclude: string[] = []) {
+  const excluded = new Set(exclude);
+  return Object.fromEntries(
+    Object.entries(record).filter(
+      ([key, value]) => !excluded.has(key) && Boolean(value) && !EMPTY.has(value),
+    ),
+  );
+}
+
 export function haplotypeFrameEvidence(
   raw: string | undefined,
   currentVariant: string,
@@ -453,6 +487,14 @@ function maximum(record: Record<string, string>, keys: string[]) {
   return values.length ? Math.max(...values) : null;
 }
 
+function preferredMaximum(record: Record<string, string>, keyGroups: string[][]) {
+  for (const keys of keyGroups) {
+    const value = maximum(record, keys);
+    if (value !== null) return value;
+  }
+  return null;
+}
+
 function minimum(record: Record<string, string>, keys: string[]) {
   const values = keys.flatMap((key) =>
     (record[key] ?? "").split(/[,&]/).map(number).filter((v): v is number => v !== null),
@@ -479,7 +521,12 @@ function uniqueValues(value: string | undefined) {
   )];
 }
 
-function parseGenotype(format: string, sampleValue: string, altIndex: number): GenotypeEvidence {
+function parseGenotype(
+  format: string,
+  sampleValue: string,
+  altIndex: number,
+  retainRawFields = false,
+): GenotypeEvidence {
   const keys = format.split(":");
   const values = sampleValue.split(":");
   const fields = Object.fromEntries(keys.map((key, index) => [key, values[index] ?? ""]));
@@ -528,6 +575,7 @@ function parseGenotype(format: string, sampleValue: string, altIndex: number): G
     phaseHaplotype,
     genotypeClass,
     genotypeFilter: fields.FT || "",
+    rawFields: retainRawFields ? populatedFields(fields) : undefined,
   };
 }
 
@@ -742,7 +790,10 @@ async function vcfHeaderLines(file: File) {
   throw new Error(`${file.name}: VCF header is incomplete`);
 }
 
-export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
+export async function parseVcfFiles(
+  files: File[],
+  options: { retainRawAnnotations?: boolean } = {},
+): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
   const rows: VariantRow[] = [];
   const evidenceByVariant = new Map<string, Record<string, GenotypeEvidence>>();
   const sampleNames = new Set<string>();
@@ -907,7 +958,12 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
         const sampleGenotypes = Object.fromEntries(fallbackSamples.map((sample, sampleIndex) => [
           sample,
           samples.length
-            ? parseGenotype(format, sampleValues[sampleIndex] ?? "", altIndex)
+            ? parseGenotype(
+                format,
+                sampleValues[sampleIndex] ?? "",
+                altIndex,
+                Boolean(options.retainRawAnnotations),
+              )
             : {
                 gt: "./.", called: false, carrier: true, dp: null, gq: null,
                 adRef: null, adAlt: null, alleleBalance: null, pl: null,
@@ -927,6 +983,9 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
         fallbackSamples.forEach((sample) => {
           const genotype = sampleGenotypes[sample];
           if (!genotype.carrier) return;
+          const unscoredIndelReasons = alleleInfoReasons(
+            info, "IEI_UNSCORED_INDEL", altIndex,
+          );
           const matching = consequences.filter((csq) => {
             const alleleNum = Number(csq.ALLELE_NUM || 0);
             return alleleNum ? alleleNum === altIndex + 1 : !csq.Allele || csq.Allele === alt;
@@ -1015,6 +1074,7 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
               liftedFromGrch37: assembly.liftedFromGrch37
                 || first(info, ["IEI_ORIGINAL_ASSEMBLY"]) === "GRCh37",
               assemblyAlleleSwap: truthy(info.IEI_ASSEMBLY_ALLELE_SWAP),
+              unscoredIndelReasons,
               originalAssembly: first(info, ["IEI_ORIGINAL_ASSEMBLY"]),
               originalChrom: first(info, ["IEI_ORIGINAL_CHROM"]),
               originalPos: number(first(info, ["IEI_ORIGINAL_POS"])),
@@ -1035,11 +1095,13 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
               gnomadPopmax: popmax,
               gnomadPopmaxPopulation: first(combined, ["MAX_AF_POPS", "gnomAD_AF_popmax_population"]),
               gnomadFrequencies: populationFrequencies,
-              cadd: maximum(combined, [
-                "CADD_phred", "CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED",
+              cadd: preferredMaximum(combined, [
+                ["CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED"],
+                ["CADD_phred"],
               ]),
-              caddRaw: maximum(combined, [
-                "CADD_raw", "CADD_WGS_CADD_RAW", "CADD_WGS_RAW",
+              caddRaw: preferredMaximum(combined, [
+                ["CADD_RAW", "CADD_WGS_CADD_RAW", "CADD_WGS_RAW"],
+                ["CADD_raw"],
               ]),
               alphaMissense: maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]),
               alphaPrediction: uniqueValues(first(combined, ["AlphaMissense_pred", "am_class"])).join(" / "),
@@ -1083,9 +1145,18 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
               haplotypeProteinChange: haplotypeFrame.protein,
               spliceAI: splice,
               promoterAI: maximum(combined, [
+                "PromoterAI_score", "promoterAI_score",
                 "promoterAI_promoterAI", "PromoterAI_promoterAI",
                 "promoterAI", "PromoterAI",
               ]),
+              loGoFuncPrediction: first(combined, ["LoGoFunc_prediction"]),
+              loGoFuncNeutral: maximum(combined, ["LoGoFunc_neutral"]),
+              loGoFuncGof: maximum(combined, ["LoGoFunc_GOF"]),
+              loGoFuncLof: maximum(combined, ["LoGoFunc_LOF"]),
+              loGoFuncAlleleAvailable: truthy(first(combined, ["LoGoFunc_allele_available"])),
+              loGoFuncSourceTranscript: first(combined, ["LoGoFunc_source_transcript"]),
+              loGoFuncSourceHgvsp: first(combined, ["LoGoFunc_source_HGVSp"]),
+              loGoFuncMatch: first(combined, ["LoGoFunc_match"]),
               pLi: maximum(combined, ["pLI", "gnomAD_pLI", "ExAC_pLI"]),
               loeuf: maximum(combined, ["LOEUF", "loeuf", "oe_lof_upper", "gnomAD_LOEUF"]),
               missenseZ: maximum(combined, ["mis_z", "missense_z", "gnomAD_mis_z"]),
@@ -1116,6 +1187,11 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
               segdup: truthy(first(combined, ["SegDup", "SEGDUP"])),
               phase: genotype.phased ? "phased" : "unknown",
               otherPredictors,
+              rawVcfEvidence: options.retainRawAnnotations ? {
+                info: populatedFields(info, ["CSQ"]),
+                consequence: populatedFields(csq),
+                format: genotype.rawFields ?? {},
+              } : undefined,
             });
           });
         });
@@ -1152,6 +1228,35 @@ export async function parseVcfFiles(files: File[]): Promise<{ rows: VariantRow[]
       row.duplicateRecordCount = sourceRecords.size;
       row.duplicateRecordKind = kind;
     });
+  });
+
+  // LoGoFunc is intentionally attached only to its exact source transcript by
+  // VEP. The review UI defaults to MANE, which may differ from that canonical
+  // source transcript, so carry the strict result to sibling UI rows for the
+  // same sample/allele/gene while retaining the source transcript explicitly.
+  // This changes only the review model; raw CSQ evidence remains transcript-local.
+  const loGoFuncEvidence = new Map<string, VariantRow>();
+  const loGoFuncKey = (row: VariantRow) => [
+    row.source, row.sample, row.chrom, row.pos, row.ref, row.alt, row.gene,
+  ].join(":");
+  rows.forEach((row) => {
+    if (row.loGoFuncMatch === "allele_transcript_protein") {
+      loGoFuncEvidence.set(loGoFuncKey(row), row);
+    }
+  });
+  rows.forEach((row) => {
+    const evidence = loGoFuncEvidence.get(loGoFuncKey(row));
+    if (!evidence || row === evidence) return;
+    row.loGoFuncPrediction = evidence.loGoFuncPrediction;
+    row.loGoFuncNeutral = evidence.loGoFuncNeutral;
+    row.loGoFuncGof = evidence.loGoFuncGof;
+    row.loGoFuncLof = evidence.loGoFuncLof;
+    row.loGoFuncAlleleAvailable = true;
+    row.loGoFuncSourceTranscript = evidence.loGoFuncSourceTranscript;
+    row.loGoFuncSourceHgvsp = evidence.loGoFuncSourceHgvsp;
+    row.loGoFuncMatch = row.transcript === evidence.loGoFuncSourceTranscript
+      ? "allele_transcript_protein"
+      : "source_transcript_match_elsewhere";
   });
 
   const intakeQc: IntakeQcCheck[] = [

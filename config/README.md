@@ -30,8 +30,9 @@ crashing VEP. Turn a source off entirely with `enabled: false`.
 | `run` | `fork` (parallelism), buffer size |
 | `output` | `format: vcf` (preserves zygosity) or `tab`; bgzip; VEP stats html |
 | `core` | pick, symbol, hgvs, sift, polyphen, gnomAD AFs — mirrors `vep_hg38.sh` |
-| `plugins` | dbNSFP 5.3.1a (CADD, REVEL, AlphaMissense, etc.), required LoF (LOFTEE), required SpliceAI |
-| `custom_tracks` | RepeatMasker, SegDup, promoterAI, ClinVar, LoGoFunc (`--custom`) |
+| `plugins` | dbNSFP 5.3.1a, required LoF (LOFTEE), required SpliceAI, optional WGS-only CADD/PromoterAI, optional LoGoFunc |
+| `custom_tracks` | RepeatMasker, SegDup, ClinVar (`--custom`) |
+| `wgs_review` | native import resources, including the pinned SCREEN cCRE BED and release-matched Ensembl gene-TSS context |
 | `clinvar` | auto-fetch latest NCBI ClinVar per run |
 | `post_processing` | required local frameshift PTC-based LOFTEE 50-bp correction and ClinVar amino-acid-match INFO flag |
 
@@ -51,8 +52,11 @@ genotypes.
 
 See [`../docs/ANNOTATIONS.md`](../docs/ANNOTATIONS.md) for the full table of
 which sources the download helper fetches automatically vs. which you must
-supply yourself (SpliceAI MANE SNVs are automatic; dbNSFP is large/registered;
-promoterAI and LoGoFunc are lab-generated custom tracks).
+supply yourself. SpliceAI MANE SNVs and score-only CADD v1.7 WGS files are
+downloadable in the UI; dbNSFP is large/registered; PromoterAI is prepared from
+user-licensed Illumina files. LoGoFunc is a public,
+optional Zenodo download installed from the local UI or with
+`scripts/download_logofunc.sh` / `scripts/prepare_logofunc.sh`.
 
 `plugins.dbNSFP.version` is the explicit release contract. Check it against the
 configured filename, the official releases page, and the pinned VEP release:

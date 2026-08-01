@@ -23,6 +23,7 @@ import subprocess
 import threading
 import uuid
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -30,6 +31,7 @@ from pathlib import Path
 from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
+from local_service.ccre_context import CcreContextStore
 from local_service.cohort_store import CohortStore
 from local_service.phenotype_store import PhenotypeStore
 from local_service.wgs_review import WgsPrefilterOptions, WgsReviewStore
@@ -44,13 +46,14 @@ ANNOTATION_SOURCE_PATHS = {
     "spliceai": ("plugins", "SpliceAI"),
     "repeatmasker": ("custom_tracks", "RepeatMasker"),
     "segdup": ("custom_tracks", "SegDup"),
-    "promoterai": ("custom_tracks", "promoterAI"),
-    "cadd_wgs": ("custom_tracks", "CADD_WGS"),
-    "logofunc": ("custom_tracks", "LoGoFunc"),
+    "promoterai": ("plugins", "PromoterAI"),
+    "cadd_wgs": ("plugins", "CADD_WGS"),
+    "logofunc": ("plugins", "LoGoFunc"),
     "clinvar": ("custom_tracks", "ClinVar"),
     "loftee_ptc_50bp": ("post_processing", "loftee_ptc_50bp"),
     "clinvar_aa_match": ("post_processing", "clinvar_aa_match"),
     "liftover": ("liftover", "grch37_to_grch38"),
+    "ccre": ("wgs_review", "ccre"),
 }
 REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp"}
 DBNSFP_OPTIONAL_PREDICTORS = [
@@ -145,36 +148,46 @@ ANNOTATION_SOURCE_SETUP = {
         ],
     },
     "promoterai": {
-        "setup_mode": "manual",
+        "setup_mode": "prepare",
+        "prepare_id": "promoterai",
         "reference_url": "https://github.com/Illumina/PromoterAI",
-        "reference_label": "Illumina promoterAI",
-        "size_hint": "licensed bring-your-own track",
+        "reference_label": "Illumina PromoterAI access information",
+        "size_hint": "licensed files; one-time local preparation",
         "instructions": [
-            "Obtain the promoterAI score resource under its applicable license.",
-            "Prepare a coordinate-sorted GRCh38 VCF with a promoterAI INFO field.",
-            "BGZF-compress and tabix-index it at references/custom/promoterAI_tss500.vcf.gz.",
-            "promoterAI is offered only in the whole-genome annotation profile.",
+            "Request PromoterAI access from Illumina and obtain tss.tsv plus promoterAI_tss500.tsv.gz.",
+            "Keep both licensed files in one local folder; this software does not upload, redistribute, or copy them into its repository.",
+            "Enter that folder below and select Prepare local files. Basic schema, coordinate, allele, and score checks run automatically.",
+            "The local preparation collapses transcripts sharing a TSS, BGZF-compresses and indexes the score table, and records source and derived-file checksums.",
+            "PromoterAI can be enabled only for whole-genome annotation; it is intentionally unavailable for Exome region only.",
         ],
     },
     "cadd_wgs": {
-        "setup_mode": "manual",
-        "reference_url": "https://cadd.gs.washington.edu/download",
+        "setup_mode": "download",
+        "download_id": "cadd_wgs",
+        "reference_url": "https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/",
         "reference_label": "CADD v1.7 downloads",
-        "size_hint": "large whole-genome SNV and indel resource",
+        "size_hint": "about 83 GiB; resumable; non-commercial use",
         "instructions": [
-            "Download the CADD v1.7 GRCh38 whole-genome SNV and indel scores separately.",
-            "Combine or convert them to the configured coordinate-sorted VCF representation.",
-            "BGZF-compress and tabix-index the configured CADD_WGS file.",
-            "This workbench does not download CADD automatically.",
+            "Select Download / resume to fetch only the official v1.7 GRCh38 score-only SNV and gnomAD genomes r4.0 indel tables.",
+            "The downloader also fetches the official tabix indexes and MD5 files, resumes interrupted ranges, and verifies every payload before installation.",
+            "The 625 GB and 11 GB inclAnno tables, 335 GB release bundle, and unrelated dbscSNV data are deliberately not downloaded because the VEP CADD plugin cannot emit their extra columns.",
+            "CADD is available for non-commercial use; review the official terms before enabling it.",
+            "The indel table is limited to precomputed gnomAD r4.0 indels. Missing scores remain missing and are conservatively retained.",
         ],
     },
     "logofunc": {
-        "setup_mode": "deferred",
-        "reference_url": "",
-        "reference_label": "",
-        "size_hint": "",
+        "setup_mode": "prepare",
+        "download_id": "logofunc",
+        "prepare_id": "logofunc",
+        "reference_url": "https://zenodo.org/records/13835271",
+        "reference_label": "LoGoFunc Zenodo record 13835271",
+        "size_hint": "3.66 GB plus tabix index; GRCh38 canonical missense SNVs",
         "instructions": [
-            "LoGoFunc setup is intentionally deferred in this release.",
+            "Select Download / resume to fetch the pinned Zenodo table and index, or enter an existing file/folder below.",
+            "The existing-file option validates checksums and creates ignored local links; it does not copy or upload the multi-gigabyte source.",
+            "Annotation requires an exact allele, Ensembl transcript, residue position, and amino-acid substitution match.",
+            "The source description states academic use only; commercial users should contact the corresponding author.",
+            "LoGoFunc predicts missense mechanism and does not replace LOFTEE or clinical variant classification.",
         ],
     },
     "clinvar": {
@@ -224,11 +237,29 @@ ANNOTATION_SOURCE_SETUP = {
             "Re-alignment and re-calling on GRCh38 remains preferable when source reads are available.",
         ],
     },
+    "ccre": {
+        "setup_mode": "download",
+        "download_id": "ccre",
+        "reference_url": "https://downloads.wenglab.org/Registry-V4/GRCh38-cCREs.bed",
+        "reference_label": "ENCODE SCREEN Registry V4 GRCh38 cCRE BED",
+        "size_hint": "approximately 30 MB after preparation",
+        "instructions": [
+            "Select Download to install the public SCREEN Registry V4 GRCh38 cCRE regions.",
+            "The software retains primary contigs, cCRE accessions, and overall cCRE classes, then creates a BGZF/tabix BED.",
+            "It also derives a compact gene-level TSS table from the release-matched Ensembl GTF for local +/-500 kb context.",
+            "This BED is used by the local WGS import filter; it is not added as a VEP transcript annotation.",
+            "Nearby genes are proximity context only; the nearest or VEP-annotated gene is not necessarily regulated by the cCRE.",
+            "The exact release is pinned so an upstream SCREEN update cannot silently change an existing import.",
+        ],
+    },
 }
 RESOURCE_DOWNLOAD_COMMANDS = {
     "spliceai": ("scripts/download_references.sh", "--only", "spliceai"),
+    "cadd_wgs": ("scripts/download_cadd_wgs.sh",),
     "clinvar": ("scripts/fetch_clinvar.sh",),
     "liftover": ("scripts/download_references.sh", "--only", "liftover"),
+    "logofunc": ("scripts/download_logofunc.sh",),
+    "ccre": ("scripts/download_references.sh", "--only", "ccre"),
 }
 
 
@@ -397,6 +428,7 @@ class AnnotationJobService:
             enable_auto_index=True,
         )
         self.wgs_review = WgsReviewStore(self.state_dir, self.cohort)
+        self.ccre_context_store = CcreContextStore(self.cohort.hts_backend)
         self._wgs_review_files: dict[str, Path] = {}
         self._wgs_review_jobs: dict[str, dict] = {}
         self._wgs_review_threads: dict[str, threading.Thread] = {}
@@ -482,6 +514,58 @@ class AnnotationJobService:
     def start_resource_download(self, resource_id: str) -> dict:
         if resource_id not in RESOURCE_DOWNLOAD_COMMANDS:
             raise ValueError(f"resource cannot be downloaded from the UI: {resource_id}")
+        specification = RESOURCE_DOWNLOAD_COMMANDS[resource_id]
+        config_path = self.pipeline_root / "config" / "annotation.config.yaml"
+        command = [
+            "bash",
+            str(self.pipeline_root / specification[0]),
+            str(config_path),
+            *specification[1:],
+        ]
+        return self._start_resource_job(resource_id, command, "download")
+
+    def start_promoterai_preparation(self, payload: dict) -> dict:
+        source_value = payload.get("source_dir") if isinstance(payload, dict) else None
+        if not isinstance(source_value, str) or not source_value.strip():
+            raise ValueError("select the local folder containing the two Illumina PromoterAI files")
+        source_dir = Path(source_value).expanduser().resolve()
+        if not source_dir.is_dir():
+            raise ValueError(f"PromoterAI source folder does not exist: {source_dir}")
+        required_files = [
+            source_dir / "tss.tsv",
+            source_dir / "promoterAI_tss500.tsv.gz",
+        ]
+        missing = [str(path) for path in required_files if not path.is_file() or path.stat().st_size == 0]
+        if missing:
+            raise ValueError("PromoterAI source folder is missing: " + ", ".join(missing))
+        config_path = self.pipeline_root / "config" / "annotation.config.yaml"
+        command = [
+            "bash",
+            str(self.pipeline_root / "scripts" / "prepare_promoterai.sh"),
+            str(source_dir),
+            str(config_path),
+        ]
+        return self._start_resource_job("promoterai", command, "preparation")
+
+    def start_logofunc_preparation(self, payload: dict) -> dict:
+        source_value = payload.get("source_path") if isinstance(payload, dict) else None
+        if not isinstance(source_value, str) or not source_value.strip():
+            raise ValueError("select the downloaded LoGoFunc file or its containing folder")
+        source_path = Path(source_value).expanduser().resolve()
+        if not source_path.exists():
+            raise ValueError(f"LoGoFunc source does not exist: {source_path}")
+        config_path = self.pipeline_root / "config" / "annotation.config.yaml"
+        command = [
+            "bash",
+            str(self.pipeline_root / "scripts" / "prepare_logofunc.sh"),
+            str(source_path),
+            str(config_path),
+        ]
+        return self._start_resource_job("logofunc", command, "preparation")
+
+    def _start_resource_job(
+        self, resource_id: str, command: list[str], operation: str
+    ) -> dict:
         with self._resource_lock:
             for job in self._resource_jobs.values():
                 if (
@@ -502,6 +586,8 @@ class AnnotationJobService:
                 "exit_code": None,
                 "error": "",
                 "log_path": str(self.resource_logs_dir / f"{job_id}.log"),
+                "operation": operation,
+                "_command": command,
             }
             self._resource_jobs[job_id] = job
             thread = threading.Thread(
@@ -517,6 +603,7 @@ class AnnotationJobService:
     @staticmethod
     def _resource_job_copy(job: dict) -> dict:
         result = dict(job)
+        result.pop("_command", None)
         path = Path(result["log_path"])
         if path.exists():
             with path.open("rb") as handle:
@@ -540,19 +627,13 @@ class AnnotationJobService:
             if not job:
                 return
             resource_id = job["resource_id"]
-        specification = RESOURCE_DOWNLOAD_COMMANDS[resource_id]
-        config_path = self.pipeline_root / "config" / "annotation.config.yaml"
-        command = [
-            "bash",
-            str(self.pipeline_root / specification[0]),
-            str(config_path),
-            *specification[1:],
-        ]
+            command = list(job["_command"])
+            operation = job.get("operation", "download")
         self._update_resource_job(
             job_id,
             status="running",
             started_at=utc_now(),
-            message="Starting download…",
+            message=f"Starting {operation}…",
         )
         log_path = self.resource_logs_dir / f"{job_id}.log"
         exit_code = 1
@@ -590,7 +671,7 @@ class AnnotationJobService:
                 job_id,
                 status="succeeded",
                 progress=100.0,
-                message="Download complete.",
+                message=f"{operation.capitalize()} complete.",
                 finished_at=utc_now(),
                 exit_code=0,
                 error="",
@@ -599,7 +680,7 @@ class AnnotationJobService:
             self._update_resource_job(
                 job_id,
                 status="failed",
-                message=last_line or "Download failed.",
+                message=last_line or f"{operation.capitalize()} failed.",
                 finished_at=utc_now(),
                 exit_code=exit_code,
                 error=str(exc),
@@ -645,13 +726,6 @@ class AnnotationJobService:
         )
         config_path = Path(config_value).expanduser().resolve()
         config = self._load_config(config_path)
-        gtf_value = (
-            ((config.get("post_processing") or {}).get("loftee_ptc_50bp") or {})
-            .get("gtf")
-        )
-        gtf_path = self._resolved_reference_path(gtf_value) if gtf_value else None
-        if options.genes and gtf_path is None:
-            raise ValueError("the annotation config does not define a GRCh38 GTF")
         region = config.get("region") or {}
         exome_bed_value = region.get("custom_bed") or region.get("bed")
         exome_bed_path = self._resolved_reference_path(exome_bed_value)
@@ -660,11 +734,18 @@ class AnnotationJobService:
                 "the annotation config must provide an existing GRCh38 "
                 "coding+splice BED so exome-region variants can be retained"
             )
+        ccre = ((config.get("wgs_review") or {}).get("ccre") or {})
+        ccre_bed_path = self._resolved_reference_path(ccre.get("bed"))
+        promoterai = ((config.get("plugins") or {}).get("PromoterAI") or {})
+        promoter_map_path = self._resolved_reference_path(
+            promoterai.get("transcript_map")
+        )
         result = self.wgs_review.prefilter(
             source,
             options,
-            gtf_path or self.pipeline_root / "references" / "regions" / "unused.gtf",
             exome_bed_path,
+            ccre_bed_path,
+            promoter_map_path,
             progress,
         )
         review_id = uuid.uuid4().hex
@@ -678,6 +759,97 @@ class AnnotationJobService:
             "id": review_id,
             "filename": output_path.name,
         }
+
+    def ccre_context(self, payload: dict) -> dict:
+        """Return local SCREEN overlap and Ensembl TSS proximity context."""
+        config_value = payload.get("config_path") or (
+            self.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        config_path = Path(config_value).expanduser().resolve()
+        config = self._load_config(config_path)
+        review = config.get("wgs_review") or {}
+        ccre = review.get("ccre") or {}
+        gene_tss = review.get("gene_tss") or {}
+        try:
+            pos = int(payload.get("pos"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("pos must be a positive integer") from exc
+        try:
+            window_bp = int(gene_tss.get("window_bp") or 500_000)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("wgs_review.gene_tss.window_bp must be an integer") from exc
+        if window_bp < 1 or window_bp > 2_000_000:
+            raise ValueError("wgs_review.gene_tss.window_bp must be 1-2000000")
+        release = str(
+            gene_tss.get("ensembl_release")
+            or (config.get("container") or {}).get("vep_image_tag")
+            or ""
+        )
+        release_match = re.search(r"(\d+)", release)
+        release_label = release_match.group(1) if release_match else release
+        try:
+            return self.ccre_context_store.query(
+                chrom=str(payload.get("chrom") or ""),
+                pos=pos,
+                ref=str(payload.get("ref") or ""),
+                alt=str(payload.get("alt") or ""),
+                ccre_path=self._resolved_reference_path(ccre.get("bed")),
+                gene_tss_path=self._resolved_reference_path(gene_tss.get("path")),
+                resource_version=str(ccre.get("version") or "SCREEN cCRE"),
+                gene_source=(
+                    f"Ensembl release {release_label} gene-level TSS"
+                    if release_label else "release-matched Ensembl gene-level TSS"
+                ),
+                window_bp=window_bp,
+            )
+        except OSError as exc:
+            raise ValueError(f"cCRE context resource could not be read: {exc}") from exc
+
+    def start_cohort_import(self, payload: dict) -> dict:
+        """Start a full or conservatively prefiltered cohort import."""
+        paths = payload.get("paths")
+        if not isinstance(paths, list):
+            raise ValueError("paths must be a list of VCF files or directories")
+        profile = str(payload.get("import_profile") or "full")
+        if profile not in {"full", "prefiltered"}:
+            raise ValueError("import_profile must be 'full' or 'prefiltered'")
+        filters = payload.get("filters") or {}
+        if not isinstance(filters, dict):
+            raise ValueError("filters must be an object")
+        normalized_filters = (
+            json.loads(json.dumps(asdict(WgsPrefilterOptions.from_payload(filters))))
+            if profile == "prefiltered" else {}
+        )
+
+        prefilter = None
+        if profile == "prefiltered":
+            config_path = payload.get("config_path")
+
+            def prefilter_source(
+                source: Path, progress: Callable[[dict], None]
+            ) -> tuple[Path, dict]:
+                request = {
+                    "path": str(source),
+                    "filters": normalized_filters,
+                }
+                if config_path:
+                    request["config_path"] = config_path
+                result = self.prefilter_wgs_review(request, progress=progress)
+                return self.wgs_review_file(result["id"]), result
+
+            prefilter = prefilter_source
+
+        return self.cohort.start_import_paths(
+            paths,
+            recursive=bool(payload.get("recursive", True)),
+            force=bool(payload.get("force", False)),
+            allow_unknown_assembly=bool(
+                payload.get("allow_unknown_assembly", False)
+            ),
+            import_profile=profile,
+            prefilter_options=normalized_filters,
+            prefilter=prefilter,
+        )
 
     def start_wgs_review(self, payload: dict) -> dict:
         """Run indexed WGS preparation in the background for progress polling."""
@@ -1021,12 +1193,13 @@ class AnnotationJobService:
             "repeatmasker": ("RepeatMasker", "Repeat-region overlap flag"),
             "segdup": ("Segmental duplications", "SegDup overlap flag"),
             "promoterai": ("promoterAI", "Optional licensed promoter score track"),
-            "cadd_wgs": ("CADD v1.7 whole genome", "Precomputed genome-wide SNV and indel scores"),
+            "cadd_wgs": ("CADD whole genome", "Precomputed genome-wide SNV and indel scores"),
             "logofunc": ("LoGoFunc", "Optional functional-mechanism predictions"),
             "clinvar": ("ClinVar", "Clinical assertions; refreshed per run by default"),
             "loftee_ptc_50bp": ("Frameshift PTC 50-bp rule", "Pipeline recomputation using local GTF and FASTA"),
             "clinvar_aa_match": ("ClinVar residue match", "Known pathogenic missense at the same amino-acid residue"),
             "liftover": ("hg19 input bundle", "Assembly-gap-aware conversion to canonical GRCh38"),
+            "ccre": ("ENCODE cCRE regions", "Native SCREEN region filter for whole-genome import"),
         }
         try:
             config = self._load_config(config_path)
@@ -1051,6 +1224,16 @@ class AnnotationJobService:
                 ]
             elif source_id == "spliceai":
                 values = [block.get("snv")]
+            elif source_id == "promoterai":
+                values = [
+                    block.get("file"),
+                    block.get("transcript_map"),
+                    block.get("manifest"),
+                ]
+            elif source_id == "cadd_wgs":
+                values = [block.get("snv"), block.get("indels")]
+            elif source_id == "logofunc":
+                values = [block.get("file"), block.get("manifest")]
             elif source_id == "loftee_ptc_50bp":
                 values = [
                     block.get("gtf"),
@@ -1060,6 +1243,11 @@ class AnnotationJobService:
                 values = []
             elif source_id == "liftover":
                 values = [block.get("source_fasta"), block.get("chain")]
+            elif source_id == "ccre":
+                values = [
+                    block.get("bed"),
+                    ((config.get("wgs_review") or {}).get("gene_tss") or {}).get("path"),
+                ]
             else:
                 values = [block.get("file")]
             return [
@@ -1082,8 +1270,27 @@ class AnnotationJobService:
                 (config.get("clinvar") or {}).get("auto_fetch", True)
             )
             installed = not paths or all(path.exists() for path in paths)
+            if source_id == "ccre" and not paths:
+                installed = False
+            if installed and source_id == "promoterai" and paths:
+                score_path = paths[0]
+                installed = (
+                    score_path.exists()
+                    and (
+                        Path(str(score_path) + ".tbi").exists()
+                        or Path(str(score_path) + ".csi").exists()
+                    )
+                    and all(path.exists() for path in paths[1:])
+                )
+            if installed and source_id == "logofunc" and paths:
+                score_path = paths[0]
+                installed = (
+                    score_path.exists()
+                    and Path(str(score_path) + ".tbi").exists()
+                    and all(path.exists() for path in paths[1:])
+                )
             if installed and source_id in {
-                "dbnsfp", "spliceai", "repeatmasker", "segdup", "clinvar"
+                "dbnsfp", "spliceai", "cadd_wgs", "repeatmasker", "segdup", "clinvar"
             }:
                 installed = all(
                     path.exists()
@@ -1093,6 +1300,16 @@ class AnnotationJobService:
                         or Path(str(path) + ".csi").exists()
                     )
                     for path in paths
+                )
+            if installed and source_id == "ccre" and paths:
+                bed_path = paths[0]
+                installed = (
+                    bed_path.exists()
+                    and (
+                        Path(str(bed_path) + ".tbi").exists()
+                        or Path(str(bed_path) + ".csi").exists()
+                    )
+                    and all(path.exists() for path in paths[1:])
                 )
             if installed and source_id == "liftover" and paths:
                 source_fasta = paths[0]
@@ -1107,7 +1324,7 @@ class AnnotationJobService:
             setup = ANNOTATION_SOURCE_SETUP[source_id]
             available_in = (
                 ["whole_genome"]
-                if source_id in {"promoterai", "cadd_wgs"}
+                if source_id in {"promoterai", "cadd_wgs", "ccre"}
                 else ["exome", "whole_genome"]
             )
             sources.append({
@@ -1200,7 +1417,7 @@ class AnnotationJobService:
             raise ValueError("analysis_scope must be exome or whole_genome")
         if analysis_scope == "exome":
             unavailable = [
-                source_id for source_id in ("promoterai", "cadd_wgs")
+                source_id for source_id in ("promoterai", "cadd_wgs", "ccre")
                 if options.get(source_id) is True
             ]
             if unavailable:
@@ -1208,7 +1425,7 @@ class AnnotationJobService:
                     "annotation source is available only for whole-genome analysis: "
                     + ", ".join(unavailable)
                 )
-            for source_id in ("promoterai", "cadd_wgs"):
+            for source_id in ("promoterai", "cadd_wgs", "ccre"):
                 location = ANNOTATION_SOURCE_PATHS[source_id]
                 config.setdefault(location[0], {}).setdefault(
                     location[1], {}
@@ -1226,7 +1443,7 @@ class AnnotationJobService:
             block = parent.setdefault(location[1], {})
             block["enabled"] = bool(options[source_id]) and (
                 analysis_scope == "whole_genome"
-                or source_id not in {"promoterai", "cadd_wgs"}
+                or source_id not in {"promoterai", "cadd_wgs", "ccre"}
             )
         if "fork" in options:
             try:
@@ -1537,6 +1754,11 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json({"jobs": self.service.resource_downloads()})
         elif path == "/api/cohort/stats":
             self._json(self.service.cohort.stats())
+        elif path == "/api/cohort/samples":
+            self._json({"samples": self.service.cohort.list_samples(
+                query=(query.get("query") or [""])[0],
+                limit=int((query.get("limit") or ["500"])[0]),
+            )})
         elif path.startswith("/api/cohort/import-jobs/"):
             job_id = path.removeprefix("/api/cohort/import-jobs/")
             job = self.service.cohort.get_import_job(job_id)
@@ -1629,12 +1851,27 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.ACCEPTED,
                 )
                 return
+            if path == "/api/ccre-context":
+                self._json(self.service.ccre_context(self._body()))
+                return
             if path.startswith("/api/resource-downloads/"):
                 resource_id = unquote(
                     path.removeprefix("/api/resource-downloads/")
                 )
                 self._json(
                     self.service.start_resource_download(resource_id),
+                    HTTPStatus.ACCEPTED,
+                )
+                return
+            if path == "/api/resource-preparations/promoterai":
+                self._json(
+                    self.service.start_promoterai_preparation(self._body()),
+                    HTTPStatus.ACCEPTED,
+                )
+                return
+            if path == "/api/resource-preparations/logofunc":
+                self._json(
+                    self.service.start_logofunc_preparation(self._body()),
                     HTTPStatus.ACCEPTED,
                 )
                 return
@@ -1653,21 +1890,31 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 ))
                 return
             if path == "/api/cohort/import-jobs":
+                self._json(
+                    self.service.start_cohort_import(self._body()),
+                    HTTPStatus.ACCEPTED,
+                )
+                return
+            if path == "/api/cohort/samples/remove":
                 body = self._body()
-                paths = body.get("paths")
-                if not isinstance(paths, list):
-                    raise ValueError("paths must be a list of VCF files or directories")
-                self._json(self.service.cohort.start_import_paths(
-                    paths,
-                    recursive=bool(body.get("recursive", True)),
-                    force=bool(body.get("force", False)),
-                    allow_unknown_assembly=bool(
-                        body.get("allow_unknown_assembly", False)
-                    ),
-                ), HTTPStatus.ACCEPTED)
+                self._json(self.service.cohort.remove_samples(
+                    body.get("sample_ids")
+                ))
                 return
             if path == "/api/cohort/query":
                 self._json(self.service.cohort.query(self._body()))
+                return
+            if path == "/api/cohort/variant-detail":
+                body = self._body()
+                self._json(self.service.cohort.variant_detail(
+                    body.get("variant_key")
+                ))
+                return
+            if path == "/api/cohort/review-records":
+                body = self._body()
+                self._json(self.service.cohort.review_records(
+                    body.get("selections")
+                ))
                 return
             if path == "/api/phenotypes/preview":
                 self._json(self.service.phenotypes.preview(

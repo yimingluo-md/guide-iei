@@ -84,6 +84,7 @@ def validate_contract(expected: dict, config: dict) -> list[dict]:
     actual = {
         "assembly": (config.get("reference") or {}).get("assembly"),
         "dbNSFP": (((config.get("plugins") or {}).get("dbNSFP") or {}).get("version")),
+        "LoGoFunc": (((config.get("plugins") or {}).get("LoGoFunc") or {}).get("version")),
         "vep_image_tag": (config.get("container") or {}).get("vep_image_tag"),
     }
     results = []
@@ -144,6 +145,28 @@ def validate_variant(spec: dict, csq_fields: list[str], records: dict[str, dict]
         elif not any(entry.get(field) in set(map(str, allowed)) for entry in entries):
             observed = sorted({entry.get(field, "") for entry in entries})
             problems.append(f"{field} expected one of {allowed}; observed {observed}")
+
+    optional_field_in = spec.get("optional_field_in") or {}
+    if optional_field_in:
+        installed = [field for field in optional_field_in if field in csq_fields]
+        if not installed:
+            skips.append(
+                "none installed: " + ", ".join(optional_field_in)
+            )
+        else:
+            missing = [field for field in optional_field_in if field not in csq_fields]
+            if missing:
+                problems.append(
+                    "partially installed optional fields; absent: " + ", ".join(missing)
+                )
+            for field in installed:
+                allowed = set(map(str, optional_field_in[field]))
+                if not any(entry.get(field) in allowed for entry in entries):
+                    observed = sorted({entry.get(field, "") for entry in entries})
+                    problems.append(
+                        f"optional {field} expected one of "
+                        f"{optional_field_in[field]}; observed {observed}"
+                    )
 
     numeric = spec.get("any_numeric_field_at_least")
     if numeric:

@@ -8,7 +8,7 @@ import json
 import os
 from datetime import datetime, timezone
 
-from build_vep_command import load_config, resolve_config_paths
+from build_vep_command import load_config
 
 
 def file_metadata(path: str) -> dict:
@@ -48,6 +48,9 @@ def reference_paths(cfg: dict) -> list[str]:
         "dbNSFP": ("path",),
         "LoF": ("human_ancestor_fa", "conservation_file", "gerp_bigwig"),
         "SpliceAI": ("snv", "indel"),
+        "CADD_WGS": ("snv", "indels"),
+        "PromoterAI": ("file", "transcript_map", "manifest"),
+        "LoGoFunc": ("file", "manifest"),
     }.items():
         block = plugins.get(name, {}) or {}
         paths.extend(block.get(key) for key in keys)
@@ -68,7 +71,7 @@ def main() -> int:
     parser.add_argument("--clinvar-release", default="NA")
     args = parser.parse_args()
 
-    cfg = resolve_config_paths(load_config(args.config), args.base_dir)
+    cfg = load_config(args.config)
     plan = json.loads(args.plan_json)
     version_path = os.path.join(args.base_dir, "VERSION")
     manifest = {
@@ -80,7 +83,12 @@ def main() -> int:
         "container": {"runtime": args.runtime, "image": args.image, "identity": args.image_id},
         "clinvar_release": args.clinvar_release,
         "vep_argv": plan.get("argv", []),
-        "references": [file_metadata(path) for path in reference_paths(cfg)],
+        "references": [
+            file_metadata(
+                path if os.path.isabs(path) else os.path.join(args.base_dir, path)
+            )
+            for path in reference_paths(cfg)
+        ],
     }
     with open(args.output + ".run_manifest.json", "w") as out:
         json.dump(manifest, out, indent=2, sort_keys=True)

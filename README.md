@@ -160,7 +160,17 @@ bash scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir
 
 # Advisory only: report whether a newer academic dbNSFP release exists.
 python3 pipeline/check_dbnsfp_version.py --config config/annotation.config.yaml
-#    promoterAI / LoGoFunc: place manually, see docs/ANNOTATIONS.md
+
+# 2c. PromoterAI is licensed and is not downloaded or shipped. After obtaining
+#     tss.tsv + promoterAI_tss500.tsv.gz from Illumina, prepare them locally:
+bash scripts/prepare_promoterai.sh /path/to/PromoterAI
+#     The same preparation is available on the Annotation datasets screen.
+
+# 2d. Optional LoGoFunc missense-mechanism predictions can be downloaded from
+#     Zenodo in the Annotation datasets screen, or from the command line:
+bash scripts/download_logofunc.sh config/annotation.config.yaml
+#     If the 3.66 GB source is already present, validate/link it without copying:
+bash scripts/prepare_logofunc.sh /path/to/LoGoFunc
 
 # 3. annotate a single- or multi-sample VCF
 bash scripts/run_annotation.sh \
@@ -194,6 +204,19 @@ search**. Add directories of annotated single- or multi-sample VCFs once, then
 query every carrier of an exact variant/rsID or carriers of qualifying variants
 in a gene. The indexed variant, annotation, and non-reference genotype records
 stay in `~/.iei-variant-review/cohort.sqlite3`; raw VCF files remain in place.
+Clicking a result opens its stored annotation, transcript, genotype, source,
+and coordinate details. When carriers are sent into the main Review workspace,
+the service uses tabix to retrieve each exact record from the indexed prepared
+VCF and restores its complete populated INFO, VEP CSQ, and sample FORMAT
+evidence on demand. This keeps the SQLite index compact while retaining access
+to population frequencies and any other annotations present in the source.
+Carrier checkboxes can send selected samples, all shown samples, or every shown
+carrier of one variant into Review. If an indexed source has moved or been
+deleted, Review reports the source problem and uses the compact SQLite fields
+for that carrier instead.
+The sample manager removes exact sample/file entries, cascades their genotype
+rows, and reclaims variants with no remaining carriers. Reimporting the source
+VCF restores a removed sample.
 
 Cohort intake validates an existing `.tbi`/`.csi` for coordinate-sorted BGZF
 VCFs. A missing index, ordinary gzip stream, uncompressed VCF, or unsorted VCF
@@ -209,6 +232,19 @@ integer to tune the reader count. When native `bcftools`/`tabix` are absent,
 the workbench uses the configured Docker/Podman image; if neither backend is
 available, or a discovered runtime cannot complete preparation, it reports a
 warning and retains the serial staged-import fallback.
+
+Full cohort indexing remains the default and supports exhaustive exact searches
+over indexed PASS carrier calls. **Compact WGS** is an optional import profile:
+it runs the same four-reader candidate filter before SQLite staging. The
+default requires `gnomAD popmax <= 0.01` or an unavailable per-variant value,
+then retains the union of coding/essential-splice, qualifying SpliceAI,
+qualifying promoterAI, and ENCODE SCREEN cCRE-overlap routes. Users may replace
+the cCRE route with all noncoding regions or no additional noncoding regions.
+Missing score values do not satisfy a score route. The database records each
+source as Full or Compact, displays mixed
+profile provenance, and warns that an absent noncoding result is not exhaustive
+when any compact source is present. Import progress includes prefilter scanned
+and retained counts as well as staged PASS and carrier counts.
 
 The workbench includes compact, versioned gnomAD v4.1.1 gene-constraint and
 IUIS October 2024 IEI resources. It joins pLI/LOEUF and related gene metrics by
@@ -304,24 +340,53 @@ chromosome readers conservatively prefilter the indexed VCF before the reduced
 result is opened in the browser. The Import page polls this background task and
 shows live preparation, chromosome-filtering, merge, compression, and indexing
 progress with scanned/retained record counts. Every PASS variant overlapping
-the configured coding+splice BED is retained unconditionally, preserving the
-complete diagnostic exome subset. Outside that BED, defaults are gnomAD popmax `< 0.01`, SpliceAI
-`>= 0.5`, absolute promoterAI `>= 0.5`, and no CADD retention threshold. An
-optional gene list plus symmetric GTF window is an AND restriction. Frequency
-and gene restrictions are ANDed with the evidence group; enabled SpliceAI,
-promoterAI, and CADD thresholds are ORed. Missing annotation values are retained
-rather than treated as negative evidence. The indexed input and filtered result
+the configured coding+splice BED defines the exonic/essential-splice route.
+Defaults are gnomAD popmax `<= 0.01` (or unavailable), SpliceAI `>= 0.5`,
+absolute promoterAI score `>= 0.8`, and SCREEN Registry V4 cCRE overlap. PASS/QC
+and population frequency are global requirements; exonic/essential-splice,
+SpliceAI, promoterAI, and the selected noncoding region mode are OR routes. The
+noncoding region control offers cCRE overlap (default), all noncoding regions,
+or no additional noncoding regions. The last option still retains qualifying
+SpliceAI and promoterAI variants. CADD, other predictors, and gene lists are not
+used at import time. The indexed input and filtered result
 are fingerprinted and reused when the source and settings are unchanged. The
 review copy preserves every retained site but compacts redundant transcript
 annotations to MANE, then VEP PICK, then one fallback per allele/gene. The
 browser reads BGZF incrementally instead of materializing the complete
 decompressed WGS VCF as one large string.
+
+Precomputed SpliceAI MANE and promoterAI score tables may contain SNVs but no
+matching indel. To avoid silently discarding these unscored alleles, the compact
+WGS import also retains a sequence-resolved intronic indel with no SpliceAI
+score and a sequence-resolved promoter indel with no promoterAI score. Promoter
+overlap uses the installed Illumina TSS +/- 500 transcript map. These safety
+routes still require PASS/QC and the population-frequency rule, work even when
+the additional noncoding-region mode is `none`, and add the allele-specific
+`IEI_UNSCORED_INDEL` INFO flag for review. A populated score below its threshold
+does not use this exception. The corresponding predictor field must be declared
+in the VCF schema, so a wholly absent annotation dataset does not activate the
+missing-indel route.
+
+The variant detail screen also queries the installed SCREEN Registry directly
+for every opened GRCh38 allele. It reports cCRE overlap or an explicit verified
+non-overlap. Each overlapping cCRE includes its EH38E accession, overall class,
+and the complete release-matched Ensembl gene-TSS context within +/-500 kb with
+strand-aware distance. The review table shows protein-coding genes by default
+and offers an **Include non-protein-coding genes** control without discarding
+them from the underlying result. This is proximity context only: the nearest or
+VEP-annotated gene is not necessarily regulated by the cCRE, and the software
+does not present these genes as predicted targets.
 For multi-gigabyte inputs, enter the existing absolute workstation path in the
 WGS review panel to avoid making an additional browser-upload copy.
 
-promoterAI and the optional full CADD v1.7 whole-genome track are exposed only
-for WGS jobs. Both are bring-your-own resources; the software does not download
-the CADD dataset.
+PromoterAI and the optional full CADD v1.7 whole-genome scores are exposed only
+for WGS jobs. The local UI prepares the two licensed Illumina PromoterAI files
+into a compact transcript-aware indexed dataset; it neither downloads nor
+redistributes them. CADD can be downloaded/resumed from the dataset setup
+screen. That action fetches only the official score-only SNV and gnomAD r4.0
+indel tables, indexes, and MD5 files (about 83 GiB), verifies them, and uses the
+standard VEP CADD plugin directly. It never downloads the much larger
+`inclAnno` tables or creates a duplicate combined VCF.
 
 **Targeted panels / custom exome capture:** point `region.custom_bed` at your
 own BED (gene panel, capture kit) and it is used verbatim instead of the
@@ -390,12 +455,13 @@ small public regression panel:
 bash scripts/run_annotation_regression.sh
 ```
 
-It annotates five public GRCh38 ClinVar controls (NCSTN frameshift, STAT3
-missense, IL2RG splice donor, IL2RG stop-gained, and a TERT promoter variant),
+It annotates eight public GRCh38 controls (three known LoGoFunc OR4F5 missense
+alleles, NCSTN frameshift, STAT3 missense, IL2RG splice donor, IL2RG
+stop-gained, and a TERT promoter variant),
 then asserts the PTC-based LOFTEE 50-bp correction, LOFTEE, AlphaMissense,
 CADD, SpliceAI, ClinVar, and ClinVar amino-acid matching.
-promoterAI is tested when its licensed track is installed and reported as an
-explicit `SKIP` otherwise. The input contains one synthetic sample named
+LoGoFunc and promoterAI are tested when their optional local tracks are
+installed and reported as explicit `SKIP`s otherwise. The input contains one synthetic sample named
 `REGRESSION`; it contains no patient data.
 
 ## Output

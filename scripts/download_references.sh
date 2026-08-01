@@ -9,17 +9,20 @@
 #   * SpliceAI masked MANE SNVs (Ensembl) ~27 GB  (bgzipped VCF + tabix index)
 #   * RepeatMasker (UCSC hg38, cleaned)   ~50 MB  (chr-stripped, bgzipped, tabix'd BED)
 #   * SegDup / genomicSuperDups (UCSC)    ~2 MB   (chr-stripped, bgzipped, tabix'd BED)
+#   * ENCODE SCREEN cCRE Registry V4      ~30 MB  (cleaned GRCh38 BED + tabix)
 #   * hg19 primary FASTA + hg19->hg38 chain ~1 GB (GRCh37 VCF intake only)
 #
 # Does NOT fetch (you supply these):
 #   * dbNSFP  (~50 GB; CADD/REVEL/AlphaMissense/SIFT/PolyPhen/... in one file)
 #             NOT auto-downloadable: academic registration -> emailed access code ->
 #             request links. See the printed instructions below + scripts/prepare_dbnsfp.sh.
-#   * promoterAI, LoGoFunc  (Illumina license form / lab track)          -> bring-your-own-custom
+#   * PromoterAI (Illumina licensed files; prepare with scripts/prepare_promoterai.sh)
+#   * LoGoFunc   (public optional 3.66 GB table; use scripts/download_logofunc.sh)
+#   * CADD WGS   (public optional score-only tables; use scripts/download_cadd_wgs.sh)
 #   * ClinVar               (fetched per-run by fetch_clinvar.sh)
 #
 # Usage:
-#   scripts/download_references.sh [config.yaml] [--only vep_cache,fasta,loftee,spliceai,repeatmasker,segdup,liftover]
+#   scripts/download_references.sh [config.yaml] [--only vep_cache,fasta,loftee,spliceai,repeatmasker,segdup,ccre,liftover]
 #
 # Idempotent: existing non-empty files are skipped. Re-run to resume.
 # =============================================================================
@@ -72,6 +75,18 @@ LIFTOVER_CHAIN=""
 LIFTOVER_SOURCE_FASTA_RAW="$(yaml_get "$CONFIG" liftover.grch37_to_grch38.source_fasta)"
 LIFTOVER_SOURCE_FASTA=""
 [[ -z "$LIFTOVER_SOURCE_FASTA_RAW" ]] || LIFTOVER_SOURCE_FASTA="$(absdir "$LIFTOVER_SOURCE_FASTA_RAW")"
+CCRE_PATH_RAW="$(yaml_get "$CONFIG" wgs_review.ccre.bed)"
+CCRE_PATH=""
+[[ -z "$CCRE_PATH_RAW" ]] || CCRE_PATH="$(absdir "$CCRE_PATH_RAW")"
+CCRE_SOURCE_URL="$(yaml_get "$CONFIG" wgs_review.ccre.source_url)"
+GENE_TSS_PATH_RAW="$(yaml_get "$CONFIG" wgs_review.gene_tss.path)"
+GENE_TSS_PATH=""
+[[ -z "$GENE_TSS_PATH_RAW" ]] || GENE_TSS_PATH="$(absdir "$GENE_TSS_PATH_RAW")"
+GENE_TSS_GTF_RAW="$(yaml_get "$CONFIG" wgs_review.gene_tss.gtf)"
+GENE_TSS_GTF=""
+[[ -z "$GENE_TSS_GTF_RAW" ]] || GENE_TSS_GTF="$(absdir "$GENE_TSS_GTF_RAW")"
+GENE_TSS_RELEASE="$(yaml_get "$CONFIG" wgs_review.gene_tss.ensembl_release)"
+GENE_TSS_RELEASE="${GENE_TSS_RELEASE:-$VEP_REL}"
 
 # ============================================================================ #
 # 1. VEP offline cache
@@ -225,7 +240,70 @@ if want segdup; then
 fi
 
 # ============================================================================ #
-# 6. GRCh37/hg19 source FASTA + GRCh38 UCSC chain
+# 6. ENCODE SCREEN Registry V4 cCREs — native WGS-review BED
+# ----------------------------------------------------------------------------
+# The official BED is GRCh38 with chr-prefixed contigs and six columns:
+# chrom, start, end, SCREEN/DCC accession, cCRE accession, cCRE class. The
+# review importer needs only the intervals, but retains accession and class so
+# the prepared resource can support richer display without another download.
+# ============================================================================ #
+if want ccre; then
+    log "=== ENCODE SCREEN cCREs (Registry V4, GRCh38) ==="
+    [[ "$ASSEMBLY" == "GRCh38" ]] \
+        || die "the bundled SCREEN cCRE resource is GRCh38-only; assembly is $ASSEMBLY"
+    [[ -n "$CCRE_PATH" ]] || die "wgs_review.ccre.bed is not configured"
+    [[ -n "$CCRE_SOURCE_URL" ]] || die "wgs_review.ccre.source_url is not configured"
+    mkdir -p "$(dirname "$CCRE_PATH")"
+    if [[ -s "$CCRE_PATH" && ( -s "${CCRE_PATH}.tbi" || -s "${CCRE_PATH}.csi" ) ]]; then
+        log "SCREEN cCRE BED and index present, skip."
+    else
+        RAW="${CCRE_PATH%.bed.gz}.official.bed"
+        CLEAN="${CCRE_PATH%.gz}"
+        fetch "$CCRE_SOURCE_URL" "$RAW" || die "SCREEN Registry V4 download failed"
+        log "normalizing SCREEN cCRE contigs and validating interval rows"
+        awk -v FS='\t' -v OFS='\t' '
+          NF >= 6 {
+            chr=$1; sub(/^chr/, "", chr); if (chr=="M") chr="MT"
+            if (chr !~ /^([1-9]|1[0-9]|2[0-2]|X|Y|MT)$/) next
+            if ($2 !~ /^[0-9]+$/ || $3 !~ /^[0-9]+$/ || $3 <= $2) next
+            if ($5 !~ /^EH38E[0-9]+$/ || $6 == "") next
+            print chr, $2, $3, $5, $6
+          }
+        ' "$RAW" | sort -k1,1 -k2,2n -k3,3n > "$CLEAN"
+        CCRE_ROWS="$(wc -l < "$CLEAN" | tr -d ' ')"
+        [[ "$CCRE_ROWS" -ge 100000 ]] \
+            || die "SCREEN cCRE cleaning retained only $CCRE_ROWS rows; refusing incomplete resource"
+        ( cd "$(dirname "$CCRE_PATH")" && hts bgzip -f "$(basename "$CLEAN")" )
+        ( cd "$(dirname "$CCRE_PATH")" && hts tabix -f -p bed "$(basename "$CCRE_PATH")" )
+        rm -f "$RAW"
+        log "wrote $CCRE_ROWS SCREEN cCRE intervals"
+    fi
+    (
+      cd "$(dirname "$CCRE_PATH")"
+      shasum -a 256 "$(basename "$CCRE_PATH")" \
+        > "$(basename "$CCRE_PATH").sha256.local"
+    )
+    [[ -n "$GENE_TSS_PATH" ]] || die "wgs_review.gene_tss.path is not configured"
+    [[ -n "$GENE_TSS_GTF" ]] || die "wgs_review.gene_tss.gtf is not configured"
+    if [[ ! -s "$GENE_TSS_GTF" ]]; then
+        mkdir -p "$(dirname "$GENE_TSS_GTF")"
+        GENE_TSS_GTF_URL="https://ftp.ensembl.org/pub/release-${GENE_TSS_RELEASE}/gtf/homo_sapiens/Homo_sapiens.${ASSEMBLY}.${GENE_TSS_RELEASE}.gtf.gz"
+        fetch "$GENE_TSS_GTF_URL" "$GENE_TSS_GTF" \
+            || die "release-matched Ensembl GTF download failed"
+    fi
+    if [[ ! -s "$GENE_TSS_PATH" || "$GENE_TSS_GTF" -nt "$GENE_TSS_PATH" ]]; then
+        log "building release-matched Ensembl gene-level TSS context"
+        python3 "${ROOT}/pipeline/build_gene_tss.py" \
+          --gtf "$GENE_TSS_GTF" --output "$GENE_TSS_PATH" \
+          --assembly "$ASSEMBLY" --release "$GENE_TSS_RELEASE" \
+          || die "Ensembl gene TSS preparation failed"
+    else
+        log "Ensembl gene TSS context present, skip."
+    fi
+fi
+
+# ============================================================================ #
+# 7. GRCh37/hg19 source FASTA + GRCh38 UCSC chain
 # ============================================================================ #
 if want liftover; then
     log "=== GRCh37/hg19 -> GRCh38 liftover reference bundle ==="
@@ -315,5 +393,6 @@ python3 "${ROOT}/pipeline/check_dbnsfp_version.py" --config "$CONFIG" \
     || warn "dbNSFP update check could not be completed"
 
 log "download_references.sh done. Review WARNs above for sources needing manual fetch."
-log "Still to supply manually: dbNSFP (scripts/prepare_dbnsfp.sh), promoterAI, LoGoFunc."
+log "Still to supply manually: dbNSFP and PromoterAI (scripts/prepare_promoterai.sh)."
+log "Optional LoGoFunc: scripts/download_logofunc.sh or use the dataset setup UI."
 log "Run scripts/fetch_clinvar.sh (or the main run script) to get ClinVar."

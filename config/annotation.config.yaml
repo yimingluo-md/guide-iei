@@ -98,6 +98,29 @@ region:
   custom_bed: ""
 
 # -----------------------------------------------------------------------------
+# Whole-genome review resources
+# -----------------------------------------------------------------------------
+# SCREEN cCREs are intersected as a native BED during local WGS import. They
+# are not added to VEP CSQ annotations. Registry V4 is pinned so an upstream
+# SCREEN update cannot silently change which variants enter a review dataset.
+wgs_review:
+  ccre:
+    enabled: true
+    version: "SCREEN Registry V4"
+    bed: "references/regions/screen.registry-v4.GRCh38.ccre.bed.gz"
+    source_url: "https://downloads.wenglab.org/Registry-V4/GRCh38-cCREs.bed"
+    assembly: GRCh38
+  # Compact gene-level TSS context is derived automatically from the same
+  # release-matched Ensembl GTF used by the pipeline. It is regional context,
+  # never a cCRE target-gene prediction.
+  gene_tss:
+    path: "references/regions/Homo_sapiens.GRCh38.113.gene_tss.tsv"
+    gtf: "references/regions/Homo_sapiens.GRCh38.113.gtf.gz"
+    ensembl_release: "113"
+    assembly: GRCh38
+    window_bp: 500000
+
+# -----------------------------------------------------------------------------
 # Run / performance / output
 # -----------------------------------------------------------------------------
 run:
@@ -227,6 +250,45 @@ plugins:
     required: true
     snv: "references/spliceai/spliceai_scores.masked.snv.ensembl_mane_v1.4.grch38.vcf.gz"
 
+  # CADD v1.7 genome-wide scores. The standard VEP CADD plugin queries the
+  # official score-only BGZF tables directly; the much larger inclAnno tables
+  # and a converted/merged VCF are neither required nor used. The official
+  # indel table covers gnomAD genomes r4.0 indels, so novel indels can remain
+  # unscored. CADD is displayed after import and is not an import-time filter.
+  CADD_WGS:
+    enabled: false           # whole-genome profile only
+    required: false
+    version: "1.7"
+    snv: "/Users/yl3232/Library/CloudStorage/OneDrive-ColumbiaUniversityIrvingMedicalCenter/large_dataset/CADD/v1.7/GRCh38/whole_genome_SNVs.tsv.gz"
+    indels: "/Users/yl3232/Library/CloudStorage/OneDrive-ColumbiaUniversityIrvingMedicalCenter/large_dataset/CADD/v1.7/GRCh38/gnomad.genomes.r4.0.indel.tsv.gz"
+    source_url: "https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/"
+    license: "non-commercial use"
+
+  # PromoterAI — licensed precomputed Illumina scores, prepared locally by
+  # scripts/prepare_promoterai.sh. The plugin matches both allele and transcript
+  # TSS; score data are never shipped in this repository or container.
+  PromoterAI:
+    enabled: false           # whole-genome profile only
+    required: false
+    file: "references/promoterai/promoterai_scores.tsv.gz"
+    transcript_map: "references/promoterai/promoterai_transcripts.tsv"
+    manifest: "references/promoterai/promoterai.manifest.json"
+
+  # LoGoFunc — public GRCh38 canonical-missense mechanism predictions from
+  # Zenodo record 13835271. The bundled plugin requires an exact genomic
+  # allele, Ensembl transcript, residue position, and amino-acid substitution
+  # match, protecting against VEP 106 -> 113 transcript/protein drift.
+  LoGoFunc:
+    enabled: true
+    required: false
+    version: "Zenodo 13835271 (2024-09-24)"
+    file: "references/logofunc/LoGoFuncVotingEnsemble_metadata_preds_final.csv.gz"
+    manifest: "references/logofunc/logofunc.manifest.json"
+    source_url: "https://zenodo.org/records/13835271"
+    source_doi: "10.5281/zenodo.13835271"
+    paper_doi: "10.1186/s13073-023-01261-9"
+    md5: "d50a4601227140c295985b87a37cea7d"
+
 # -----------------------------------------------------------------------------
 # Custom annotation tracks  (VEP --custom)
 # Each: file, format (bed|vcf), and vcf-specific type/coords/fields.
@@ -253,31 +315,6 @@ custom_tracks:
     short_name: SegDup
     format: bed
 
-  promoterAI:                # tier: bring-your-own-custom (Illumina license form)
-    enabled: false           # WGS profile only; the UI can enable it when installed
-    required: false
-    # NOT auto-downloadable. Request precomputed scores via Illumina's
-    # noncommercial license form (link emailed) — see docs/ANNOTATIONS.md.
-    # Convert to a bgzipped, tabix-indexed VCF with a promoterAI INFO field.
-    file: "references/custom/promoterAI_tss500.vcf.gz"
-    short_name: promoterAI
-    format: vcf
-    type: exact
-    fields: ["promoterAI"]
-
-  CADD_WGS:                  # tier: bring-your-own-large; whole-genome profile only
-    enabled: false
-    required: false
-    version: "1.7"
-    # The workbench intentionally does not download this very large resource.
-    # Prepare the official GRCh38 whole-genome SNV + indel scores as one
-    # coordinate-sorted BGZF VCF, with a tabix/CSI sidecar, at this path.
-    file: "references/custom/cadd_v1.7_whole_genome.vcf.gz"
-    short_name: CADD_WGS
-    format: vcf
-    type: exact
-    fields: ["CADD_RAW", "CADD_PHRED"]
-
   ClinVar:                   # tier: auto-per-run (fetched fresh each run)
     enabled: true
     required: false
@@ -288,16 +325,6 @@ custom_tracks:
     type: exact
     coords: 0
     fields: ["CLNSIG", "CLNSIGCONF", "CLNREVSTAT", "CLNDN"]
-
-  LoGoFunc:                  # tier: bring-your-own-custom (lab-generated)
-    enabled: true
-    required: false
-    file: "references/custom/LoGoFunc_custom_annotation.vcf.gz"
-    short_name: LoGoFunc
-    format: vcf
-    type: exact
-    coords: 0
-    fields: ["LoGoFunc_GOF", "LoGoFunc_LOF"]
 
 # -----------------------------------------------------------------------------
 # ClinVar auto-fetch (scripts/fetch_clinvar.sh)

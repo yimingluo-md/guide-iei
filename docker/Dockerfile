@@ -116,6 +116,14 @@ RUN sed -i \
       's/\$self->add_file(\$param_hash->{indel});/\$self->add_file(\$param_hash->{indel}) if defined(\$param_hash->{indel}) \&\& length(\$param_hash->{indel});/' \
       /plugins/SpliceAI.pm
 
+# Transcript-aware lookup for licensed, user-supplied PromoterAI scores. The
+# plugin code is bundled; the score files are never copied into the image.
+COPY --chown=vep:vep PromoterAI.pm /plugins/PromoterAI.pm
+
+# Transcript- and protein-change-aware lookup of the public LoGoFunc canonical
+# missense prediction table. The multi-gigabyte data remain user-supplied.
+COPY --chown=vep:vep LoGoFunc.pm /plugins/LoGoFunc.pm
+
 # Return to the unprivileged user for runtime.
 USER vep
 WORKDIR /data

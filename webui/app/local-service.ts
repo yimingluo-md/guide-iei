@@ -73,8 +73,9 @@ export type ServiceCapabilities = {
       version: string;
       available_in: ("exome" | "whole_genome")[];
       status: "ready" | "required_missing" | "optional_missing";
-      setup_mode: "manual" | "download" | "bundled" | "deferred";
+      setup_mode: "manual" | "download" | "prepare" | "bundled" | "deferred";
       download_id?: string;
+      prepare_id?: "promoterai" | "logofunc";
       reference_url: string;
       reference_label: string;
       size_hint: string;
@@ -98,7 +99,8 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "spliceai" | "clinvar" | "liftover";
+  resource_id: "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre";
+  operation?: "download" | "preparation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;
   message: string;
@@ -127,9 +129,7 @@ export type WgsPrefilterOptions = {
   max_gnomad_popmax: number | null;
   min_spliceai: number | null;
   min_promoterai_abs: number | null;
-  min_cadd: number | null;
-  genes: string[];
-  gene_window_bp: number;
+  noncoding_mode: "ccre" | "all" | "none";
 };
 
 export type WgsReviewResult = {
@@ -143,7 +143,10 @@ export type WgsReviewResult = {
   records_retained: number;
   annotations_scanned: number;
   annotations_retained: number;
-  missing_genes: string[];
+  unscored_intronic_indels: number;
+  unscored_promoter_indels: number;
+  noncoding_mode: "ccre" | "all" | "none";
+  ccre_resource: string;
   preparation_warning: string;
 };
 
@@ -163,6 +166,41 @@ export type WgsReviewJob = {
   error: string;
 };
 
+export type CcreNearbyGene = {
+  symbol: string;
+  gene_id: string;
+  tss: number;
+  strand: "+" | "-";
+  biotype: string;
+  distance_bp: number;
+  absolute_distance_bp: number;
+  relative_position: "overlaps TSS" | "upstream of TSS" | "downstream of TSS";
+};
+
+export type CcreOverlap = {
+  accession: string;
+  class: string;
+  class_label: string;
+  chrom: string;
+  start: number;
+  end: number;
+  length_bp: number;
+  nearby_genes: CcreNearbyGene[];
+};
+
+export type CcreContext = {
+  assembly: "GRCh38";
+  resource_version: string;
+  resource_available: boolean;
+  gene_resource_available: boolean;
+  gene_source: string;
+  gene_window_bp: number;
+  status: "overlap" | "no_overlap" | "resource_unavailable";
+  interpretation_caveat: string;
+  variant: { chrom: string; start: number; end: number; ref: string; alt: string };
+  overlaps: CcreOverlap[];
+};
+
 export type StagedAnnotationFile = {
   path: string;
   filename: string;
@@ -176,6 +214,25 @@ export type CohortStats = {
   individuals: number;
   variants: number;
   carrier_observations: number;
+  full_files: number;
+  prefiltered_files: number;
+};
+
+export type CohortSample = {
+  id: number;
+  name: string;
+  file_id: number;
+  source_path: string;
+  import_profile: "full" | "prefiltered";
+  imported_at: string;
+  carrier_observations: number;
+};
+
+export type CohortSampleRemoval = {
+  removed: Pick<CohortSample, "id" | "name" | "file_id" | "source_path">[];
+  removed_count: number;
+  orphan_variants_removed: number;
+  stats: CohortStats;
 };
 
 export type CohortImportFile = {
@@ -193,6 +250,10 @@ export type CohortImportFile = {
   reader_count?: number;
   preparation_warning?: string;
   cache_hit?: boolean;
+  import_profile?: "full" | "prefiltered";
+  prefilter_options?: WgsPrefilterOptions | Record<string, never>;
+  prefilter_records_scanned?: number;
+  prefilter_records_retained?: number;
   error?: string;
 };
 
@@ -220,9 +281,13 @@ export type CohortImportJob = {
   records_processed: number;
   pass_records: number;
   carrier_count: number;
-  phase: "queued" | "preparing" | "preparing_index" | "indexing" | "merging" | "complete" | "failed";
+  phase: "queued" | "preparing" | "preparing_index" | "filtering" | "compressing" | "indexing_output" | "indexing" | "merging" | "complete" | "failed";
   reader_count: number;
   prepared_path: string;
+  import_profile: "full" | "prefiltered";
+  prefilter_options: WgsPrefilterOptions | Record<string, never>;
+  prefilter_records_scanned: number;
+  prefilter_records_retained: number;
   result: CohortImportResult | null;
   error: string;
 };
@@ -239,6 +304,7 @@ export type CohortQueryRow = {
   original_pos: number | null;
   original_ref: string | null;
   original_alt: string | null;
+  unscored_indel_reasons: string | null;
   gene: string;
   gene_id: string;
   transcript: string;
@@ -250,6 +316,15 @@ export type CohortQueryRow = {
   cadd: number | null;
   alpha_missense: number | null;
   spliceai: number | null;
+  promoterai: number | null;
+  logofunc_prediction: string;
+  logofunc_neutral: number | null;
+  logofunc_gof: number | null;
+  logofunc_lof: number | null;
+  logofunc_allele_available: boolean;
+  logofunc_source_transcript: string;
+  logofunc_source_hgvsp: string;
+  logofunc_match: string;
   clinvar: string;
   clinvar_conflicting: string;
   loftee: string;
@@ -263,7 +338,10 @@ export type CohortQueryRow = {
   repeat_masker: boolean;
   segdup: boolean;
   sample: string;
+  sample_entry_id: number;
+  source_file_id: number;
   source_path: string;
+  import_profile: "full" | "prefiltered";
   genotype: string;
   zygosity: string;
   phased: boolean;
@@ -288,6 +366,46 @@ export type CohortQueryResult = {
   rows: CohortQueryRow[];
 };
 
+export type CohortVariantAnnotation = Pick<CohortQueryRow,
+  "gene" | "gene_id" | "transcript" | "hgvsc" | "hgvsp" |
+  "consequence" | "impact" | "gnomad_popmax" | "cadd" |
+  "alpha_missense" | "spliceai" | "promoterai" |
+  "logofunc_prediction" | "logofunc_neutral" | "logofunc_gof" |
+  "logofunc_lof" | "logofunc_allele_available" |
+  "logofunc_source_transcript" | "logofunc_source_hgvsp" | "logofunc_match" |
+  "clinvar" | "clinvar_conflicting" |
+  "loftee" | "loftee_50bp" | "loftee_50bp_original" |
+  "loftee_50bp_changed" | "ptc_distance" | "ptc_calc_status" |
+  "mane" | "picked" | "repeat_masker" | "segdup"
+>;
+
+export type CohortVariantDetail = CohortQueryResult & {
+  annotations: CohortVariantAnnotation[];
+};
+
+export type CohortReviewSelection = {
+  variant_key: string;
+  sample_entry_id: number;
+  sample: string;
+};
+
+export type CohortReviewVcf = {
+  source_file_id: number;
+  source_path: string;
+  prepared_path: string;
+  name: string;
+  selections: CohortReviewSelection[];
+  vcf: string;
+};
+
+export type CohortReviewRecords = {
+  requested: number;
+  resolved: number;
+  files: CohortReviewVcf[];
+  unresolved: Pick<CohortReviewSelection, "variant_key" | "sample_entry_id">[];
+  warnings: string[];
+};
+
 export type CohortQuery = {
   mode: "variant" | "gene";
   query?: string;
@@ -297,6 +415,8 @@ export type CohortQuery = {
   min_cadd?: number | null;
   min_alpha_missense?: number | null;
   min_spliceai?: number | null;
+  logofunc_class?: "GOF" | "LOF" | "Neutral" | "";
+  min_logofunc_probability?: number | null;
   clinvar_pathogenic_only?: boolean;
   clinvar_conflict_pathogenic_only?: boolean;
   exclude_confirmed_frame_restored?: boolean;
@@ -409,11 +529,25 @@ export async function getResourceDownloads() {
   return (await request<{ jobs: ResourceDownloadJob[] }>("/api/resource-downloads")).jobs;
 }
 
-export async function startResourceDownload(resourceId: "spliceai" | "clinvar" | "liftover") {
+export async function startResourceDownload(resourceId: "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "logofunc" | "ccre") {
   return request<ResourceDownloadJob>(
     `/api/resource-downloads/${encodeURIComponent(resourceId)}`,
     { method: "POST", body: "{}" },
   );
+}
+
+export async function startPromoterAiPreparation(sourceDir: string) {
+  return request<ResourceDownloadJob>("/api/resource-preparations/promoterai", {
+    method: "POST",
+    body: JSON.stringify({ source_dir: sourceDir }),
+  });
+}
+
+export async function startLoGoFuncPreparation(sourcePath: string) {
+  return request<ResourceDownloadJob>("/api/resource-preparations/logofunc", {
+    method: "POST",
+    body: JSON.stringify({ source_path: sourcePath }),
+  });
 }
 
 export async function submitJob(payload: SubmitJob) {
@@ -472,6 +606,15 @@ export async function prefilterWgsReview(
   });
 }
 
+export async function getCcreContext(
+  variant: { chrom: string; pos: number; ref: string; alt: string },
+) {
+  return request<CcreContext>("/api/ccre-context", {
+    method: "POST",
+    body: JSON.stringify(variant),
+  });
+}
+
 export async function getWgsReviewJob(jobId: string) {
   return request<WgsReviewJob>(`/api/wgs-review/${encodeURIComponent(jobId)}`);
 }
@@ -517,6 +660,8 @@ export async function startCohortImport(
   recursive = true,
   force = false,
   allowUnknownAssembly = false,
+  importProfile: "full" | "prefiltered" = "full",
+  filters?: WgsPrefilterOptions,
 ) {
   return request<CohortImportJob>("/api/cohort/import-jobs", {
     method: "POST",
@@ -525,6 +670,8 @@ export async function startCohortImport(
       recursive,
       force,
       allow_unknown_assembly: allowUnknownAssembly,
+      import_profile: importProfile,
+      filters,
     }),
   });
 }
@@ -537,6 +684,36 @@ export async function queryCohort(payload: CohortQuery) {
   return request<CohortQueryResult>("/api/cohort/query", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function getCohortVariantDetail(variantKey: string) {
+  return request<CohortVariantDetail>("/api/cohort/variant-detail", {
+    method: "POST",
+    body: JSON.stringify({ variant_key: variantKey }),
+  });
+}
+
+export async function getCohortReviewRecords(
+  selections: Pick<CohortReviewSelection, "variant_key" | "sample_entry_id">[],
+) {
+  return request<CohortReviewRecords>("/api/cohort/review-records", {
+    method: "POST",
+    body: JSON.stringify({ selections }),
+  });
+}
+
+export async function getCohortSamples(query = "", limit = 500) {
+  const params = new URLSearchParams({ query, limit: String(limit) });
+  return (await request<{ samples: CohortSample[] }>(
+    `/api/cohort/samples?${params.toString()}`,
+  )).samples;
+}
+
+export async function removeCohortSamples(sampleIds: number[]) {
+  return request<CohortSampleRemoval>("/api/cohort/samples/remove", {
+    method: "POST",
+    body: JSON.stringify({ sample_ids: sampleIds }),
   });
 }
 

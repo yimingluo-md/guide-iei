@@ -24,14 +24,37 @@ class AnnotationJobServiceTests(unittest.TestCase):
             "container:\n  vep_image_tag: release_113.4\n"
             "reference:\n  species: homo_sapiens\n"
             "  vep_cache_dir: references/vep_cache\n"
+            "plugins:\n  CADD_WGS:\n    enabled: false\n    version: '1.7'\n"
+            "    snv: references/cadd/whole_genome_SNVs.tsv.gz\n"
+            "    indels: references/cadd/gnomad.genomes.r4.0.indel.tsv.gz\n"
             "region:\n  coding_only: true\n"
             "  bed: references/regions/coding.bed.gz\n"
+            "wgs_review:\n  ccre:\n    enabled: true\n"
+            "    version: SCREEN Registry V4\n"
+            "    bed: references/regions/screen.ccre.bed.gz\n"
+            "  gene_tss:\n"
+            "    path: references/regions/gene_tss.tsv\n"
+            "    ensembl_release: '113'\n"
+            "    window_bp: 500000\n"
         )
         (self.root / "references" / "regions").mkdir(parents=True)
         with gzip.open(
             self.root / "references" / "regions" / "coding.bed.gz", "wt"
         ) as handle:
             handle.write("1\t0\t1000000\n")
+        with gzip.open(
+            self.root / "references" / "regions" / "screen.ccre.bed.gz", "wt"
+        ) as handle:
+            handle.write("1\t99\t100\tEH38E0000001\tpELS\n")
+        (self.root / "references" / "regions" / "screen.ccre.bed.gz.tbi").write_text(
+            "test index"
+        )
+        (self.root / "references" / "regions" / "gene_tss.tsv").write_text(
+            "#assembly=GRCh38\n"
+            "chrom\ttss\tgene_symbol\tgene_id\tstrand\tbiotype\n"
+            "1\t90\tNEAR1\tENSG_NEAR1\t+\tprotein_coding\n"
+            "1\t300\tNEAR2\tENSG_NEAR2\t-\tlncRNA\n"
+        )
         (self.root / "references" / "vep_cache" / "homo_sapiens" / "113_GRCh38").mkdir(
             parents=True
         )
@@ -59,6 +82,33 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self._write_script(
             "fetch_clinvar.sh",
             "#!/usr/bin/env bash\nset -eu\nprintf 'ClinVar ready\\n'\n",
+        )
+        self._write_script(
+            "prepare_promoterai.sh",
+            "#!/usr/bin/env bash\nset -eu\n"
+            'test -s "$1/tss.tsv"\ntest -s "$1/promoterAI_tss500.tsv.gz"\n'
+            'test -s "$2"\nprintf "40.0%% validating PromoterAI\\n"\n'
+            'printf "100.0%% PromoterAI preparation complete\\n"\n',
+        )
+        self._write_script(
+            "download_logofunc.sh",
+            "#!/usr/bin/env bash\nset -eu\n"
+            'test -s "$1"\nprintf "50.0%% downloading LoGoFunc\\n"\n'
+            'printf "100.0%% LoGoFunc download and validation complete\\n"\n',
+        )
+        self._write_script(
+            "download_cadd_wgs.sh",
+            "#!/usr/bin/env bash\nset -eu\n"
+            'test -s "$1"\nprintf "42.0%% downloading CADD SNVs\\n"\n'
+            'printf "99.0%% downloading CADD indels\\n"\n'
+            'printf "100.0%% CADD download and validation complete\\n"\n',
+        )
+        self._write_script(
+            "prepare_logofunc.sh",
+            "#!/usr/bin/env bash\nset -eu\n"
+            'test -e "$1"\ntest -s "$2"\n'
+            'printf "94.0%% verifying LoGoFunc source checksums\\n"\n'
+            'printf "100.0%% LoGoFunc local source installed\\n"\n',
         )
         self.state = Path(self.temp.name) / "state"
         self.service = AnnotationJobService(self.root, self.state)
@@ -92,6 +142,21 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 return job
             time.sleep(0.02)
         self.fail("resource download did not finish")
+
+    def test_ccre_context_distinguishes_overlap_from_no_overlap(self):
+        overlap = self.service.ccre_context({
+            "chrom": "1", "pos": 100, "ref": "A", "alt": "G",
+        })
+        self.assertEqual(overlap["status"], "overlap")
+        self.assertEqual(overlap["overlaps"][0]["accession"], "EH38E0000001")
+        self.assertEqual(
+            {gene["symbol"] for gene in overlap["overlaps"][0]["nearby_genes"]},
+            {"NEAR1", "NEAR2"},
+        )
+        no_overlap = self.service.ccre_context({
+            "chrom": "1", "pos": 500, "ref": "A", "alt": "G",
+        })
+        self.assertEqual(no_overlap["status"], "no_overlap")
 
     def test_job_runs_and_persists_command(self):
         job = self.service.submit(
@@ -238,6 +303,13 @@ class AnnotationJobServiceTests(unittest.TestCase):
         }
         self.assertEqual(sources["promoterai"]["available_in"], ["whole_genome"])
         self.assertEqual(sources["cadd_wgs"]["available_in"], ["whole_genome"])
+        self.assertEqual(sources["cadd_wgs"]["setup_mode"], "download")
+        self.assertEqual(sources["cadd_wgs"]["download_id"], "cadd_wgs")
+        self.assertEqual(len(sources["cadd_wgs"]["configured_paths"]), 2)
+        self.assertFalse(sources["cadd_wgs"]["installed"])
+        self.assertEqual(sources["ccre"]["available_in"], ["whole_genome"])
+        self.assertEqual(sources["ccre"]["download_id"], "ccre")
+        self.assertTrue(sources["ccre"]["installed"])
         with self.assertRaisesRegex(ValueError, "only for whole-genome"):
             self.service.submit({
                 "input_path": str(self.input),
@@ -260,6 +332,15 @@ class AnnotationJobServiceTests(unittest.TestCase):
         generated = Path(job["config_path"]).read_text()
         self.assertIn("coding_only: false", generated)
 
+        cadd_job = self.service.submit({
+            "input_path": str(self.input),
+            "output_path": str(self.root / "results" / "patient.cadd.vep.vcf.gz"),
+            "analysis_scope": "whole_genome",
+            "annotation_options": {"cadd_wgs": True},
+        })
+        cadd_config = Path(cadd_job["config_path"]).read_text()
+        self.assertRegex(cadd_config, r"CADD_WGS:\n\s+enabled: true")
+
     def test_wgs_review_service_prepares_filters_and_registers_output(self):
         source = self.root / "annotated-wgs.vcf"
         write_parallel_vcf(source)
@@ -272,16 +353,14 @@ class AnnotationJobServiceTests(unittest.TestCase):
             "filters": {
                 "max_gnomad_popmax": 0.01,
                 "min_spliceai": 0.5,
-                "min_promoterai_abs": 0.5,
-                "min_cadd": None,
-                "genes": [],
-                "gene_window_bp": 0,
+                "min_promoterai_abs": 0.8,
+                "noncoding_mode": "ccre",
             },
         }, progress=progress_updates.append)
 
         self.assertEqual(result["reader_count"], 4)
         self.assertEqual(result["records_scanned"], 4)
-        self.assertEqual(result["records_retained"], 4)
+        self.assertEqual(result["records_retained"], 1)
         output = self.service.wgs_review_file(result["id"])
         self.assertTrue(output.is_file())
         self.assertTrue(Path(result["index_path"]).is_file())
@@ -293,14 +372,14 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(progress_updates[-1]["progress"], 100.0)
         cached = self.service.prefilter_wgs_review({
             "path": str(source),
-            "filters": {},
+            "filters": {"noncoding_mode": "ccre"},
         })
         self.assertTrue(cached["cache_hit"])
-        self.assertEqual(cached["records_retained"], 4)
+        self.assertEqual(cached["records_retained"], 1)
 
         job = self.service.start_wgs_review({
             "path": str(source),
-            "filters": {},
+            "filters": {"noncoding_mode": "ccre"},
         })
         deadline = time.time() + 5
         while job["status"] in {"queued", "running"} and time.time() < deadline:
@@ -311,6 +390,27 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(job["progress"], 100.0)
         self.assertEqual(job["records_scanned"], 4)
         self.assertIsNotNone(job["result"])
+
+        cohort_job = self.service.start_cohort_import({
+            "paths": [str(source)],
+            "import_profile": "prefiltered",
+            "filters": {"noncoding_mode": "ccre"},
+        })
+        deadline = time.time() + 5
+        while cohort_job["status"] in {"queued", "running"} and time.time() < deadline:
+            time.sleep(0.02)
+            cohort_job = self.service.cohort.get_import_job(cohort_job["id"])
+        self.assertEqual(cohort_job["status"], "succeeded")
+        self.assertEqual(cohort_job["import_profile"], "prefiltered")
+        self.assertEqual(cohort_job["prefilter_records_scanned"], 4)
+        self.assertEqual(cohort_job["prefilter_records_retained"], 1)
+        self.assertEqual(cohort_job["result"]["stats"]["prefiltered_files"], 1)
+        indexed = self.service.cohort.query({
+            "mode": "variant", "query": "1:100:A:G",
+        })
+        self.assertEqual(indexed["rows"][0]["import_profile"], "prefiltered")
+        self.assertEqual(indexed["rows"][0]["promoterai"], -0.75)
+        self.assertEqual(indexed["rows"][0]["source_path"], str(source.resolve()))
 
     def test_resource_download_jobs_are_constrained_and_report_progress(self):
         first = self.service.start_resource_download("spliceai")
@@ -323,8 +423,43 @@ class AnnotationJobServiceTests(unittest.TestCase):
 
         clinvar = self.service.start_resource_download("clinvar")
         self.assertEqual(self._wait_resource(clinvar["id"])["status"], "succeeded")
+        logofunc = self.service.start_resource_download("logofunc")
+        completed_logofunc = self._wait_resource(logofunc["id"])
+        self.assertEqual(completed_logofunc["status"], "succeeded")
+        self.assertEqual(completed_logofunc["resource_id"], "logofunc")
+        cadd = self.service.start_resource_download("cadd_wgs")
+        completed_cadd = self._wait_resource(cadd["id"])
+        self.assertEqual(completed_cadd["status"], "succeeded")
+        self.assertEqual(completed_cadd["resource_id"], "cadd_wgs")
+        self.assertIn("100.0% CADD", completed_cadd["log"])
         with self.assertRaisesRegex(ValueError, "cannot be downloaded"):
             self.service.start_resource_download("dbnsfp")
+
+    def test_promoterai_preparation_requires_and_uses_the_two_local_files(self):
+        source = self.root / "licensed-promoterai"
+        source.mkdir()
+        with self.assertRaisesRegex(ValueError, "missing"):
+            self.service.start_promoterai_preparation({"source_dir": str(source)})
+        (source / "tss.tsv").write_text("header\n")
+        (source / "promoterAI_tss500.tsv.gz").write_bytes(b"gzip-placeholder")
+        first = self.service.start_promoterai_preparation({"source_dir": str(source)})
+        same = self.service.start_promoterai_preparation({"source_dir": str(source)})
+        self.assertEqual(first["id"], same["id"])
+        completed = self._wait_resource(first["id"])
+        self.assertEqual(completed["resource_id"], "promoterai")
+        self.assertEqual(completed["operation"], "preparation")
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(completed["progress"], 100.0)
+
+    def test_logofunc_preparation_accepts_an_existing_source_file_or_folder(self):
+        source = self.root / "LoGoFuncVotingEnsemble_metadata_preds_final.csv.gz"
+        source.write_bytes(b"source-placeholder")
+        first = self.service.start_logofunc_preparation({"source_path": str(source)})
+        completed = self._wait_resource(first["id"])
+        self.assertEqual(completed["resource_id"], "logofunc")
+        self.assertEqual(completed["operation"], "preparation")
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(completed["progress"], 100.0)
 
     def test_loopback_http_health_and_job_list(self):
         server = create_server(self.service, "127.0.0.1", 0)
@@ -365,6 +500,8 @@ class AnnotationJobServiceTests(unittest.TestCase):
     def test_loopback_http_cohort_import_and_query(self):
         cohort_vcf = self.root / "cohort.vep.vcf.gz"
         write_vcf(cohort_vcf)
+        self.service.cohort.hts_backend = FakeHtsBackend()
+        self.service.cohort.index_readers = 2
         server = create_server(self.service, "127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
@@ -404,6 +541,18 @@ class AnnotationJobServiceTests(unittest.TestCase):
             )
             self.assertEqual(result["total"], 1)
             self.assertEqual(result["rows"][0]["sample"], "P1")
+            detail = post(
+                "/api/cohort/variant-detail", {"variant_key": "1:100:A:G"}
+            )
+            self.assertEqual(detail["total"], 1)
+            self.assertGreaterEqual(len(detail["annotations"]), 1)
+            review = post("/api/cohort/review-records", {"selections": [{
+                "variant_key": result["rows"][0]["variant_key"],
+                "sample_entry_id": result["rows"][0]["sample_entry_id"],
+            }]})
+            self.assertEqual(review["resolved"], 1)
+            self.assertIn("1\t100\trsExact\tA\tG", review["files"][0]["vcf"])
+            self.assertNotIn("\tP2\n", review["files"][0]["vcf"])
 
             individual = post("/api/phenotypes/individual", {
                 "individual_id": "CASE-P1",
@@ -442,6 +591,21 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 "profile_name": "Test mapping",
             })
             self.assertEqual(imported_phenotypes["created"], 1)
+
+            with urllib.request.urlopen(
+                base + "/api/cohort/samples", timeout=5
+            ) as response:
+                samples = json.load(response)["samples"]
+            p1 = next(sample for sample in samples if sample["name"] == "P1")
+            removal = post(
+                "/api/cohort/samples/remove", {"sample_ids": [p1["id"]]}
+            )
+            self.assertEqual(removal["removed_count"], 1)
+            self.assertEqual(removal["stats"]["individuals"], 1)
+            removed_query = post(
+                "/api/cohort/query", {"mode": "variant", "query": "1:100:A:G"}
+            )
+            self.assertEqual(removed_query["total"], 0)
         finally:
             server.shutdown()
             server.server_close()

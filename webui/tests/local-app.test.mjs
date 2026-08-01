@@ -39,13 +39,16 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /analysisScope === "whole_genome"/);
   assert.match(source, /Indexing and prefiltering WGS/);
   assert.match(source, /Whole-genome indexing and prefiltering progress/);
-  assert.match(source, /every PASS variant in the configured coding\+splice exome BED is retained first/);
+  assert.match(source, /PASS\/QC AND \(popmax ≤ threshold OR popmax unavailable\)/);
   assert.match(source, /wgsImportJob\.records_scanned/);
   assert.match(await readFile(new URL("app/vcf.ts", root), "utf8"), /async function\* fileLines/);
   assert.doesNotMatch(await readFile(new URL("app/vcf.ts", root), "utf8"), /decoded\.join/);
-  assert.match(source, /gnomAD popmax </);
+  assert.match(source, /gnomAD popmax ≤/);
   assert.match(source, /\|promoterAI\| ≥/);
-  assert.match(source, /leaving CADD blank disables CADD/);
+  assert.match(source, /ENCODE cCRE regions/);
+  assert.match(source, /All noncoding regions/);
+  assert.match(source, /No additional noncoding regions/);
+  assert.doesNotMatch(source, /leaving CADD blank disables CADD/);
   assert.match(source, /PASS records only/);
   assert.match(source, /not read yet/);
   assert.match(source, /Import and review variants/);
@@ -73,11 +76,24 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Set up annotation datasets/);
   assert.match(source, /Registration and setup instructions/);
   assert.match(source, /Download \/ resume/);
+  assert.match(source, /Download \/ resume 83 GiB/);
+  assert.match(service, /"cadd_wgs"/);
   assert.match(source, /Download latest/);
   assert.match(source, /Configured location/);
   assert.match(source, /downloadJob\.progress/);
   assert.match(service, /\/api\/resource-downloads/);
   assert.match(service, /startResourceDownload/);
+  assert.match(source, /Prepare local files/);
+  assert.match(source, /promoterAI_tss500\.tsv\.gz/);
+  assert.match(service, /\/api\/resource-preparations\/promoterai/);
+  assert.match(service, /startPromoterAiPreparation/);
+  assert.match(source, /PromoterAI \|score\| ≥/);
+  assert.match(source, /Math\.abs\(row\.promoterAI\) < promoterAbsMin/);
+  assert.match(source, /Existing LoGoFunc \.csv\.gz file or containing folder/);
+  assert.match(source, /Use existing source/);
+  assert.match(service, /\/api\/resource-preparations\/logofunc/);
+  assert.match(service, /startLoGoFuncPreparation/);
+  assert.match(source, /LoGoFunc predicted class/);
 });
 
 test("builds compound-het candidates only from rows surviving active filters", async () => {
@@ -101,6 +117,15 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /phastCons 100-way/);
   assert.match(source, /All gnomAD population frequencies/);
   assert.match(source, /Loaded automatically from bundled gnomAD/);
+  assert.match(source, /ENCODE SCREEN cCRE/);
+  assert.match(source, /Does not overlap a/);
+  assert.match(source, /proximity is not a target-gene assignment/);
+  assert.match(source, /Every gene below is listed only because its gene-level TSS lies within/);
+  assert.match(source, /Include non-protein-coding genes/);
+  assert.match(source, /Protein-coding genes are shown by default/);
+  assert.match(source, /shown ·.*total.*protein-coding.*other/);
+  assert.match(source, /Distance from cCRE to TSS/);
+  assert.match(await readFile(new URL("app/local-service.ts", root), "utf8"), /\/api\/ccre-context/);
   assert.match(source, /loadBundledReferences/);
   assert.match(styles, /\.workspace\.review-mode/);
   assert.match(styles, /\.review-list/);
@@ -145,8 +170,24 @@ test("provides persistent genotype-first cohort indexing and carrier search", as
   assert.match(source, /role="progressbar"/);
   assert.match(source, /records scanned/);
   assert.match(service, /\/api\/cohort\/query/);
+  assert.match(service, /\/api\/cohort\/samples/);
+  assert.match(service, /\/api\/cohort\/variant-detail/);
+  assert.match(service, /\/api\/cohort\/review-records/);
+  assert.match(source, /Manage cohort samples/);
+  assert.match(source, /Remove selected/);
+  assert.match(source, /REVIEW SELECTED/);
+  assert.match(source, /REVIEW ALL CARRIERS OF THIS VARIANT/);
+  assert.match(source, /Full source INFO, VEP CSQ, and sample FORMAT annotations were loaded on demand/);
+  assert.match(source, /All source VCF annotations/);
+  assert.match(source, /Variant details/);
+  assert.match(source, /Compact WGS/);
+  assert.match(source, /Compact WGS candidate import/);
+  assert.match(source, /selected noncoding region route/);
+  assert.match(source, /prefilter_records_retained/);
   assert.match(styles, /\.workspace\.cohort-mode/);
   assert.match(styles, /\.cohort-table/);
+  assert.match(styles, /\.cohort-variant-detail/);
+  assert.match(styles, /\.cohort-sample-manager/);
 });
 
 test("provides pedigree-aware de novo and compound-heterozygous review", async () => {

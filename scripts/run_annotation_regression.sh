@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Run the five-public-variant annotation regression panel through the real,
+# Run the eight-public-variant annotation regression panel through the real,
 # locally installed VEP/reference stack.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

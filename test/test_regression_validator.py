@@ -46,6 +46,7 @@ def write_inputs(directory: pathlib.Path, alpha: str = "0.99"):
                 "resource_contract": {
                     "assembly": "GRCh38",
                     "dbNSFP": "5.3.1a",
+                    "LoGoFunc": None,
                     "vep_image_tag": "release_113.4",
                 },
                 "variants": [
@@ -57,6 +58,10 @@ def write_inputs(directory: pathlib.Path, alpha: str = "0.99"):
                         "fields_nonempty": ["AlphaMissense_score", "CADD_phred"],
                         "clinvar_contains": "Pathogenic",
                         "info_equals": {"ClinVar_path_aa_match": "1"},
+                        "optional_field_in": {
+                            "LoGoFunc_prediction": ["GOF"],
+                            "LoGoFunc_match": ["allele_transcript_protein"],
+                        },
                     },
                     {
                         "id": "promoter",
@@ -94,7 +99,7 @@ def write_inputs(directory: pathlib.Path, alpha: str = "0.99"):
 def test_regression_passes_and_optional_track_is_explicit_skip(tmp_path):
     report = run_validation(*write_inputs(tmp_path))
     assert report["status"] == "PASS"
-    assert report["counts"] == {"PASS": 4, "FAIL": 0, "SKIP": 1}
+    assert report["counts"] == {"PASS": 4, "FAIL": 0, "SKIP": 2}
 
 
 def test_regression_fails_when_required_predictor_is_empty(tmp_path):
@@ -106,10 +111,38 @@ def test_regression_fails_when_required_predictor_is_empty(tmp_path):
     )
 
 
+def test_installed_optional_field_contract_is_enforced(tmp_path):
+    config, expected, vcf = write_inputs(tmp_path)
+    content = vcf.read_text()
+    content = content.replace(
+        "|ClinVar_CLNSIG\">",
+        "|ClinVar_CLNSIG|LoGoFunc_prediction|LoGoFunc_match\">",
+    ).replace(
+        "|Pathogenic;ClinVar_path_aa_match",
+        "|Pathogenic|GOF|allele_transcript_protein;ClinVar_path_aa_match",
+    )
+    vcf.write_text(content)
+    report = run_validation(config, expected, vcf)
+    assert report["status"] == "PASS"
+    assert report["counts"] == {"PASS": 5, "FAIL": 0, "SKIP": 1}
+
+    vcf.write_text(content.replace(
+        "|GOF|allele_transcript_protein;",
+        "|LOF|allele_transcript_protein;",
+    ))
+    failed = run_validation(config, expected, vcf)
+    assert failed["status"] == "FAIL"
+    assert any(
+        item["id"] == "missense" and item["status"] == "FAIL"
+        for item in failed["checks"]
+    )
+
+
 if __name__ == "__main__":
     tests = [
         test_regression_passes_and_optional_track_is_explicit_skip,
         test_regression_fails_when_required_predictor_is_empty,
+        test_installed_optional_field_contract_is_enforced,
     ]
     for test in tests:
         with tempfile.TemporaryDirectory() as directory:

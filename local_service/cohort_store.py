@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import json
 import multiprocessing
 import os
 import re
@@ -41,6 +42,7 @@ class VcfHeader:
     samples: tuple[str, ...]
     csq_fields: tuple[str, ...]
     contigs: tuple[str, ...]
+    info_fields: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -228,6 +230,7 @@ def read_vcf_header(path: Path) -> VcfHeader:
     samples: tuple[str, ...] = ()
     csq_fields: tuple[str, ...] = ()
     contigs: list[str] = []
+    info_fields: list[str] = []
     saw_fileformat = False
     with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
         for line in handle:
@@ -252,9 +255,14 @@ def read_vcf_header(path: Path) -> VcfHeader:
                         f"(expected 248956422, found {values['length']})"
                     )
             elif line.startswith("##INFO=<ID=CSQ"):
+                info_fields.append("CSQ")
                 match = re.search(r"Format:\s*([^\">]+)", line, re.IGNORECASE)
                 if match:
                     csq_fields = tuple(match.group(1).strip().split("|"))
+            elif line.startswith("##INFO=<"):
+                identifier = re.search(r"(?:^|[,<])ID=([^,>]+)", line)
+                if identifier:
+                    info_fields.append(identifier.group(1))
             elif line.startswith("#CHROM"):
                 columns = line.rstrip("\r\n").split("\t")
                 samples = tuple(columns[9:])
@@ -269,7 +277,26 @@ def read_vcf_header(path: Path) -> VcfHeader:
         raise ValueError("cohort VCF contains duplicate or empty sample names")
     if not csq_fields:
         raise ValueError("VEP CSQ Format header was not found")
-    return VcfHeader(samples=samples, csq_fields=csq_fields, contigs=tuple(contigs))
+    return VcfHeader(
+        samples=samples,
+        csq_fields=csq_fields,
+        contigs=tuple(contigs),
+        info_fields=tuple(info_fields),
+    )
+
+
+def read_vcf_header_lines(path: Path) -> list[str]:
+    """Read the complete VCF header without decompressing the variant body."""
+    opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+    lines: list[str] = []
+    with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+            if not line.startswith("#"):
+                break
+            lines.append(line.rstrip("\r\n"))
+            if line.startswith("#CHROM\t"):
+                return lines
+    raise ValueError(f"VCF header is incomplete: {path}")
 
 
 def utc_now() -> str:
@@ -320,6 +347,15 @@ def first(record: dict[str, str], keys: tuple[str, ...]) -> str:
     return ""
 
 
+def allele_info_value(
+    record: dict[str, str], key: str, alt_index: int,
+) -> str:
+    """Return one Number=A INFO value, treating dot as not applicable."""
+    values = record.get(key, "").split(",")
+    value = values[alt_index] if alt_index < len(values) else ""
+    return "" if value in EMPTY else decode(value)
+
+
 def maximum(record: dict[str, str], keys: tuple[str, ...]) -> float | None:
     values: list[float] = []
     for key in keys:
@@ -328,6 +364,17 @@ def maximum(record: dict[str, str], keys: tuple[str, ...]) -> float | None:
             if parsed is not None:
                 values.append(parsed)
     return max(values) if values else None
+
+
+def preferred_maximum(
+    record: dict[str, str], key_groups: tuple[tuple[str, ...], ...]
+) -> float | None:
+    """Use the first source group with a value, maximizing only within it."""
+    for keys in key_groups:
+        value = maximum(record, keys)
+        if value is not None:
+            return value
+    return None
 
 
 def truthy(value: str) -> bool:
@@ -439,9 +486,13 @@ def annotation_from(record: dict[str, str]) -> dict:
             "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax",
             "gnomAD_popmax_AF", "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
         )),
-        "cadd": maximum(record, (
-            "CADD_phred", "CADD_PHRED", "CADD_WGS_CADD_PHRED",
-            "CADD_WGS_PHRED",
+        # When both sources exist on a coding SNV, the explicitly selected
+        # genome-wide v1.7 plugin is authoritative. dbNSFP is the fallback for
+        # exome jobs or records without a plugin value; do not combine sources
+        # by taking the numerically larger score.
+        "cadd": preferred_maximum(record, (
+            ("CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED"),
+            ("CADD_phred",),
         )),
         "alpha_missense": maximum(record, ("AlphaMissense_score", "am_pathogenicity")),
         "spliceai": maximum(record, (
@@ -449,6 +500,17 @@ def annotation_from(record: dict[str, str]) -> dict:
             "SpliceAI_pred_DS_DG", "SpliceAI_pred_DS_DL",
             "DS_AG", "DS_AL", "DS_DG", "DS_DL",
         )),
+        "promoterai": parse_number(first(record, (
+            "PromoterAI_score", "promoterAI_score", "promoterAI", "PROMOTERAI", "promoterAI_promoterAI",
+        ))),
+        "logofunc_prediction": first(record, ("LoGoFunc_prediction",)),
+        "logofunc_neutral": parse_number(first(record, ("LoGoFunc_neutral",))),
+        "logofunc_gof": parse_number(first(record, ("LoGoFunc_GOF",))),
+        "logofunc_lof": parse_number(first(record, ("LoGoFunc_LOF",))),
+        "logofunc_allele_available": int(truthy(first(record, ("LoGoFunc_allele_available",)))),
+        "logofunc_source_transcript": first(record, ("LoGoFunc_source_transcript",)),
+        "logofunc_source_hgvsp": first(record, ("LoGoFunc_source_HGVSp",)),
+        "logofunc_match": first(record, ("LoGoFunc_match",)),
         "clinvar": first(record, ("ClinVar_CLNSIG", "CLNSIG")),
         "clinvar_conflicting": first(
             record, ("ClinVar_CLNSIGCONF", "CLNSIGCONF")
@@ -469,12 +531,15 @@ def annotation_from(record: dict[str, str]) -> dict:
 STAGE_VARIANT_COLUMNS = (
     "variant_key", "chrom", "pos", "ref", "alt", "rsid",
     "original_assembly", "original_chrom", "original_pos",
-    "original_ref", "original_alt",
+    "original_ref", "original_alt", "unscored_indel_reasons",
 )
 STAGE_ANNOTATION_COLUMNS = (
     "variant_key", "gene", "gene_id", "transcript", "hgvsc", "hgvsp",
     "consequence", "impact", "gnomad_popmax", "cadd", "alpha_missense",
-    "spliceai", "clinvar", "clinvar_conflicting", "loftee", "loftee_50bp",
+    "spliceai", "promoterai", "logofunc_prediction", "logofunc_neutral",
+    "logofunc_gof", "logofunc_lof", "logofunc_allele_available",
+    "logofunc_source_transcript", "logofunc_source_hgvsp", "logofunc_match",
+    "clinvar", "clinvar_conflicting", "loftee", "loftee_50bp",
     "loftee_50bp_original", "loftee_50bp_changed", "ptc_distance",
     "ptc_calc_status", "mane", "picked", "repeat_masker", "segdup",
 )
@@ -506,7 +571,8 @@ CREATE TABLE stage_variants (
   original_chrom TEXT,
   original_pos INTEGER,
   original_ref TEXT,
-  original_alt TEXT
+  original_alt TEXT,
+  unscored_indel_reasons TEXT
 ) WITHOUT ROWID;
 CREATE TABLE stage_annotations (
   variant_key TEXT NOT NULL,
@@ -521,6 +587,15 @@ CREATE TABLE stage_annotations (
   cadd REAL,
   alpha_missense REAL,
   spliceai REAL,
+  promoterai REAL,
+  logofunc_prediction TEXT,
+  logofunc_neutral REAL,
+  logofunc_gof REAL,
+  logofunc_lof REAL,
+  logofunc_allele_available INTEGER NOT NULL DEFAULT 0,
+  logofunc_source_transcript TEXT,
+  logofunc_source_hgvsp TEXT,
+  logofunc_match TEXT,
   clinvar TEXT,
   clinvar_conflicting TEXT,
   loftee TEXT,
@@ -699,6 +774,9 @@ def _stage_vcf_records(
                         original_alts[alt_index]
                         if alt_index < len(original_alts)
                         else (original_alts[0] if original_alts else "")
+                    ) or None,
+                    allele_info_value(
+                        info, "IEI_UNSCORED_INDEL", alt_index
                     ) or None,
                 )
 
@@ -887,6 +965,10 @@ class CohortStore:
                     ,import_mode TEXT NOT NULL DEFAULT 'serial'
                     ,reader_count INTEGER NOT NULL DEFAULT 1
                     ,preparation_warning TEXT NOT NULL DEFAULT ''
+                    ,import_profile TEXT NOT NULL DEFAULT 'full'
+                    ,prefilter_options TEXT NOT NULL DEFAULT '{}'
+                    ,prefilter_records_scanned INTEGER NOT NULL DEFAULT 0
+                    ,prefilter_records_retained INTEGER NOT NULL DEFAULT 0
                 );
 
                 CREATE TABLE IF NOT EXISTS cohort_samples (
@@ -908,7 +990,8 @@ class CohortStore:
                     original_chrom TEXT,
                     original_pos INTEGER,
                     original_ref TEXT,
-                    original_alt TEXT
+                    original_alt TEXT,
+                    unscored_indel_reasons TEXT
                 );
 
                 CREATE TABLE IF NOT EXISTS cohort_annotations (
@@ -925,6 +1008,15 @@ class CohortStore:
                     cadd REAL,
                     alpha_missense REAL,
                     spliceai REAL,
+                    promoterai REAL,
+                    logofunc_prediction TEXT,
+                    logofunc_neutral REAL,
+                    logofunc_gof REAL,
+                    logofunc_lof REAL,
+                    logofunc_allele_available INTEGER NOT NULL DEFAULT 0,
+                    logofunc_source_transcript TEXT,
+                    logofunc_source_hgvsp TEXT,
+                    logofunc_match TEXT,
                     clinvar TEXT,
                     clinvar_conflicting TEXT,
                     loftee TEXT,
@@ -997,6 +1089,15 @@ class CohortStore:
                 ("loftee_50bp_changed", "INTEGER NOT NULL DEFAULT 0"),
                 ("ptc_distance", "REAL"),
                 ("ptc_calc_status", "TEXT"),
+                ("promoterai", "REAL"),
+                ("logofunc_prediction", "TEXT"),
+                ("logofunc_neutral", "REAL"),
+                ("logofunc_gof", "REAL"),
+                ("logofunc_lof", "REAL"),
+                ("logofunc_allele_available", "INTEGER NOT NULL DEFAULT 0"),
+                ("logofunc_source_transcript", "TEXT"),
+                ("logofunc_source_hgvsp", "TEXT"),
+                ("logofunc_match", "TEXT"),
             ):
                 if column not in annotation_columns:
                     connection.execute(
@@ -1039,6 +1140,10 @@ class CohortStore:
                 ("import_mode", "TEXT NOT NULL DEFAULT 'serial'"),
                 ("reader_count", "INTEGER NOT NULL DEFAULT 1"),
                 ("preparation_warning", "TEXT NOT NULL DEFAULT ''"),
+                ("import_profile", "TEXT NOT NULL DEFAULT 'full'"),
+                ("prefilter_options", "TEXT NOT NULL DEFAULT '{}'"),
+                ("prefilter_records_scanned", "INTEGER NOT NULL DEFAULT 0"),
+                ("prefilter_records_retained", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if column not in file_columns:
                     connection.execute(
@@ -1056,6 +1161,7 @@ class CohortStore:
                 ("original_pos", "INTEGER"),
                 ("original_ref", "TEXT"),
                 ("original_alt", "TEXT"),
+                ("unscored_indel_reasons", "TEXT"),
             ):
                 if column not in variant_columns:
                     connection.execute(
@@ -1102,10 +1208,134 @@ class CohortStore:
                   (SELECT COUNT(*) FROM cohort_samples) AS sample_entries,
                   (SELECT COUNT(DISTINCT name) FROM cohort_samples) AS individuals,
                   (SELECT COUNT(*) FROM cohort_variants) AS variants,
-                  (SELECT COUNT(*) FROM cohort_genotypes) AS carrier_observations
+                  (SELECT COUNT(*) FROM cohort_genotypes) AS carrier_observations,
+                  (SELECT COUNT(*) FROM cohort_files
+                   WHERE import_profile = 'full') AS full_files,
+                  (SELECT COUNT(*) FROM cohort_files
+                   WHERE import_profile = 'prefiltered') AS prefiltered_files
                 """
             ).fetchone()
         return dict(row)
+
+    def list_samples(self, query: str = "", limit: int = 500) -> list[dict]:
+        """List exact sample entries so duplicate names remain distinguishable."""
+        limit = max(1, min(int(limit), 5_000))
+        cleaned = query.strip()
+        where = "WHERE s.name LIKE ? COLLATE NOCASE" if cleaned else ""
+        parameters: tuple = (f"%{cleaned}%", limit) if cleaned else (limit,)
+        with self._session() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT s.id, s.name, s.file_id, f.path AS source_path,
+                       f.import_profile, f.imported_at,
+                       COUNT(g.id) AS carrier_observations
+                FROM cohort_samples s
+                JOIN cohort_files f ON f.id = s.file_id
+                LEFT JOIN cohort_genotypes g ON g.sample_id = s.id
+                {where}
+                GROUP BY s.id
+                ORDER BY s.name COLLATE NOCASE, f.path
+                LIMIT ?
+                """,
+                parameters,
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def remove_samples(self, sample_ids: list[int]) -> dict:
+        """Remove selected sample entries and reclaim variants with no carriers."""
+        with self._import_jobs_lock:
+            if any(
+                job["status"] in {"queued", "running"}
+                for job in self._import_jobs.values()
+            ):
+                raise ValueError(
+                    "wait for the active cohort import to finish before removing samples"
+                )
+        if not isinstance(sample_ids, list):
+            raise ValueError("sample_ids must be a list")
+        try:
+            selected = sorted({int(value) for value in sample_ids})
+        except (TypeError, ValueError) as error:
+            raise ValueError("sample_ids must contain integers") from error
+        if not selected:
+            raise ValueError("select at least one sample to remove")
+        if len(selected) > 5_000:
+            raise ValueError("a single removal is limited to 5,000 sample entries")
+        placeholders = ",".join("?" for _ in selected)
+        with self._session() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT s.id, s.name, s.file_id, f.path AS source_path
+                FROM cohort_samples s
+                JOIN cohort_files f ON f.id = s.file_id
+                WHERE s.id IN ({placeholders})
+                ORDER BY s.name, f.path
+                """,
+                selected,
+            ).fetchall()
+            if len(rows) != len(selected):
+                found = {row["id"] for row in rows}
+                missing = [value for value in selected if value not in found]
+                raise ValueError(
+                    "sample entries were not found: " + ", ".join(map(str, missing))
+                )
+            file_ids = sorted({row["file_id"] for row in rows})
+            connection.execute(
+                f"DELETE FROM cohort_samples WHERE id IN ({placeholders})",
+                selected,
+            )
+            for file_id in file_ids:
+                counts = connection.execute(
+                    """
+                    SELECT COUNT(DISTINCT s.id) AS sample_count,
+                           COUNT(DISTINCT g.variant_id) AS variant_count,
+                           COUNT(g.id) AS carrier_count
+                    FROM cohort_files f
+                    LEFT JOIN cohort_samples s ON s.file_id = f.id
+                    LEFT JOIN cohort_genotypes g ON g.sample_id = s.id
+                    WHERE f.id = ?
+                    """,
+                    (file_id,),
+                ).fetchone()
+                if counts["sample_count"] == 0:
+                    connection.execute(
+                        "DELETE FROM cohort_files WHERE id = ?", (file_id,)
+                    )
+                else:
+                    connection.execute(
+                        """
+                        UPDATE cohort_files SET sample_count=?, variant_count=?,
+                                                carrier_count=?, mtime_ns=-1
+                        WHERE id=?
+                        """,
+                        (
+                            counts["sample_count"], counts["variant_count"],
+                            counts["carrier_count"], file_id,
+                        ),
+                    )
+            orphaned = connection.execute(
+                """
+                SELECT COUNT(*) FROM cohort_variants v
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM cohort_genotypes g WHERE g.variant_id = v.id
+                )
+                """
+            ).fetchone()[0]
+            connection.execute(
+                """
+                DELETE FROM cohort_variants
+                WHERE NOT EXISTS (
+                  SELECT 1 FROM cohort_genotypes
+                  WHERE cohort_genotypes.variant_id = cohort_variants.id
+                )
+                """
+            )
+        return {
+            "removed": [dict(row) for row in rows],
+            "removed_count": len(rows),
+            "orphan_variants_removed": orphaned,
+            "stats": self.stats(),
+        }
 
     def expand_paths(self, raw_paths: list[str], recursive: bool = True) -> list[Path]:
         candidates: list[Path] = []
@@ -1162,7 +1392,14 @@ class CohortStore:
     def start_import_paths(
         self, raw_paths: list[str], recursive: bool = True, force: bool = False,
         allow_unknown_assembly: bool = False,
+        import_profile: str = "full",
+        prefilter_options: dict | None = None,
+        prefilter: Callable[[Path, Callable[[dict], None]], tuple[Path, dict]] | None = None,
     ) -> dict:
+        if import_profile not in {"full", "prefiltered"}:
+            raise ValueError("import_profile must be 'full' or 'prefiltered'")
+        if import_profile == "prefiltered" and prefilter is None:
+            raise ValueError("prefiltered cohort import requires a prefilter")
         paths = self.expand_paths(raw_paths, recursive)
         with self._import_jobs_lock:
             if any(
@@ -1190,6 +1427,10 @@ class CohortStore:
                 "phase": "queued",
                 "reader_count": 1,
                 "prepared_path": "",
+                "import_profile": import_profile,
+                "prefilter_options": prefilter_options or {},
+                "prefilter_records_scanned": 0,
+                "prefilter_records_retained": 0,
                 "result": None,
                 "error": "",
             }
@@ -1202,7 +1443,10 @@ class CohortStore:
                 self._import_jobs.pop(key, None)
         thread = threading.Thread(
             target=self._run_import_job,
-            args=(job_id, paths, force, allow_unknown_assembly),
+            args=(
+                job_id, paths, force, allow_unknown_assembly, import_profile,
+                prefilter_options or {}, prefilter,
+            ),
             name=f"cohort-import-{job_id[:8]}",
             daemon=True,
         )
@@ -1222,6 +1466,9 @@ class CohortStore:
     def _run_import_job(
         self, job_id: str, paths: list[Path], force: bool,
         allow_unknown_assembly: bool,
+        import_profile: str,
+        prefilter_options: dict,
+        prefilter: Callable[[Path, Callable[[dict], None]], tuple[Path, dict]] | None,
     ) -> None:
         self._update_import_job(
             job_id, status="running", phase="preparing", started_at=utc_now()
@@ -1231,12 +1478,18 @@ class CohortStore:
         total_records = 0
         total_pass = 0
         total_carriers = 0
+        total_prefilter_scanned = 0
+        total_prefilter_retained = 0
         try:
             for index, path in enumerate(paths):
                 file_size = path.stat().st_size
                 file_records = 0
                 file_pass = 0
                 file_carriers = 0
+                file_prefilter_scanned = 0
+                file_prefilter_retained = 0
+                import_path = path
+                prefilter_metadata: dict = {}
                 self._update_import_job(
                     job_id,
                     current_path=str(path),
@@ -1247,13 +1500,83 @@ class CohortStore:
                     prepared_path="",
                 )
 
+                if prefilter is not None:
+                    def prefilter_progress(update: dict) -> None:
+                        nonlocal file_prefilter_scanned, file_prefilter_retained
+                        file_prefilter_scanned = int(
+                            update.get("records_scanned", file_prefilter_scanned)
+                        )
+                        file_prefilter_retained = int(
+                            update.get("records_retained", file_prefilter_retained)
+                        )
+                        percent = max(
+                            0.0, min(100.0, float(update.get("progress", 0) or 0))
+                        )
+                        self._update_import_job(
+                            job_id,
+                            processed_bytes=completed_bytes + int(
+                                file_size * 0.65 * percent / 100.0
+                            ),
+                            current_file_bytes=int(
+                                file_size * 0.65 * percent / 100.0
+                            ),
+                            phase=str(update.get("phase") or "prefiltering"),
+                            reader_count=int(update.get("reader_count", 1) or 1),
+                            prefilter_records_scanned=(
+                                total_prefilter_scanned + file_prefilter_scanned
+                            ),
+                            prefilter_records_retained=(
+                                total_prefilter_retained + file_prefilter_retained
+                            ),
+                        )
+
+                    try:
+                        import_path, prefilter_metadata = prefilter(
+                            path, prefilter_progress
+                        )
+                    except Exception as error:
+                        results.append({
+                            "path": str(path),
+                            "status": "failed",
+                            "import_profile": import_profile,
+                            "prefilter_records_scanned": file_prefilter_scanned,
+                            "prefilter_records_retained": file_prefilter_retained,
+                            "error": str(error),
+                        })
+                        completed_bytes += file_size
+                        total_prefilter_scanned += file_prefilter_scanned
+                        total_prefilter_retained += file_prefilter_retained
+                        self._update_import_job(
+                            job_id,
+                            completed_files=index + 1,
+                            processed_bytes=completed_bytes,
+                            current_file_bytes=file_size,
+                            prefilter_records_scanned=total_prefilter_scanned,
+                            prefilter_records_retained=total_prefilter_retained,
+                        )
+                        continue
+                    file_prefilter_scanned = int(
+                        prefilter_metadata.get(
+                            "records_scanned", file_prefilter_scanned
+                        )
+                    )
+                    file_prefilter_retained = int(
+                        prefilter_metadata.get(
+                            "records_retained", file_prefilter_retained
+                        )
+                    )
+
                 def progress(update: dict) -> None:
                     nonlocal file_records, file_pass, file_carriers
                     file_records = int(update.get("records_processed", file_records))
                     file_pass = int(update.get("pass_records", file_pass))
                     file_carriers = int(update.get("carrier_count", file_carriers))
-                    current_bytes = min(
+                    import_bytes = min(
                         file_size, int(update.get("processed_bytes", 0))
+                    )
+                    current_bytes = (
+                        int(file_size * 0.65 + import_bytes * 0.35)
+                        if prefilter is not None else import_bytes
                     )
                     changes = {
                         "processed_bytes": completed_bytes + current_bytes,
@@ -1270,10 +1593,14 @@ class CohortStore:
 
                 try:
                     result = self.import_vcf(
-                        path,
+                        import_path,
                         force=force,
                         allow_unknown_assembly=allow_unknown_assembly,
                         progress=progress,
+                        source_path=path,
+                        import_profile=import_profile,
+                        prefilter_options=prefilter_options,
+                        prefilter_metadata=prefilter_metadata,
                     )
                 except Exception as error:
                     result = {
@@ -1286,6 +1613,8 @@ class CohortStore:
                 total_records += file_records
                 total_pass += int(result.get("pass_records", file_pass) or 0)
                 total_carriers += int(result.get("carrier_count", file_carriers) or 0)
+                total_prefilter_scanned += file_prefilter_scanned
+                total_prefilter_retained += file_prefilter_retained
                 self._update_import_job(
                     job_id,
                     completed_files=index + 1,
@@ -1294,6 +1623,8 @@ class CohortStore:
                     records_processed=total_records,
                     pass_records=total_pass,
                     carrier_count=total_carriers,
+                    prefilter_records_scanned=total_prefilter_scanned,
+                    prefilter_records_retained=total_prefilter_retained,
                 )
             result = {
                 "files": results,
@@ -1347,6 +1678,12 @@ class CohortStore:
                 and existing["mtime_ns"] == stat.st_mtime_ns
             ):
                 result = dict(existing)
+                try:
+                    result["prefilter_options"] = json.loads(
+                        result.get("prefilter_options") or "{}"
+                    )
+                except json.JSONDecodeError:
+                    result["prefilter_options"] = {}
                 result.update({"status": "unchanged"})
                 if progress:
                     progress({"processed_bytes": stat.st_size})
@@ -1483,8 +1820,9 @@ class CohortStore:
                                     INSERT INTO cohort_variants(
                                       variant_key, chrom, pos, ref, alt, rsid,
                                       original_assembly, original_chrom, original_pos,
-                                      original_ref, original_alt
-                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      original_ref, original_alt,
+                                      unscored_indel_reasons
+                                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                                     ON CONFLICT(variant_key) DO UPDATE SET
                                       rsid = CASE
                                         WHEN excluded.rsid IS NOT NULL AND excluded.rsid != '.'
@@ -1508,6 +1846,10 @@ class CohortStore:
                                       original_alt=COALESCE(
                                         cohort_variants.original_alt,
                                         excluded.original_alt
+                                      ),
+                                      unscored_indel_reasons=COALESCE(
+                                        NULLIF(excluded.unscored_indel_reasons, ''),
+                                        cohort_variants.unscored_indel_reasons
                                       )
                                     """,
                                     (
@@ -1518,6 +1860,9 @@ class CohortStore:
                                         original["pos"],
                                         original["ref"] or None,
                                         original["alt"] or None,
+                                        allele_info_value(
+                                            info, "IEI_UNSCORED_INDEL", alt_index
+                                        ) or None,
                                     ),
                                 )
                                 variant_id = connection.execute(
@@ -1570,7 +1915,11 @@ class CohortStore:
                                     INSERT INTO cohort_annotations(
                                       variant_id, gene, gene_id, transcript, hgvsc, hgvsp,
                                       consequence, impact, gnomad_popmax, cadd, alpha_missense,
-                                      spliceai, clinvar, clinvar_conflicting,
+                                      spliceai, promoterai, logofunc_prediction,
+                                      logofunc_neutral, logofunc_gof, logofunc_lof,
+                                      logofunc_allele_available, logofunc_source_transcript,
+                                      logofunc_source_hgvsp, logofunc_match,
+                                      clinvar, clinvar_conflicting,
                                       loftee, loftee_50bp,
                                       loftee_50bp_original, loftee_50bp_changed,
                                       ptc_distance, ptc_calc_status, mane, picked,
@@ -1578,7 +1927,11 @@ class CohortStore:
                                     ) VALUES (
                                       :variant_id, :gene, :gene_id, :transcript, :hgvsc, :hgvsp,
                                       :consequence, :impact, :gnomad_popmax, :cadd, :alpha_missense,
-                                      :spliceai, :clinvar, :clinvar_conflicting,
+                                      :spliceai, :promoterai, :logofunc_prediction,
+                                      :logofunc_neutral, :logofunc_gof, :logofunc_lof,
+                                      :logofunc_allele_available, :logofunc_source_transcript,
+                                      :logofunc_source_hgvsp, :logofunc_match,
+                                      :clinvar, :clinvar_conflicting,
                                       :loftee, :loftee_50bp,
                                       :loftee_50bp_original, :loftee_50bp_changed,
                                       :ptc_distance, :ptc_calc_status, :mane, :picked,
@@ -1592,6 +1945,15 @@ class CohortStore:
                                       cadd=COALESCE(excluded.cadd, cohort_annotations.cadd),
                                       alpha_missense=COALESCE(excluded.alpha_missense, cohort_annotations.alpha_missense),
                                       spliceai=COALESCE(excluded.spliceai, cohort_annotations.spliceai),
+                                      promoterai=COALESCE(excluded.promoterai, cohort_annotations.promoterai),
+                                      logofunc_prediction=COALESCE(NULLIF(excluded.logofunc_prediction, ''), cohort_annotations.logofunc_prediction),
+                                      logofunc_neutral=COALESCE(excluded.logofunc_neutral, cohort_annotations.logofunc_neutral),
+                                      logofunc_gof=COALESCE(excluded.logofunc_gof, cohort_annotations.logofunc_gof),
+                                      logofunc_lof=COALESCE(excluded.logofunc_lof, cohort_annotations.logofunc_lof),
+                                      logofunc_allele_available=MAX(excluded.logofunc_allele_available, cohort_annotations.logofunc_allele_available),
+                                      logofunc_source_transcript=COALESCE(NULLIF(excluded.logofunc_source_transcript, ''), cohort_annotations.logofunc_source_transcript),
+                                      logofunc_source_hgvsp=COALESCE(NULLIF(excluded.logofunc_source_hgvsp, ''), cohort_annotations.logofunc_source_hgvsp),
+                                      logofunc_match=COALESCE(NULLIF(excluded.logofunc_match, ''), cohort_annotations.logofunc_match),
                                       clinvar=COALESCE(NULLIF(excluded.clinvar, ''), cohort_annotations.clinvar),
                                       clinvar_conflicting=COALESCE(NULLIF(excluded.clinvar_conflicting, ''), cohort_annotations.clinvar_conflicting),
                                       loftee=COALESCE(NULLIF(excluded.loftee, ''), cohort_annotations.loftee),
@@ -1909,6 +2271,9 @@ class CohortStore:
         existing: sqlite3.Row | None,
         import_mode: str,
         reader_count: int,
+        import_profile: str,
+        prefilter_options_json: str,
+        prefilter_metadata: dict,
     ) -> tuple[int, int]:
         stat = source_path.stat()
         aliases = [f"stage_{index}" for index in range(len(stages))]
@@ -1937,8 +2302,10 @@ class CohortStore:
                 INSERT INTO cohort_files(
                   path, size_bytes, mtime_ns, imported_at, assembly,
                   lifted_from_assembly, prepared_path, index_path,
-                  import_mode, reader_count, preparation_warning
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  import_mode, reader_count, preparation_warning,
+                  import_profile, prefilter_options,
+                  prefilter_records_scanned, prefilter_records_retained
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(source_path), stat.st_size, stat.st_mtime_ns, utc_now(),
@@ -1947,6 +2314,9 @@ class CohortStore:
                     str(prepared.path),
                     str(prepared.index_path) if prepared.index_path else None,
                     import_mode, reader_count, prepared.warning,
+                    import_profile, prefilter_options_json,
+                    int(prefilter_metadata.get("records_scanned", 0) or 0),
+                    int(prefilter_metadata.get("records_retained", 0) or 0),
                 ),
             ).lastrowid
             connection.executemany(
@@ -1959,11 +2329,11 @@ class CohortStore:
                     INSERT INTO cohort_variants(
                       variant_key, chrom, pos, ref, alt, rsid,
                       original_assembly, original_chrom, original_pos,
-                      original_ref, original_alt
+                      original_ref, original_alt, unscored_indel_reasons
                     )
                     SELECT variant_key, chrom, pos, ref, alt, rsid,
                            original_assembly, original_chrom, original_pos,
-                           original_ref, original_alt
+                           original_ref, original_alt, unscored_indel_reasons
                     FROM {alias}.stage_variants WHERE 1
                     ON CONFLICT(variant_key) DO UPDATE SET
                       rsid=CASE
@@ -1978,13 +2348,19 @@ class CohortStore:
                       original_ref=COALESCE(
                         cohort_variants.original_ref, excluded.original_ref),
                       original_alt=COALESCE(
-                        cohort_variants.original_alt, excluded.original_alt)
+                        cohort_variants.original_alt, excluded.original_alt),
+                      unscored_indel_reasons=COALESCE(
+                        NULLIF(excluded.unscored_indel_reasons, ''),
+                        cohort_variants.unscored_indel_reasons)
                 """)
                 connection.execute(f"""
                     INSERT INTO cohort_annotations(
                       variant_id, gene, gene_id, transcript, hgvsc, hgvsp,
                       consequence, impact, gnomad_popmax, cadd, alpha_missense,
-                      spliceai, clinvar, clinvar_conflicting, loftee, loftee_50bp,
+                      spliceai, promoterai, logofunc_prediction, logofunc_neutral,
+                      logofunc_gof, logofunc_lof, logofunc_allele_available,
+                      logofunc_source_transcript, logofunc_source_hgvsp,
+                      logofunc_match, clinvar, clinvar_conflicting, loftee, loftee_50bp,
                       loftee_50bp_original, loftee_50bp_changed, ptc_distance,
                       ptc_calc_status, mane, picked, repeat_masker, segdup
                     )
@@ -1993,6 +2369,11 @@ class CohortStore:
                            annotation.consequence, annotation.impact,
                            annotation.gnomad_popmax, annotation.cadd,
                            annotation.alpha_missense, annotation.spliceai,
+                           annotation.promoterai, annotation.logofunc_prediction,
+                           annotation.logofunc_neutral, annotation.logofunc_gof,
+                           annotation.logofunc_lof, annotation.logofunc_allele_available,
+                           annotation.logofunc_source_transcript,
+                           annotation.logofunc_source_hgvsp, annotation.logofunc_match,
                            annotation.clinvar, annotation.clinvar_conflicting,
                            annotation.loftee, annotation.loftee_50bp,
                            annotation.loftee_50bp_original,
@@ -2012,6 +2393,15 @@ class CohortStore:
                       cadd=COALESCE(excluded.cadd, cohort_annotations.cadd),
                       alpha_missense=COALESCE(excluded.alpha_missense, cohort_annotations.alpha_missense),
                       spliceai=COALESCE(excluded.spliceai, cohort_annotations.spliceai),
+                      promoterai=COALESCE(excluded.promoterai, cohort_annotations.promoterai),
+                      logofunc_prediction=COALESCE(NULLIF(excluded.logofunc_prediction, ''), cohort_annotations.logofunc_prediction),
+                      logofunc_neutral=COALESCE(excluded.logofunc_neutral, cohort_annotations.logofunc_neutral),
+                      logofunc_gof=COALESCE(excluded.logofunc_gof, cohort_annotations.logofunc_gof),
+                      logofunc_lof=COALESCE(excluded.logofunc_lof, cohort_annotations.logofunc_lof),
+                      logofunc_allele_available=MAX(excluded.logofunc_allele_available, cohort_annotations.logofunc_allele_available),
+                      logofunc_source_transcript=COALESCE(NULLIF(excluded.logofunc_source_transcript, ''), cohort_annotations.logofunc_source_transcript),
+                      logofunc_source_hgvsp=COALESCE(NULLIF(excluded.logofunc_source_hgvsp, ''), cohort_annotations.logofunc_source_hgvsp),
+                      logofunc_match=COALESCE(NULLIF(excluded.logofunc_match, ''), cohort_annotations.logofunc_match),
                       clinvar=COALESCE(NULLIF(excluded.clinvar, ''), cohort_annotations.clinvar),
                       clinvar_conflicting=COALESCE(NULLIF(excluded.clinvar_conflicting, ''), cohort_annotations.clinvar_conflicting),
                       loftee=COALESCE(NULLIF(excluded.loftee, ''), cohort_annotations.loftee),
@@ -2116,15 +2506,26 @@ class CohortStore:
     def import_vcf(
         self, path: Path, force: bool = False, allow_unknown_assembly: bool = False,
         progress: Callable[[dict], None] | None = None,
+        source_path: Path | None = None,
+        import_profile: str = "full",
+        prefilter_options: dict | None = None,
+        prefilter_metadata: dict | None = None,
     ) -> dict:
-        if os.environ.get("IEI_COHORT_LEGACY_IMPORT") == "1":
+        if import_profile not in {"full", "prefiltered"}:
+            raise ValueError("import_profile must be 'full' or 'prefiltered'")
+        if os.environ.get("IEI_COHORT_LEGACY_IMPORT") == "1" and source_path is None:
             return self._import_vcf_rowwise(
                 path, force=force,
                 allow_unknown_assembly=allow_unknown_assembly,
                 progress=progress,
             )
         path = path.resolve()
-        assembly = detect_vcf_assembly(path)
+        source_path = (source_path or path).resolve()
+        prefilter_metadata = prefilter_metadata or {}
+        prefilter_options_json = json.dumps(
+            prefilter_options or {}, sort_keys=True, separators=(",", ":")
+        )
+        assembly = detect_vcf_assembly(source_path)
         if assembly["assembly"] == "conflict":
             raise ValueError("VCF header contains conflicting assembly evidence")
         if assembly["assembly"] == "GRCh37":
@@ -2135,17 +2536,25 @@ class CohortStore:
             raise ValueError(
                 "VCF assembly is ambiguous; confirm it is GRCh38 to index it"
             )
-        stat = path.stat()
+        stat = source_path.stat()
         with self._session() as connection:
             existing = connection.execute(
-                "SELECT * FROM cohort_files WHERE path = ?", (str(path),)
+                "SELECT * FROM cohort_files WHERE path = ?", (str(source_path),)
             ).fetchone()
             if (
                 existing and not force
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
+                and existing["import_profile"] == import_profile
+                and existing["prefilter_options"] == prefilter_options_json
             ):
                 result = dict(existing)
+                try:
+                    result["prefilter_options"] = json.loads(
+                        result.get("prefilter_options") or "{}"
+                    )
+                except json.JSONDecodeError:
+                    result["prefilter_options"] = {}
                 result.update({"status": "unchanged"})
                 if progress:
                     progress({
@@ -2195,7 +2604,7 @@ class CohortStore:
                     "reader_count": reader_count,
                 })
             file_id, variant_count = self._merge_stages(
-                source_path=path,
+                source_path=source_path,
                 prepared=prepared,
                 assembly=assembly,
                 header=header,
@@ -2203,6 +2612,9 @@ class CohortStore:
                 existing=existing,
                 import_mode=import_mode,
                 reader_count=reader_count,
+                import_profile=import_profile,
+                prefilter_options_json=prefilter_options_json,
+                prefilter_metadata=prefilter_metadata,
             )
 
         pass_records = sum(stage["pass_records"] for stage in stages)
@@ -2211,7 +2623,7 @@ class CohortStore:
         records_processed = sum(stage["records_processed"] for stage in stages)
         result = {
             "id": file_id,
-            "path": str(path),
+            "path": str(source_path),
             "status": "imported",
             "sample_count": len(header.samples),
             "pass_records": pass_records,
@@ -2225,6 +2637,14 @@ class CohortStore:
             "reader_count": reader_count,
             "preparation_warning": prepared.warning,
             "cache_hit": prepared.cache_hit,
+            "import_profile": import_profile,
+            "prefilter_options": prefilter_options or {},
+            "prefilter_records_scanned": int(
+                prefilter_metadata.get("records_scanned", 0) or 0
+            ),
+            "prefilter_records_retained": int(
+                prefilter_metadata.get("records_retained", 0) or 0
+            ),
         }
         if progress:
             progress({
@@ -2308,6 +2728,29 @@ class CohortStore:
                 if payload.get(key) is not None:
                     annotation_conditions.append(f"{column} >= ?")
                     annotation_parameters.append(float(payload[key]))
+            logofunc_class = str(payload.get("logofunc_class") or "").strip()
+            if logofunc_class:
+                if logofunc_class not in {"GOF", "LOF", "Neutral"}:
+                    raise ValueError("logofunc_class must be GOF, LOF, or Neutral")
+                logofunc_score_column = {
+                    "GOF": "logofunc_gof",
+                    "LOF": "logofunc_lof",
+                    "Neutral": "logofunc_neutral",
+                }[logofunc_class]
+                clause = (
+                    "EXISTS (SELECT 1 FROM cohort_annotations lf_filter "
+                    "WHERE lf_filter.variant_id = a.variant_id "
+                    "AND lf_filter.gene = a.gene "
+                    "AND lf_filter.logofunc_prediction = ? "
+                    "AND lf_filter.logofunc_match = 'allele_transcript_protein'"
+                )
+                annotation_parameters.append(logofunc_class)
+                if payload.get("min_logofunc_probability") is not None:
+                    clause += f" AND lf_filter.{logofunc_score_column} >= ?"
+                    annotation_parameters.append(
+                        float(payload["min_logofunc_probability"])
+                    )
+                annotation_conditions.append(clause + ")")
             if payload.get("mane_only", True):
                 annotation_conditions.append(
                     "(a.mane = 1 OR (a.picked = 1 AND NOT EXISTS ("
@@ -2373,19 +2816,41 @@ class CohortStore:
             FROM cohort_annotations a
             JOIN matched_variants mv ON mv.id = a.variant_id
             WHERE {annotation_where}
+          ),
+          logofunc AS (
+            SELECT source.*,
+              ROW_NUMBER() OVER (
+                PARTITION BY source.variant_id, source.gene
+                ORDER BY source.id
+              ) AS logofunc_rank
+            FROM cohort_annotations source
+            WHERE source.logofunc_match = 'allele_transcript_protein'
           )
           SELECT
             v.variant_key, v.chrom, v.pos, v.ref, v.alt, v.rsid,
             v.original_assembly, v.original_chrom, v.original_pos,
-            v.original_ref, v.original_alt,
+            v.original_ref, v.original_alt, v.unscored_indel_reasons,
             a.gene, a.gene_id, a.transcript, a.hgvsc, a.hgvsp,
             a.consequence, a.impact, a.gnomad_popmax, a.cadd,
-            a.alpha_missense, a.spliceai, a.clinvar,
+            a.alpha_missense, a.spliceai, a.promoterai,
+            COALESCE(NULLIF(a.logofunc_prediction, ''), lf.logofunc_prediction) AS logofunc_prediction,
+            COALESCE(a.logofunc_neutral, lf.logofunc_neutral) AS logofunc_neutral,
+            COALESCE(a.logofunc_gof, lf.logofunc_gof) AS logofunc_gof,
+            COALESCE(a.logofunc_lof, lf.logofunc_lof) AS logofunc_lof,
+            MAX(a.logofunc_allele_available, COALESCE(lf.logofunc_allele_available, 0)) AS logofunc_allele_available,
+            COALESCE(lf.logofunc_source_transcript, a.logofunc_source_transcript) AS logofunc_source_transcript,
+            COALESCE(lf.logofunc_source_hgvsp, a.logofunc_source_hgvsp) AS logofunc_source_hgvsp,
+            CASE WHEN lf.id IS NOT NULL AND a.id != lf.id
+              THEN 'source_transcript_match_elsewhere'
+              ELSE COALESCE(a.logofunc_match, lf.logofunc_match) END AS logofunc_match,
+            a.clinvar,
             a.clinvar_conflicting, a.loftee,
             a.loftee_50bp, a.loftee_50bp_original, a.loftee_50bp_changed,
             a.ptc_distance, a.ptc_calc_status,
             a.mane, a.picked, a.repeat_masker, a.segdup,
-            s.name AS sample, f.path AS source_path,
+            s.id AS sample_entry_id, s.name AS sample,
+            f.id AS source_file_id, f.path AS source_path,
+            f.import_profile,
             g.genotype, g.zygosity, g.phased, g.dp, g.gq,
             g.allele_balance, g.qual, g.haplotype_frame_status,
             g.haplotype_frame_partners, g.haplotype_protein_change,
@@ -2394,6 +2859,8 @@ class CohortStore:
           FROM cohort_genotypes g
           JOIN matched_variants v ON v.id = g.variant_id
           JOIN ranked a ON a.variant_id = v.id AND a.annotation_rank = 1
+          LEFT JOIN logofunc lf ON lf.variant_id = a.variant_id
+            AND lf.gene = a.gene AND lf.logofunc_rank = 1
           JOIN cohort_samples s ON s.id = g.sample_id
           JOIN cohort_files f ON f.id = s.file_id
           WHERE {genotype_where}
@@ -2435,12 +2902,286 @@ class CohortStore:
             "rows": rows,
         }
 
+    def variant_detail(self, variant_key_value: str) -> dict:
+        """Return all stored transcripts and carriers for one exact allele."""
+        cleaned = str(variant_key_value or "").strip()
+        parsed = self._parse_variant_query(cleaned)
+        if not parsed or parsed[0] != "v.variant_key = ?":
+            raise ValueError("variant_key must be CHROM:POS:REF:ALT")
+        canonical_key = parsed[1][0]
+        result = self.query({
+            "mode": "variant", "query": canonical_key, "limit": 5_000,
+        })
+        if not result["rows"]:
+            raise ValueError("variant is not present in the cohort index")
+        with self._session() as connection:
+            annotations = connection.execute(
+                """
+                SELECT a.gene, a.gene_id, a.transcript, a.hgvsc, a.hgvsp,
+                       a.consequence, a.impact, a.gnomad_popmax, a.cadd,
+                       a.alpha_missense, a.spliceai, a.promoterai,
+                       a.logofunc_prediction, a.logofunc_neutral,
+                       a.logofunc_gof, a.logofunc_lof,
+                       a.logofunc_allele_available,
+                       a.logofunc_source_transcript, a.logofunc_source_hgvsp,
+                       a.logofunc_match, a.clinvar,
+                       a.clinvar_conflicting, a.loftee, a.loftee_50bp,
+                       a.loftee_50bp_original, a.loftee_50bp_changed,
+                       a.ptc_distance, a.ptc_calc_status, a.mane, a.picked,
+                       a.repeat_masker, a.segdup
+                FROM cohort_annotations a
+                JOIN cohort_variants v ON v.id = a.variant_id
+                WHERE v.variant_key = ?
+                ORDER BY a.mane DESC, a.picked DESC,
+                  CASE a.impact
+                    WHEN 'HIGH' THEN 1 WHEN 'MODERATE' THEN 2
+                    WHEN 'LOW' THEN 3 WHEN 'MODIFIER' THEN 4 ELSE 5 END,
+                  a.gene, a.transcript
+                """,
+                (canonical_key,),
+            ).fetchall()
+        result["annotations"] = [
+            self._serialize_annotation_row(row) for row in annotations
+        ]
+        return result
+
+    def review_records(self, selections: list[dict]) -> dict:
+        """Fetch complete exact-allele records from indexed source VCFs.
+
+        SQLite remains the cohort search index. Full INFO, CSQ, and FORMAT
+        evidence is retrieved only when a user opens selected calls in REVIEW.
+        The returned VCF snippets contain only requested sample columns and
+        exact records, keeping the response independent of source VCF size.
+        """
+        if not isinstance(selections, list):
+            raise ValueError("selections must be a list")
+        if not selections:
+            raise ValueError("select at least one cohort carrier for review")
+        if len(selections) > 5_000:
+            raise ValueError("a single cohort review is limited to 5,000 carrier calls")
+
+        requested: dict[tuple[str, int], dict] = {}
+        for selection in selections:
+            if not isinstance(selection, dict):
+                raise ValueError("each review selection must be an object")
+            cleaned = str(selection.get("variant_key") or "").strip()
+            parsed = self._parse_variant_query(cleaned)
+            if not parsed or parsed[0] != "v.variant_key = ?":
+                raise ValueError("variant_key must be CHROM:POS:REF:ALT")
+            try:
+                sample_entry_id = int(selection.get("sample_entry_id"))
+            except (TypeError, ValueError) as error:
+                raise ValueError("sample_entry_id must be an integer") from error
+            if sample_entry_id < 1:
+                raise ValueError("sample_entry_id must be a positive integer")
+            canonical_key = parsed[1][0]
+            requested[(canonical_key, sample_entry_id)] = {
+                "variant_key": canonical_key,
+                "sample_entry_id": sample_entry_id,
+            }
+
+        rows: list[sqlite3.Row] = []
+        requested_pairs = sorted(requested)
+        with self._session() as connection:
+            for offset in range(0, len(requested_pairs), 300):
+                batch = requested_pairs[offset:offset + 300]
+                requested_values = ",".join("(?, ?)" for _ in batch)
+                parameters = [value for pair in batch for value in pair]
+                rows.extend(connection.execute(
+                    f"""
+                    WITH requested(variant_key, sample_entry_id) AS (
+                        VALUES {requested_values}
+                    )
+                    SELECT v.variant_key, v.chrom, v.pos, v.ref, v.alt,
+                           s.id AS sample_entry_id, s.name AS sample,
+                           f.id AS source_file_id, f.path AS source_path,
+                           f.prepared_path, f.index_path
+                    FROM requested request
+                    JOIN cohort_variants v
+                      ON v.variant_key = request.variant_key
+                    JOIN cohort_genotypes g
+                      ON g.variant_id = v.id
+                    JOIN cohort_samples s ON s.id = g.sample_id
+                      AND s.id = request.sample_entry_id
+                    JOIN cohort_files f ON f.id = s.file_id
+                    """,
+                    parameters,
+                ).fetchall())
+
+        matched = {
+            (row["variant_key"], row["sample_entry_id"]): row
+            for row in rows
+            if (row["variant_key"], row["sample_entry_id"]) in requested
+        }
+        missing_index_entries = sorted(set(requested) - set(matched))
+        warnings = [
+            f"{variant}: sample entry {sample_id} is no longer present in the cohort index"
+            for variant, sample_id in missing_index_entries
+        ]
+        grouped: dict[int, list[sqlite3.Row]] = {}
+        for row in matched.values():
+            grouped.setdefault(row["source_file_id"], []).append(row)
+
+        files: list[dict] = []
+        resolved: set[tuple[str, int]] = set()
+        if self.hts_backend is None:
+            warnings.append(
+                "bcftools/tabix is unavailable; full source annotations could not be loaded"
+            )
+        else:
+            for source_file_id, group in grouped.items():
+                source_path = Path(group[0]["source_path"])
+                prepared_value = group[0]["prepared_path"]
+                prepared_path = Path(prepared_value) if prepared_value else source_path
+                if not prepared_path.is_file():
+                    warnings.append(
+                        f"{source_path.name}: indexed review VCF is missing; refresh this cohort source"
+                    )
+                    continue
+                saved_index = (
+                    Path(group[0]["index_path"])
+                    if group[0]["index_path"] else None
+                )
+                candidate_indexes = [
+                    saved_index,
+                    Path(f"{prepared_path}.tbi"),
+                    Path(f"{prepared_path}.csi"),
+                ]
+                if not any(path and path.is_file() for path in candidate_indexes):
+                    warnings.append(
+                        f"{source_path.name}: tabix/CSI index is missing; refresh this cohort source"
+                    )
+                    continue
+
+                try:
+                    header = read_vcf_header(prepared_path)
+                    header_lines = read_vcf_header_lines(prepared_path)
+                    header_columns = header_lines[-1].split("\t")
+                    sample_column = {
+                        sample: index + 9 for index, sample in enumerate(header.samples)
+                    }
+                    selected_samples = []
+                    for row in sorted(group, key=lambda value: value["sample_entry_id"]):
+                        if row["sample"] not in sample_column:
+                            warnings.append(
+                                f"{source_path.name}: sample {row['sample']} is absent from the indexed VCF header"
+                            )
+                            continue
+                        if row["sample"] not in selected_samples:
+                            selected_samples.append(row["sample"])
+                    if not selected_samples:
+                        continue
+
+                    available_contigs = list(header.contigs)
+                    if not available_contigs:
+                        available_contigs = self.hts_backend.list_contigs(prepared_path)
+                    contig_by_normalized = {
+                        normalize_chromosome(contig): contig
+                        for contig in available_contigs
+                    }
+                    targets: dict[str, tuple[str, int, str, str]] = {}
+                    for row in group:
+                        targets[row["variant_key"]] = (
+                            row["chrom"], row["pos"], row["ref"].upper(),
+                            row["alt"].upper(),
+                        )
+                    regions = sorted({
+                        f"{contig_by_normalized.get(chrom, chrom)}:{pos}-{pos}"
+                        for chrom, pos, _, _ in targets.values()
+                    })
+                    records: list[str] = []
+                    found_variants: set[str] = set()
+                    for line in self.hts_backend.iter_records(prepared_path, regions):
+                        columns = line.rstrip("\r\n").split("\t")
+                        if len(columns) < 9 + len(header.samples):
+                            continue
+                        try:
+                            record_pos = int(columns[1])
+                        except ValueError:
+                            continue
+                        record_chrom = normalize_chromosome(columns[0])
+                        record_ref = columns[3].upper()
+                        record_alts = {alt.upper() for alt in columns[4].split(",")}
+                        matching_keys = {
+                            key for key, (chrom, pos, ref, alt) in targets.items()
+                            if record_chrom == chrom and record_pos == pos
+                            and record_ref == ref and alt in record_alts
+                        }
+                        if not matching_keys:
+                            continue
+                        found_variants.update(matching_keys)
+                        projected = columns[:9] + [
+                            columns[sample_column[sample]] for sample in selected_samples
+                        ]
+                        records.append("\t".join(projected))
+
+                    projected_header = [*header_lines[:-1], "\t".join(
+                        header_columns[:9] + selected_samples
+                    )]
+                    if records:
+                        review_name = f"cohort-{source_file_id}-{source_path.name}"
+                        for suffix in (".vcf.gz", ".vcf.bgz", ".vcf", ".gz", ".bgz"):
+                            if review_name.lower().endswith(suffix):
+                                review_name = review_name[:-len(suffix)]
+                                break
+                        review_name += ".vcf"
+                        file_selections = []
+                        for row in group:
+                            pair = (row["variant_key"], row["sample_entry_id"])
+                            if (
+                                row["variant_key"] in found_variants
+                                and row["sample"] in selected_samples
+                            ):
+                                resolved.add(pair)
+                                file_selections.append({
+                                    "variant_key": row["variant_key"],
+                                    "sample_entry_id": row["sample_entry_id"],
+                                    "sample": row["sample"],
+                                })
+                        files.append({
+                            "source_file_id": source_file_id,
+                            "source_path": str(source_path),
+                            "prepared_path": str(prepared_path),
+                            "name": review_name,
+                            "selections": file_selections,
+                            "vcf": "\n".join([*projected_header, *records, ""]),
+                        })
+                    for key in sorted(set(targets) - found_variants):
+                        warnings.append(
+                            f"{source_path.name}: exact allele {key} was not found by tabix"
+                        )
+                except (OSError, RuntimeError, ValueError) as error:
+                    warnings.append(
+                        f"{source_path.name}: source annotations could not be loaded ({error})"
+                    )
+
+        unresolved = [
+            requested[pair] for pair in sorted(set(requested) - resolved)
+        ]
+        return {
+            "requested": len(requested),
+            "resolved": len(resolved),
+            "files": files,
+            "unresolved": unresolved,
+            "warnings": warnings,
+        }
+
     @staticmethod
     def _serialize_query_row(row: sqlite3.Row) -> dict:
         result = dict(row)
         for key in (
             "mane", "picked", "repeat_masker", "segdup", "phased",
-            "loftee_50bp_changed",
+            "loftee_50bp_changed", "logofunc_allele_available",
+        ):
+            result[key] = bool(result[key])
+        return result
+
+    @staticmethod
+    def _serialize_annotation_row(row: sqlite3.Row) -> dict:
+        result = dict(row)
+        for key in (
+            "mane", "picked", "repeat_masker", "segdup",
+            "loftee_50bp_changed", "logofunc_allele_available",
         ):
             result[key] = bool(result[key])
         return result

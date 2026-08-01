@@ -35,6 +35,12 @@ FIELDS = [
     "LoF_50_BP_RULE_original",
     "LoF_50_BP_RULE_PTC",
     "PTC_calc_status",
+    "LoGoFunc_prediction",
+    "LoGoFunc_neutral",
+    "LoGoFunc_GOF",
+    "LoGoFunc_LOF",
+    "LoGoFunc_allele_available",
+    "LoGoFunc_match",
 ]
 
 
@@ -54,6 +60,11 @@ def write_config(path: pathlib.Path) -> None:
                     },
                     "LoF": {"enabled": True, "required": True},
                     "SpliceAI": {"enabled": True, "required": True},
+                    "LoGoFunc": {
+                        "enabled": True,
+                        "required": False,
+                        "version": "Zenodo 13835271 (2024-09-24)",
+                    },
                 },
                 "annotation_qc": {
                     "critical_dbnsfp_fields": [
@@ -101,6 +112,18 @@ def write_vcf(path: pathlib.Path, missing_alpha: bool = False) -> None:
                 "0",
                 "0",
                 "Pathogenic",
+                "",
+                "",
+                "",
+                "",
+                "",
+                "ok",
+                "GOF",
+                "0.05",
+                "0.90",
+                "0.05",
+                "1",
+                "allele_transcript_protein",
             )
             + ";ClinVar_path_aa_match=1"
         ),
@@ -170,6 +193,9 @@ def test_certificate_uses_annotation_specific_denominators(tmp_path):
     assert report["details"]["loftee_ptc_50bp"]["recomputed_records"] == 1
     assert report["details"]["spliceai"]["eligible_mane_snv_records"] == 2
     assert report["details"]["promoterAI"]["status"] == "SKIPPED_NOT_INSTALLED"
+    assert report["details"]["logofunc"]["allele_available_records"] == 1
+    assert report["details"]["logofunc"]["exact_transcript_protein_match_records"] == 1
+    assert report["details"]["logofunc"]["prediction_class_counts"] == {"GOF": 1}
     assert "Annotation completeness certificate" in render_html(report)
 
 

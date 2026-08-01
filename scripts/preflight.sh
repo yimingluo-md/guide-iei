@@ -224,6 +224,35 @@ if mode != "--dry-run":
         for key in ("snv", "indel"):
             if spliceai.get(key):
                 indexed.append((f"SpliceAI.{key}", absolute(spliceai.get(key)), spliceai.get("required", False)))
+    cadd = plugins.get("CADD_WGS", {}) or {}
+    if cadd.get("enabled"):
+        for key in ("snv", "indels"):
+            indexed.append((
+                f"CADD_WGS.{key}", absolute(cadd.get(key)),
+                cadd.get("required", False),
+            ))
+    promoterai = plugins.get("PromoterAI", {}) or {}
+    if promoterai.get("enabled"):
+        required = promoterai.get("required", False)
+        indexed.append(("PromoterAI", absolute(promoterai.get("file")), required))
+        for key in ("transcript_map", "manifest"):
+            path = absolute(promoterai.get(key))
+            if not path or not os.path.isfile(path):
+                message = f"PromoterAI {key} missing: {path} (run scripts/prepare_promoterai.sh)"
+                (errors if required else warnings).append(message)
+    logofunc = plugins.get("LoGoFunc", {}) or {}
+    if logofunc.get("enabled"):
+        required = logofunc.get("required", False)
+        path = absolute(logofunc.get("file"))
+        indexed.append(("LoGoFunc", path, required))
+        manifest = absolute(logofunc.get("manifest"))
+        if path and os.path.isfile(path) and (
+            not manifest or not os.path.isfile(manifest)
+        ):
+            warnings.append(
+                "LoGoFunc provenance manifest missing: "
+                f"{manifest} (run scripts/prepare_logofunc.sh)"
+            )
     for name, track in (cfg.get("custom_tracks", {}) or {}).items():
         if track.get("enabled") and str(track.get("file", "")).endswith(".gz"):
             indexed.append((name, absolute(track.get("file")), track.get("required", False)))
@@ -256,6 +285,15 @@ RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
 IMAGE="$(yaml_get "$CONFIG" container.image)"; IMAGE="${IMAGE:-vep-annotate:latest}"
 command -v "$RUNTIME" >/dev/null 2>&1 || die "container runtime not found: $RUNTIME"
 CHECK='for tool in vep haplo bgzip tabix bcftools samtools; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }; done; bcftools plugin -l | grep -qx liftover || { echo "missing bcftools +liftover plugin" >&2; exit 2; }'
+if [[ "$(yaml_get "$CONFIG" plugins.PromoterAI.enabled)" == "true" ]]; then
+    CHECK+='; test -r /plugins/PromoterAI.pm || { echo "missing bundled PromoterAI VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
+fi
+if [[ "$(yaml_get "$CONFIG" plugins.LoGoFunc.enabled)" == "true" ]]; then
+    CHECK+='; test -r /plugins/LoGoFunc.pm || { echo "missing bundled LoGoFunc VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
+fi
+if [[ "$(yaml_get "$CONFIG" plugins.CADD_WGS.enabled)" == "true" ]]; then
+    CHECK+='; test -r /plugins/CADD.pm || { echo "missing standard CADD VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
+fi
 case "$RUNTIME" in
     docker|podman)
         # Docker Desktop can occasionally list and run a tagged image while

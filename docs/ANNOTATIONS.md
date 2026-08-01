@@ -20,8 +20,9 @@ work whether or not you have the large/custom datasets on hand.
 |------|---------|------------------|
 | **auto** | VEP cache, reference FASTA, LOFTEE GRCh38 data, SpliceAI masked MANE SNVs, RepeatMasker, SegDup | `scripts/download_references.sh` (SpliceAI is fetched from Ensembl; RepeatMasker/SegDup are fetched from UCSC and cleaned for VEP automatically) |
 | **auto, per-run** | ClinVar | fetched fresh from NCBI on every run by `scripts/fetch_clinvar.sh` |
-| **bring-your-own (large)** | dbNSFP; CADD v1.7 whole genome (WGS only) | large downloads — place the files and point the config at them. dbNSFP needs a one-time rebuild (`scripts/prepare_dbnsfp.sh`); CADD is not downloaded by this software. |
-| **bring-your-own (custom)** | promoterAI, LoGoFunc | license-gated / lab-generated tracks — not scriptable; auto-skipped if absent |
+| **large local** | dbNSFP; CADD v1.7 whole genome (WGS only) | dbNSFP requires academic registration and one-time rebuilding (`scripts/prepare_dbnsfp.sh`). CADD's required score-only files are downloadable/resumable from the UI or `scripts/download_cadd_wgs.sh`. |
+| **bring-your-own (licensed)** | PromoterAI | obtain the two files from Illumina, then prepare them from the local UI or `scripts/prepare_promoterai.sh`; auto-skipped if absent |
+| **optional public** | LoGoFunc | resumable download from Zenodo in the UI or `scripts/download_logofunc.sh`; an existing download can be validated/linked with `scripts/prepare_logofunc.sh`; auto-skipped if absent |
 | **auto (region)** | coding+splice BED | built once from the release-matched Ensembl GTF by `scripts/build_coding_bed.sh`; used to pre-filter the input VCF |
 
 **Design note.** Most precomputed pathogenicity/conservation scores that used
@@ -60,6 +61,9 @@ VEP.
 | dbNSFP | `plugins.dbNSFP` | `path` + `columns` | One file, dozens of scores (CADD, REVEL, AlphaMissense, SIFT, PolyPhen, PrimateAI, MetaRNN, GERP++, phyloP/phastCons…). Core fields are always included; each annotation job can add curated predictors from the local UI. The diagnostic profile pins **v5.3.1a**. Download from dbnsfp.org, then run `scripts/prepare_dbnsfp.sh`. |
 | LoF (LOFTEE) | `plugins.LoF` | `human_ancestor_fa`, `conservation_file`, `gerp_bigwig` | Required by the diagnostic profile. **Must use the LOFTEE `grch38` branch** (baked into the image). `loftee_path: auto` resolves to `$LOFTEE_DIR` (`/opt/vep/src/loftee`) inside the container. |
 | SpliceAI | `plugins.SpliceAI` | `snv` (optional `indel`) | Required by default. `scripts/download_references.sh` fetches Ensembl's GRCh38 masked SNV scores for MANE v1.4. A lab may additionally configure a compatible indexed indel VCF. |
+| CADD v1.7 whole genome | `plugins.CADD_WGS` | `snv`, `indels` | Optional, WGS-only standard CADD plugin. The UI downloads only the official score tables and indexes and emits `CADD_RAW`/`CADD_PHRED`; CADD is licensed for non-commercial use. |
+| PromoterAI | `plugins.PromoterAI` | `file`, `transcript_map`, `manifest` | Optional, WGS-only transcript/TSS-aware plugin. The plugin code is bundled; licensed scores are prepared locally and never shipped. |
+| LoGoFunc | `plugins.LoGoFunc` | `file`, `manifest` | Optional GRCh38 missense-mechanism prediction (Neutral/GOF/LOF probabilities) from [Zenodo 13835271](https://zenodo.org/records/13835271). The plugin requires allele, source transcript, residue, and amino-acid substitution agreement. |
 
 ## Custom tracks (`--custom`)
 
@@ -67,13 +71,26 @@ VEP.
 |-------|-----------|--------|--------|
 | RepeatMasker | `custom_tracks.RepeatMasker` | bed | overlap flag — **auto** from UCSC hg38 `rmsk`, cleaned (see below) |
 | SegmentalDups | `custom_tracks.SegDup` | bed | overlap flag — **auto** from UCSC hg38 `genomicSuperDups`, cleaned |
-| promoterAI | `custom_tracks.promoterAI` | vcf (type=exact) | `promoterAI` — **license-gated** (see below) |
-| CADD v1.7 whole genome | `custom_tracks.CADD_WGS` | vcf (type=exact) | `CADD_RAW`, `CADD_PHRED` — **WGS profile only; manual download/preparation** |
 | ClinVar | `custom_tracks.ClinVar` | vcf (type=exact, coords=0) | `CLNSIG`, `CLNSIGCONF`, `CLNREVSTAT`, `CLNDN` |
-| LoGoFunc | `custom_tracks.LoGoFunc` | vcf (type=exact, coords=0) | `LoGoFunc_GOF`, `LoGoFunc_LOF` — **lab custom track** |
 
 Custom-track fields are joined with `%` in the VEP `--custom` string (VEP's
 multi-field separator), reproducing the original `vep_hg38.sh` behaviour.
+
+### LoGoFunc matching and interpretation
+
+LoGoFunc's public table contains one canonical Ensembl transcript consequence
+for each GRCh38 missense SNV and was generated with VEP 106. This pipeline is
+pinned to VEP 113 and retains all clinical transcript consequences. A genomic
+allele match alone is therefore insufficient: the plugin emits probabilities
+only when the source transcript stable ID, amino-acid position, reference amino
+acid, and alternate amino acid also agree. Allele-only matches are recorded as
+such so transcript-version drift is visible rather than silently misassigned.
+
+The UI can propagate a verified source-transcript prediction alongside the
+preferred MANE row for the same allele and gene, while preserving the source
+transcript and match status. Cohort LoGoFunc filters use only verified matches.
+These are research mechanism predictions, not ClinVar classifications and not
+LOFTEE calls. See [Bayrak et al., Genome Medicine (2023)](https://pubmed.ncbi.nlm.nih.gov/38037155/).
 
 ---
 
@@ -146,38 +163,113 @@ score VCF, add it as `plugins.SpliceAI.indel`; the command builder will pass
 both files to the plugin. This distinction should remain visible when
 interpreting an unannotated indel.
 
-### promoterAI
-promoterAI scores are distributed by Illumina under a **non-commercial license
-form** (not a direct download). Request access at Illumina's PromoterAI page;
-they email a link to the precomputed scores. Convert to a bgzipped,
-tabix-indexed VCF exposing a `promoterAI` INFO field and point
-`custom_tracks.promoterAI.file` at it. Auto-skipped until present.
-The Import page makes this source unavailable for exome-region jobs.
+### PromoterAI
+
+PromoterAI scores are distributed directly by Illumina after the user accepts
+the applicable license at <https://github.com/Illumina/PromoterAI>. This
+software does not download, bundle, upload, or redistribute the score files.
+The supplied folder must contain exactly these two inputs:
+
+- `tss.tsv`
+- `promoterAI_tss500.tsv.gz`
+
+On the local **Annotation datasets** screen, paste the folder's absolute path
+into the PromoterAI card and select **Prepare local files**. The equivalent
+terminal command is:
+
+```bash
+bash scripts/prepare_promoterai.sh /absolute/path/to/PromoterAI
+```
+
+The one-time preparation performs basic schema, coordinate, strand, SNV, and
+numeric-score checks. It collapses transcripts that share the same genomic TSS
+into an indexed table with `score_A`, `score_C`, `score_G`, and `score_T`
+columns, while retaining a separate transcript/TSS map. It writes:
+
+- `references/promoterai/promoterai_scores.tsv.gz` plus `.tbi`
+- `references/promoterai/promoterai_transcripts.tsv`
+- `references/promoterai/promoterai.manifest.json`
+
+The manifest records source filenames, sizes, SHA-256 checksums, row counts,
+the GRCh38 coordinate convention, and checksums for every derived file. It does
+not record a license acknowledgement, agreement date, or license version.
+Small TSS groups present in `tss.tsv` but absent from Illumina's score table are
+left unannotated and listed under `missing_tss`; preparation fails if omissions
+exceed 0.1% instead of silently accepting a materially incomplete source.
+
+The bundled `PromoterAI.pm` VEP plugin annotates an SNV only when its GRCh38
+allele and the VEP transcript's TSS both match. Output includes the signed
+`PromoterAI_score`, TSS, strand-aware distance from the TSS, source transcript,
+and transcript match mode. The review UI automatically detects the score,
+shows it among the default predictors, and offers the optional filter
+`|PromoterAI score| >= 0.8` when the annotation is present.
+
+PromoterAI is deliberately unavailable under **Exome region only**, because
+that profile removes promoter variants before VEP. Use a whole-genome job to
+enable it. A missing local PromoterAI dataset is an explicit optional skip.
 
 ### CADD v1.7 whole genome
 
-The WGS annotation profile offers a separate, optional full-genome CADD v1.7
-track. Download the GRCh38 whole-genome SNV and indel resources from the
-official CADD site, combine or convert them into the configured
-coordinate-sorted VCF representation, and create a tabix/CSI index. The UI only
-registers and validates this bring-your-own file; it intentionally does not
-download it. This is distinct from the coding-region CADD columns already
-provided through dbNSFP.
+The WGS annotation profile offers separate, optional full-genome CADD v1.7
+scores. Select **Download / resume** in the dataset setup screen or run
+`scripts/download_cadd_wgs.sh`. The downloader retrieves only
+`whole_genome_SNVs.tsv.gz`, `gnomad.genomes.r4.0.indel.tsv.gz`, their tabix
+indexes, and official MD5 files (about 83 GiB total). It deliberately skips the
+625 GB/11 GB `inclAnno` files, the 335 GB release bundle, and dbscSNV because
+the standard VEP CADD plugin reports only `CADD_RAW` and `CADD_PHRED`.
+
+The files are queried directly with
+`--plugin CADD,snv=<file>,indels=<file>`; no converted or merged VCF is made.
+This is distinct from the coding-region CADD columns supplied through dbNSFP.
+When both exist, the selected WGS plugin value is authoritative and dbNSFP is
+the fallback. The official indel table covers gnomAD genomes r4.0 indels rather
+than every possible novel indel; absent values remain missing and pass the
+conservative WGS prefilter. CADD is available for non-commercial use.
 
 ### Whole-genome review prefilter
 
 The Import page prepares annotated WGS VCFs as BGZF/tabix input and filters
 chromosome shards with four concurrent readers. The work is a background job;
 the page displays its current phase, percentage, scanned variants, retained
-variants, and active reader count. PASS variants overlapping the configured
-coding+splice BED are always retained before any WGS thresholds are evaluated.
+variants, and active reader count. PASS/QC and the population-frequency rule
+(`gnomAD popmax <= 0.01` or a per-variant unavailable value by default) are
+evaluated before the candidate routes.
 The derived browser-review VCF keeps every retained site while reducing
 redundant CSQ entries to MANE, then PICK, then one fallback per allele/gene.
 Browser intake streams BGZF lines with bounded decompression memory.
-For variants outside that exome region, gnomAD frequency and an optional gene
-interval are AND restrictions, while enabled SpliceAI, absolute promoterAI,
-and CADD thresholds form an OR evidence group. Missing scores remain
-conservatively retained.
+The candidate routes are exonic/essential-splice, qualifying SpliceAI,
+qualifying absolute promoterAI, and one mutually exclusive noncoding-region
+choice: SCREEN Registry V4 cCRE overlap (default), all noncoding regions, or no
+additional noncoding regions. CADD, other predictors, and gene lists are not
+import-time filters. A missing score does not satisfy its score route; a
+qualifying variant can still enter through another route. There are two narrow
+indel safety routes because the configured precomputed reference tracks may be
+SNV-only: an intronic sequence-resolved indel without a SpliceAI value is
+retained, and a sequence-resolved indel overlapping the installed promoterAI
+TSS +/- 500 map without a promoterAI value is retained. Both remain subject to
+PASS/QC and population frequency. They are labeled per ALT with
+`IEI_UNSCORED_INDEL=SpliceAI_intronic`, `PromoterAI_promoter`, or both joined by
+`&`; `.` denotes an ALT for which the flag is not applicable. The exception is
+not applied when a score is present but below threshold, and it is enabled only
+when the corresponding predictor field is declared in that VCF's INFO/CSQ
+schema. A completely absent annotation dataset is therefore not mistaken for
+an unscored indel.
+
+SCREEN cCREs are a native indexed BED resource, not a VEP plugin. Install the
+pinned public Registry V4 GRCh38 BED from the dataset setup screen or with
+`scripts/download_references.sh config/annotation.config.yaml --only ccre`.
+The preparation retains cCRE accessions and overall classes for future display,
+normalizes primary contigs, and creates a BGZF/tabix BED. It also builds a
+compact gene-level TSS table from the release-matched Ensembl 113 GTF.
+
+Variant detail lookup is local and distinguishes overlap, confirmed non-overlap,
+and an unavailable resource. Each overlapping cCRE reports its accession,
+class, and every Ensembl gene whose gene-level TSS lies within 500 kb of the
+cCRE interval, ordered by absolute strand-aware distance. Protein-coding genes
+are displayed by default; an **Include non-protein-coding genes** option reveals
+the complete result while retaining total and biotype counts. This table is
+deliberately not called a target-gene table: proximity does not establish
+regulation, and the nearest or VEP-annotated gene may not be the cCRE's target.
 
 ## Region restriction — coding + splice BED (default)
 
@@ -333,11 +425,12 @@ rules:
 | LOFTEE | records with stop-gained, frameshift, essential splice, or start-lost consequences |
 | PTC 50-bp correction | records with a frameshift consequence |
 | SpliceAI | transcript-overlapping SNVs on a MANE transcript |
+| LoGoFunc allele availability | missense SNVs; exact-match coverage then uses allele-available records |
 
 A field absent from the required VEP schema is a failure. Coverage below its
 configured threshold is a warning. No eligible records is
-`NOT_APPLICABLE`—not a failure. promoterAI is `SKIPPED_NOT_INSTALLED` when its
-licensed source is unavailable.
+`NOT_APPLICABLE`—not a failure. Optional LoGoFunc and promoterAI checks are
+reported as `SKIPPED_NOT_INSTALLED` when their local sources are unavailable.
 
 The complementary regression panel verifies known public examples against the
 actual installed VEP image and data:
@@ -351,5 +444,7 @@ machine-readable report is
 `test/out/regression/annotation_regression.report.json`. The assertions are
 version-aware but avoid brittle exact score values: they check annotation
 presence, expected consequence/gene, a meaningful SpliceAI score, ClinVar
-pathogenicity, LOFTEE classification, and amino-acid matching. The TERT control
-automatically becomes a required promoterAI check when that field is present.
+pathogenicity, LOFTEE classification, and amino-acid matching. Three OR4F5
+controls verify LoGoFunc class, source transcript, and strict match status when
+the public table is installed. The TERT control similarly becomes a required
+promoterAI check when that field is present.

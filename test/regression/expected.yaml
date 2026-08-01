@@ -6,9 +6,37 @@ description: >-
 resource_contract:
   assembly: GRCh38
   dbNSFP: "5.3.1a"
+  LoGoFunc: "Zenodo 13835271 (2024-09-24)"
   vep_image_tag: "release_113.4"
 
 variants:
+  - id: LoGoFunc_OR4F5_p.Lys2Gln
+    key: 1-65568-A-C
+    gene: OR4F5
+    consequence_any: [missense_variant]
+    optional_field_in:
+      LoGoFunc_prediction: [LOF]
+      LoGoFunc_match: [allele_transcript_protein]
+      LoGoFunc_source_transcript: [ENST00000641515]
+
+  - id: LoGoFunc_OR4F5_p.Lys2Asn
+    key: 1-65570-G-C
+    gene: OR4F5
+    consequence_any: [missense_variant]
+    optional_field_in:
+      LoGoFunc_prediction: [Neutral]
+      LoGoFunc_match: [allele_transcript_protein]
+      LoGoFunc_source_transcript: [ENST00000641515]
+
+  - id: LoGoFunc_OR4F5_p.Val4Ala
+    key: 1-69038-T-C
+    gene: OR4F5
+    consequence_any: [missense_variant]
+    optional_field_in:
+      LoGoFunc_prediction: [Neutral]
+      LoGoFunc_match: [allele_transcript_protein]
+      LoGoFunc_source_transcript: [ENST00000641515]
+
   - id: NCSTN_frameshift_PTC_50bp
     key: 1-160343408-AG-A
     gene: NCSTN
@@ -58,6 +86,8 @@ variants:
     # promoterAI is a licensed bring-your-own track. Absence of its CSQ field
     # is an explicit SKIP; if installed, this assertion becomes mandatory.
     optional_any_field_nonempty:
+      - PromoterAI_score
+      - promoterAI_score
       - promoterAI_promoterAI
       - PromoterAI_promoterAI
       - promoterAI

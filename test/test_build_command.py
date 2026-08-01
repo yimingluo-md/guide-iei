@@ -22,8 +22,12 @@ def _full_cfg(root):
         "dbnsfp/dbNSFP5.3.1a_grch38.gz",
         "loftee/human_ancestor.fa.gz", "loftee/loftee.sql",
         "loftee/gerp.bw", "spliceai/snv.vcf.gz", "spliceai/indel.vcf.gz",
-        "custom/rm.bed.gz", "custom/segdup.bed.gz", "custom/promoter.vcf.gz",
-        "clinvar/clinvar.vcf.gz", "custom/logofunc.vcf.gz",
+        "cadd/whole_genome_SNVs.tsv.gz", "cadd/whole_genome_SNVs.tsv.gz.tbi",
+        "cadd/gnomad.genomes.r4.0.indel.tsv.gz", "cadd/gnomad.genomes.r4.0.indel.tsv.gz.tbi",
+        "promoterai/promoterai_scores.tsv.gz", "promoterai/promoterai_transcripts.tsv",
+        "custom/rm.bed.gz", "custom/segdup.bed.gz",
+        "clinvar/clinvar.vcf.gz", "logofunc/LoGoFunc.csv.gz",
+        "logofunc/LoGoFunc.csv.gz.tbi",
     ]:
         _touch(root, rel)
     return {
@@ -52,21 +56,29 @@ def _full_cfg(root):
                     "gerp_bigwig": j("loftee/gerp.bw")},
             "SpliceAI": {"enabled": True, "snv": j("spliceai/snv.vcf.gz"),
                          "indel": j("spliceai/indel.vcf.gz")},
+            "CADD_WGS": {
+                "enabled": True,
+                "snv": j("cadd/whole_genome_SNVs.tsv.gz"),
+                "indels": j("cadd/gnomad.genomes.r4.0.indel.tsv.gz"),
+            },
+            "PromoterAI": {
+                "enabled": True,
+                "file": j("promoterai/promoterai_scores.tsv.gz"),
+                "transcript_map": j("promoterai/promoterai_transcripts.tsv"),
+            },
+            "LoGoFunc": {
+                "enabled": True,
+                "file": j("logofunc/LoGoFunc.csv.gz"),
+            },
         },
         "custom_tracks": {
             "RepeatMasker": {"enabled": True, "file": j("custom/rm.bed.gz"),
                              "short_name": "RepeatMasker", "format": "bed"},
             "SegDup": {"enabled": True, "file": j("custom/segdup.bed.gz"),
                        "short_name": "SegDup", "format": "bed"},
-            "promoterAI": {"enabled": True, "file": j("custom/promoter.vcf.gz"),
-                           "short_name": "promoterAI", "format": "vcf",
-                           "type": "exact", "fields": ["promoterAI"]},
             "ClinVar": {"enabled": True, "file": j("clinvar/clinvar.vcf.gz"),
                         "short_name": "ClinVar", "format": "vcf", "type": "exact",
                         "coords": 0, "fields": ["CLNSIG", "CLNSIGCONF", "CLNREVSTAT", "CLNDN"]},
-            "LoGoFunc": {"enabled": True, "file": j("custom/logofunc.vcf.gz"),
-                         "short_name": "LoGoFunc", "format": "vcf", "type": "exact",
-                         "coords": 0, "fields": ["LoGoFunc_GOF", "LoGoFunc_LOF"]},
         },
     }
 
@@ -99,13 +111,27 @@ def test_full_stack_native(tmp_path):
     assert "CADD_phred" in dbnsfp[0] and "REVEL_score" in dbnsfp[0] and "AlphaMissense_score" in dbnsfp[0]
     assert any(a.startswith("LoF,loftee_path:$LOFTEE_DIR") for a in plan.argv)
     assert any(a.startswith("SpliceAI,snv=") and "indel=" in a for a in plan.argv)
-    # custom tracks — all 5
+    assert any(
+        a.startswith("CADD,snv=") and "indels=" in a for a in plan.argv
+    )
+    assert any(a.startswith("PromoterAI,file=") and "transcript_map=" in a for a in plan.argv)
+    assert any(a.startswith("LoGoFunc,file=") for a in plan.argv)
+    # custom tracks — RepeatMasker, SegDup and ClinVar
     customs = [plan.argv[i + 1] for i, a in enumerate(plan.argv) if a == "--custom"]
-    assert len(customs) == 5, customs
+    assert len(customs) == 3, customs
     clinvar = [c for c in customs if "short_name=ClinVar" in c][0]
     assert "fields=CLNSIG%CLNSIGCONF%CLNREVSTAT%CLNDN" in clinvar
     assert "type=exact" in clinvar and "coords=0" in clinvar
     return s
+
+
+def test_optional_cadd_requires_both_data_files_and_indexes(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    (tmp_path / "cadd" / "gnomad.genomes.r4.0.indel.tsv.gz.tbi").unlink()
+    plan = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz", container=False)
+    assert not plan.errors
+    assert any("CADD_WGS.indels" in warning and "index" in warning for warning in plan.warnings)
+    assert not any(value.startswith("CADD,") for value in plan.argv)
 
 
 def test_required_spliceai_snv_only(tmp_path):
@@ -142,15 +168,15 @@ def test_missing_file_skipped(tmp_path):
     """A missing optional file is skipped with a warning, run still valid."""
     cfg = _full_cfg(str(tmp_path))
     os.remove(cfg["plugins"]["dbNSFP"]["path"])       # delete dbNSFP
-    os.remove(cfg["custom_tracks"]["LoGoFunc"]["file"])  # delete LoGoFunc
+    os.remove(cfg["plugins"]["LoGoFunc"]["file"])  # delete LoGoFunc
     plan = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
     assert not plan.errors
     assert any("dbNSFP" in w for w in plan.warnings)
     assert any("LoGoFunc" in w for w in plan.warnings)
     assert not any(a.startswith("dbNSFP,") for a in plan.argv)
+    assert not any(a.startswith("LoGoFunc,") for a in plan.argv)
     customs = [plan.argv[i + 1] for i, a in enumerate(plan.argv) if a == "--custom"]
-    assert not any("LoGoFunc" in c for c in customs)
-    assert len(customs) == 4  # 5 - 1 skipped
+    assert len(customs) == 3
 
 
 def test_required_missing_errors(tmp_path):

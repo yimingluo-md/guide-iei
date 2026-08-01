@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 import gzip
 import os
+import re
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from local_service.cohort_store import CohortStore
+from local_service.cohort_store import CohortStore, annotation_from
 
 
 CSQ_FIELDS = [
@@ -16,6 +17,9 @@ CSQ_FIELDS = [
     "RepeatMasker", "SegDup", "LoF_50_BP_RULE_PTC",
     "LoF_50_BP_RULE_original", "LoF_50_BP_RULE_changed",
     "PTC_dist_from_last_exon", "PTC_calc_status",
+    "LoGoFunc_prediction", "LoGoFunc_neutral", "LoGoFunc_GOF",
+    "LoGoFunc_LOF", "LoGoFunc_allele_available",
+    "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match",
 ]
 
 
@@ -25,6 +29,10 @@ def csq(
     mane="MANE", picked="1", transcript=None,
     loftee_50bp="", loftee_50bp_original="", loftee_50bp_changed="",
     ptc_distance="", ptc_status="",
+    logofunc_prediction="", logofunc_neutral="", logofunc_gof="",
+    logofunc_lof="", logofunc_allele_available="",
+    logofunc_source_transcript="", logofunc_source_hgvsp="",
+    logofunc_match="",
 ):
     values = [
         allele, str(number), consequence, impact, gene, f"ENSG_{gene}",
@@ -33,6 +41,9 @@ def csq(
         str(alpha), str(splice), clinvar, lof, repeat, segdup,
         loftee_50bp, loftee_50bp_original, loftee_50bp_changed,
         str(ptc_distance), ptc_status,
+        logofunc_prediction, str(logofunc_neutral), str(logofunc_gof),
+        str(logofunc_lof), str(logofunc_allele_available),
+        logofunc_source_transcript, logofunc_source_hgvsp, logofunc_match,
     ]
     return "|".join(values)
 
@@ -47,6 +58,7 @@ def write_vcf(path: Path):
                 loftee_50bp="FAIL", loftee_50bp_original="PASS",
                 loftee_50bp_changed="1", ptc_distance=42, ptc_status="ok",
             )
+            + ";IEI_UNSCORED_INDEL=SpliceAI_intronic"
             + "\tGT:AD:DP:GQ\t0/1:12,10:22:80\t0/0:20,0:20:70"
         ),
         (
@@ -142,11 +154,27 @@ class FakeHtsBackend:
         return contigs
 
     def iter_records(self, path: Path, contigs):
-        selected = set(contigs)
+        selected_contigs = set()
+        selected_regions = []
+        for value in contigs:
+            match = re.fullmatch(r"([^:]+):(\d+)-(\d+)", value)
+            if match:
+                selected_regions.append(
+                    (match.group(1), int(match.group(2)), int(match.group(3)))
+                )
+            else:
+                selected_contigs.add(value)
         opener = gzip.open if path.name.endswith(".gz") else open
         with opener(path, "rt", encoding="utf-8") as handle:
             for line in handle:
-                if not line.startswith("#") and line.split("\t", 1)[0] in selected:
+                if line.startswith("#"):
+                    continue
+                columns = line.split("\t", 2)
+                chrom, pos = columns[0], int(columns[1])
+                if chrom in selected_contigs or any(
+                    chrom == region_chrom and start <= pos <= end
+                    for region_chrom, start, end in selected_regions
+                ):
                     yield line
 
 
@@ -169,13 +197,14 @@ def write_parallel_vcf(path: Path):
         + '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
         + "|".join(CSQ_FIELDS)
         + '">\n'
+        + '##INFO=<ID=promoterAI,Number=1,Type=Float,Description="promoterAI score">\n'
         + '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
         + '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\n'
         + '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'
         + '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">\n'
         + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
         + "".join(
-            f"{chrom}\t100\t.\tA\tG\t99\tPASS\tCSQ={consequence}"
+            f"{chrom}\t100\t.\tA\tG\t99\tPASS\tIEI_UNSCORED_INDEL=PromoterAI_promoter;promoterAI=-0.75;CSQ={consequence}"
             "\tGT:AD:DP:GQ\t0/1:10,10:20:99\n"
             for chrom in range(1, 5)
         )
@@ -183,6 +212,14 @@ def write_parallel_vcf(path: Path):
 
 
 class CohortStoreTests(unittest.TestCase):
+    def test_wgs_cadd_value_precedes_dbnsfp_duplicate(self):
+        annotation = annotation_from({
+            "CADD_PHRED": "21.5",
+            "CADD_phred": "35.0",
+        })
+        self.assertEqual(annotation["cadd"], 21.5)
+        self.assertEqual(annotation_from({"CADD_phred": "35.0"})["cadd"], 35.0)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -224,6 +261,63 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(job["carrier_count"], 5)
         self.assertEqual(job["result"]["imported"], 1)
 
+    def test_lists_and_removes_exact_sample_entries_then_reimports_source(self):
+        self.store.import_paths([str(self.vcf)])
+        samples = self.store.list_samples()
+        self.assertEqual([sample["name"] for sample in samples], ["P1", "P2"])
+        self.assertTrue(all(
+            sample["source_path"] == str(self.vcf.resolve()) for sample in samples
+        ))
+
+        p1 = next(sample for sample in samples if sample["name"] == "P1")
+        removed = self.store.remove_samples([p1["id"]])
+        self.assertEqual(removed["removed_count"], 1)
+        self.assertEqual(removed["stats"]["individuals"], 1)
+        self.assertEqual(
+            self.store.query({"mode": "variant", "query": "rsExact"})["total"],
+            0,
+        )
+        self.assertEqual([sample["name"] for sample in self.store.list_samples()], ["P2"])
+
+        restored = self.store.import_paths([str(self.vcf)])
+        self.assertEqual(restored["imported"], 1)
+        self.assertEqual(restored["stats"]["individuals"], 2)
+
+    def test_prefiltered_job_records_profile_provenance_and_progress(self):
+        filters = {
+            "max_gnomad_popmax": 0.01,
+            "min_spliceai": 0.5,
+            "min_promoterai_abs": 0.5,
+            "noncoding_mode": "ccre",
+        }
+
+        def prefilter(source, progress):
+            progress({
+                "phase": "filtering", "progress": 50,
+                "records_scanned": 5, "records_retained": 4,
+                "reader_count": 4,
+            })
+            return source, {"records_scanned": 5, "records_retained": 4}
+
+        job = self.store.start_import_paths(
+            [str(self.vcf)], import_profile="prefiltered",
+            prefilter_options=filters, prefilter=prefilter,
+        )
+        for _ in range(200):
+            job = self.store.get_import_job(job["id"])
+            if job["status"] in {"succeeded", "failed"}:
+                break
+            time.sleep(0.01)
+        self.assertEqual(job["status"], "succeeded")
+        self.assertEqual(job["prefilter_records_scanned"], 5)
+        self.assertEqual(job["prefilter_records_retained"], 4)
+        self.assertEqual(job["processed_bytes"], job["total_bytes"])
+        self.assertEqual(job["result"]["stats"]["prefiltered_files"], 1)
+        row = self.store.query({"mode": "variant", "query": "rsExact"})["rows"][0]
+        self.assertEqual(row["import_profile"], "prefiltered")
+        self.assertIsInstance(row["sample_entry_id"], int)
+        self.assertEqual(row["source_path"], str(self.vcf.resolve()))
+
     def test_exact_variant_query_is_allele_specific_for_multiallelic_records(self):
         self.store.import_paths([str(self.vcf)])
         result = self.store.query({"mode": "variant", "query": "chr1:300:G:C"})
@@ -248,6 +342,24 @@ class CohortStoreTests(unittest.TestCase):
         self.assertTrue(result["rows"][0]["loftee_50bp_changed"])
         self.assertEqual(result["rows"][0]["ptc_distance"], 42)
         self.assertEqual(result["rows"][0]["ptc_calc_status"], "ok")
+        self.assertEqual(
+            result["rows"][0]["unscored_indel_reasons"],
+            "SpliceAI_intronic",
+        )
+
+    def test_cohort_review_reports_compact_fallback_when_tabix_is_unavailable(self):
+        self.store.import_paths([str(self.vcf)])
+        row = self.store.query({"mode": "variant", "query": "rsExact"})["rows"][0]
+
+        review = self.store.review_records([{
+            "variant_key": row["variant_key"],
+            "sample_entry_id": row["sample_entry_id"],
+        }])
+
+        self.assertEqual(review["resolved"], 0)
+        self.assertEqual(review["files"], [])
+        self.assertEqual(review["unresolved"][0]["variant_key"], "1:100:A:G")
+        self.assertIn("bcftools/tabix is unavailable", review["warnings"][0])
 
     def test_gene_query_applies_default_qualification_and_genotype_filters(self):
         self.store.import_paths([str(self.vcf)])
@@ -345,6 +457,71 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(all_transcripts["total"], 1)
         self.assertEqual(all_transcripts["rows"][0]["transcript"], "ENST_ALTERNATE")
 
+        detail = self.store.variant_detail("1:700:A:G")
+        self.assertEqual(detail["total"], 1)
+        self.assertEqual(len(detail["annotations"]), 2)
+        self.assertEqual(
+            {row["transcript"] for row in detail["annotations"]},
+            {"ENST_PICKED", "ENST_ALTERNATE"},
+        )
+
+    def test_logofunc_filter_requires_exact_source_match_and_preserves_mane_row(self):
+        source = self.root / "logofunc.vcf"
+        mane = csq(
+            "G", 1, "missense_variant", "MODERATE", "LOGOGENE",
+            "c.1A>G", "p.Lys1Arg", 0.0001, 25, 0.8, 0.01,
+            mane="MANE", picked="1", transcript="ENST_MANE",
+            logofunc_allele_available="1",
+            logofunc_source_transcript="ENST_SOURCE",
+            logofunc_source_hgvsp="ENSP_SOURCE:p.Lys1Arg",
+            logofunc_match="allele_only",
+        )
+        source_match = csq(
+            "G", 1, "missense_variant", "MODERATE", "LOGOGENE",
+            "c.1A>G", "p.Lys1Arg", 0.0001, 25, 0.8, 0.01,
+            mane="", picked="", transcript="ENST_SOURCE",
+            logofunc_prediction="GOF", logofunc_neutral=0.05,
+            logofunc_gof=0.9, logofunc_lof=0.05,
+            logofunc_allele_available="1",
+            logofunc_source_transcript="ENST_SOURCE",
+            logofunc_source_hgvsp="ENSP_SOURCE:p.Lys1Arg",
+            logofunc_match="allele_transcript_protein",
+        )
+        source.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=1,length=248956422>\n"
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+            + "|".join(CSQ_FIELDS) + '">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
+            f"1\t950\t.\tA\tG\t99\tPASS\tCSQ={mane},{source_match}"
+            "\tGT:AD:DP:GQ\t0/1:10,10:20:99\n"
+        )
+        self.store.import_paths([str(source)])
+
+        result = self.store.query({
+            "mode": "gene", "gene": "LOGOGENE",
+            "logofunc_class": "GOF", "min_logofunc_probability": 0.8,
+        })
+        self.assertEqual(result["total"], 1)
+        row = result["rows"][0]
+        self.assertEqual(row["transcript"], "ENST_MANE")
+        self.assertEqual(row["logofunc_prediction"], "GOF")
+        self.assertAlmostEqual(row["logofunc_gof"], 0.9)
+        self.assertEqual(row["logofunc_source_transcript"], "ENST_SOURCE")
+        self.assertEqual(row["logofunc_match"], "source_transcript_match_elsewhere")
+
+        rejected = self.store.query({
+            "mode": "gene", "gene": "LOGOGENE", "logofunc_class": "LOF",
+        })
+        self.assertEqual(rejected["total"], 0)
+
+        detail = self.store.variant_detail("1:950:A:G")
+        exact = next(
+            annotation for annotation in detail["annotations"]
+            if annotation["transcript"] == "ENST_SOURCE"
+        )
+        self.assertEqual(exact["logofunc_match"], "allele_transcript_protein")
+
     def test_legacy_single_transcript_vcf_without_pick_remains_searchable(self):
         legacy_vcf = self.root / "legacy-pick-output.vcf"
         legacy_fields = [field for field in CSQ_FIELDS if field != "PICK"]
@@ -424,10 +601,59 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(backend.sort_calls, 1)
         self.assertTrue(Path(imported["prepared_path"]).is_file())
         self.assertTrue(Path(imported["index_path"]).is_file())
+        indexed = store.query({"mode": "variant", "query": "1:100:A:G"})
+        self.assertEqual(indexed["rows"][0]["promoterai"], -0.75)
+        self.assertEqual(
+            indexed["rows"][0]["unscored_indel_reasons"],
+            "PromoterAI_promoter",
+        )
 
         refreshed = store.import_vcf(source, force=True)
         self.assertTrue(refreshed["cache_hit"])
         self.assertEqual(backend.sort_calls, 1)
+
+    def test_cohort_review_fetches_complete_exact_record_with_tabix(self):
+        source = self.root / "review-source.vcf"
+        write_vcf(source)
+        store = CohortStore(
+            self.root / "review.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        store.import_vcf(source)
+        row = store.query({"mode": "variant", "query": "1:100:A:G"})["rows"][0]
+
+        review = store.review_records([{
+            "variant_key": row["variant_key"],
+            "sample_entry_id": row["sample_entry_id"],
+        }])
+
+        self.assertEqual(review["requested"], 1)
+        self.assertEqual(review["resolved"], 1)
+        self.assertEqual(review["unresolved"], [])
+        self.assertEqual(len(review["files"]), 1)
+        content = review["files"][0]["vcf"]
+        self.assertIn("##INFO=<ID=CSQ", content)
+        self.assertIn("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n", content)
+        self.assertNotIn("\tP2\n", content)
+        self.assertIn("1\t100\trsExact\tA\tG", content)
+        self.assertNotIn("1\t200\t", content)
+        self.assertEqual(
+            review["files"][0]["selections"][0]["sample_entry_id"],
+            row["sample_entry_id"],
+        )
+
+        second = store.query({"mode": "variant", "query": "1:200:C:T"})["rows"][0]
+        combined = store.review_records([
+            {"variant_key": row["variant_key"], "sample_entry_id": row["sample_entry_id"]},
+            {"variant_key": second["variant_key"], "sample_entry_id": second["sample_entry_id"]},
+        ])
+        self.assertEqual(combined["resolved"], 2)
+        self.assertEqual(len(combined["files"]), 1)
+        self.assertIn("\tP1\tP2\n", combined["files"][0]["vcf"])
+        self.assertIn("1\t100\trsExact\tA\tG", combined["files"][0]["vcf"])
+        self.assertIn("1\t200\t.\tC\tT", combined["files"][0]["vcf"])
 
     def test_background_job_supports_spawned_parallel_readers(self):
         source = self.root / "parallel-background.vcf"

@@ -81,7 +81,10 @@ class PathMapper:
         self._counter = 0
 
     def map(self, host_path: str) -> str:
-        ap = os.path.abspath(host_path)
+        # Resolve symlinks before choosing the bind mount. Large optional
+        # datasets may remain in a lab-managed data directory while a small,
+        # ignored link under references/ supplies the configured path.
+        ap = os.path.realpath(os.path.abspath(host_path))
         if not self.container:
             return ap
         host_dir = os.path.dirname(ap)
@@ -113,6 +116,23 @@ def _resolve(plan: VepPlan, mapper: PathMapper, host_path: str,
             plan.warnings.append(msg + "  [skipped]")
         return None
     return mapper.map(host_path)
+
+
+def _resolve_indexed(plan: VepPlan, mapper: PathMapper, host_path: str,
+                     label: str, required: bool,
+                     check_exists: bool) -> str | None:
+    """Resolve a BGZF reference and require a sibling tabix/CSI index."""
+    cp = _resolve(plan, mapper, host_path, label, required, check_exists)
+    if cp is None or not check_exists:
+        return cp
+    if not any(os.path.isfile(host_path + suffix) for suffix in (".tbi", ".csi")):
+        msg = f"{label}: tabix/CSI index not found -> {host_path}.tbi/.csi"
+        if required:
+            plan.errors.append(msg)
+        else:
+            plan.warnings.append(msg + "  [skipped]")
+        return None
+    return cp
 
 
 # --------------------------------------------------------------------------- #
@@ -301,6 +321,59 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
             parts.append(f"{key}={cp}")
         if ok and parts:
             argv += ["--plugin", "SpliceAI," + ",".join(parts)]
+
+    # CADD v1.7 WGS — the official VEP plugin reads the score-only SNV and
+    # indel TSVs directly. Do not convert these files to a duplicate VCF and
+    # do not use the much larger inclAnno downloads: the plugin emits only
+    # CADD_RAW and CADD_PHRED.
+    cadd = plugins.get("CADD_WGS", {})
+    if cadd.get("enabled"):
+        required = cadd.get("required", False)
+        parts = []
+        ok = True
+        for key in ("snv", "indels"):
+            host_path = cadd.get(key, "")
+            cp = _resolve_indexed(
+                plan, mapper, host_path,
+                f"plugin.CADD_WGS.{key}", required, check_exists,
+            )
+            if cp is None:
+                ok = False
+            else:
+                parts.append(f"{key}={cp}")
+        if ok:
+            argv += ["--plugin", "CADD," + ",".join(parts)]
+
+    # PromoterAI — local licensed scores compacted to an indexed four-allele
+    # table plus a transcript/TSS map by scripts/prepare_promoterai.sh.
+    promoterai = plugins.get("PromoterAI", {})
+    if promoterai.get("enabled"):
+        required = promoterai.get("required", False)
+        score_path = _resolve(
+            plan, mapper, promoterai.get("file", ""),
+            "plugin.PromoterAI.file", required, check_exists,
+        )
+        transcript_map = _resolve(
+            plan, mapper, promoterai.get("transcript_map", ""),
+            "plugin.PromoterAI.transcript_map", required, check_exists,
+        )
+        if score_path and transcript_map:
+            argv += [
+                "--plugin",
+                f"PromoterAI,file={score_path},transcript_map={transcript_map}",
+            ]
+
+    # LoGoFunc — strict allele + transcript + protein-change matching is
+    # implemented in the bundled plugin. The source table is already BGZF and
+    # tabix indexed, so it is mounted and queried without conversion.
+    logofunc = plugins.get("LoGoFunc", {})
+    if logofunc.get("enabled"):
+        score_path = _resolve(
+            plan, mapper, logofunc.get("file", ""),
+            "plugin.LoGoFunc.file", logofunc.get("required", False), check_exists,
+        )
+        if score_path:
+            argv += ["--plugin", f"LoGoFunc,file={score_path}"]
 
 
 def _add_custom(tracks: dict, plan: VepPlan, mapper: PathMapper,

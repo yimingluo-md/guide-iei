@@ -6,13 +6,15 @@ import unittest
 from pathlib import Path
 
 from local_service.cohort_store import CohortStore, VcfHeader
-from local_service.test_cohort_store import write_parallel_vcf
+from local_service.test_cohort_store import FakeHtsBackend, write_parallel_vcf
 from local_service.wgs_review import (
     WgsPrefilterOptions,
     WgsReviewStore,
+    add_unscored_indel_info,
     bed_intervals,
     compact_review_transcripts,
-    gene_intervals,
+    evaluate_record,
+    promoterai_intervals,
     record_passes,
 )
 
@@ -39,64 +41,146 @@ class WgsPrefilterTests(unittest.TestCase):
         options = WgsPrefilterOptions.from_payload({})
         self.assertEqual(options.max_gnomad_popmax, 0.01)
         self.assertEqual(options.min_spliceai, 0.5)
-        self.assertEqual(options.min_promoterai_abs, 0.5)
-        self.assertIsNone(options.min_cadd)
+        self.assertEqual(options.min_promoterai_abs, 0.8)
+        self.assertEqual(options.noncoding_mode, "ccre")
         with self.assertRaisesRegex(ValueError, "between 0 and 1"):
             WgsPrefilterOptions.from_payload({"max_gnomad_popmax": 2})
+        with self.assertRaisesRegex(ValueError, "ccre, all, or none"):
+            WgsPrefilterOptions.from_payload({"noncoding_mode": "enhancer"})
 
-    def test_frequency_and_gene_filters_are_and_gates(self):
+    def test_population_frequency_is_a_global_gate(self):
         options = WgsPrefilterOptions()
         self.assertFalse(record_passes(
-            variant(af="0.01", splice="0.9"), HEADER, options, {}
-        ))
-        self.assertFalse(record_passes(
-            variant(pos=500, splice="0.9"), HEADER, options, {"1": ((1, 200),)}
+            variant(af="0.011", splice="0.9"), HEADER, options, {}
         ))
         self.assertTrue(record_passes(
-            variant(pos=150, splice="0.9"), HEADER, options, {"1": ((1, 200),)}
+            variant(af="0.01", splice="0.9"), HEADER, options, {}
         ))
 
-    def test_prediction_thresholds_are_or_gates(self):
+    def test_candidate_routes_are_or_gates(self):
         options = WgsPrefilterOptions()
         self.assertFalse(record_passes(variant(), HEADER, options, {}))
         self.assertTrue(record_passes(
-            variant(promoter="-0.7"), HEADER, options, {}
+            variant(promoter="-0.9"), HEADER, options, {}
         ))
-        with_cadd = WgsPrefilterOptions(min_cadd=20)
         self.assertTrue(record_passes(
-            variant(cadd="25"), HEADER, with_cadd, {}
+            variant(pos=150), HEADER, options, {"1": ((100, 200),)}
         ))
 
-    def test_missing_annotations_are_retained(self):
+    def test_missing_frequency_is_retained_but_missing_evidence_does_not_qualify(self):
         options = WgsPrefilterOptions()
-        self.assertTrue(record_passes(
+        self.assertFalse(record_passes(
             variant(splice=".", promoter="0.1"), HEADER, options, {}
         ))
         unannotated = "1\t100\t.\tA\tG\t99\tPASS\t.\tGT\t0/1\n"
-        self.assertTrue(record_passes(unannotated, HEADER, options, {}))
+        self.assertFalse(record_passes(unannotated, HEADER, options, {}))
+        self.assertTrue(record_passes(
+            unannotated, HEADER, options, {"1": ((90, 110),)}
+        ))
         self.assertFalse(record_passes(
             unannotated.replace("\tPASS\t", "\tLowQual\t"), HEADER, options, {}
         ))
 
-    def test_exome_regions_are_retained_before_optional_wgs_filters(self):
+    def test_exome_is_a_route_after_population_frequency(self):
         strict = WgsPrefilterOptions(
             max_gnomad_popmax=0.01,
             min_spliceai=0.9,
             min_promoterai_abs=0.9,
-            genes=("OTHER",),
+            noncoding_mode="none",
         )
         exome = {"1": ((90, 110),)}
-        outside_gene = {"1": ((500, 600),)}
         common_without_evidence = variant(
             pos=100, af="0.5", splice="0.1", promoter="0.1"
         )
-        self.assertTrue(record_passes(
-            common_without_evidence, HEADER, strict, outside_gene, exome
-        ))
         self.assertFalse(record_passes(
-            variant(pos=200, af="0.5", splice="0.1", promoter="0.1"),
-            HEADER, strict, outside_gene, exome,
+            common_without_evidence, HEADER, strict, {}, exome
         ))
+        self.assertTrue(record_passes(
+            variant(pos=100, af="0.001", splice="0.1", promoter="0.1"),
+            HEADER, strict, {}, exome,
+        ))
+
+    def test_noncoding_modes_are_mutually_exclusive_region_routes(self):
+        all_noncoding = WgsPrefilterOptions(noncoding_mode="all")
+        no_noncoding = WgsPrefilterOptions(noncoding_mode="none")
+        quiet = variant(pos=300, splice="0.1", promoter="0.1")
+        exome = {"1": ((90, 110),)}
+        self.assertTrue(record_passes(quiet, HEADER, all_noncoding, {}, exome))
+        self.assertFalse(record_passes(quiet, HEADER, no_noncoding, {}, exome))
+
+    def test_region_overlap_uses_the_full_small_variant_span(self):
+        deletion = variant(pos=95, splice="0.1", promoter="0.1").replace(
+            "\tA\tG\t", "\tAAAAAA\tA\t"
+        )
+        self.assertTrue(record_passes(
+            deletion, HEADER, WgsPrefilterOptions(), {"1": ((100, 110),)}
+        ))
+
+    def test_unscored_intronic_indel_is_retained_and_flagged(self):
+        fields = (
+            "Allele", "ALLELE_NUM", "SYMBOL", "Consequence", "MAX_AF",
+            "SpliceAI_pred_DS_AG", "promoterAI_promoterAI",
+        )
+        header = VcfHeader(("CASE",), fields, ("1",))
+        csq = "A|1|GENE1|intron_variant|0.001|.|."
+        deletion = f"1\t100\t.\tAT\tA\t99\tPASS\tCSQ={csq}\tGT\t0/1\n"
+        retain, reasons = evaluate_record(
+            deletion,
+            header,
+            WgsPrefilterOptions(noncoding_mode="none"),
+            {},
+        )
+        self.assertTrue(retain)
+        self.assertEqual(reasons, (("SpliceAI_intronic",),))
+        flagged = add_unscored_indel_info(deletion, reasons)
+        self.assertIn("IEI_UNSCORED_INDEL=SpliceAI_intronic", flagged)
+
+    def test_unscored_promoter_indel_is_retained_but_snv_is_not(self):
+        options = WgsPrefilterOptions(noncoding_mode="none")
+        promoter = {"1": ((90, 110),)}
+        deletion = variant(
+            pos=100, splice=".", promoter="."
+        ).replace("\tA\tG\t", "\tAT\tA\t")
+        retain, reasons = evaluate_record(
+            deletion, HEADER, options, {}, {}, promoter
+        )
+        self.assertTrue(retain)
+        self.assertEqual(reasons, (("PromoterAI_promoter",),))
+        self.assertFalse(record_passes(
+            variant(pos=100, splice=".", promoter="."),
+            HEADER, options, {}, {}, promoter,
+        ))
+
+    def test_absent_predictor_dataset_does_not_enable_missing_indel_route(self):
+        header = VcfHeader(
+            ("CASE",),
+            ("Allele", "ALLELE_NUM", "SYMBOL", "Consequence", "MAX_AF"),
+            ("1",),
+        )
+        csq = "A|1|GENE1|intron_variant|0.001"
+        deletion = f"1\t100\t.\tAT\tA\t99\tPASS\tCSQ={csq}\tGT\t0/1\n"
+        self.assertFalse(record_passes(
+            deletion,
+            header,
+            WgsPrefilterOptions(noncoding_mode="none"),
+            {},
+            {},
+            {"1": ((90, 110),)},
+        ))
+
+    def test_scored_intronic_indel_does_not_get_missing_score_flag(self):
+        fields = (
+            "Allele", "ALLELE_NUM", "SYMBOL", "Consequence", "MAX_AF",
+            "SpliceAI_pred_DS_AG", "promoterAI_promoterAI",
+        )
+        header = VcfHeader(("CASE",), fields, ("1",))
+        csq = "A|1|GENE1|intron_variant|0.001|0.1|."
+        deletion = f"1\t100\t.\tAT\tA\t99\tPASS\tCSQ={csq}\tGT\t0/1\n"
+        retain, reasons = evaluate_record(
+            deletion, header, WgsPrefilterOptions(noncoding_mode="none"), {}
+        )
+        self.assertFalse(retain)
+        self.assertEqual(reasons, ((),))
 
     def test_bed_intervals_convert_coordinates_and_merge(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -105,6 +189,18 @@ class WgsPrefilterTests(unittest.TestCase):
                 handle.write("chr1\t99\t110\n1\t110\t120\nchr2\t0\t1\n")
             intervals = bed_intervals(bed)
         self.assertEqual(intervals, {"1": ((100, 120),), "2": ((1, 1),)})
+
+    def test_promoterai_transcript_map_becomes_tss_500bp_intervals(self):
+        with tempfile.TemporaryDirectory() as directory:
+            transcript_map = Path(directory) / "promoterai_transcripts.tsv"
+            transcript_map.write_text(
+                "transcript_id\tchrom\ttss_pos\n"
+                "ENST1\tchr1\t1000\nENST2\t1\t1500\nENST3\t2\t100\n",
+                encoding="utf-8",
+            )
+            intervals = promoterai_intervals(transcript_map)
+        self.assertEqual(intervals["1"], ((500, 2000),))
+        self.assertEqual(intervals["2"], ((1, 600),))
 
     def test_review_output_compacts_transcripts_without_dropping_genes(self):
         fields = (
@@ -132,19 +228,39 @@ class WgsPrefilterTests(unittest.TestCase):
         self.assertIn("ENST_FALLBACK", compacted)
         self.assertNotIn("ENST_REDUNDANT", compacted)
 
-    def test_gtf_gene_windows_and_missing_symbols(self):
+    def test_prefilter_output_persists_allele_flag_and_count(self):
         with tempfile.TemporaryDirectory() as directory:
-            gtf = Path(directory) / "genes.gtf.gz"
-            with gzip.open(gtf, "wt") as handle:
-                handle.write(
-                    '1\ttest\tgene\t100\t200\t.\t+\t.\tgene_id "ENSG1.2"; '
-                    'gene_name "NFKB1";\n'
-                )
-            intervals, missing = gene_intervals(
-                gtf, ("NFKB1", "MISSING"), 25
+            root = Path(directory)
+            source = root / "intronic-indel.vcf"
+            fields = (
+                "Allele", "ALLELE_NUM", "SYMBOL", "Consequence", "MAX_AF",
+                "SpliceAI_pred_DS_AG", "promoterAI_promoterAI", "PICK",
             )
-        self.assertEqual(intervals, {"1": ((75, 225),)})
-        self.assertEqual(missing, ("MISSING",))
+            csq = "A|1|GENE1|intron_variant|0.001|.|.|1"
+            source.write_text(
+                "##fileformat=VCFv4.2\n"
+                "##contig=<ID=1,length=248956422>\n"
+                f'##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: {"|".join(fields)}">\n'
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tCASE\n"
+                f"1\t100\t.\tAT\tA\t99\tPASS\tCSQ={csq}\tGT\t0/1\n",
+                encoding="utf-8",
+            )
+            cohort = CohortStore(
+                root / "cohort.sqlite3",
+                enable_auto_index=True,
+                hts_backend=FakeHtsBackend(),
+            )
+            result = WgsReviewStore(root, cohort).prefilter(
+                source,
+                WgsPrefilterOptions(noncoding_mode="none"),
+            )
+            with gzip.open(result["path"], "rt", encoding="utf-8") as handle:
+                output = handle.read()
+        self.assertEqual(result["records_retained"], 1)
+        self.assertEqual(result["unscored_intronic_indels"], 1)
+        self.assertEqual(result["unscored_promoter_indels"], 0)
+        self.assertIn("##INFO=<ID=IEI_UNSCORED_INDEL,Number=A", output)
+        self.assertIn("IEI_UNSCORED_INDEL=SpliceAI_intronic", output)
 
     @unittest.skipUnless(
         os.environ.get("IEI_RUN_HTS_INTEGRATION") == "1",
@@ -162,8 +278,8 @@ class WgsPrefilterTests(unittest.TestCase):
             )
             result = WgsReviewStore(root, cohort).prefilter(
                 source,
-                WgsPrefilterOptions(),
-                root / "unused.gtf",
+                WgsPrefilterOptions(noncoding_mode="all"),
+                promoter_map_path=None,
             )
             self.assertEqual(result["reader_count"], 4)
             self.assertEqual(result["records_scanned"], 4)
