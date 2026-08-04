@@ -16,21 +16,32 @@ from pathlib import Path
 
 
 def remote_metadata(url: str) -> tuple[int, str]:
+    # Some archives (notably ENCODE) redirect downloads to a signed object URL
+    # whose signature is valid for GET but not HEAD.  A one-byte ranged GET
+    # follows that redirect and reports both the object size and range support
+    # without downloading the file.
     result = subprocess.run(
-        ["curl", "-fsSI", "--max-time", "60", url],
+        [
+            "curl", "-fsSL", "--max-time", "60", "--range", "0-0",
+            "--dump-header", "-", "--output", "/dev/null", url,
+        ],
         check=True,
         capture_output=True,
         text=True,
     )
-    headers: dict[str, str] = {}
-    for line in result.stdout.splitlines():
-        if ":" in line:
-            key, value = line.split(":", 1)
-            headers[key.strip().lower()] = value.strip()
-    size = int(headers["content-length"])
-    if "bytes" not in headers.get("accept-ranges", ""):
-        raise RuntimeError("server does not advertise byte-range support")
-    return size, headers.get("etag", "")
+    ranges = re.findall(
+        r"^content-range:\s*bytes\s+0-0/(\d+)\s*$",
+        result.stdout,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    if not ranges:
+        raise RuntimeError("server did not honor a one-byte range request")
+    etags = re.findall(
+        r'^etag:\s*(.+?)\s*$',
+        result.stdout,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    return int(ranges[-1]), etags[-1] if etags else ""
 
 
 def bsd_sum(path: Path) -> tuple[int, int]:

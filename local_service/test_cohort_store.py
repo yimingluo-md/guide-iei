@@ -245,6 +245,19 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(repeated["skipped"], 1)
         self.assertEqual(repeated["stats"]["carrier_observations"], 5)
 
+    def test_full_index_preserves_whole_genome_scope_separately(self):
+        imported = self.store.import_vcf(
+            self.vcf, import_profile="full", analysis_scope="whole_genome"
+        )
+        self.assertEqual(imported["import_profile"], "full")
+        self.assertEqual(imported["analysis_scope"], "whole_genome")
+        row = self.store.query({"mode": "variant", "query": "rsExact"})["rows"][0]
+        self.assertEqual(row["import_profile"], "full")
+        self.assertEqual(row["analysis_scope"], "whole_genome")
+        review = self.store.sample_review_files([row["sample_entry_id"]])
+        self.assertEqual(review["analysis_scope"], "whole_genome")
+        self.assertEqual(review["files"][0]["analysis_scope"], "whole_genome")
+
     def test_background_import_reports_file_byte_and_record_progress(self):
         job = self.store.start_import_paths([str(self.vcf)])
         for _ in range(200):
@@ -283,6 +296,55 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(restored["imported"], 1)
         self.assertEqual(restored["stats"]["individuals"], 2)
 
+    def test_removing_entire_cohort_uses_reset_and_preserves_phenotypes(self):
+        self.store.import_paths([str(self.vcf)])
+        with self.store._session() as connection:
+            connection.execute(
+                """
+                CREATE TABLE phenotype_individuals(
+                    individual_id TEXT PRIMARY KEY,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO phenotype_individuals(
+                    individual_id, created_at, updated_at
+                ) VALUES ('participant-1', '2026-08-02T00:00:00Z',
+                          '2026-08-02T00:00:00Z')
+                """
+            )
+        samples = self.store.list_samples()
+        removed = self.store.remove_samples([row["id"] for row in samples])
+        self.assertEqual(removed["removed_count"], 2)
+        self.assertEqual(removed["orphan_variants_removed"], 5)
+        self.assertEqual(removed["stats"]["files"], 0)
+        self.assertEqual(removed["stats"]["carrier_observations"], 0)
+        with self.store._session() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM phenotype_individuals"
+                ).fetchone()[0],
+                1,
+            )
+            cohort_tables = {
+                row[0] for row in connection.execute(
+                    """
+                    SELECT name FROM sqlite_master
+                    WHERE type='table' AND name LIKE 'cohort_%'
+                    """
+                )
+            }
+        self.assertEqual(cohort_tables, {
+            "cohort_files", "cohort_samples", "cohort_variants",
+            "cohort_annotations", "cohort_genotypes",
+        })
+        restored = self.store.import_paths([str(self.vcf)])
+        self.assertEqual(restored["imported"], 1)
+        self.assertEqual(restored["stats"]["individuals"], 2)
+
     def test_prefiltered_job_records_profile_provenance_and_progress(self):
         filters = {
             "max_gnomad_popmax": 0.01,
@@ -315,6 +377,7 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(job["result"]["stats"]["prefiltered_files"], 1)
         row = self.store.query({"mode": "variant", "query": "rsExact"})["rows"][0]
         self.assertEqual(row["import_profile"], "prefiltered")
+        self.assertEqual(row["analysis_scope"], "whole_genome")
         self.assertIsInstance(row["sample_entry_id"], int)
         self.assertEqual(row["source_path"], str(self.vcf.resolve()))
 
@@ -654,6 +717,34 @@ class CohortStoreTests(unittest.TestCase):
         self.assertIn("\tP1\tP2\n", combined["files"][0]["vcf"])
         self.assertIn("1\t100\trsExact\tA\tG", combined["files"][0]["vcf"])
         self.assertIn("1\t200\t.\tC\tT", combined["files"][0]["vcf"])
+
+    def test_sample_review_projects_complete_stored_carrier_set(self):
+        self.store.import_paths([str(self.vcf)])
+        p1 = next(
+            sample for sample in self.store.list_samples()
+            if sample["name"] == "P1"
+        )
+
+        review = self.store.sample_review_files([p1["id"]])
+
+        self.assertEqual(review["sample_entries"], 1)
+        self.assertEqual(review["carrier_observations"], 3)
+        self.assertEqual(review["records"], 3)
+        self.assertEqual(review["analysis_scope"], "exome")
+        self.assertEqual(len(review["files"]), 1)
+        self.assertEqual(review["files"][0]["import_profile"], "full")
+        self.assertEqual(review["files"][0]["analysis_scope"], "exome")
+        content = review["files"][0]["vcf"]
+        self.assertIn("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n", content)
+        self.assertNotIn("\tP2\n", content)
+        self.assertIn("1\t100\trsExact\tA\tG", content)
+        self.assertIn("1\t300\t.\tG\tA,C", content)
+        self.assertIn("1\t400\t.\tT\tC", content)
+        self.assertNotIn("1\t200\t.\tC\tT", content)
+
+    def test_sample_review_rejects_unknown_sample_entry(self):
+        with self.assertRaisesRegex(ValueError, "sample entries were not found"):
+            self.store.sample_review_files([999])
 
     def test_background_job_supports_spawned_parallel_readers(self):
         source = self.root / "parallel-background.vcf"

@@ -5,9 +5,13 @@ import {
   cancelJob,
   getCapabilities,
   getCcreContext,
+  getScreenContext,
+  getScreenContextCatalog,
   getCohortStats,
+  getCohortProfiles,
   getCohortSamples,
   getCohortReviewRecords,
+  getCohortSampleReview,
   getCohortVariantDetail,
   getJobLog,
   getJobs,
@@ -22,9 +26,22 @@ import {
   openJobReviewFile,
   openWgsReviewFile,
   prefilterWgsReview,
+  filterScreenContext,
   previewPhenotypeInput,
   queryCohort,
   removeCohortSamples,
+  getSampleLibrary,
+  getSampleLibraryPhenotype,
+  importSampleLibrary,
+  openSampleLibraryFile,
+  mapSampleLibraryIdentity,
+  updateSampleLibraryMetadata,
+  reindexSampleLibraryDataset,
+  removeSampleLibraryDatasetFromCohort,
+  removeSampleLibraryDataset,
+  getStorageStats,
+  cleanupStorage,
+  compactStorage,
   savePhenotypeIndividual,
   stageAnnotationFile,
   startResourceDownload,
@@ -40,8 +57,11 @@ import {
   type CohortQueryRow,
   type CohortSample,
   type CohortStats,
+  type CohortProfile,
   type CohortVariantDetail,
   type CcreContext,
+  type ScreenContextCatalog,
+  type ScreenContextEvidence,
   type PhenotypeField,
   type PhenotypeIndividual,
   type PhenotypePreview,
@@ -53,6 +73,9 @@ import {
   type StagedAnnotationFile,
   type WgsPrefilterOptions,
   type WgsReviewJob,
+  type SampleLibraryDataset,
+  type SampleLibraryImportSource,
+  type StorageStats,
 } from "./local-service";
 import {
   ADDITIONAL_DBNSFP_PREDICTORS,
@@ -85,9 +108,23 @@ import {
   type GeneConstraint,
   type ReferenceManifest,
 } from "./reference-data";
+import {
+  activeRegulatorySet,
+  readRegulatoryContextSets,
+  RegulatoryEvidencePanel,
+  RegulatoryFilterControl,
+  RegulatorySummary,
+  storeRegulatoryContextSets,
+  type RegulatoryContextSet,
+} from "./regulatory-evidence";
 
-type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "phenotypes" | "gene_lists" | "import";
+type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "sample_library" | "storage" | "phenotypes" | "gene_lists" | "import";
 type AnalysisScope = "exome" | "whole_genome";
+type LibraryImportOptions = {
+  keep: boolean;
+  includeInCohort: boolean;
+};
+type PendingIdentity = Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id">;
 type Zygosity = "all" | "hom" | "compound" | "de_novo";
 type DisplayItem =
   | "quality" | "population" | "gnomadPopulations" | "clinvar" | "transcript" | "geneConstraint"
@@ -97,6 +134,12 @@ type DisplayItem =
 
 const STARTER_IEI = new Set(["NFKB1", "NOD2", "IL10RA", "CYBB", "CTLA4", "IL23R", "PIK3CD"]);
 const IMPACTS = ["HIGH", "MODERATE", "LOW", "MODIFIER"] as const;
+const CODING_CONSEQUENCES = new Set([
+  "coding_sequence_variant", "frameshift_variant", "inframe_deletion",
+  "inframe_insertion", "missense_variant", "protein_altering_variant",
+  "start_lost", "start_retained_variant", "stop_gained", "stop_lost",
+  "stop_retained_variant", "synonymous_variant",
+]);
 const DEFAULT_DISPLAY = new Set<DisplayItem>([
   "quality", "population", "clinvar", "transcript", "geneConstraint",
   "alphaMissense", "cadd", "spliceAI", "promoterAI", "loGoFunc", "loftee",
@@ -234,6 +277,14 @@ function fullVariantId(row: VariantCoordinates) {
   return `${row.chrom}:${row.pos}:${row.ref}:${row.alt}`;
 }
 
+function regulatoryVariantKey(row: VariantCoordinates) {
+  return fullVariantId(row);
+}
+
+function hasCodingTranscriptConsequence(row: Pick<VariantRow, "consequence">) {
+  return row.consequence.split(/[&,]/).some((term) => CODING_CONSEQUENCES.has(term.trim()));
+}
+
 function compactAllele(allele: string, limit = 13) {
   if (allele.length <= limit) return allele;
   const left = Math.ceil((limit - 1) / 2);
@@ -349,6 +400,8 @@ export default function VariantWorkbench() {
   const [wgsImportJob, setWgsImportJob] = useState<WgsReviewJob | null>(null);
   const [importError, setImportError] = useState("");
   const [pendingReviewFiles, setPendingReviewFiles] = useState<File[]>([]);
+  const [pendingIdentityDatasets, setPendingIdentityDatasets] = useState<PendingIdentity[]>([]);
+  const [phenotypeTarget, setPhenotypeTarget] = useState<string | null>(null);
   const [ieiGenes, setIeiGenes] = useState<Set<string>>(STARTER_IEI);
   const [hiGenes, setHiGenes] = useState<Set<string>>(new Set());
   const [dominantGenes, setDominantGenes] = useState<Set<string>>(new Set());
@@ -362,6 +415,15 @@ export default function VariantWorkbench() {
   const [pedigreeTrios, setPedigreeTrios] = useState<TrioDefinition[]>([]);
   const [pedigreeWarnings, setPedigreeWarnings] = useState<string[]>([]);
   const [trioThresholds, setTrioThresholds] = useState<TrioThresholds>({ ...DEFAULT_TRIO_THRESHOLDS });
+  const [screenCatalog, setScreenCatalog] = useState<ScreenContextCatalog | null>(null);
+  const [regulatoryContextSets, setRegulatoryContextSets] = useState<RegulatoryContextSet[]>([]);
+  const [activeRegulatorySetId, setActiveRegulatorySetId] = useState("immune-core");
+  const [reviewAnalysisScope, setReviewAnalysisScope] = useState<AnalysisScope>("exome");
+  const [regulatoryFilterEnabled, setRegulatoryFilterEnabled] = useState(false);
+  const [regulatoryMatches, setRegulatoryMatches] = useState<Set<string> | null>(null);
+  const [regulatoryFilterLoading, setRegulatoryFilterLoading] = useState(false);
+  const [regulatoryFilterProgress, setRegulatoryFilterProgress] = useState("");
+  const [regulatoryFilterError, setRegulatoryFilterError] = useState("");
 
   useEffect(() => {
     let active = true;
@@ -384,6 +446,25 @@ export default function VariantWorkbench() {
       if (active) setReferenceError(error instanceof Error ? error.message : "Bundled reference data could not be loaded.");
     });
     return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const frame = window.requestAnimationFrame(() => {
+      if (active) setRegulatoryContextSets(readRegulatoryContextSets());
+    });
+    getScreenContextCatalog().then((value) => {
+      if (!active) return;
+      setScreenCatalog(value);
+      if (value.presets.length && !value.presets.some((item) => item.id === activeRegulatorySetId)) {
+        setActiveRegulatorySetId(value.presets[0].id);
+      }
+    }).catch(() => {
+      if (active) setScreenCatalog({ available: false, registry: "SCREEN Registry V4", assembly: "GRCh38", tissues: [], immune_contexts: [], presets: [] });
+    });
+    return () => { active = false; window.cancelAnimationFrame(frame); };
+    // The first available preset is selected only during initial hydration.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -481,6 +562,71 @@ export default function VariantWorkbench() {
     return true;
   }), [referencedRows, preferredClinicalKeys, query, samples, impacts, popmax, maneOnly, excludeRepeat, excludeSegdup, clinvarOnly, clinvarConflictOnly, excludeConfirmedFrameRestored, ieiOnly, hiOnly, dominantOnly, lofConstrainedOnly, selectedCustomListIds, selectedCustomGenes, alphaMin, caddMin, spliceMin, promoterAbsMin, loGoFuncClass, loGoFuncMin, ieiGenes, hiGenes, dominantGenes, lofConstrainedGenes, qcSettings, includeQcFailing]);
 
+  const selectedRegulatorySet = useMemo(
+    () => activeRegulatorySet(screenCatalog, regulatoryContextSets, activeRegulatorySetId),
+    [screenCatalog, regulatoryContextSets, activeRegulatorySetId],
+  );
+
+  useEffect(() => {
+    if (reviewAnalysisScope !== "whole_genome") {
+      return;
+    }
+    if (!regulatoryFilterEnabled) {
+      return;
+    }
+    if (!screenCatalog?.available || !selectedRegulatorySet) {
+      const frame = window.requestAnimationFrame(() => {
+        setRegulatoryMatches(null);
+        setRegulatoryFilterError("Prepared SCREEN context data or a context set is unavailable.");
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    const unique = new Map<string, { key: string; chrom: string; pos: number; ref: string; alt: string }>();
+    eligibleRows.forEach((row) => {
+      const key = regulatoryVariantKey(row);
+      unique.set(key, { key, chrom: row.chrom, pos: row.pos, ref: row.ref, alt: row.alt });
+    });
+    const variants = [...unique.values()];
+    let active = true;
+    (async () => {
+      await Promise.resolve();
+      if (!active) return;
+      setRegulatoryFilterLoading(true);
+      setRegulatoryMatches(null);
+      setRegulatoryFilterError("");
+      const matching = new Set<string>();
+      const size = 1000;
+      for (let index = 0; index < variants.length; index += size) {
+        if (!active) return;
+        setRegulatoryFilterProgress(`Screening ${Math.min(index + size, variants.length).toLocaleString()} of ${variants.length.toLocaleString()} unique variants…`);
+        const result = await filterScreenContext({
+          variants: variants.slice(index, index + size),
+          tissue_ids: selectedRegulatorySet.tissueIds,
+          immune_context_ids: selectedRegulatorySet.immuneContextIds,
+          mode: "any",
+        });
+        if (!result.available) throw new Error("Prepared SCREEN context data are unavailable.");
+        result.matching_keys.forEach((key) => matching.add(key));
+      }
+      if (active) setRegulatoryMatches(matching);
+    })().catch((reason: unknown) => {
+      if (active) setRegulatoryFilterError(reason instanceof Error ? reason.message : "SCREEN context filtering failed.");
+    }).finally(() => {
+      if (active) {
+        setRegulatoryFilterLoading(false);
+        setRegulatoryFilterProgress("");
+      }
+    });
+    return () => { active = false; };
+  }, [reviewAnalysisScope, regulatoryFilterEnabled, selectedRegulatorySet, screenCatalog?.available, eligibleRows]);
+
+  const screenFilteredRows = useMemo(
+    () => reviewAnalysisScope === "whole_genome" && regulatoryFilterEnabled && regulatoryMatches
+      ? eligibleRows.filter((row) => regulatoryMatches.has(regulatoryVariantKey(row)))
+      : eligibleRows,
+    [eligibleRows, reviewAnalysisScope, regulatoryFilterEnabled, regulatoryMatches],
+  );
+
   const qcFailingCalls = useMemo(
     () => new Set(
       referencedRows
@@ -491,12 +637,12 @@ export default function VariantWorkbench() {
   );
 
   const compoundKeys = useMemo(
-    () => candidateCompoundHetKeys(eligibleRows),
-    [eligibleRows],
+    () => candidateCompoundHetKeys(screenFilteredRows),
+    [screenFilteredRows],
   );
   const trioPairs = useMemo(
-    () => trio ? compoundHetPairs(eligibleRows, trio) : [],
-    [eligibleRows, trio],
+    () => trio ? compoundHetPairs(screenFilteredRows, trio) : [],
+    [screenFilteredRows, trio],
   );
   const trioCandidatePairs = useMemo(
     () => trioPairs.filter((pair) => pair.phase !== "cis"),
@@ -508,23 +654,23 @@ export default function VariantWorkbench() {
   );
   const deNovoAssessments = useMemo(() => {
     const assessments = new Map<string, DeNovoAssessment>();
-    if (trio) eligibleRows.forEach((row) => assessments.set(row.key, assessDeNovo(row, trio, trioThresholds)));
+    if (trio) screenFilteredRows.forEach((row) => assessments.set(row.key, assessDeNovo(row, trio, trioThresholds)));
     return assessments;
-  }, [eligibleRows, trio, trioThresholds]);
+  }, [screenFilteredRows, trio, trioThresholds]);
   const deNovoCandidateKeys = useMemo(() => new Set(
     [...deNovoAssessments.entries()]
       .filter(([, assessment]) => ["high_confidence", "possible", "possible_parental_mosaicism"].includes(assessment.status))
       .map(([key]) => key),
   ), [deNovoAssessments]);
 
-  const filtered = useMemo(() => eligibleRows.filter((row) => {
+  const filtered = useMemo(() => screenFilteredRows.filter((row) => {
     if (zygosity === "hom" && !isHom(row.genotype)) return false;
     if (zygosity === "compound" && !(trio ? trioCompoundVariantKeys.has(row.key) : compoundKeys.has(`${row.sample}:${row.gene}`))) return false;
     if (zygosity === "de_novo" && !deNovoCandidateKeys.has(row.key)) return false;
     if (view === "saved" && !saved.has(row.key)) return false;
     if (view === "compound" && !(trio ? trioCompoundVariantKeys.has(row.key) : compoundKeys.has(`${row.sample}:${row.gene}`))) return false;
     return true;
-  }), [eligibleRows, zygosity, trio, trioCompoundVariantKeys, compoundKeys, deNovoCandidateKeys, view, saved]);
+  }), [screenFilteredRows, zygosity, trio, trioCompoundVariantKeys, compoundKeys, deNovoCandidateKeys, view, saved]);
 
   const uniqueSamples = [...new Set(referencedRows.map((row) => row.sample))];
   const geneCounts = useMemo(() => {
@@ -538,6 +684,9 @@ export default function VariantWorkbench() {
     analysisScope: AnalysisScope = "exome",
     wgsFilters?: WgsPrefilterOptions,
     workstationPaths: string[] = [],
+    libraryOptions: LibraryImportOptions = {
+      keep: true, includeInCohort: true,
+    },
   ) {
     if (!list?.length && !workstationPaths.length) return;
     setImporting(true);
@@ -546,6 +695,7 @@ export default function VariantWorkbench() {
     try {
       let reviewFiles = Array.from(list ?? []);
       const wgsMessages: string[] = [];
+      const librarySources: SampleLibraryImportSource[] = [];
       if (analysisScope === "whole_genome") {
         if (!wgsFilters) throw new Error("Whole-genome prefilter settings are required.");
         const batch = `wgs-review-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -577,6 +727,13 @@ export default function VariantWorkbench() {
           const filtered = job.result;
           setImportProgress(`Opening ${filtered.records_retained.toLocaleString()} retained records…`);
           filteredFiles.push(await openWgsReviewFile(filtered.id, filtered.filename));
+          librarySources.push({
+            review_id: filtered.id,
+            original_path: source.path,
+            original_name: source.name,
+            source_record_count: filtered.records_scanned,
+            retained_record_count: filtered.records_retained,
+          });
           wgsMessages.push(
             `${source.name}: WGS prefilter retained ${filtered.records_retained.toLocaleString()} of ${filtered.records_scanned.toLocaleString()} records using ${filtered.reader_count} reader${filtered.reader_count === 1 ? "" : "s"}${filtered.cache_hit ? " (cache reused)" : ""}.`,
           );
@@ -588,12 +745,53 @@ export default function VariantWorkbench() {
           }
         }
         reviewFiles = filteredFiles;
+      } else if (libraryOptions.keep) {
+        const batch = `sample-library-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        for (let index = 0; index < reviewFiles.length; index += 1) {
+          setImportProgress(`Preparing persistent copy ${index + 1} of ${reviewFiles.length}: ${reviewFiles[index].name}`);
+          const staged = await stageAnnotationFile(reviewFiles[index], batch);
+          librarySources.push({
+            path: staged.path,
+            original_path: staged.path,
+            original_name: reviewFiles[index].name,
+          });
+        }
       }
       setImportProgress("Parsing retained annotations…");
       const result = await parseVcfFiles(reviewFiles);
       result.summary.warnings.unshift(...wgsMessages);
+      if (libraryOptions.keep) {
+        setImportProgress("Saving the review set to the Sample Library…");
+        const library = await importSampleLibrary({
+          sources: librarySources,
+          analysis_scope: analysisScope,
+          index_scope: "compact",
+          include_in_cohort: libraryOptions.includeInCohort,
+          qc_settings: { ...qcSettings, preset: qcPreset, include_failing: includeQcFailing },
+          prefilter_settings: analysisScope === "whole_genome" ? wgsFilters : {},
+          retention_routes: analysisScope === "whole_genome"
+            ? ["coding/essential-splice", "SpliceAI", "promoterAI", wgsFilters?.noncoding_mode === "ccre" ? "ENCODE cCRE" : wgsFilters?.noncoding_mode === "all" ? "all noncoding" : "no additional noncoding", "unscored relevant indels"]
+            : ["exome region"],
+        });
+        const identityBySample = new Map(library.datasets.map((dataset) => [dataset.vcf_sample_name, dataset]));
+        result.rows = result.rows.map((row) => {
+          const identity = identityBySample.get(row.sample);
+          return identity ? { ...row, libraryDatasetId: identity.id, librarySampleId: identity.sample_id, libraryIndividualId: identity.individual_id } : row;
+        });
+        setPendingIdentityDatasets(library.datasets);
+        result.summary.warnings.unshift(
+          `${library.datasets.length} sample dataset${library.datasets.length === 1 ? "" : "s"} saved in the persistent Sample Library${libraryOptions.includeInCohort ? " and added to Cohort Search" : ""}.`,
+        );
+      } else {
+        result.summary.warnings.unshift("Review-once import: this dataset was not saved in the Sample Library or Cohort Search.");
+      }
       setRows(result.rows);
       setSummary(result.summary);
+      setReviewAnalysisScope(analysisScope);
+      if (analysisScope !== "whole_genome") {
+        setRegulatoryFilterEnabled(false);
+        setRegulatoryMatches(null);
+      }
       if (analysisScope === "whole_genome") {
         setImpacts(new Set(IMPACTS));
         setManeOnly(false);
@@ -639,6 +837,11 @@ export default function VariantWorkbench() {
     );
   }
 
+  function saveRegulatoryContextSets(sets: RegulatoryContextSet[]) {
+    setRegulatoryContextSets(sets);
+    storeRegulatoryContextSets(sets);
+  }
+
   function resetFilters() {
     setQuery(""); setSamples(new Set()); setImpacts(new Set(["HIGH", "MODERATE"]));
     setPopmax(0.01); setManeOnly(true); setExcludeRepeat(true); setExcludeSegdup(true);
@@ -647,6 +850,7 @@ export default function VariantWorkbench() {
     setIncludeQcFailing(false);
     setIeiOnly(false); setHiOnly(false); setDominantOnly(false); setLofConstrainedOnly(false);
     setSelectedCustomListIds(new Set());
+    setRegulatoryFilterEnabled(false); setRegulatoryMatches(null);
     setZygosity("all"); setAlphaMin(null); setCaddMin(null); setSpliceMin(null); setPromoterAbsMin(null); setLoGoFuncClass("all"); setLoGoFuncMin(null);
   }
 
@@ -660,7 +864,7 @@ export default function VariantWorkbench() {
         </div>
       </header>
 
-      <div className={`workspace ${selected ? "review-mode" : ""} ${view === "cohort" ? "cohort-mode" : ""} ${view === "phenotypes" ? "phenotype-mode" : ""} ${view === "family" ? "family-mode" : ""} ${view === "gene_lists" ? "gene-lists-mode" : ""} ${view === "import" ? "import-mode" : ""}`}>
+      <div className={`workspace ${selected ? "review-mode" : ""} ${view === "cohort" ? "cohort-mode" : ""} ${view === "sample_library" ? "library-mode" : ""} ${view === "storage" ? "storage-mode" : ""} ${view === "phenotypes" ? "phenotype-mode" : ""} ${view === "family" ? "family-mode" : ""} ${view === "gene_lists" ? "gene-lists-mode" : ""} ${view === "import" ? "import-mode" : ""}`}>
         <nav className="rail" aria-label="Primary navigation">
           <div className="nav-group-label">Review</div>
           {([
@@ -671,9 +875,11 @@ export default function VariantWorkbench() {
           ))}
           <button className={`nav-item ${view === "family" ? "active" : ""}`} onClick={() => { setView("family"); setSelected(null); }}><span>Family analysis</span><span>{trio ? deNovoCandidateKeys.size + trioCandidatePairs.length : "—"}</span></button>
           <div className="nav-group-label secondary">Data</div>
+          <button className={`nav-item ${view === "sample_library" ? "active" : ""}`} onClick={() => { setView("sample_library"); setSelected(null); }}><span>Sample library</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "cohort" ? "active" : ""}`} onClick={() => { setView("cohort"); setSelected(null); }}><span>Cohort search</span><Icon name="search" /></button>
-          <button className={`nav-item ${view === "phenotypes" ? "active" : ""}`} onClick={() => { setView("phenotypes"); setSelected(null); }}><span>Phenotypes</span><Icon name="file" /></button>
+          <button className={`nav-item ${view === "phenotypes" ? "active" : ""}`} onClick={() => { setPhenotypeTarget(null); setView("phenotypes"); setSelected(null); }}><span>Phenotypes</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "gene_lists" ? "active" : ""}`} onClick={() => { setView("gene_lists"); setSelected(null); }}><span>Gene lists</span><span>{4 + customGeneLists.length}</span></button>
+          <button className={`nav-item ${view === "storage" ? "active" : ""}`} onClick={() => { setView("storage"); setSelected(null); }}><span>Storage</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "import" ? "active" : ""}`} onClick={() => setView("import")}><span>Import & QC</span><Icon name="chevron" /></button>
           <div className="rail-note"><strong>Defaults active</strong><span>PASS upstream</span><span>MANE transcripts</span><span>Repeat/SegDup excluded</span></div>
         </nav>
@@ -734,13 +940,39 @@ export default function VariantWorkbench() {
             <Check label="Exclude RepeatMasker" checked={excludeRepeat} onChange={setExcludeRepeat} />
             <Check label="Exclude SegDup" checked={excludeSegdup} onChange={setExcludeSegdup} />
           </FilterSection>
+          {reviewAnalysisScope === "whole_genome" && <FilterSection title="Regulatory context" count={regulatoryFilterEnabled && regulatoryMatches ? regulatoryMatches.size : undefined}>
+            <RegulatoryFilterControl
+              catalog={screenCatalog}
+              activeSetId={activeRegulatorySetId}
+              setActiveSetId={setActiveRegulatorySetId}
+              customSets={regulatoryContextSets}
+              enabled={regulatoryFilterEnabled}
+              setEnabled={(value) => {
+                setRegulatoryFilterEnabled(value);
+                if (!value) {
+                  setRegulatoryMatches(null);
+                  setRegulatoryFilterLoading(false);
+                  setRegulatoryFilterProgress("");
+                  setRegulatoryFilterError("");
+                }
+              }}
+              loading={regulatoryFilterLoading}
+              progress={regulatoryFilterProgress}
+              error={regulatoryFilterError}
+            />
+          </FilterSection>}
         </aside>
 
         <section className="content">
           {view === "cohort" ? (
-            <CohortPanel onReview={(reviewRows, reviewSummary) => {
+            <CohortPanel onReview={(reviewRows, reviewSummary, analysisScope) => {
               setRows(reviewRows);
               setSummary(reviewSummary);
+              setReviewAnalysisScope(analysisScope);
+              if (analysisScope !== "whole_genome") {
+                setRegulatoryFilterEnabled(false);
+                setRegulatoryMatches(null);
+              }
               setQuery("");
               setImpacts(new Set());
               setPopmax(1);
@@ -765,8 +997,17 @@ export default function VariantWorkbench() {
               setView("variants");
               setSelected(reviewRows[0] ?? null);
             }} />
+          ) : view === "sample_library" ? (
+            <SampleLibraryPanel onReview={(reviewRows, reviewSummary, analysisScope) => {
+              setRows(reviewRows); setSummary(reviewSummary); setReviewAnalysisScope(analysisScope);
+              resetFilters();
+              setView("variants"); setSelected(null);
+              if (analysisScope === "whole_genome") { setImpacts(new Set(IMPACTS)); setManeOnly(false); }
+            }} onManagePhenotype={(individualId) => { setPhenotypeTarget(individualId ?? null); setView("phenotypes"); }} />
+          ) : view === "storage" ? (
+            <StoragePanel />
           ) : view === "phenotypes" ? (
-            <PhenotypePanel />
+            <PhenotypePanel initialIndividualId={phenotypeTarget} />
           ) : view === "gene_lists" ? (
             <GeneListsPanel
               geneSets={{ iei: ieiGenes, hi: hiGenes, dominant: dominantGenes }}
@@ -783,7 +1024,7 @@ export default function VariantWorkbench() {
             <ImportPanel importing={importing} importProgress={importProgress} wgsImportJob={wgsImportJob} error={importError} summary={summary} pendingFiles={pendingReviewFiles} onStageFiles={stageReviewFiles} onImportFiles={importFiles} qcSettings={qcSettings} setQcSettings={setQcSettings} qcPreset={qcPreset} setQcPreset={setQcPreset} includeQcFailing={includeQcFailing} setIncludeQcFailing={setIncludeQcFailing} />
           ) : view === "family" ? (
             <FamilyPanel
-              rows={eligibleRows}
+              rows={screenFilteredRows}
               samples={uniqueSamples}
               trio={trio}
               setTrio={setTrio}
@@ -817,6 +1058,13 @@ export default function VariantWorkbench() {
               trio={trio}
               trioThresholds={trioThresholds}
               qcSettings={qcSettings}
+              analysisScope={reviewAnalysisScope}
+              screenCatalog={screenCatalog}
+              activeRegulatorySetId={activeRegulatorySetId}
+              setActiveRegulatorySetId={setActiveRegulatorySetId}
+              regulatoryContextSets={regulatoryContextSets}
+              setRegulatoryContextSets={saveRegulatoryContextSets}
+              onManagePhenotype={() => { setPhenotypeTarget(selected.libraryIndividualId ?? null); setSelected(null); setView("phenotypes"); }}
             />
           ) : (
             <>
@@ -830,6 +1078,10 @@ export default function VariantWorkbench() {
           )}
         </section>
       </div>
+      {pendingIdentityDatasets.length > 0 && <IdentityMappingDialog
+        datasets={pendingIdentityDatasets}
+        onComplete={() => setPendingIdentityDatasets([])}
+      />}
     </main>
   );
 }
@@ -863,8 +1115,8 @@ function VariantTable({ rows, hasImportedData, saved, setSaved, setSelected, com
     return <tr key={row.key} onClick={() => setSelected(row)}>
       <td><button className={`star-button ${isSaved ? "saved" : ""}`} aria-label={isSaved ? "Remove saved candidate" : "Save candidate"} onClick={(event) => { event.stopPropagation(); setSaved((current) => toggleSet(current, row.key, !isSaved)); }}><Icon name="star" /></button></td>
       <td><VariantIdentifier row={row}/><span className="cell-sub">{row.sample} · {row.genotype}</span></td>
-      <td><strong className="gene">{row.gene}</strong>{isCompound && <span className="mini-badge amber">{trio ? "comp het candidate" : "comp het?"}</span>}</td>
-      <td><span className="truncate-hgvs">{row.hgvsP || row.hgvsC || "—"}</span><span className="cell-sub truncate-hgvs">{row.hgvsP ? row.hgvsC : ""}</span></td>
+      <td><strong className="gene" title={row.gene}>{row.gene}</strong>{isCompound && <span className="mini-badge amber">{trio ? "comp het candidate" : "comp het?"}</span>}</td>
+      <td><span className="truncate-hgvs" title={row.hgvsP || row.hgvsC || undefined}>{row.hgvsP || row.hgvsC || "—"}</span><span className="cell-sub truncate-hgvs" title={row.hgvsP && row.hgvsC ? row.hgvsC : undefined}>{row.hgvsP ? row.hgvsC : ""}</span></td>
       <td><span className={`impact-pill ${row.impact.toLowerCase()}`}>{row.impact}</span><span className="cell-sub consequence">{row.consequence.replaceAll("_", " ")}</span></td>
       <td className={row.gnomadPopmax !== null && row.gnomadPopmax > 0.001 ? "muted-value" : ""}>{compactNumber(row.gnomadPopmax)}</td>
       <td><div className="predictor-pair">{visibleInfo.has("alphaMissense") && <Score label="AM" value={row.alphaMissense} strong={(row.alphaMissense ?? 0) >= 0.564} />}{visibleInfo.has("cadd") && <Score label="CADD" value={row.cadd} strong={(row.cadd ?? 0) >= 20} />}</div></td>
@@ -956,7 +1208,7 @@ function CcreContextPanel({
     {context?.status === "resource_unavailable" && <div className="ccre-unavailable"><strong>SCREEN cCRE resource is not installed</strong><span>This is not evidence that the variant lacks a cCRE overlap. Install the native SCREEN Registry resource from Annotation datasets.</span></div>}
     {context?.status === "no_overlap" && <div className="ccre-no-overlap"><strong>Does not overlap a {context.resource_version} cCRE</strong><span>The full GRCh38 REF span was checked against the installed local resource.</span></div>}
     {context?.status === "overlap" && <>
-      <div className="ccre-caveat"><strong>Important: proximity is not a target-gene assignment.</strong><span>The VEP or closest gene shown for this variant is not necessarily regulated by the cCRE. Every gene below is listed only because its gene-level TSS lies within ±{(context.gene_window_bp / 1000).toLocaleString()} kb of that cCRE; experimental or cell-specific regulatory evidence is needed to infer a target.</span></div>
+      <div className="ccre-caveat"><strong>Important: proximity is not a target-gene assignment.</strong><span>The VEP or closest gene shown for this variant is not necessarily regulated by the cCRE. Every gene below is listed only because its gene-level TSS lies within ±{(context.gene_window_bp / 1000).toLocaleString()} kb of that cCRE; experimental or cell-specific regulatory evidence is needed to infer a target.</span><span>A genomic region can simultaneously have a transcript-specific coding consequence and be a regulatory element. The regulatory element may act on the same gene, another gene, or multiple genes; the cCRE overlap is not independent evidence of pathogenicity.</span></div>
       {context.gene_resource_available && <label className="ccre-gene-toggle"><input type="checkbox" checked={includeNoncodingGenes} onChange={(event) => setIncludeNoncodingGenes(event.target.checked)} /><span>Include non-protein-coding genes</span><small>Protein-coding genes are shown by default; the complete context remains available.</small></label>}
       <div className="ccre-overlap-list">{context.overlaps.map((overlap) => {
         const proteinCodingGenes = overlap.nearby_genes.filter((gene) => isProteinCodingBiotype(gene.biotype));
@@ -964,15 +1216,19 @@ function CcreContextPanel({
         const displayedGenes = includeNoncodingGenes ? [...proteinCodingGenes, ...otherGenes] : proteinCodingGenes;
         return <article key={`${overlap.accession}:${overlap.start}:${overlap.end}`}>
           <header><div><strong>{overlap.accession}</strong><span>{overlap.class} · {overlap.class_label}</span></div><code>{overlap.chrom}:{overlap.start}-{overlap.end}</code></header>
-          {context.gene_resource_available ? <><div className="ccre-gene-caption"><span>{includeNoncodingGenes ? "All" : "Protein-coding"} gene TSSs within ±{(context.gene_window_bp / 1000).toLocaleString()} kb</span><small>{displayedGenes.length.toLocaleString()} shown · {overlap.nearby_genes.length.toLocaleString()} total ({proteinCodingGenes.length.toLocaleString()} protein-coding, {otherGenes.length.toLocaleString()} other) · {context.gene_source} · signed by transcriptional direction</small></div>{displayedGenes.length ? <div className="ccre-gene-table-wrap"><table className="ccre-gene-table"><thead><tr><th>Gene</th><th>Ensembl ID</th><th>TSS / strand</th><th>Distance from cCRE to TSS</th><th>Biotype</th></tr></thead><tbody>{displayedGenes.map((gene) => <tr key={gene.gene_id}><td><strong>{gene.symbol}</strong></td><td className="mono">{gene.gene_id}</td><td className="mono">{overlap.chrom}:{gene.tss.toLocaleString()} · {gene.strand}</td><td className="mono">{ccreDistanceLabel(gene.distance_bp)}</td><td>{cleanLabel(gene.biotype)}</td></tr>)}</tbody></table></div> : <div className="ccre-no-coding-genes"><strong>No protein-coding gene TSSs in this window</strong><span>{otherGenes.length.toLocaleString()} non-protein-coding gene{otherGenes.length === 1 ? " is" : "s are"} available using the option above.</span></div>}</> : <div className="ccre-unavailable"><strong>Nearby-gene context unavailable</strong><span>The cCRE overlap is valid, but the release-matched Ensembl gene TSS table is not installed.</span></div>}
+          {context.gene_resource_available ? <><div className="ccre-gene-caption"><span>{includeNoncodingGenes ? "All" : "Protein-coding"} gene TSSs within ±{(context.gene_window_bp / 1000).toLocaleString()} kb</span><small>{displayedGenes.length.toLocaleString()} shown · {overlap.nearby_genes.length.toLocaleString()} total ({proteinCodingGenes.length.toLocaleString()} protein-coding, {otherGenes.length.toLocaleString()} other) · {context.gene_source} · signed by transcriptional direction</small></div>{displayedGenes.length ? <div className="ccre-gene-table-wrap"><table className="ccre-gene-table"><thead><tr><th>Gene</th><th>Ensembl ID</th><th>TSS / strand</th><th>Distance from cCRE to TSS</th><th>Biotype</th></tr></thead><tbody>{displayedGenes.map((gene) => <tr key={gene.gene_id}><td title={gene.symbol === gene.gene_id ? "No separate gene symbol in the Ensembl source" : gene.symbol}><strong className={gene.symbol === gene.gene_id ? "symbol-unavailable" : ""}>{gene.symbol === gene.gene_id ? "—" : gene.symbol}</strong></td><td className="mono" title={gene.gene_id}>{gene.gene_id}</td><td className="mono" title={`${overlap.chrom}:${gene.tss.toLocaleString()} · ${gene.strand}`}>{overlap.chrom}:{gene.tss.toLocaleString()} · {gene.strand}</td><td className="mono" title={ccreDistanceLabel(gene.distance_bp)}>{ccreDistanceLabel(gene.distance_bp)}</td><td title={cleanLabel(gene.biotype)}>{cleanLabel(gene.biotype)}</td></tr>)}</tbody></table></div> : <div className="ccre-no-coding-genes"><strong>No protein-coding gene TSSs in this window</strong><span>{otherGenes.length.toLocaleString()} non-protein-coding gene{otherGenes.length === 1 ? " is" : "s are"} available using the option above.</span></div>}</> : <div className="ccre-unavailable"><strong>Nearby-gene context unavailable</strong><span>The cCRE overlap is valid, but the release-matched Ensembl gene TSS table is not installed.</span></div>}
         </article>;
       })}</div>
     </>}
   </section>;
 }
 
-function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, compoundKeys, visibleInfo, settingsOpen, setSettingsOpen, setVisibleInfo, availableDbnsfpPredictors, visibleDbnsfpPredictors, setVisibleDbnsfpPredictors, trio, trioThresholds, qcSettings }: { rows: VariantRow[]; selected: VariantRow; setSelected: (row: VariantRow | null) => void; saved: Set<string>; setSaved: React.Dispatch<React.SetStateAction<Set<string>>>; compoundKeys: Set<string>; visibleInfo: Set<DisplayItem>; settingsOpen: boolean; setSettingsOpen: (value: boolean) => void; setVisibleInfo: React.Dispatch<React.SetStateAction<Set<DisplayItem>>>; availableDbnsfpPredictors: Set<string>; visibleDbnsfpPredictors: Set<string>; setVisibleDbnsfpPredictors: React.Dispatch<React.SetStateAction<Set<string>>>; trio: TrioDefinition | null; trioThresholds: TrioThresholds; qcSettings: VariantQcSettings }) {
+function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, compoundKeys, visibleInfo, settingsOpen, setSettingsOpen, setVisibleInfo, availableDbnsfpPredictors, visibleDbnsfpPredictors, setVisibleDbnsfpPredictors, trio, trioThresholds, qcSettings, analysisScope, screenCatalog, activeRegulatorySetId, setActiveRegulatorySetId, regulatoryContextSets, setRegulatoryContextSets, onManagePhenotype }: { rows: VariantRow[]; selected: VariantRow; setSelected: (row: VariantRow | null) => void; saved: Set<string>; setSaved: React.Dispatch<React.SetStateAction<Set<string>>>; compoundKeys: Set<string>; visibleInfo: Set<DisplayItem>; settingsOpen: boolean; setSettingsOpen: (value: boolean) => void; setVisibleInfo: React.Dispatch<React.SetStateAction<Set<DisplayItem>>>; availableDbnsfpPredictors: Set<string>; visibleDbnsfpPredictors: Set<string>; setVisibleDbnsfpPredictors: React.Dispatch<React.SetStateAction<Set<string>>>; trio: TrioDefinition | null; trioThresholds: TrioThresholds; qcSettings: VariantQcSettings; analysisScope: AnalysisScope; screenCatalog: ScreenContextCatalog | null; activeRegulatorySetId: string; setActiveRegulatorySetId: (id: string) => void; regulatoryContextSets: RegulatoryContextSet[]; setRegulatoryContextSets: (sets: RegulatoryContextSet[]) => void; onManagePhenotype: () => void }) {
   const detailRef = useRef<HTMLElement>(null);
+  const [reviewSection, setReviewSection] = useState<"overview" | "phenotype" | "regulatory">("overview");
+  const [screenEvidence, setScreenEvidence] = useState<ScreenContextEvidence | null>(null);
+  const [screenEvidenceLoading, setScreenEvidenceLoading] = useState(true);
+  const [screenEvidenceError, setScreenEvidenceError] = useState("");
   const isSaved = saved.has(selected.key);
   const isCompound = compoundKeys.has(`${selected.sample}:${selected.gene}`);
   const deNovo = trio ? assessDeNovo(selected, trio, trioThresholds) : null;
@@ -1023,22 +1279,43 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
     detailRef.current?.scrollTo({ top: 0 });
   }, [selected.key]);
 
+  useEffect(() => {
+    if (analysisScope !== "whole_genome") {
+      const frame = window.requestAnimationFrame(() => {
+        setScreenEvidence(null);
+        setScreenEvidenceError("");
+        setScreenEvidenceLoading(false);
+      });
+      return () => window.cancelAnimationFrame(frame);
+    }
+    let active = true;
+    Promise.resolve().then(() => {
+      if (!active) return null;
+      setScreenEvidenceLoading(true);
+      setScreenEvidenceError("");
+      setScreenEvidence(null);
+      return getScreenContext({ chrom: selected.chrom, pos: selected.pos, ref: selected.ref, alt: selected.alt });
+    })
+      .then((value) => { if (active && value) setScreenEvidence(value); })
+      .catch((reason: unknown) => { if (active) setScreenEvidenceError(reason instanceof Error ? reason.message : "SCREEN context lookup failed"); })
+      .finally(() => { if (active) setScreenEvidenceLoading(false); });
+    return () => { active = false; };
+  }, [analysisScope, selected.chrom, selected.pos, selected.ref, selected.alt]);
+
   return <div className="review-workspace">
     <aside className="review-list"><div className="review-list-head"><button onClick={() => setSelected(null)}>← Back to results</button><span>{rows.length} variants</span></div><div className="review-list-scroll">{rows.map((row) => <button key={row.key} className={`review-list-item ${row.key === selected.key ? "active" : ""}`} onClick={() => setSelected(row)}><div><strong>{row.gene}</strong><span className={`impact-pill ${row.impact.toLowerCase()}`}>{row.impact}</span></div><VariantIdentifier row={row}/><small>{row.hgvsP || row.hgvsC || row.consequence.replaceAll("_", " ")}</small><small>{row.sample} · {row.genotype}</small></button>)}</div></aside>
     <article className="review-detail" ref={detailRef}>
-      <div className="review-toolbar"><button className="back-button" onClick={() => setSelected(null)}>← Results</button><div><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} /><button className={`secondary-button save-candidate ${isSaved ? "active" : ""}`} onClick={() => setSaved((current) => toggleSet(current, selected.key, !isSaved))}><Icon name="star" />{isSaved ? "Saved" : "Save candidate"}</button></div></div>
+      <div className="review-toolbar"><button className="back-button" onClick={() => setSelected(null)}>← Results</button><div className="review-view-tabs" role="tablist" aria-label="Variant review workspace"><button role="tab" aria-selected={reviewSection === "overview"} className={reviewSection === "overview" ? "active" : ""} onClick={() => setReviewSection("overview")}>Variant</button><button role="tab" aria-selected={reviewSection === "phenotype"} className={reviewSection === "phenotype" ? "active" : ""} onClick={() => setReviewSection("phenotype")}>Phenotype</button>{analysisScope === "whole_genome" && <button role="tab" aria-selected={reviewSection === "regulatory"} className={reviewSection === "regulatory" ? "active" : ""} onClick={() => setReviewSection("regulatory")}>Regulatory evidence</button>}</div><div><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} /><button className={`secondary-button save-candidate ${isSaved ? "active" : ""}`} onClick={() => setSaved((current) => toggleSet(current, selected.key, !isSaved))}><Icon name="star" />{isSaved ? "Saved" : "Save candidate"}</button></div></div>
       <header className="review-hero"><div><div className="review-kickers"><span className={`impact-pill ${selected.impact.toLowerCase()}`}>{selected.impact}</span>{selectedQcFailures.length > 0 && <span className="review-badge qc-fail-flag">QC fail</span>}{selected.duplicateRecord && <span className="review-badge amber">{selected.duplicateRecordKind === "liftover_collision" ? "Lift-over collision" : "Duplicate record"}</span>}{deNovo && ["high_confidence", "possible", "possible_parental_mosaicism"].includes(deNovo.status) && <span className={`review-badge family-status ${deNovo.status}`}>{deNovoLabel(deNovo.status)}</span>}{selected.liftedFromGrch37 && <span className="review-badge amber">Lifted from GRCh37</span>}{selected.assemblyAlleleSwap && <span className="review-badge amber" title="A source allele became the GRCh38 reference; genotype and allele-indexed annotations were remapped">Assembly allele swap</span>}{selected.mane && <span className="review-badge">MANE</span>}{selected.picked && !selected.mane && <span className="review-badge">PICK fallback</span>}{isCompound && <span className="review-badge amber">candidate comp het</span>}</div><h1>{selected.gene}</h1><p>{selected.hgvsP || selected.hgvsC || fullVariantId(selected)}</p><div className="review-hero-locus"><VariantIdentifier row={selected}/><span>· {selected.sample} · {selected.genotype}</span></div>{selected.liftedFromGrch37 && selected.originalChrom && <span className="cell-sub mono">Original GRCh37: {selected.originalChrom}:{selected.originalPos} {selected.originalRef}›{selected.originalAlt}</span>}</div><div className="hero-score"><span>gnomAD popmax</span><strong>{compactNumber(selected.gnomadPopmax)}</strong></div></header>
 
+      {reviewSection === "phenotype" ? <PhenotypeReviewPanel sample={selected.sample} onManage={onManagePhenotype}/> : analysisScope === "whole_genome" && reviewSection === "regulatory" ? <RegulatoryEvidencePanel catalog={screenCatalog} evidence={screenEvidence} loading={screenEvidenceLoading} error={screenEvidenceError} activeSetId={activeRegulatorySetId} setActiveSetId={setActiveRegulatorySetId} customSets={regulatoryContextSets} setCustomSets={setRegulatoryContextSets}><CcreContextPanel compact chrom={selected.chrom} pos={selected.pos} ref={selected.ref} alt={selected.alt}/></RegulatoryEvidencePanel> : <>
       <section className="review-section"><div className="section-title"><div><p className="eyebrow">Computational evidence</p><h2>Predictors</h2></div><span>{predictorCards.length + additionalPredictorCards.length} shown</span></div><div className="predictor-card-grid">{[...predictorCards, ...additionalPredictorCards].map((item) => <div className={`predictor-card ${item.strong ? "strong" : ""}`} key={item.key}><span>{item.label}</span><strong>{compactNumber(item.value ?? null, item.label.includes("CADD") ? 1 : 3)}</strong><small>{item.value === null || item.value === undefined ? "No score for this variant" : item.note || "Available"}</small></div>)}</div>{visibleInfo.has("loGoFunc") && selected.loGoFuncAlleleAvailable && <div className="logofunc-evidence"><div><span>LoGoFunc missense mechanism</span><strong>{selected.loGoFuncPrediction || "Allele available; transcript/protein mismatch"}{selectedLoGoFuncScore !== null ? ` · ${compactNumber(selectedLoGoFuncScore, 3)}` : ""}</strong><small>Research prediction; not a clinical classification or LOFTEE result.</small></div><dl><div><dt>Neutral</dt><dd>{compactNumber(selected.loGoFuncNeutral, 3)}</dd></div><div><dt>GOF</dt><dd>{compactNumber(selected.loGoFuncGof, 3)}</dd></div><div><dt>LOF</dt><dd>{compactNumber(selected.loGoFuncLof, 3)}</dd></div></dl><p>Source {selected.loGoFuncSourceTranscript || "—"} · {selected.loGoFuncSourceHgvsp || "—"} · {cleanLabel(selected.loGoFuncMatch)}</p></div>}{visibleInfo.has("loftee") && <div className="loftee-line"><span>LOFTEE</span><strong>{selected.haplotypeFrameStatus === "FRAME_RESTORED_CONFIRMED" ? `Not LoF after confirmed haplotype reconstruction · per-variant ${selected.loftee || "not annotated"}` : selected.loftee || "Not applicable / not annotated"}{selected.loftee50bp ? ` · PTC 50-bp ${selected.loftee50bp}` : ""}</strong></div>}{visibleInfo.has("loftee") && selected.ptcCalcStatus && <div className="loftee-line"><span>Frameshift PTC calculation</span><strong>{selected.ptcCalcStatus.replaceAll("_", " ")}{selected.ptcDistanceFromLastExon !== null ? ` · ${selected.ptcDistanceFromLastExon} bp from final exon junction` : ""}{selected.loftee50bpChanged ? ` · replaced ${selected.loftee50bpOriginal}` : ""}</strong></div>}{selected.haplotypeFrameStatus && <div className="loftee-line"><span>Sample haplotype</span><strong>{haplotypeFrameLabel(selected.haplotypeFrameStatus)}{selected.haplotypeFramePartners?.length ? ` · partner ${selected.haplotypeFramePartners.join(", ")}` : ""}{selected.haplotypeProteinChange ? ` · ${selected.haplotypeProteinChange}` : ""}</strong></div>}</section>
-
-      <CcreContextPanel chrom={selected.chrom} pos={selected.pos} ref={selected.ref} alt={selected.alt}/>
 
       <div className="evidence-layout">
         {trio && <TrioGenotypeEvidence row={selected} trio={trio} assessment={deNovo}/>}
         {visibleInfo.has("quality") && <EvidenceSection eyebrow="Sample evidence" title="Call quality"><EvidenceGrid items={[
           ["QC status", selectedQcFailures.length ? `Fail: ${selectedQcFailures.join("; ")}` : "Pass"], ["Record warning", duplicateRecordLabel(selected) || "None"], ["QUAL", compactNumber(selected.qual ?? null, 1)], ["Site depth", selected.siteDepth ?? "—"], ["Depth (DP)", selected.dp ?? "—"], ["Genotype quality", selected.gq ?? "—"], ["Allele depths", selected.adRef !== undefined || selected.adAlt !== undefined ? `${selected.adRef ?? "—"}, ${selected.adAlt ?? "—"}` : "—"], ["Allele balance", compactNumber(selected.alleleBalance, 3)], ["Genotype FT", selected.genotypeFilter || "—"], ["Genotype", selected.genotype], ["Phase", selected.phaseSet ? `${selected.phase} · PS ${selected.phaseSet}` : selected.phase],
         ]} /></EvidenceSection>}
-        <PhenotypeSummary sample={selected.sample}/>
         {visibleInfo.has("clinvar") && <EvidenceSection eyebrow="Clinical evidence" title="ClinVar"><EvidenceGrid items={[
           ["Significance", cleanLabel(selected.clinvar)], ["Conflicting submissions", cleanLabel(selected.clinvarConflictingEvidence)], ["Conflict includes P / LP", isClinvarConflictWithPathogenic(selected.clinvar, selected.clinvarConflictingEvidence) ? "Yes" : "No"], ["Review status", cleanLabel(selected.clinvarReviewStatus)], ["Condition", cleanLabel(selected.clinvarDisease)], ["Same pathogenic residue", selected.clinvarAaMatch ? "Yes" : "No / not annotated"],
         ]} /></EvidenceSection>}
@@ -1057,7 +1334,9 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
         ]} /><p className="constraint-note">{selected.constraintRelease ? `Loaded automatically from bundled gnomAD v${selected.constraintRelease} gene constraint data using its selected MANE/canonical transcript. gnomAD recommends LOEUF over pLI for current interpretation.` : "No matching gene was found in the bundled gnomAD constraint table. Constraint metrics remain unavailable for this gene."}</p></EvidenceSection>}
       </div>
       {selected.rawVcfEvidence && <RawVcfEvidencePanel evidence={selected.rawVcfEvidence}/>}
+      {analysisScope === "whole_genome" && <RegulatorySummary evidence={screenEvidence} loading={screenEvidenceLoading} error={screenEvidenceError} codingConsequence={hasCodingTranscriptConsequence(selected)} onOpen={() => setReviewSection("regulatory")}/>}
       <div className="interpretation-banner"><strong>Review aid, not a classification</strong><span>This workspace organizes evidence; it does not assign ACMG/AMP criteria or replace clinical interpretation.</span></div>
+      </>}
     </article>
   </div>;
 }
@@ -1246,26 +1525,56 @@ function TrioGenotypeEvidence({ row, trio, assessment }: { row: VariantRow; trio
   return <div className="trio-evidence-span"><EvidenceSection eyebrow="Family evidence" title="Trio genotypes"><TrioGenotypeTable row={row} trio={trio}/>{assessment && <div className={`trio-assessment ${assessment.status}`}><strong>{deNovoLabel(assessment.status)}</strong><span>{assessment.reasons.join(" ")}</span></div>}<p className="constraint-note">{trio.parentalRelationshipsConfirmed ? "Parental relationships are recorded as confirmed by the reviewer." : "Parental relationships are not recorded as confirmed."} This is a candidate-analysis aid and does not assign PS2/PM6.</p></EvidenceSection></div>;
 }
 
-function PhenotypeSummary({ sample }: { sample: string }) {
+function PhenotypeReviewPanel({ sample, onManage }: { sample: string; onManage: () => void }) {
   const [records, setRecords] = useState<PhenotypeIndividual[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
   useEffect(() => {
     let active = true;
-    getPhenotypesBySample(sample)
-      .then((value) => { if (active) setRecords(value); })
-      .catch(() => { if (active) setRecords([]); });
+    setLoading(true);
+    setError("");
+    Promise.all([getSampleLibrary(sample).catch(() => []), getPhenotypesBySample(sample)])
+      .then(async ([datasets, legacy]) => {
+        const exact = datasets.filter((dataset) => dataset.vcf_sample_name === sample);
+        if (exact.length === 1) {
+          const phenotype = await getSampleLibraryPhenotype(exact[0].id);
+          if (active) setRecords(phenotype ? [phenotype] : []);
+        } else if (active) {
+          setRecords(legacy);
+        }
+      })
+      .catch((reason: unknown) => {
+        if (active) {
+          setRecords([]);
+          setError(reason instanceof Error ? reason.message : "Phenotype lookup failed.");
+        }
+      })
+      .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [sample]);
-  if (!records.length) return null;
-  return <EvidenceSection eyebrow="Individual context" title={records.map((record) => record.individual_id).join(", ")}>{records.map((record) => <div className="variant-phenotype-summary" key={record.individual_id}><EvidenceGrid items={[
-    ["VCF sample", sample],
-    ["Sex at birth", record.sex_at_birth || "—"],
-    ["Age at evaluation", record.age_at_evaluation === null ? "—" : `${record.age_at_evaluation} ${record.age_at_evaluation_unit}`],
-    ["Age at onset", record.age_at_onset === null ? "—" : `${record.age_at_onset} ${record.age_at_onset_unit}`],
-    ["Reported race", record.reported_race.join(", ") || "—"],
-    ["Reported ethnicity", record.reported_ethnicity.join(", ") || "—"],
-    ["Current diagnosis", record.current_diagnosis || "—"],
-    ["Source date", record.source_date || "—"],
-  ]}/><p>{record.phenotype_summary || "No phenotype summary recorded."}</p>{record.present_features.length > 0 && <span><strong>Present:</strong> {record.present_features.join("; ")}</span>}{record.absent_features.length > 0 && <span><strong>Absent:</strong> {record.absent_features.join("; ")}</span>}</div>)}</EvidenceSection>;
+  return <div className="phenotype-review-panel">
+    <div className="phenotype-review-head"><div><p className="eyebrow">Individual context</p><h1>Phenotype</h1><p>Phenotype is linked to the individual through VCF sample <span className="mono">{sample}</span>.</p></div><button className="secondary-button" onClick={onManage}>Manage phenotype data</button></div>
+    {loading && <div className="phenotype-review-state">Loading linked phenotype information…</div>}
+    {!loading && error && <div className="alert error">{error}</div>}
+    {!loading && !error && records.length === 0 && <div className="phenotype-review-empty"><strong>No phenotype record is linked to this sample</strong><span>The genotype remains reviewable. Add an individual record now or link this sample later.</span><button className="primary-button dark" onClick={onManage}>Add or link phenotype</button></div>}
+    {!loading && records.length > 1 && <div className="alert">This VCF sample is linked to {records.length} individual records. Review the sample-to-individual mapping.</div>}
+    {!loading && records.map((record) => <article className="phenotype-review-record" key={record.individual_id}>
+      <header><div><p className="eyebrow">Individual</p><h2>{record.individual_id}</h2><span>{record.current_diagnosis || "No current diagnosis recorded"}</span></div><small>Updated {record.updated_at || "—"}</small></header>
+      <EvidenceGrid items={[
+        ["VCF sample", sample],
+        ["Linked samples", record.sample_ids.join(", ") || "—"],
+        ["Sex at birth", record.sex_at_birth || "—"],
+        ["Age at evaluation", record.age_at_evaluation === null ? "—" : `${record.age_at_evaluation} ${record.age_at_evaluation_unit}`],
+        ["Age at onset", record.age_at_onset === null ? "—" : `${record.age_at_onset} ${record.age_at_onset_unit}`],
+        ["Reported race", record.reported_race.join(", ") || "—"],
+        ["Reported ethnicity", record.reported_ethnicity.join(", ") || "—"],
+        ["Source date", record.source_date || "—"],
+      ]}/>
+      <section><h3>Phenotype summary</h3><p>{record.phenotype_summary || "Not entered."}</p></section>
+      <div className="phenotype-feature-grid"><section><h3>Present features</h3>{record.present_features.length ? <ul>{record.present_features.map((feature) => <li key={feature}>{feature}</li>)}</ul> : <p>Not entered.</p>}</section><section><h3>Explicitly absent features</h3>{record.absent_features.length ? <ul>{record.absent_features.map((feature) => <li key={feature}>{feature}</li>)}</ul> : <p>None explicitly recorded.</p>}</section></div>
+      {record.notes && <section><h3>Notes</h3><p>{record.notes}</p></section>}
+    </article>)}
+  </div>;
 }
 
 function EvidenceSection({ eyebrow, title, children }: { eyebrow: string; title: string; children: React.ReactNode }) {
@@ -1370,7 +1679,7 @@ function phenotypeToForm(record: PhenotypeIndividual): Record<string, string> {
   };
 }
 
-function PhenotypePanel() {
+function PhenotypePanel({ initialIndividualId = null }: { initialIndividualId?: string | null }) {
   const [tab, setTab] = useState<"records" | "manual" | "bulk">("records");
   const [stats, setStats] = useState<PhenotypeStats | null>(null);
   const [individuals, setIndividuals] = useState<PhenotypeIndividual[]>([]);
@@ -1407,6 +1716,15 @@ function PhenotypePanel() {
     // This page owns refreshes after later mutations; initial load runs once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!initialIndividualId) return;
+    getPhenotypeIndividuals(initialIndividualId).then((records) => {
+      const exact = records.find((record) => record.individual_id === initialIndividualId);
+      if (exact) { setForm(phenotypeToForm(exact)); setTab("manual"); }
+      else { setForm({ ...EMPTY_PHENOTYPE_FORM, individual_id: initialIndividualId }); setTab("manual"); }
+    }).catch(() => undefined);
+  }, [initialIndividualId]);
 
   function field(name: string, label: string, input: React.ReactNode) {
     return <label className="phenotype-field" key={name}><span>{label}</span>{input}</label>;
@@ -1576,13 +1894,14 @@ function PhenotypePanel() {
 }
 
 function CohortPanel({ onReview }: {
-  onReview: (rows: VariantRow[], summary: ImportSummary) => void;
+  onReview: (rows: VariantRow[], summary: ImportSummary, analysisScope: AnalysisScope) => void;
 }) {
   const [stats, setStats] = useState<CohortStats | null>(null);
   const [sourcePaths, setSourcePaths] = useState("");
   const [recursive, setRecursive] = useState(true);
   const [allowUnknownAssembly, setAllowUnknownAssembly] = useState(false);
-  const [importProfile, setImportProfile] = useState<"full" | "prefiltered">("full");
+  const [importProfile, setImportProfile] = useState<"full" | "prefiltered">("prefiltered");
+  const [cohortAnalysisScope, setCohortAnalysisScope] = useState<AnalysisScope>("whole_genome");
   const [prefilter, setPrefilter] = useState<WgsPrefilterOptions>({ ...DEFAULT_WGS_PREFILTER });
   const [indexing, setIndexing] = useState(false);
   const [importResult, setImportResult] = useState<CohortImportResult | null>(null);
@@ -1605,25 +1924,28 @@ function CohortPanel({ onReview }: {
   const [excludeSegdup, setExcludeSegdup] = useState(true);
   const [zygosity, setZygosity] = useState<"all" | "heterozygous" | "homozygous" | "hemizygous">("all");
   const [queryResult, setQueryResult] = useState<CohortQueryResult | null>(null);
+  const [cohortProfiles, setCohortProfiles] = useState<CohortProfile[]>([]);
+  const [queryScopes, setQueryScopes] = useState<Set<AnalysisScope>>(new Set());
+  const [queryProfiles, setQueryProfiles] = useState<Set<string>>(new Set());
   const [selectedVariant, setSelectedVariant] = useState<CohortQueryRow | null>(null);
   const [variantDetail, setVariantDetail] = useState<CohortVariantDetail | null>(null);
   const [detailWorking, setDetailWorking] = useState(false);
   const [reviewWorking, setReviewWorking] = useState(false);
-  const [detailCarrierIds, setDetailCarrierIds] = useState<Set<number>>(new Set());
   const [selectedCarrierIds, setSelectedCarrierIds] = useState<Set<number>>(new Set());
   const [managingSamples, setManagingSamples] = useState(false);
   const [cohortSamples, setCohortSamples] = useState<CohortSample[]>([]);
   const [sampleQuery, setSampleQuery] = useState("");
   const [selectedSampleIds, setSelectedSampleIds] = useState<Set<number>>(new Set());
-  const [sampleWorking, setSampleWorking] = useState(false);
+  const [sampleOperation, setSampleOperation] = useState<"loading" | "removing" | null>(null);
   const [sampleMessage, setSampleMessage] = useState("");
   const [working, setWorking] = useState(false);
   const [error, setError] = useState("");
+  const sampleWorking = sampleOperation !== null;
 
   useEffect(() => {
     let active = true;
-    getCohortStats().then((value) => {
-      if (active) { setStats(value); setError(""); }
+    Promise.all([getCohortStats(), getCohortProfiles()]).then(([value, profiles]) => {
+      if (active) { setStats(value); setCohortProfiles(profiles); setError(""); }
     }).catch(() => {
       if (active) setError("The local cohort service is not running. Start the workbench to index or query VCFs.");
     });
@@ -1631,14 +1953,14 @@ function CohortPanel({ onReview }: {
   }, []);
 
   async function loadSamples(query = sampleQuery) {
-    setSampleWorking(true);
+    setSampleOperation("loading");
     try {
       setCohortSamples(await getCohortSamples(query));
       setSelectedSampleIds(new Set());
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Cohort samples could not be loaded.");
     } finally {
-      setSampleWorking(false);
+      setSampleOperation(null);
     }
   }
 
@@ -1648,7 +1970,9 @@ function CohortPanel({ onReview }: {
     const names = selectedEntries.slice(0, 5).map((sample) => sample.name).join(", ");
     const more = selectedEntries.length > 5 ? ` and ${selectedEntries.length - 5} more` : "";
     if (!window.confirm(`Remove ${selectedEntries.length} indexed sample entr${selectedEntries.length === 1 ? "y" : "ies"} (${names}${more})? This removes their cohort genotypes; reimporting the source VCF restores them.`)) return;
-    setSampleWorking(true);
+    const carrierCalls = selectedEntries.reduce((total, sample) => total + sample.carrier_observations, 0);
+    setSampleOperation("removing");
+    setSampleMessage(`Removing ${selectedEntries.length.toLocaleString()} sample entr${selectedEntries.length === 1 ? "y" : "ies"} and ${carrierCalls.toLocaleString()} carrier calls…`);
     setError("");
     try {
       const result = await removeCohortSamples([...selectedSampleIds]);
@@ -1658,10 +1982,13 @@ function CohortPanel({ onReview }: {
       setSelectedVariant(null);
       setVariantDetail(null);
       setSelectedCarrierIds(new Set());
-      await loadSamples(sampleQuery);
+      setCohortSamples(await getCohortSamples(sampleQuery));
+      setSelectedSampleIds(new Set());
     } catch (reason) {
+      setSampleMessage("");
       setError(reason instanceof Error ? reason.message : "Selected samples could not be removed.");
-      setSampleWorking(false);
+    } finally {
+      setSampleOperation(null);
     }
   }
 
@@ -1677,6 +2004,7 @@ function CohortPanel({ onReview }: {
     try {
       let job = await startCohortImport(
         paths, recursive, false, allowUnknownAssembly, importProfile,
+        importProfile === "prefiltered" ? "whole_genome" : cohortAnalysisScope,
         importProfile === "prefiltered" ? prefilter : undefined,
       );
       setImportJob(job);
@@ -1694,6 +2022,7 @@ function CohortPanel({ onReview }: {
       const result = job.result;
       setImportResult(result);
       setStats(result.stats);
+      setCohortProfiles(await getCohortProfiles());
       if (managingSamples) await loadSamples();
       if (result.failed) setError(`${result.failed} VCF${result.failed === 1 ? "" : "s"} could not be indexed. See the file results below.`);
     } catch (reason) {
@@ -1719,6 +2048,8 @@ function CohortPanel({ onReview }: {
         mode,
         query: exactQuery.trim(),
         zygosity,
+        analysis_scopes: [...queryScopes],
+        profile_hashes: [...queryProfiles],
         limit: 1000,
       } : {
         mode,
@@ -1737,6 +2068,8 @@ function CohortPanel({ onReview }: {
         exclude_repeat: excludeRepeat,
         exclude_segdup: excludeSegdup,
         zygosity,
+        analysis_scopes: [...queryScopes],
+        profile_hashes: [...queryProfiles],
         limit: 1000,
       });
       setQueryResult(result);
@@ -1753,19 +2086,44 @@ function CohortPanel({ onReview }: {
   const importPercent = importJob?.total_bytes
     ? Math.min(100, (importJob.processed_bytes / importJob.total_bytes) * 100)
     : 0;
-  const resultCarrierIds = new Set(
-    queryResult?.rows.map((row) => row.sample_entry_id) ?? [],
-  );
+  const variantGroups = useMemo(() => {
+    const groups = new Map<string, {
+      row: CohortQueryRow;
+      rows: CohortQueryRow[];
+      carrierIds: Set<number>;
+    }>();
+    for (const row of queryResult?.rows ?? []) {
+      const existing = groups.get(row.variant_key);
+      if (existing) {
+        existing.rows.push(row);
+        existing.carrierIds.add(row.sample_entry_id);
+      } else {
+        groups.set(row.variant_key, {
+          row,
+          rows: [row],
+          carrierIds: new Set([row.sample_entry_id]),
+        });
+      }
+    }
+    return [...groups.values()];
+  }, [queryResult]);
+  const resultCarrierIds = new Set(queryResult?.rows.map((row) => row.sample_entry_id) ?? []);
   const selectedReviewRows = queryResult?.rows.filter(
+    (row) => selectedCarrierIds.has(row.sample_entry_id),
+  ) ?? [];
+  const allResultCarriersSelected = resultCarrierIds.size > 0
+    && [...resultCarrierIds].every((sampleId) => selectedCarrierIds.has(sampleId));
+  const detailCarrierIds = new Set(
+    variantDetail?.rows.map((row) => row.sample_entry_id) ?? [],
+  );
+  const allDetailCarriersSelected = detailCarrierIds.size > 0
+    && [...detailCarrierIds].every((sampleId) => selectedCarrierIds.has(sampleId));
+  const selectedDetailRows = variantDetail?.rows.filter(
     (row) => selectedCarrierIds.has(row.sample_entry_id),
   ) ?? [];
 
   function toggleAllResultCarriers() {
-    setSelectedCarrierIds(
-      selectedCarrierIds.size === resultCarrierIds.size
-        ? new Set()
-        : new Set(resultCarrierIds),
-    );
+    setSelectedCarrierIds(allResultCarriersSelected ? new Set() : new Set(resultCarrierIds));
   }
 
   async function reviewRows(rows: CohortQueryRow[]) {
@@ -1833,9 +2191,66 @@ function CohortPanel({ onReview }: {
         rows: reviewRows.length,
         warnings,
         intakeQc,
-      });
+      }, rows.some((row) => row.analysis_scope === "whole_genome" || row.import_profile === "prefiltered") ? "whole_genome" : "exome");
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Source annotations could not be loaded for review.");
+    } finally {
+      setReviewWorking(false);
+    }
+  }
+
+  async function loadIndividualsForReview(sampleIds: number[]) {
+    if (!sampleIds.length) return;
+    setReviewWorking(true);
+    setError("");
+    try {
+      const source = await getCohortSampleReview(sampleIds);
+      const reviewRows: VariantRow[] = [];
+      const parserWarnings: string[] = [];
+      const intakeQc: ImportSummary["intakeQc"] = [];
+      const profileWarnings: string[] = [];
+
+      for (const sourceFile of source.files) {
+        const parsed = await parseVcfFiles([
+          new File([sourceFile.vcf], sourceFile.name, { type: "text/vcf" }),
+        ], { retainRawAnnotations: true });
+        reviewRows.push(...parsed.rows.map((row) => ({
+          ...row,
+          source: sourceFile.source_path,
+        })));
+        parserWarnings.push(...parsed.summary.warnings);
+        intakeQc.push(...parsed.summary.intakeQc);
+        const sampleNames = sourceFile.samples.map((sample) => sample.sample).join(", ");
+        if (sourceFile.import_profile === "prefiltered") {
+          const filters = sourceFile.prefilter_options as Partial<WgsPrefilterOptions>;
+          profileWarnings.push(
+            `${fileName(sourceFile.source_path)} (${sampleNames}): Compact WGS candidate profile · ${sourceFile.record_count.toLocaleString()} stored records · popmax ${filters.max_gnomad_popmax ?? "not limited"} · noncoding ${filters.noncoding_mode ?? "unspecified"}.`,
+          );
+        } else {
+          profileWarnings.push(
+            `${fileName(sourceFile.source_path)} (${sampleNames}): ${cohortProfileLabel(sourceFile.import_profile, sourceFile.analysis_scope)} · ${sourceFile.record_count.toLocaleString()} stored carrier records.`,
+          );
+        }
+      }
+      if (!reviewRows.length) {
+        throw new Error("The selected individuals have no stored PASS carrier records to review.");
+      }
+      onReview(reviewRows, {
+        files: source.files.length,
+        samples: source.sample_entries,
+        passRecords: source.records,
+        excludedNonPass: 0,
+        rows: reviewRows.length,
+        warnings: [
+          "Complete stored review sets were loaded using each source's original cohort import profile.",
+          ...profileWarnings,
+          ...source.warnings,
+          ...parserWarnings,
+        ],
+        intakeQc,
+      }, source.analysis_scope);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Selected individuals could not be loaded for review.");
     } finally {
       setReviewWorking(false);
     }
@@ -1844,7 +2259,6 @@ function CohortPanel({ onReview }: {
   async function openVariantDetail(row: CohortQueryRow) {
     setSelectedVariant(row);
     setVariantDetail(null);
-    setDetailCarrierIds(new Set([row.sample_entry_id]));
     setDetailWorking(true);
     try {
       const detail = await getCohortVariantDetail(row.variant_key);
@@ -1869,21 +2283,22 @@ function CohortPanel({ onReview }: {
 
     {managingSamples && <section className="cohort-sample-manager">
       <div className="cohort-results-head"><div><p className="eyebrow">Indexed entries</p><h2>Manage cohort samples</h2></div><span>Removal is recoverable by reimporting the source VCF.</span></div>
-      <div className="sample-manager-toolbar"><label className="search"><Icon name="search"/><input value={sampleQuery} onChange={(event) => setSampleQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void loadSamples()} placeholder="Find sample ID…"/></label><button className="secondary-button" disabled={sampleWorking} onClick={() => void loadSamples()}>{sampleWorking ? "Loading…" : "Search"}</button><button className="secondary-button" disabled={!cohortSamples.length} onClick={() => setSelectedSampleIds(selectedSampleIds.size === cohortSamples.length ? new Set() : new Set(cohortSamples.map((sample) => sample.id)))}>{selectedSampleIds.size === cohortSamples.length && cohortSamples.length ? "Clear all" : "Select all shown"}</button><button className="danger-button" disabled={sampleWorking || indexing || !selectedSampleIds.size} onClick={() => void removeSelectedSamples()}>Remove selected ({selectedSampleIds.size})</button></div>
-      {sampleMessage && <div className="alert success">{sampleMessage}</div>}
-      {cohortSamples.length ? <div className="cohort-sample-list">{cohortSamples.map((sample) => <label key={sample.id}><input type="checkbox" checked={selectedSampleIds.has(sample.id)} onChange={(event) => setSelectedSampleIds((current) => toggleSet(current, sample.id, event.target.checked))}/><span><strong>{sample.name}</strong><small title={sample.source_path}>{fileName(sample.source_path)} · {sample.carrier_observations.toLocaleString()} carrier calls</small></span><em className={sample.import_profile}>{sample.import_profile === "prefiltered" ? "Compact" : "Full"}</em></label>)}</div> : !sampleWorking && <div className="empty-state compact"><h2>No indexed samples</h2><p>Add an annotated VCF to populate the cohort.</p></div>}
+      <div className="sample-manager-toolbar"><label className="search"><Icon name="search"/><input value={sampleQuery} onChange={(event) => setSampleQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void loadSamples()} placeholder="Find sample ID…"/></label><button className="secondary-button" disabled={sampleWorking} onClick={() => void loadSamples()}>{sampleOperation === "removing" ? "Removing…" : sampleOperation === "loading" ? "Loading…" : "Search"}</button><button className="secondary-button" disabled={!cohortSamples.length} onClick={() => setSelectedSampleIds(selectedSampleIds.size === cohortSamples.length ? new Set() : new Set(cohortSamples.map((sample) => sample.id)))}>{selectedSampleIds.size === cohortSamples.length && cohortSamples.length ? "Clear all" : "Select all shown"}</button><button className="danger-button" disabled={sampleWorking || indexing || !selectedSampleIds.size} onClick={() => void removeSelectedSamples()}>Remove selected ({selectedSampleIds.size})</button></div>
+      {sampleMessage && <div className={sampleOperation === "removing" ? "alert" : "alert success"}>{sampleMessage}</div>}
+      {cohortSamples.length ? <div className="cohort-sample-list">{cohortSamples.map((sample) => <label key={sample.id}><input type="checkbox" checked={selectedSampleIds.has(sample.id)} onChange={(event) => setSelectedSampleIds((current) => toggleSet(current, sample.id, event.target.checked))}/><span><strong>{sample.name}</strong><small title={sample.source_path}>{fileName(sample.source_path)} · {sample.carrier_observations.toLocaleString()} carrier calls</small></span><em className={sample.import_profile}>{cohortProfileLabel(sample.import_profile, sample.analysis_scope)}</em></label>)}</div> : !sampleWorking && <div className="empty-state compact"><h2>No indexed samples</h2><p>Add an annotated VCF to populate the cohort.</p></div>}
     </section>}
 
     <div className="cohort-control-grid">
       <section className="cohort-card">
         <div className="cohort-card-head"><div><p className="eyebrow">Cohort data</p><h2>Index annotated VCFs</h2></div><span className="local-only-badge">SQLite · local only</span></div>
         <p>Enter GRCh38 VEP-annotated <span className="mono">.vcf</span> or <span className="mono">.vcf.gz</span> files. The local SQLite index retains non-reference carriers rather than every reference call, allowing hundreds of samples when workstation memory and disk are adequate. Lifted GRCh37 calls retain their original locus.</p>
-        <div className="query-mode cohort-import-profile" role="group" aria-label="Cohort import profile"><button className={importProfile === "full" ? "active" : ""} onClick={() => setImportProfile("full")}><strong>Full index</strong><span>Exhaustive carrier search</span></button><button className={importProfile === "prefiltered" ? "active" : ""} onClick={() => setImportProfile("prefiltered")}><strong>Compact WGS</strong><span>Clinical prefilter first</span></button></div>
+        <div className="query-mode cohort-import-profile" role="group" aria-label="Cohort import profile"><button className={importProfile === "prefiltered" ? "active" : ""} onClick={() => { setImportProfile("prefiltered"); setCohortAnalysisScope("whole_genome"); }}><strong>Compact WGS · recommended</strong><span>Gentle candidate prefilter first</span></button><button className={importProfile === "full" ? "active" : ""} onClick={() => setImportProfile("full")}><strong>Advanced full index</strong><span>Every PASS carrier; high disk use</span></button></div>
+        {importProfile === "full" ? <div className="cohort-scope-selector"><span>Source variant scope</span><div className="query-mode" role="group" aria-label="Indexed source variant scope"><button className={cohortAnalysisScope === "exome" ? "active" : ""} onClick={() => setCohortAnalysisScope("exome")}>Exome</button><button className={cohortAnalysisScope === "whole_genome" ? "active" : ""} onClick={() => setCohortAnalysisScope("whole_genome")}>Whole genome</button></div><small>This provenance label controls whether regulatory evidence is available when the individual is reopened.</small></div> : <p className="cohort-scope-fixed"><strong>Source scope:</strong> Whole genome · recorded with the Compact WGS filter settings below.</p>}
         {importProfile === "prefiltered" && <div className="cohort-prefilter-settings"><div className="cohort-prefilter-note"><strong>Compact WGS candidate import</strong><span>PASS/QC and population frequency are required first. Coding/essential-splice, SpliceAI, promoterAI, and the selected noncoding region route are then combined with OR. Unscored intronic/promoter indels are retained with a review flag.</span></div><div className="cohort-prefilter-grid"><label className="form-field"><span>gnomAD popmax ≤</span><input inputMode="decimal" value={prefilter.max_gnomad_popmax ?? ""} onChange={(event) => setPrefilter({ ...prefilter, max_gnomad_popmax: optionalNumber(event.target.value) })}/></label><label className="form-field"><span>SpliceAI ≥</span><input inputMode="decimal" value={prefilter.min_spliceai ?? ""} onChange={(event) => setPrefilter({ ...prefilter, min_spliceai: optionalNumber(event.target.value) })}/></label><label className="form-field"><span>|promoterAI| ≥</span><input inputMode="decimal" value={prefilter.min_promoterai_abs ?? ""} onChange={(event) => setPrefilter({ ...prefilter, min_promoterai_abs: optionalNumber(event.target.value) })}/></label></div><NoncodingModePicker value={prefilter.noncoding_mode} onChange={(noncoding_mode) => setPrefilter({ ...prefilter, noncoding_mode })}/><p className="wgs-filter-logic"><strong>Logic:</strong> PASS/QC AND (popmax ≤ threshold OR popmax unavailable) AND (exonic/essential-splice OR SpliceAI OR promoterAI OR selected noncoding regions OR explicitly flagged unscored intronic/promoter indel).</p></div>}
         <label className="form-field"><span>VCF file or directory path(s)</span><textarea rows={4} value={sourcePaths} onChange={(event) => setSourcePaths(event.target.value)} placeholder={"/absolute/path/annotated-vcfs\n/absolute/path/cohort.vcf.gz"} /></label>
         <div className="cohort-actions"><div><Check label="Search subdirectories" checked={recursive} onChange={setRecursive}/><Check label="I confirm header-ambiguous VCFs are GRCh38" checked={allowUnknownAssembly} onChange={setAllowUnknownAssembly}/></div><button className="primary-button dark" disabled={indexing} onClick={indexSources}>{indexing ? "Indexing VCFs…" : "Add or refresh cohort"}</button></div>
         {importJob && (indexing || importJob.status === "failed") && <div className={`cohort-import-progress ${importJob.status}`}><div><strong>{importJob.status === "queued" ? "Preparing cohort import" : importJob.status === "failed" ? "Import stopped" : ["preparing_index", "filtering", "compressing", "indexing_output"].includes(importJob.phase) ? `Prefiltering ${fileName(importJob.current_path) || "WGS VCF"}` : importJob.phase === "merging" ? `Merging staged records for ${fileName(importJob.current_path) || "VCF"}` : `Indexing ${fileName(importJob.current_path) || "VCFs"}`}</strong><span>{importPercent.toFixed(1)}% · {importJob.completed_files}/{importJob.total_files} files · {(importJob.import_profile === "prefiltered" ? importJob.prefilter_records_scanned : importJob.records_processed).toLocaleString()} records scanned</span></div><div className="progress-track" role="progressbar" aria-label="Cohort VCF import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(importPercent)}><span style={{ width: `${importPercent}%` }} /></div><small>{compactFileSize(importJob.processed_bytes)} of {compactFileSize(importJob.total_bytes)} · {importJob.import_profile === "prefiltered" ? `${importJob.prefilter_records_retained.toLocaleString()} records retained by prefilter · ` : ""}{importJob.pass_records.toLocaleString()} PASS records staged · {importJob.carrier_count.toLocaleString()} carrier calls · {importJob.reader_count} reader{importJob.reader_count === 1 ? "" : "s"}</small></div>}
-        {importResult && <div className="cohort-import-result"><strong>{importResult.imported} indexed · {importResult.skipped} unchanged · {importResult.failed} failed</strong>{importResult.files.slice(0, 6).map((item) => <span key={item.path} className={item.status === "failed" ? "failed" : ""}>{fileName(item.path)} — {item.status}{item.import_profile === "prefiltered" ? ` · compact (${(item.prefilter_records_retained ?? 0).toLocaleString()} of ${(item.prefilter_records_scanned ?? 0).toLocaleString()} retained)` : " · full"}{item.reader_count ? ` · ${item.reader_count} reader${item.reader_count === 1 ? "" : "s"}` : ""}{item.cache_hit ? " · prepared cache reused" : ""}{item.preparation_warning ? ` · ${item.preparation_warning}` : ""}{item.error ? `: ${item.error}` : ""}</span>)}{importResult.files.length > 6 && <span>+ {importResult.files.length - 6} more files</span>}</div>}
+        {importResult && <div className="cohort-import-result"><strong>{importResult.imported} indexed · {importResult.skipped} unchanged · {importResult.failed} failed</strong>{importResult.files.slice(0, 6).map((item) => <span key={item.path} className={item.status === "failed" ? "failed" : ""}>{fileName(item.path)} — {item.status}{item.import_profile === "prefiltered" ? ` · compact WGS (${(item.prefilter_records_retained ?? 0).toLocaleString()} of ${(item.prefilter_records_scanned ?? 0).toLocaleString()} retained)` : ` · full ${item.analysis_scope === "whole_genome" ? "WGS" : "exome"}`}{item.reader_count ? ` · ${item.reader_count} reader${item.reader_count === 1 ? "" : "s"}` : ""}{item.cache_hit ? " · prepared cache reused" : ""}{item.preparation_warning ? ` · ${item.preparation_warning}` : ""}{item.error ? `: ${item.error}` : ""}</span>)}{importResult.files.length > 6 && <span>+ {importResult.files.length - 6} more files</span>}</div>}
       </section>
 
       <section className="cohort-card query-card">
@@ -1903,25 +2318,48 @@ function CohortPanel({ onReview }: {
           {loGoFuncClass && <p className="query-note">LoGoFunc uses its exact source transcript and amino-acid substitution. Missing predictions do not pass this filter.</p>}
           <div className="qualifying-checks"><Check label="Clinical transcripts (MANE + PICK fallback)" checked={maneOnly} onChange={setManeOnly}/><Check label="Exclude RepeatMasker" checked={excludeRepeat} onChange={setExcludeRepeat}/><Check label="Exclude SegDup" checked={excludeSegdup} onChange={setExcludeSegdup}/><Check label="Hide confirmed frame-restored events" checked={excludeConfirmedFrameRestored} onChange={setExcludeConfirmedFrameRestored}/><Check label="ClinVar P / LP only" checked={clinvarOnly} onChange={(checked) => { setClinvarOnly(checked); if (checked) setClinvarConflictOnly(false); }}/><Check label="ClinVar conflict with ≥1 P / LP" checked={clinvarConflictOnly} onChange={(checked) => { setClinvarConflictOnly(checked); if (checked) setClinvarOnly(false); }}/></div>
         </>}
+        <details className="cohort-profile-filters"><summary>Assay and import profile filters {queryScopes.size + queryProfiles.size ? `(${queryScopes.size + queryProfiles.size})` : ""}</summary><p>Leave blank to search every indexed carrier. These filters improve comparability but do not turn absence into a negative genotype call.</p><div className="qualifying-checks"><Check label="WES / exome" checked={queryScopes.has("exome")} onChange={(checked) => setQueryScopes((current) => toggleSet(current, "exome", checked))}/><Check label="Whole genome" checked={queryScopes.has("whole_genome")} onChange={(checked) => setQueryScopes((current) => toggleSet(current, "whole_genome", checked))}/></div><div className="cohort-profile-list">{cohortProfiles.map((profile) => <Check key={profile.profile_hash} label={profile.profile_label} checked={queryProfiles.has(profile.profile_hash)} onChange={(checked) => setQueryProfiles((current) => toggleSet(current, profile.profile_hash, checked))} note={`${profile.sample_entries} sample entr${profile.sample_entries === 1 ? "y" : "ies"} · ${profile.profile_hash}`}/>)}</div></details>
         <div className="cohort-query-footer"><label>Genotype<select value={zygosity} onChange={(event) => setZygosity(event.target.value as typeof zygosity)}><option value="all">All carriers</option><option value="heterozygous">Heterozygous</option><option value="homozygous">Homozygous</option><option value="hemizygous">Hemizygous</option></select></label><button className="primary-button dark" disabled={working} onClick={searchCohort}><Icon name="search" />{working ? "Searching…" : "Find carriers"}</button></div>
       </section>
     </div>
 
     {error && <div className="alert error cohort-alert">{error}</div>}
     {queryResult && <section className="cohort-results">
-      <div className="cohort-results-head"><div><p className="eyebrow">Query results</p><h2>{queryResult.total.toLocaleString()} carrier call{queryResult.total === 1 ? "" : "s"}</h2></div><div className="cohort-result-actions"><span>{queryResult.individuals.toLocaleString()} individuals · {queryResult.variants.toLocaleString()} variants{queryResult.truncated ? ` · first ${queryResult.limit.toLocaleString()} shown` : ""}</span>{queryResult.rows.length > 0 && <><button className="secondary-button" disabled={reviewWorking} onClick={toggleAllResultCarriers}>{selectedCarrierIds.size === resultCarrierIds.size ? "Clear carriers" : "Select all carriers"}</button><button className="primary-button dark" disabled={reviewWorking || !selectedReviewRows.length} onClick={() => void reviewRows(selectedReviewRows)}>{reviewWorking ? "LOADING SOURCE ANNOTATIONS…" : `REVIEW SELECTED (${selectedCarrierIds.size})`}</button><button className="secondary-button" disabled={reviewWorking} onClick={() => void reviewRows(queryResult.rows)}>REVIEW ALL SHOWN</button></>}</div></div>
-      {queryResult.rows.length ? <div className="cohort-table-scroll"><table className="cohort-table cohort-selectable-table"><thead><tr><th aria-label="Select carriers"></th><th>Individual</th><th>Variant</th><th>Gene / consequence</th><th>Genotype evidence</th><th>Annotations</th><th>Source</th></tr></thead><tbody>{queryResult.rows.map((row) => {
-        const selectedRow = selectedVariant?.variant_key === row.variant_key && selectedVariant.sample_entry_id === row.sample_entry_id;
-        return <tr key={`${row.variant_key}:${row.sample_entry_id}:${row.source_path}`} className={selectedRow ? "selected" : ""} tabIndex={0} onClick={() => void openVariantDetail(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") void openVariantDetail(row); }}><td><input aria-label={`Select ${row.sample} for review`} type="checkbox" checked={selectedCarrierIds.has(row.sample_entry_id)} onClick={(event) => event.stopPropagation()} onChange={(event) => setSelectedCarrierIds((current) => toggleSet(current, row.sample_entry_id, event.target.checked))}/></td><td><strong>{row.sample}</strong><span className="cell-sub">{row.zygosity.replaceAll("_", " ")}{queryResult.mode === "gene" && row.sample_qualifying_variant_count > 1 ? ` · ${row.sample_qualifying_variant_count} qualifying variants` : ""}</span></td><td><VariantIdentifier row={row}/>{row.rsid && <span className="cell-sub">{row.rsid}</span>}{row.original_assembly && <span className="cell-sub mono">GRCh37: {row.original_chrom}:{row.original_pos} {row.original_ref}›{row.original_alt}</span>}</td><td><strong>{row.gene}</strong><span className={`impact-pill ${row.impact.toLowerCase()}`}>{row.impact}</span><span className="cell-sub">{row.hgvsp || row.hgvsc || cleanLabel(row.consequence)} · {row.mane ? "MANE" : row.picked ? "PICK fallback" : "alternate transcript"}</span></td><td><strong className="mono">{row.genotype}</strong><span className="cell-sub">DP {row.dp ?? "—"} · GQ {compactNumber(row.gq, 1)} · AB {compactNumber(row.allele_balance)}</span>{row.haplotype_frame_status && <span className="cell-sub">{haplotypeFrameLabel(row.haplotype_frame_status)}</span>}</td><td><span className={isPathogenic(row.clinvar) || isClinvarConflictWithPathogenic(row.clinvar, row.clinvar_conflicting) ? "clinvar pathogenic" : "clinvar"}>{cleanLabel(row.clinvar)}</span><span className="cell-sub">popmax {compactNumber(row.gnomad_popmax)} · CADD {compactNumber(row.cadd, 1)} · AM {compactNumber(row.alpha_missense)} · SpliceAI {compactNumber(row.spliceai)} · promoterAI {compactNumber(row.promoterai)}{row.logofunc_prediction ? ` · LoGoFunc ${row.logofunc_prediction}` : ""}</span></td><td><span title={row.source_path}>{fileName(row.source_path)}</span><small className={`source-profile ${row.import_profile}`}>{row.import_profile === "prefiltered" ? "Compact" : "Full"}</small></td></tr>;
+      <div className="cohort-results-head">
+        <div><p className="eyebrow">Query results</p><h2>{queryResult.variants.toLocaleString()} unique variant{queryResult.variants === 1 ? "" : "s"}</h2></div>
+        <div className="cohort-result-actions">
+          <span>{queryResult.individuals.toLocaleString()} individuals · {queryResult.total.toLocaleString()} matched carrier calls{queryResult.truncated ? ` · first ${queryResult.limit.toLocaleString()} calls shown` : ""}{selectedCarrierIds.size ? ` · ${selectedCarrierIds.size.toLocaleString()} selected` : ""}</span>
+          {queryResult.rows.length > 0 && <>
+            <button className="secondary-button" disabled={reviewWorking} onClick={toggleAllResultCarriers}>{allResultCarriersSelected ? "Clear selection" : "Select all shown individuals"}</button>
+            <button className="secondary-button" disabled={reviewWorking || !selectedReviewRows.length} onClick={() => void reviewRows(selectedReviewRows)}>{reviewWorking ? "LOADING…" : "Review selected findings"}</button>
+            <button className="primary-button dark" disabled={reviewWorking || !selectedCarrierIds.size} onClick={() => void loadIndividualsForReview([...selectedCarrierIds])}>{reviewWorking ? "LOADING STORED REVIEW SETS…" : `LOAD SELECTED INDIVIDUALS (${selectedCarrierIds.size})`}</button>
+          </>}
+        </div>
+      </div>
+      <div className="profile-caveat"><strong>{queryResult.represented_profiles.length} import profile{queryResult.represented_profiles.length === 1 ? "" : "s"} represented</strong><span>{queryResult.comparability_warning}</span></div>
+      {variantGroups.length ? <div className="cohort-table-scroll"><table className="cohort-table cohort-variant-table cohort-selectable-table"><thead><tr><th>Variant</th><th>Gene / consequence</th><th>Matched carriers</th><th>Annotations</th><th>Indexed profile</th></tr></thead><tbody>{variantGroups.map((group) => {
+        const row = group.row;
+        const selectedRow = selectedVariant?.variant_key === row.variant_key;
+        const sampleNames = [...new Set(group.rows.map((carrier) => carrier.sample))];
+        const selectedInGroup = [...group.carrierIds].filter((sampleId) => selectedCarrierIds.has(sampleId)).length;
+        const sourceLabels = new Set(group.rows.map((carrier) => carrier.profile_label || cohortProfileLabel(carrier.import_profile, carrier.analysis_scope)));
+        const profileLabel = sourceLabels.size > 1 ? "Mixed source profiles" : [...sourceLabels][0];
+        return <tr key={row.variant_key} className={selectedRow ? "selected" : ""} tabIndex={0} onClick={() => void openVariantDetail(row)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") void openVariantDetail(row); }}>
+          <td><VariantIdentifier row={row}/>{row.rsid && <span className="cell-sub">{row.rsid}</span>}{row.original_assembly && <span className="cell-sub mono">GRCh37: {row.original_chrom}:{row.original_pos} {row.original_ref}›{row.original_alt}</span>}</td>
+          <td><strong>{row.gene}</strong><span className={`impact-pill ${row.impact.toLowerCase()}`}>{row.impact}</span><span className="cell-sub">{row.hgvsp || row.hgvsc || cleanLabel(row.consequence)} · {row.mane ? "MANE" : row.picked ? "PICK fallback" : "alternate transcript"}</span></td>
+          <td><strong>{group.carrierIds.size.toLocaleString()} individual{group.carrierIds.size === 1 ? "" : "s"}</strong><span className="cell-sub">{sampleNames.slice(0, 4).join(", ")}{sampleNames.length > 4 ? ` +${sampleNames.length - 4}` : ""}</span>{selectedInGroup > 0 && <small className="carrier-selected-count">{selectedInGroup} selected</small>}</td>
+          <td><span className={isPathogenic(row.clinvar) || isClinvarConflictWithPathogenic(row.clinvar, row.clinvar_conflicting) ? "clinvar pathogenic" : "clinvar"}>{cleanLabel(row.clinvar)}</span><span className="cell-sub">popmax {compactNumber(row.gnomad_popmax)} · CADD {compactNumber(row.cadd, 1)} · AM {compactNumber(row.alpha_missense)} · SpliceAI {compactNumber(row.spliceai)} · promoterAI {compactNumber(row.promoterai)}{row.logofunc_prediction ? ` · LoGoFunc ${row.logofunc_prediction}` : ""}</span></td>
+          <td><strong>{profileLabel}</strong><span className="cell-sub">Click to inspect carriers and source files</span></td>
+        </tr>;
       })}</tbody></table></div> : <div className="empty-state compact"><span className="empty-icon"><Icon name="search" /></span><h2>No carriers found</h2><p>{mode === "variant" ? "Check the GRCh38 locus and alleles, or try the rsID." : "Relax one or more qualification filters."}</p></div>}
       {selectedVariant && <div className="cohort-variant-detail">
-        <div className="cohort-detail-head"><div><p className="eyebrow">Variant details</p><h2><VariantIdentifier row={selectedVariant} full/> {selectedVariant.rsid ? <small>{selectedVariant.rsid}</small> : null}</h2></div><div><button className="primary-button dark" disabled={detailWorking || reviewWorking} onClick={() => void reviewRows(variantDetail?.rows ?? queryResult.rows.filter((row) => row.variant_key === selectedVariant.variant_key))}>{reviewWorking ? "LOADING SOURCE ANNOTATIONS…" : "REVIEW ALL CARRIERS OF THIS VARIANT"}</button><button className="secondary-button" onClick={() => { setSelectedVariant(null); setVariantDetail(null); }}>Close</button></div></div>
+        <div className="cohort-detail-head"><div><p className="eyebrow">Variant details</p><h2><VariantIdentifier row={selectedVariant} full/> {selectedVariant.rsid ? <small>{selectedVariant.rsid}</small> : null}</h2></div><div><button className="primary-button dark" disabled={detailWorking || reviewWorking} onClick={() => void reviewRows(variantDetail?.rows ?? queryResult.rows.filter((row) => row.variant_key === selectedVariant.variant_key))}>{reviewWorking ? "LOADING SOURCE ANNOTATIONS…" : "REVIEW THIS VARIANT"}</button><button className="secondary-button" onClick={() => { setSelectedVariant(null); setVariantDetail(null); }}>Close</button></div></div>
         {detailWorking && <div className="cohort-detail-loading">Loading every stored transcript and carrier…</div>}
         <div className="cohort-detail-grid">
-          <section className="cohort-carrier-detail"><h3>Carriers {variantDetail ? `(${variantDetail.individuals})` : ""}</h3>{variantDetail ? <><div className="cohort-detail-carriers">{variantDetail.rows.map((carrier) => <label key={carrier.sample_entry_id}><input type="checkbox" checked={detailCarrierIds.has(carrier.sample_entry_id)} onChange={(event) => setDetailCarrierIds((current) => toggleSet(current, carrier.sample_entry_id, event.target.checked))}/><span><strong>{carrier.sample}</strong><small className="mono">{carrier.genotype} · DP {carrier.dp ?? "—"} · GQ {compactNumber(carrier.gq, 1)} · AB {compactNumber(carrier.allele_balance)}</small><small title={carrier.source_path}>{fileName(carrier.source_path)} · {carrier.import_profile === "prefiltered" ? "Compact" : "Full"}</small></span></label>)}</div><div className="cohort-detail-review-actions"><button className="secondary-button" disabled={reviewWorking} onClick={() => setDetailCarrierIds(detailCarrierIds.size === variantDetail.rows.length ? new Set() : new Set(variantDetail.rows.map((row) => row.sample_entry_id)))}>{detailCarrierIds.size === variantDetail.rows.length ? "Clear all" : "Select all"}</button><button className="primary-button dark" disabled={reviewWorking || !detailCarrierIds.size} onClick={() => void reviewRows(variantDetail.rows.filter((row) => detailCarrierIds.has(row.sample_entry_id)))}>{reviewWorking ? "LOADING…" : `REVIEW SELECTED (${detailCarrierIds.size})`}</button></div></> : <dl><div><dt>Sample</dt><dd>{selectedVariant.sample}</dd></div><div><dt>Genotype</dt><dd className="mono">{selectedVariant.genotype} · {cleanLabel(selectedVariant.zygosity)}</dd></div><div><dt>Evidence</dt><dd>DP {selectedVariant.dp ?? "—"} · GQ {compactNumber(selectedVariant.gq, 1)} · AB {compactNumber(selectedVariant.allele_balance)} · QUAL {compactNumber(selectedVariant.qual, 1)}</dd></div></dl>}</section>
+          <section className="cohort-carrier-detail"><h3>Carriers {variantDetail ? `(${variantDetail.individuals})` : ""}</h3>{variantDetail ? <><div className="cohort-detail-carriers">{variantDetail.rows.map((carrier) => <label key={carrier.sample_entry_id}><input type="checkbox" checked={selectedCarrierIds.has(carrier.sample_entry_id)} onChange={(event) => setSelectedCarrierIds((current) => toggleSet(current, carrier.sample_entry_id, event.target.checked))}/><span><strong>{carrier.sample}</strong><small className="mono">{carrier.genotype} · DP {carrier.dp ?? "—"} · GQ {compactNumber(carrier.gq, 1)} · AB {compactNumber(carrier.allele_balance)}</small><small title={carrier.source_path}>{fileName(carrier.source_path)} · {cohortProfileLabel(carrier.import_profile, carrier.analysis_scope)}</small></span></label>)}</div><div className="cohort-detail-review-actions"><button className="secondary-button" disabled={reviewWorking} onClick={() => setSelectedCarrierIds((current) => { const next = new Set(current); for (const sampleId of detailCarrierIds) { if (allDetailCarriersSelected) next.delete(sampleId); else next.add(sampleId); } return next; })}>{allDetailCarriersSelected ? "Clear these carriers" : "Select all carriers"}</button><button className="secondary-button" disabled={reviewWorking || !selectedDetailRows.length} onClick={() => void reviewRows(selectedDetailRows)}>{reviewWorking ? "LOADING…" : "Review selected findings"}</button><button className="primary-button dark" disabled={reviewWorking || !selectedDetailRows.length} onClick={() => void loadIndividualsForReview([...new Set(selectedDetailRows.map((row) => row.sample_entry_id))])}>{reviewWorking ? "LOADING…" : `Load selected individuals (${selectedDetailRows.length})`}</button></div></> : <dl><div><dt>Sample</dt><dd>{selectedVariant.sample}</dd></div><div><dt>Genotype</dt><dd className="mono">{selectedVariant.genotype} · {cleanLabel(selectedVariant.zygosity)}</dd></div><div><dt>Evidence</dt><dd>DP {selectedVariant.dp ?? "—"} · GQ {compactNumber(selectedVariant.gq, 1)} · AB {compactNumber(selectedVariant.allele_balance)} · QUAL {compactNumber(selectedVariant.qual, 1)}</dd></div></dl>}</section>
           <section className="cohort-transcript-detail"><h3>Stored transcript annotations {variantDetail ? `(${variantDetail.annotations.length})` : ""}</h3>{variantDetail ? <div className="cohort-transcript-list">{variantDetail.annotations.map((annotation, index) => <article key={`${annotation.gene}:${annotation.transcript}:${annotation.consequence}:${index}`}><div><strong>{annotation.gene}</strong><span className={`impact-pill ${annotation.impact.toLowerCase()}`}>{annotation.impact}</span><em>{annotation.mane ? "MANE" : annotation.picked ? "PICK" : "alternate"}</em></div><span className="mono">{annotation.transcript || "—"}</span><span>{annotation.hgvsp || annotation.hgvsc || cleanLabel(annotation.consequence)}</span><small>{cleanLabel(annotation.consequence)} · popmax {compactNumber(annotation.gnomad_popmax)} · CADD {compactNumber(annotation.cadd, 1)} · SpliceAI {compactNumber(annotation.spliceai)} · promoterAI {compactNumber(annotation.promoterai)}{annotation.logofunc_prediction ? ` · LoGoFunc ${annotation.logofunc_prediction}` : ""}</small></article>)}</div> : <dl><div><dt>Gene</dt><dd>{selectedVariant.gene}</dd></div><div><dt>Transcript</dt><dd className="mono">{selectedVariant.transcript || "—"}</dd></div><div><dt>HGVS</dt><dd>{selectedVariant.hgvsp || selectedVariant.hgvsc || "—"}</dd></div></dl>}</section>
           <section><h3>Clinical and prediction evidence</h3><dl><div><dt>ClinVar</dt><dd>{cleanLabel(selectedVariant.clinvar)}{selectedVariant.clinvar_conflicting ? ` · ${cleanLabel(selectedVariant.clinvar_conflicting)}` : ""}</dd></div><div><dt>Scores</dt><dd>popmax {compactNumber(selectedVariant.gnomad_popmax)} · CADD {compactNumber(selectedVariant.cadd, 1)} · AlphaMissense {compactNumber(selectedVariant.alpha_missense)} · SpliceAI {compactNumber(selectedVariant.spliceai)} · promoterAI {compactNumber(selectedVariant.promoterai)}</dd></div><div><dt>LoGoFunc</dt><dd>{selectedVariant.logofunc_prediction || (selectedVariant.logofunc_allele_available ? "Allele available; transcript/protein mismatch" : "Not annotated")}{selectedVariant.logofunc_prediction ? ` · N ${compactNumber(selectedVariant.logofunc_neutral)} · GOF ${compactNumber(selectedVariant.logofunc_gof)} · LOF ${compactNumber(selectedVariant.logofunc_lof)}` : ""}</dd></div><div><dt>LOFTEE</dt><dd>{cleanLabel(selectedVariant.loftee)} · 50 bp {cleanLabel(selectedVariant.loftee_50bp)}{selectedVariant.ptc_distance !== null ? ` · PTC distance ${selectedVariant.ptc_distance}` : ""}</dd></div><div><dt>Regions</dt><dd>{selectedVariant.repeat_masker ? "RepeatMasker" : "Not RepeatMasker"} · {selectedVariant.segdup ? "SegDup" : "Not SegDup"}</dd></div></dl></section>
-          <section><h3>Source and coordinates</h3><dl><div><dt>GRCh38</dt><dd className="mono"><VariantIdentifier row={selectedVariant} full/></dd></div>{selectedVariant.original_assembly && <div><dt>Original</dt><dd className="mono">{selectedVariant.original_assembly}: {selectedVariant.original_chrom}:{selectedVariant.original_pos} {selectedVariant.original_ref}›{selectedVariant.original_alt}</dd></div>}<div><dt>Selected source</dt><dd title={selectedVariant.source_path}>{selectedVariant.source_path}</dd></div><div><dt>Index profile</dt><dd>{selectedVariant.import_profile === "prefiltered" ? "Compact clinical WGS" : "Full"}</dd></div></dl></section>
+          <section><h3>Source and coordinates</h3><dl><div><dt>GRCh38</dt><dd className="mono"><VariantIdentifier row={selectedVariant} full/></dd></div>{selectedVariant.original_assembly && <div><dt>Original</dt><dd className="mono">{selectedVariant.original_assembly}: {selectedVariant.original_chrom}:{selectedVariant.original_pos} {selectedVariant.original_ref}›{selectedVariant.original_alt}</dd></div>}<div><dt>Selected source</dt><dd title={selectedVariant.source_path}>{selectedVariant.source_path}</dd></div><div><dt>Index profile</dt><dd>{cohortProfileLabel(selectedVariant.import_profile, selectedVariant.analysis_scope)}</dd></div></dl></section>
         </div>
         <CcreContextPanel compact chrom={selectedVariant.chrom} pos={selectedVariant.pos} ref={selectedVariant.ref} alt={selectedVariant.alt}/>
         {selectedVariant.haplotype_frame_status && <div className="cohort-haplotype-detail"><strong>{haplotypeFrameLabel(selectedVariant.haplotype_frame_status)}</strong><span>{selectedVariant.haplotype_protein_change || "No combined protein consequence stored"}{selectedVariant.haplotype_frame_partners ? ` · partners ${selectedVariant.haplotype_frame_partners}` : ""}</span></div>}
@@ -2021,13 +2459,154 @@ function CustomGeneSet({ list, onChange, onDelete }: { list: CustomGeneList; onC
   return <article className="custom-gene-list-card"><header><div><strong>{list.name}</strong><span>{list.genes.size} gene{list.genes.size === 1 ? "" : "s"}</span></div><div><button className="secondary-button" onClick={beginEditing}>Edit</button><button className="secondary-button" onClick={() => uploadRef.current?.click()}>Replace file</button><button className="danger-text-button" onClick={onDelete}>Delete</button><input ref={uploadRef} className="sr-only" type="file" accept=".txt,.csv,.tsv" onChange={(event) => { const file = event.target.files?.[0]; if (file) file.text().then((text) => onChange({ ...list, genes: parseGeneList(text) })); event.target.value = ""; }} /></div></header>{editing ? <div className="custom-gene-list-editor"><label className="form-field"><span>List name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label className="form-field"><span>Gene symbols</span><textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={9} spellCheck={false} /></label><div><span>{parseGeneList(draft).size} unique genes</span><button className="secondary-button" onClick={() => setEditing(false)}>Cancel</button><button className="primary-button dark" onClick={save}>Apply changes</button></div></div> : <p>{[...list.genes].sort().slice(0, 18).join(", ")}{list.genes.size > 18 ? `, +${list.genes.size - 18} more` : ""}{!list.genes.size ? "No genes have been added." : ""}</p>}</article>;
 }
 
-function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, pendingFiles, onStageFiles, onImportFiles, qcSettings, setQcSettings, qcPreset, setQcPreset, includeQcFailing, setIncludeQcFailing }: { importing: boolean; importProgress: string; wgsImportJob: WgsReviewJob | null; error: string; summary: ImportSummary | null; pendingFiles: File[]; onStageFiles: (files: File[]) => void; onImportFiles: (files: File[], analysisScope: AnalysisScope, filters: WgsPrefilterOptions, workstationPaths: string[]) => void; qcSettings: VariantQcSettings; setQcSettings: React.Dispatch<React.SetStateAction<VariantQcSettings>>; qcPreset: "standard" | "none" | "custom"; setQcPreset: (value: "standard" | "none" | "custom") => void; includeQcFailing: boolean; setIncludeQcFailing: (value: boolean) => void }) {
+function StoragePanel() {
+  const [stats, setStats] = useState<StorageStats | null>(null);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  const refresh = () => getStorageStats().then(setStats).catch((reason) => setError(reason instanceof Error ? reason.message : "Storage information is unavailable."));
+  useEffect(() => { void refresh(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function clean() {
+    if (!window.confirm("Remove temporary uploads and rebuildable cache files? Managed Sample Library VCFs and original external VCFs are preserved.")) return;
+    setWorking(true); setError("");
+    try { const result = await cleanupStorage(["uploads", "cohort_cache", "wgs_review_cache", "partials"]); setStats(result.storage); setMessage(`${result.removed_files} files removed · ${compactFileSize(result.freed_bytes)} reclaimed.`); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Storage cleanup failed."); }
+    finally { setWorking(false); }
+  }
+  async function compact() {
+    if (!window.confirm("Compact the SQLite database now? This can take several minutes and cohort operations will pause. No samples or variants are deleted.")) return;
+    setWorking(true); setError(""); setMessage("Compacting the database…");
+    try { setStats(await compactStorage()); setMessage("Database compacted; unused pages were returned to disk."); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Database compaction failed."); }
+    finally { setWorking(false); }
+  }
+  return <div className="data-page storage-page"><div className="data-page-header"><div><p className="eyebrow">Workstation maintenance</p><h1>Storage</h1><p>Managed review VCFs are deduplicated by checksum. Temporary and index caches can be safely rebuilt.</p></div>{stats && <div className="library-summary"><strong>{compactFileSize(stats.total_bytes)}</strong><span>local workbench state</span></div>}</div>{stats && <><div className="storage-grid">{Object.entries(stats.locations).map(([key, value]) => <article key={key}><span>{cleanLabel(key)}</span><strong>{compactFileSize(value)}</strong></article>)}</div><div className="storage-detail"><span>{stats.datasets} library datasets · {stats.managed_unique_files} unique managed VCF files</span><span>SQLite reclaimable space: <strong>{compactFileSize(stats.database_reclaimable_bytes)}</strong></span><code>{stats.state_dir}</code></div></>}{message && <div className="alert">{message}</div>}{error && <div className="alert error">{error}</div>}<div className="storage-actions"><article><h2>Clean rebuildable files</h2><p>Removes old browser uploads, cohort preparation copies, WGS review cache, and partial files. Persistent managed VCFs are retained.</p><button className="secondary-button" disabled={working} onClick={() => void clean()}>Clean temporary data</button></article><article><h2>Return unused database space</h2><p>Removing cohort samples makes SQLite pages reusable but does not shrink the file. Compact only when substantial reclaimable space is shown.</p><button className="secondary-button" disabled={working || !stats?.database_reclaimable_bytes} onClick={() => void compact()}>Compact database</button></article></div></div>;
+}
+
+function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: VariantRow[], summary: ImportSummary, scope: AnalysisScope) => void; onManagePhenotype: (individualId?: string | null) => void }) {
+  const [datasets, setDatasets] = useState<SampleLibraryDataset[]>([]);
+  const [query, setQuery] = useState("");
+  const [working, setWorking] = useState("");
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+  async function refresh(value = query) {
+    try { setDatasets(await getSampleLibrary(value)); setError(""); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Sample Library is unavailable."); }
+  }
+  useEffect(() => { void refresh(""); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  async function openDataset(dataset: SampleLibraryDataset) {
+    setWorking(dataset.id); setError(""); setMessage("Opening the managed review VCF…");
+    try {
+      const parsed = await parseVcfFiles([await openSampleLibraryFile(dataset.id, dataset.original_name)], { retainRawAnnotations: true });
+      parsed.summary.warnings.unshift(`Reopened from Sample Library · ${dataset.profile_label}`);
+      onReview(parsed.rows.map((row) => ({
+        ...row,
+        libraryDatasetId: dataset.id,
+        librarySampleId: dataset.sample_id,
+        libraryIndividualId: dataset.individual_id,
+      })), parsed.summary, dataset.analysis_scope);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Dataset could not be opened."); }
+    finally { setWorking(""); setMessage(""); }
+  }
+  async function indexDataset(dataset: SampleLibraryDataset, action: "add" | "repair" | "rebuild" | "full") {
+    const fullWgs = action === "full" || (dataset.analysis_scope === "whole_genome" && dataset.index_scope === "full");
+    if (fullWgs && !window.confirm("Full WGS indexing stores every PASS carrier call from the original WGS VCF. A single genome can require roughly 10 GB in SQLite and take substantial time. Continue?")) return;
+    const activeMessage = action === "add" ? "Adding this sample to Cohort Search…" : action === "repair" ? "Repairing this sample's Cohort Search entry…" : fullWgs ? "Building the advanced full-WGS cohort index…" : "Rebuilding this sample's Cohort Search entry…";
+    const successMessage = action === "add" ? "Sample added to Cohort Search." : action === "repair" ? "Cohort Search entry repaired." : "Cohort Search index rebuilt.";
+    setWorking(dataset.id); setError(""); setMessage(activeMessage);
+    try { await reindexSampleLibraryDataset(dataset.id, fullWgs); await refresh(); setMessage(successMessage); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Dataset could not be indexed."); }
+    finally { setWorking(""); }
+  }
+  async function removeFromCohort(dataset: SampleLibraryDataset) {
+    if (!window.confirm(`Remove ${dataset.sample_label} from Cohort Search? It will remain available in the Sample Library.`)) return;
+    setWorking(dataset.id); setError(""); setMessage("Removing this sample from Cohort Search…");
+    try { await removeSampleLibraryDatasetFromCohort(dataset.id); await refresh(); setMessage("Sample removed from Cohort Search and retained in the Sample Library."); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Cohort Search entry could not be removed."); }
+    finally { setWorking(""); }
+  }
+  async function remove(dataset: SampleLibraryDataset) {
+    if (!window.confirm(`Remove ${dataset.sample_label} / ${dataset.original_name} from the Sample Library and Cohort Search? The original VCF is not deleted.`)) return;
+    setWorking(dataset.id); setError("");
+    try { await removeSampleLibraryDataset(dataset.id); await refresh(); setMessage("Dataset removed. The original source VCF was not deleted."); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Dataset could not be removed."); }
+    finally { setWorking(""); }
+  }
+  async function editMetadata(dataset: SampleLibraryDataset) {
+    const label = window.prompt("Sample/specimen label", dataset.sample_label);
+    if (label === null) return;
+    try { await updateSampleLibraryMetadata(dataset.id, { sample_label: label }); await refresh(); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "Metadata could not be updated."); }
+  }
+  return <div className="data-page library-page"><div className="data-page-header"><div><p className="eyebrow">Persistent source of truth</p><h1>Sample Library</h1><p>Reopen review sets, connect phenotype records, and rebuild the derived Cohort Search index.</p></div><div className="library-summary"><strong>{datasets.length}</strong><span>genomic datasets</span></div></div>
+    <div className="library-toolbar"><label className="search"><Icon name="search"/><input value={query} placeholder="Find sample, individual, or VCF…" onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void refresh(); }}/></label><button className="secondary-button" onClick={() => void refresh()}>Search</button></div>
+    <div className="profile-caveat"><strong>Positive carrier findings remain useful across profiles.</strong><span>Absence from a candidate index is not evidence that the individual lacks a variant. Compare assay and profile badges before interpreting coverage.</span></div>
+    {message && <div className="alert">{message}</div>}{error && <div className="alert error">{error}</div>}
+    <div className="library-list">{datasets.map((dataset) => {
+      const cohortStatus = dataset.cohort_index_status ?? (dataset.include_in_cohort ? "needs_repair" : "not_included");
+      return <article className="library-card" key={dataset.id}>
+        <header><div><strong>{dataset.sample_label}</strong><span>{dataset.individual_id ? `Individual ${dataset.individual_id}` : "Phenotype not linked"} · VCF sample {dataset.vcf_sample_name}</span></div><div className="profile-badges"><span>{dataset.analysis_scope === "whole_genome" ? "WGS" : "WES/exome"}</span><span>{dataset.index_scope === "full" ? "Full index" : "Compact candidate"}</span><span className={cohortStatus === "needs_repair" ? "warning" : cohortStatus === "not_included" ? "muted" : ""}>{cohortStatus === "ready" ? "Included in Cohort Search" : cohortStatus === "needs_repair" ? "Cohort index needs repair" : "Library only"}</span></div></header>
+        <div className="library-card-body"><div><span>Dataset</span><strong>{dataset.original_name}</strong><small title={dataset.original_path}>{dataset.original_path}</small></div><div><span>Import profile</span><strong>{dataset.profile_label}</strong><small>Settings {dataset.settings_hash} · {new Date(dataset.imported_at).toLocaleString()}</small></div><div><span>Managed review copy</span><strong>{compactFileSize(dataset.managed_size_bytes)}</strong><small title={dataset.managed_checksum}>SHA-256 {dataset.managed_checksum.slice(0, 16)}…</small></div></div>
+        <footer>
+          <button className="primary-button dark" disabled={working === dataset.id} onClick={() => void openDataset(dataset)}>{working === dataset.id ? "Working…" : "Open review"}</button>
+          <button className="secondary-button" onClick={() => onManagePhenotype(dataset.individual_id)}>{dataset.individual_id ? "View phenotype" : "Add phenotype"}</button>
+          {cohortStatus === "not_included" && <button className="secondary-button" disabled={working === dataset.id} onClick={() => void indexDataset(dataset, "add")}>Add to Cohort Search</button>}
+          {cohortStatus === "needs_repair" && <button className="secondary-button repair-button" disabled={working === dataset.id} onClick={() => void indexDataset(dataset, "repair")}>Repair Cohort Search</button>}
+          <details className="library-advanced"><summary>More actions</summary><div className="library-maintenance-actions">
+            <button className="secondary-button" onClick={() => void editMetadata(dataset)}>Edit sample label</button>
+            {cohortStatus === "ready" && <button className="secondary-button" disabled={working === dataset.id} onClick={() => void indexDataset(dataset, "rebuild")}>Rebuild search index</button>}
+            {cohortStatus === "ready" && <button className="danger-text-button" disabled={working === dataset.id} onClick={() => void removeFromCohort(dataset)}>Remove from Cohort Search</button>}
+            {dataset.analysis_scope === "whole_genome" && dataset.index_scope !== "full" && <><button className="danger-text-button" disabled={working === dataset.id} onClick={() => void indexDataset(dataset, "full")}>Build full WGS index</button><small>Indexes every PASS carrier call from the original VCF; not recommended for routine workstation use.</small></>}
+            <button className="danger-text-button" disabled={working === dataset.id} onClick={() => void remove(dataset)}>Remove from Sample Library</button>
+          </div></details>
+        </footer>
+      </article>;
+    })}</div>
+    {!datasets.length && !error && <div className="empty-state"><span className="empty-icon"><Icon name="file"/></span><h2>No retained samples</h2><p>Import a VCF and keep the recommended Sample Library option enabled.</p></div>}
+  </div>;
+}
+
+function IdentityMappingDialog({ datasets, onComplete }: { datasets: PendingIdentity[]; onComplete: () => void }) {
+  const [index, setIndex] = useState(0);
+  const [mode, setMode] = useState<"existing" | "create" | "unavailable">("unavailable");
+  const [individualId, setIndividualId] = useState("");
+  const [individuals, setIndividuals] = useState<PhenotypeIndividual[]>([]);
+  const [working, setWorking] = useState(false);
+  const [error, setError] = useState("");
+  const dataset = datasets[index];
+  useEffect(() => { getPhenotypeIndividuals().then(setIndividuals).catch(() => setIndividuals([])); }, []);
+  useEffect(() => {
+    setIndividualId(dataset?.individual_id ?? "");
+    setMode(dataset?.individual_id ? "existing" : "unavailable");
+  }, [dataset]);
+  if (!dataset) return null;
+  async function save() {
+    if (mode !== "unavailable" && !individualId.trim()) { setError("Enter or select an individual ID."); return; }
+    setWorking(true); setError("");
+    try {
+      await mapSampleLibraryIdentity(dataset.id, { mode, individual_id: mode === "unavailable" ? undefined : individualId.trim() });
+      if (index + 1 < datasets.length) setIndex(index + 1); else onComplete();
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Identity mapping could not be saved."); }
+    finally { setWorking(false); }
+  }
+  return <div className="dialog-backdrop"><section className="identity-dialog" role="dialog" aria-modal="true" aria-label="Link sample to an individual"><p className="eyebrow">Sample Library · {index + 1} of {datasets.length}</p><h2>Who does {dataset.vcf_sample_name} belong to?</h2><p>Phenotype and demographics belong to an individual. This VCF import remains a separate genomic dataset.</p><div className="identity-options">
+    <label className={mode === "existing" ? "active" : ""}><input type="radio" checked={mode === "existing"} onChange={() => setMode("existing")}/><span><strong>Link existing individual</strong><small>Use an existing phenotype record.</small></span></label>
+    {mode === "existing" && <select value={individualId} onChange={(event) => setIndividualId(event.target.value)}><option value="">Select individual…</option>{individuals.map((item) => <option key={item.individual_id} value={item.individual_id}>{item.individual_id}</option>)}</select>}
+    <label className={mode === "create" ? "active" : ""}><input type="radio" checked={mode === "create"} onChange={() => setMode("create")}/><span><strong>Create individual</strong><small>Create an ID now; phenotype can be entered later.</small></span></label>
+    {mode === "create" && <input value={individualId} placeholder="Individual ID" onChange={(event) => setIndividualId(event.target.value)}/>}
+    <label className={mode === "unavailable" ? "active" : ""}><input type="radio" checked={mode === "unavailable"} onChange={() => setMode("unavailable")}/><span><strong>Phenotype unavailable for now</strong><small>The dataset stays in the library and can be linked later.</small></span></label>
+  </div>{error && <div className="alert error">{error}</div>}<footer><button className="secondary-button" onClick={onComplete}>Finish later</button><button className="primary-button dark" disabled={working} onClick={save}>{working ? "Saving…" : index + 1 < datasets.length ? "Save and continue" : "Finish"}</button></footer></section></div>;
+}
+
+function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, pendingFiles, onStageFiles, onImportFiles, qcSettings, setQcSettings, qcPreset, setQcPreset, includeQcFailing, setIncludeQcFailing }: { importing: boolean; importProgress: string; wgsImportJob: WgsReviewJob | null; error: string; summary: ImportSummary | null; pendingFiles: File[]; onStageFiles: (files: File[]) => void; onImportFiles: (files: File[], analysisScope: AnalysisScope, filters: WgsPrefilterOptions, workstationPaths: string[], libraryOptions: LibraryImportOptions) => void; qcSettings: VariantQcSettings; setQcSettings: React.Dispatch<React.SetStateAction<VariantQcSettings>>; qcPreset: "standard" | "none" | "custom"; setQcPreset: (value: "standard" | "none" | "custom") => void; includeQcFailing: boolean; setIncludeQcFailing: (value: boolean) => void }) {
   const [mode, setMode] = useState<"review" | "annotate">(
     pendingFiles.length ? "review" : "annotate",
   );
   const [analysisScope, setAnalysisScope] = useState<AnalysisScope>("exome");
   const [wgsFilters, setWgsFilters] = useState<WgsPrefilterOptions>({ ...DEFAULT_WGS_PREFILTER });
   const [wgsWorkstationPaths, setWgsWorkstationPaths] = useState("");
+  const [keepInLibrary, setKeepInLibrary] = useState(true);
+  const [includeInCohort, setIncludeInCohort] = useState(true);
   const reviewPicker = useRef<HTMLInputElement>(null);
   const reviewFolder = useRef<HTMLInputElement>(null);
 
@@ -2084,9 +2663,16 @@ function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, 
       </div><NoncodingModePicker value={wgsFilters.noncoding_mode} onChange={(noncoding_mode) => setWgsFilters((current) => ({ ...current, noncoding_mode }))}/><details className="advanced-paths wgs-local-paths"><summary>Recommended for very large files: use existing workstation paths</summary><label className="form-field"><span>Annotated WGS VCF path(s), one per line</span><textarea rows={3} value={wgsWorkstationPaths} onChange={(event) => setWgsWorkstationPaths(event.target.value)} placeholder={"/absolute/path/case.annotated.vcf.gz"}/><small>A direct path avoids copying a multi-gigabyte browser-selected file into local staging.</small></label></details><p className="wgs-filter-logic"><strong>Logic:</strong> PASS/QC AND (popmax ≤ threshold OR popmax unavailable) AND (exonic/essential-splice OR SpliceAI ≥ threshold OR |promoterAI| ≥ threshold OR selected noncoding regions OR flagged unscored intronic/promoter indel). The indel exception applies only when the relevant precomputed score is unavailable, not when a populated score is below threshold.</p></section>}
       <div className="plain-defaults"><span>PASS records only</span><span>MANE + clinical transcript fallback</span><span>Repeat/SegDup excluded by default</span></div>
       <QcSettingsPanel settings={qcSettings} setSettings={setQcSettings} preset={qcPreset} setPreset={setQcPreset} includeFailing={includeQcFailing} setIncludeFailing={setIncludeQcFailing} />
+      <section className="library-intake-options"><div className="settings-section-head"><div><p className="eyebrow">After review</p><h3>Keep this sample available</h3><p>The Sample Library is persistent; Cohort Search is a rebuildable genotype index.</p></div><span className="readiness ready">Recommended</span></div>
+        <div className="library-retention-choice" role="radiogroup" aria-label="Import retention">
+          <label className={keepInLibrary ? "active" : ""}><input type="radio" name="library-retention" checked={keepInLibrary} onChange={() => { setKeepInLibrary(true); setIncludeInCohort(true); }}/><span><strong>Keep in Sample Library</strong><small>Save a compact managed review VCF and provenance on this workstation.</small></span></label>
+          <label className={!keepInLibrary ? "active" : ""}><input type="radio" name="library-retention" checked={!keepInLibrary} onChange={() => { setKeepInLibrary(false); setIncludeInCohort(false); }}/><span><strong>Review once</strong><small>Open now without retaining a managed copy or cohort entry.</small></span></label>
+        </div>
+        <Check label="Include qualifying variants in Cohort Search" checked={keepInLibrary && includeInCohort} onChange={setIncludeInCohort} note={keepInLibrary ? "On by default; can be rebuilt from the library later" : "Available only for retained samples"}/>
+      </section>
       {error && <div className="alert error">{error}</div>}
       {analysisScope === "whole_genome" && importing && <div className={`cohort-import-progress wgs-import-progress ${wgsImportJob?.status === "failed" ? "failed" : ""}`}><div><strong>{wgsImportJob?.message || importProgress || "Preparing whole-genome input…"}</strong><span>{wgsPercent.toFixed(1)}%</span></div><div className="progress-track" role="progressbar" aria-label="Whole-genome indexing and prefiltering progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(wgsPercent)}><span style={{ width: `${wgsPercent}%` }} /></div><small>{wgsImportJob ? `${wgsImportJob.records_scanned.toLocaleString()} records scanned · ${wgsImportJob.records_retained.toLocaleString()} retained · ${wgsImportJob.reader_count} reader${wgsImportJob.reader_count === 1 ? "" : "s"}` : "Staging the selected WGS VCF on this workstation"}</small></div>}
-      <div className="review-import-actions"><span>{importing && importProgress ? importProgress : pendingFiles.length || activeWgsPaths.length ? analysisScope === "whole_genome" ? "The indexed WGS prefilter runs locally before browser review." : "The selected files will be read using the thresholds above." : "Select one or more annotated VCFs to continue."}</span><button className="primary-button dark" disabled={importing || (pendingFiles.length === 0 && activeWgsPaths.length === 0)} onClick={() => onImportFiles(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths)}>{importing ? analysisScope === "whole_genome" ? "Preparing WGS…" : "Importing annotations…" : "Import and review variants"}</button></div>
+      <div className="review-import-actions"><span>{importing && importProgress ? importProgress : pendingFiles.length || activeWgsPaths.length ? analysisScope === "whole_genome" ? "The indexed WGS prefilter runs locally before browser review." : "The selected files will be read using the thresholds above." : "Select one or more annotated VCFs to continue."}</span><button className="primary-button dark" disabled={importing || (pendingFiles.length === 0 && activeWgsPaths.length === 0)} onClick={() => onImportFiles(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths, { keep: keepInLibrary, includeInCohort: keepInLibrary && includeInCohort })}>{importing ? analysisScope === "whole_genome" ? "Preparing WGS…" : "Importing annotations…" : "Import and review variants"}</button></div>
     </section><RecentReviewFiles onStageFiles={onStageFiles} onWgsPath={(path) => { onStageFiles([]); setAnalysisScope("whole_genome"); setWgsWorkstationPaths(path); setMode("review"); }}/></> : <AnnotationPanel analysisScope={analysisScope} onReviewPath={(path) => { onStageFiles([]); setAnalysisScope("whole_genome"); setWgsWorkstationPaths(path); setMode("review"); }} onReviewFile={(files) => { onStageFiles(files); setMode("review"); }} />}
 
     {summary && <div className="import-summary"><h2>Last review import</h2><div className="stat-grid"><Stat value={summary.files} label="files"/><Stat value={summary.samples} label="samples"/><Stat value={summary.rows} label="transcript rows"/></div><div className="intake-check-grid">{summary.intakeQc.map((check) => <div className={`intake-check ${check.status}`} key={check.id}><span>{check.status === "pass" ? "✓" : "!"}</span><div><strong>{check.label}</strong><small>{check.detail}</small></div></div>)}</div>{summary.warnings.map((warning) => <div className="alert" key={warning}>{warning}</div>)}</div>}
@@ -2176,6 +2762,22 @@ function QcSettingsPanel({ settings, setSettings, preset, setPreset, includeFail
 }
 
 type AnnotationSource = ServiceCapabilities["annotation_profile"]["sources"][number];
+
+const DEFAULT_WGS_ANNOTATION_SOURCES = new Set(["cadd_wgs", "promoterai"]);
+
+function annotationSourceIsEnabled(
+  source: AnnotationSource,
+  analysisScope: AnalysisScope,
+  selections: Record<string, boolean>,
+) {
+  const supported = (source.available_in ?? ["exome", "whole_genome"]).includes(analysisScope);
+  if (!supported) return false;
+  if (selections[source.id] !== undefined) return selections[source.id];
+  if (source.required) return true;
+  if (!source.available) return false;
+  return source.enabled
+    || (analysisScope === "whole_genome" && DEFAULT_WGS_ANNOTATION_SOURCES.has(source.id));
+}
 
 function DatasetSetupCard({
   source,
@@ -2296,10 +2898,12 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
           setFork(nextCapabilities.hardware.recommended_vep_workers);
           setWorkerMode("automatic");
           setSourceEnabled(Object.fromEntries(
-            nextCapabilities.annotation_profile.sources.map((source) => [
-              source.id,
-              source.required || (source.enabled && source.available),
-            ]),
+            nextCapabilities.annotation_profile.sources
+              .filter((source) => !DEFAULT_WGS_ANNOTATION_SOURCES.has(source.id))
+              .map((source) => [
+                source.id,
+                source.required || (source.enabled && source.available),
+              ]),
           ));
         }
       } catch {
@@ -2368,8 +2972,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
             ...Object.fromEntries(
               (capabilities.annotation_profile.sources ?? []).map((source) => [
                 source.id,
-                (source.available_in ?? ["exome", "whole_genome"]).includes(analysisScope)
-                  && Boolean(sourceEnabled[source.id]),
+                annotationSourceIsEnabled(source, analysisScope, sourceEnabled),
               ]),
             ),
             analysis_scope: analysisScope,
@@ -2493,14 +3096,14 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     </> : <>
       {!setupOnly && <div className="wizard-selection"><div><strong>{selectedFiles.length || inputPaths.split(/\r?\n/).filter(Boolean).length} VCF file{(selectedFiles.length || inputPaths.split(/\r?\n/).filter(Boolean).length) === 1 ? "" : "s"} selected</strong><span>{selectedFiles.slice(0, 3).map((file) => file.name).join(", ") || "Existing workstation paths"}{selectedFiles.length > 3 ? ` and ${selectedFiles.length - 3} more` : ""}</span></div><button onClick={() => setStep(1)}>Change</button></div>}
       {!setupOnly && <section className="settings-section"><div className="settings-section-head"><div><h3>{analysisScope === "exome" ? "Exome-region annotation" : "Whole-genome annotation"}</h3><p>{analysisScope === "exome" ? "Coding exons and splice-region padding are selected before VEP." : "The input is automatically prepared as sorted BGZF with tabix/CSI indexing before parallel VEP annotation."}</p></div></div>
-        <div className="run-defaults"><div className="scope-run-summary"><strong>{analysisScope === "exome" ? "Exome region only" : "Whole genome"}</strong><span>{analysisScope === "exome" ? "promoterAI and full-genome CADD unavailable" : "indexed WGS intake"}</span></div><Check label="PASS records only" checked={passOnly} onChange={setPassOnly} /><Check label="Refresh ClinVar before run" checked={useClinvar} onChange={setUseClinvar} /></div>
+        <div className="run-defaults"><div className="scope-run-summary"><strong>{analysisScope === "exome" ? "Exome region only" : "Whole genome"}</strong><span>{analysisScope === "exome" ? "promoterAI and full-genome CADD unavailable" : "indexed WGS intake · CADD and promoterAI on by default"}</span></div><Check label="PASS records only" checked={passOnly} onChange={setPassOnly} /><Check label="Refresh ClinVar before run" checked={useClinvar} onChange={setUseClinvar} /></div>
         <div className="form-pair simple"><label className="form-field"><span>Input genome build</span><select value={inputAssembly} onChange={(event) => setInputAssembly(event.target.value as typeof inputAssembly)}>{capabilities?.input_assemblies.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option value="GRCh38">GRCh38 / hg38</option>}</select></label><label className="form-field worker-field"><span>VEP workers <small>{workerMode === "automatic" ? "Automatic" : "Custom"}</small></span><div className="worker-value"><strong>{fork}</strong><span>worker{fork === 1 ? "" : "s"}</span>{workerMode === "custom" && <button type="button" onClick={() => { const recommended = capabilities?.hardware.recommended_vep_workers ?? 1; setFork(recommended); setWorkerMode("automatic"); }}>Use automatic</button>}</div><input className="worker-range" type="range" min={1} max={capabilities?.hardware.max_vep_workers ?? 8} step={1} value={fork} onChange={(event) => { setFork(Number(event.target.value)); setWorkerMode("custom"); }} /><small>Detected {capabilities?.hardware.logical_cpus ?? "—"} logical CPU threads · recommended {capabilities?.hardware.recommended_vep_workers ?? "—"}.</small></label></div>
       </section>}
       <section className="settings-section"><div className="settings-section-head"><div><h3>Annotation datasets</h3><p>Availability and indexes are checked automatically. Open each dataset for sources and setup instructions.</p></div><span className={`readiness ${profileReady ? "ready" : "missing"}`}>{profileReady ? "Ready to run" : "Setup needed"}</span></div>
         {capabilities?.annotation_profile.error && <div className="alert error">{capabilities.annotation_profile.error}</div>}
         {capabilities?.annotation_profile.foundations.map((item) => <div className="foundation-row" key={item.id}><span className={`availability-dot ${item.available ? "ready" : "missing"}`} /><strong>{item.label}</strong><span>{item.available ? `Available${item.version ? ` · release ${item.version}` : ""}` : "Missing"}</span></div>)}
         <div className="pinned-bundle-note"><strong>Validated annotation bundle · VEP 113 / GRCh38</strong><span>This workstation profile is intentionally pinned. Annotation resource changes are installed only through a tested software release.</span></div>
-        <div className="dataset-grid">{capabilities?.annotation_profile.sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={sourceEnabled[source.id] ?? source.enabled} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "promoterai" ? setPromoterAiSourceDir : source.id === "logofunc" ? setLoGoFuncSourcePath : () => undefined} onPrepare={source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>)}</div>
+        <div className="dataset-grid">{capabilities?.annotation_profile.sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "promoterai" ? setPromoterAiSourceDir : source.id === "logofunc" ? setLoGoFuncSourcePath : () => undefined} onPrepare={source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>)}</div>
         {!setupOnly && <details className="dbnsfp-options"><summary><span><strong>Additional dbNSFP predictors</strong><small>Optional; core AlphaMissense, CADD, REVEL and commonly used predictors remain included.</small></span><em>{selectedDbnsfpPredictors.size} selected</em></summary><div className="dbnsfp-options-body"><div className="dbnsfp-option-actions"><p>Select only predictors useful to your analysis. More columns increase output size and annotation work.</p><div><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set(availableDbnsfpOptions.filter((item) => item.recommended).map((item) => item.id)))}>Recommended extended</button><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set(availableDbnsfpOptions.map((item) => item.id)))}>Select all available</button><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set())}>Clear</button></div></div><div className="dbnsfp-predictor-grid">{dbnsfpOptions.map((item) => <label className={!item.available ? "unavailable" : ""} key={item.id}><input type="checkbox" checked={selectedDbnsfpPredictors.has(item.id)} disabled={!item.available} onChange={(event) => setSelectedDbnsfpPredictors((current) => toggleSet(current, item.id, event.target.checked))}/><span className="custom-check"/><span><strong>{item.label}</strong><small>{item.category}{item.recommended ? " · recommended extended" : ""}</small></span></label>)}</div>{dbnsfpOptions.some((item) => !item.available) && <p className="dbnsfp-unavailable-note">Unavailable choices are not present in the installed dbNSFP header and cannot be queued.</p>}</div></details>}
       </section>
       {!setupOnly && <details className="advanced-paths"><summary>Output and execution</summary><div className="form-pair simple"><label className="form-field"><span>Output folder</span><input value={outputDirectory} onChange={(event) => setOutputDirectory(event.target.value)} /></label><label className="form-field"><span>Execution</span><select value={profile} onChange={(event) => setProfile(event.target.value)} disabled={!capabilities}>{capabilities?.profiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option>Local workstation</option>}</select></label></div></details>}
@@ -2550,6 +3153,16 @@ async function droppedVcfFiles(dataTransfer: DataTransfer) {
 
 function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
+}
+
+function cohortProfileLabel(
+  profile: "full" | "prefiltered",
+  scope: "exome" | "whole_genome" | "unknown",
+) {
+  if (profile === "prefiltered") return "Compact WGS candidate";
+  if (scope === "whole_genome") return "Full WGS index";
+  if (scope === "exome") return "Full exome index";
+  return "Full index · scope not recorded";
 }
 
 function annotationOutputPath(inputPath: string, outputDirectory: string) {

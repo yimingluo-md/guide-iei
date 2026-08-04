@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "policy_id": "alphagenome-encode-audit-v1",
+  "description": "Versioned adaptation of the AlphaGenome ENCODE audit policy for categorical SCREEN immune-cell annotations.",
+  "source": {
+    "article": "Advancing regulatory variant effect prediction with AlphaGenome",
+    "doi": "10.1038/s41586-025-10014-0",
+    "article_url": "https://www.nature.com/articles/s41586-025-10014-0",
+    "supplementary_table_url": "https://media.springernature.com/original/springer-static/esm/art%3A10.1038%2Fs41586-025-10014-0/MediaObjects/41586_2025_10014_MOESM3_ESM.xlsx",
+    "supplementary_table_sha256": "833cb78b6ae6fe39415cfff296ac00c48d800326139f13eb307531a1cc133154",
+    "retrieved_at": "2026-08-01"
+  },
+  "rules": {
+    "exclude_all_error_audits": true,
+    "exclude_not_compliant_categories": [
+      "extremely low pct_ligation_motif_present",
+      "extremely low pct_unique_long_range_greater_than_20kb",
+      "insufficient coverage",
+      "insufficient number of aligned reads",
+      "insufficient number of reproducible peaks",
+      "insufficient replicate concordance",
+      "low TSS enrichment",
+      "low non-redundant PET",
+      "poor library complexity",
+      "severe bottlenecking",
+      "inconsistent age"
+    ],
+    "warning_audits_are_tolerated": true,
+    "other_not_compliant_audits_are_tolerated": true,
+    "frip_rescue": false
+  },
+  "adaptation_notes": [
+    "AlphaGenome uses quantitative ENCODE tracks and may rescue some ChIP experiments using FRiP. SCREEN supplies categorical cCRE calls without a harmonized FRiP value, so this preparation does not perform FRiP rescue.",
+    "The policy is applied to every ENCODE experiment contributing to a retained SCREEN biosample profile. It never rewrites the original 448-column SCREEN matrix.",
+    "This audit policy controls the curated baseline-primary-cell view only. Excluded profiles remain available in the complete source layer with their exclusion reasons."
+  ]
+}

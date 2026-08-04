@@ -110,6 +110,13 @@ wgs_review:
     bed: "references/regions/screen.registry-v4.GRCh38.ccre.bed.gz"
     source_url: "https://downloads.wenglab.org/Registry-V4/GRCh38-cCREs.bed"
     assembly: GRCh38
+  # Optional categorical tissue and donor-aware baseline immune-cell evidence.
+  # This is a review layer over the same Registry V4 catalog, not a VEP field,
+  # target-gene assignment, or combined regulatory score. The preparation
+  # script writes this manifest; IEI_SCREEN_CONTEXT_MANIFEST may override it.
+  screen_context:
+    enabled: true
+    manifest: ""
   # Compact gene-level TSS context is derived automatically from the same
   # release-matched Ensembl GTF used by the pipeline. It is regional context,
   # never a cCRE target-gene prediction.

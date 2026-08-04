@@ -201,6 +201,93 @@ export type CcreContext = {
   overlaps: CcreOverlap[];
 };
 
+export type ScreenContextState =
+  | "classified"
+  | "h3k4me3_associated"
+  | "mixed"
+  | "accessible_only"
+  | "accessible_classification_unavailable"
+  | "not_detected";
+
+export type ScreenTissueContext = {
+  id: string;
+  index: number;
+  name: string;
+  source_filename: string;
+  state: ScreenContextState;
+  state_label: string;
+  activity_detected: boolean;
+  class: string;
+};
+
+export type ScreenImmuneContext = {
+  id: string;
+  context_id: string;
+  ontology_id: string;
+  name: string;
+  lineages: string[];
+  donor_count: number;
+  tier_counts: Record<string, number>;
+  assay_capability: Record<string, number>;
+  audit_warning_counts: Record<string, number>;
+  ancestor_context_ids: string[];
+  direct_parent_context_ids: string[];
+  descendant_context_ids: string[];
+  direct_child_context_ids: string[];
+  is_nested_context: boolean;
+  is_summary_parent: boolean;
+  state: ScreenContextState;
+  state_label: string;
+  activity_detected: boolean;
+  donors_detected: number;
+  classification_capable_donors: number;
+  exact_class_counts: Record<string, number>;
+  profile_calls: {
+    donor_accession: string;
+    evidence_tier: string;
+    assays_available: string[];
+    class: string;
+    detected: boolean;
+  }[];
+};
+
+export type ScreenContextCatalog = {
+  available: boolean;
+  registry: string;
+  assembly: "GRCh38";
+  created_at?: string;
+  message?: string;
+  scientific_caveats?: string[];
+  tissues: Omit<ScreenTissueContext, "state" | "state_label" | "activity_detected" | "class">[];
+  immune_contexts: Omit<ScreenImmuneContext, "state" | "state_label" | "activity_detected" | "donors_detected" | "classification_capable_donors" | "exact_class_counts" | "profile_calls">[];
+  presets: { id: string; name: string; tissue_ids: string[]; immune_context_ids: string[] }[];
+};
+
+export type ScreenContextEvidence = {
+  available: boolean;
+  status: "overlap" | "no_overlap" | "resource_unavailable";
+  registry?: string;
+  assembly?: "GRCh38";
+  overlaps: {
+    row_index: number;
+    accession: string;
+    overall_class: string;
+    chrom: string;
+    start: number;
+    end: number;
+    tissues: ScreenTissueContext[];
+    immune_contexts: ScreenImmuneContext[];
+    summary: {
+      tissues_detected: number;
+      tissues_total: number;
+      immune_contexts_detected: number;
+      immune_contexts_total: number;
+      mixed_immune_contexts: number;
+    };
+  }[];
+  modules?: Record<string, { available: boolean; label: string; note?: string }>;
+};
+
 export type StagedAnnotationFile = {
   path: string;
   filename: string;
@@ -224,8 +311,21 @@ export type CohortSample = {
   file_id: number;
   source_path: string;
   import_profile: "full" | "prefiltered";
+  analysis_scope: "exome" | "whole_genome" | "unknown";
   imported_at: string;
   carrier_observations: number;
+  profile_label: string;
+  profile_hash: string;
+};
+
+export type CohortProfile = {
+  profile_hash: string;
+  profile_label: string;
+  analysis_scope: "exome" | "whole_genome";
+  import_profile: "full" | "prefiltered";
+  settings: Record<string, unknown>;
+  files: number;
+  sample_entries: number;
 };
 
 export type CohortSampleRemoval = {
@@ -251,6 +351,7 @@ export type CohortImportFile = {
   preparation_warning?: string;
   cache_hit?: boolean;
   import_profile?: "full" | "prefiltered";
+  analysis_scope?: "exome" | "whole_genome";
   prefilter_options?: WgsPrefilterOptions | Record<string, never>;
   prefilter_records_scanned?: number;
   prefilter_records_retained?: number;
@@ -285,6 +386,7 @@ export type CohortImportJob = {
   reader_count: number;
   prepared_path: string;
   import_profile: "full" | "prefiltered";
+  analysis_scope: "exome" | "whole_genome";
   prefilter_options: WgsPrefilterOptions | Record<string, never>;
   prefilter_records_scanned: number;
   prefilter_records_retained: number;
@@ -342,6 +444,9 @@ export type CohortQueryRow = {
   source_file_id: number;
   source_path: string;
   import_profile: "full" | "prefiltered";
+  analysis_scope: "exome" | "whole_genome" | "unknown";
+  profile_label: string;
+  profile_hash: string;
   genotype: string;
   zygosity: string;
   phased: boolean;
@@ -364,6 +469,8 @@ export type CohortQueryResult = {
   individuals: number;
   variants: number;
   rows: CohortQueryRow[];
+  represented_profiles: string[];
+  comparability_warning: string;
 };
 
 export type CohortVariantAnnotation = Pick<CohortQueryRow,
@@ -406,6 +513,35 @@ export type CohortReviewRecords = {
   warnings: string[];
 };
 
+export type CohortSampleReviewEntry = {
+  sample_entry_id: number;
+  sample: string;
+  carrier_observations: number;
+};
+
+export type CohortSampleReviewVcf = {
+  source_file_id: number;
+  source_path: string;
+  prepared_path: string;
+  name: string;
+  import_profile: "full" | "prefiltered";
+  analysis_scope: "exome" | "whole_genome" | "unknown";
+  prefilter_options: WgsPrefilterOptions | Record<string, never>;
+  imported_at: string;
+  record_count: number;
+  samples: CohortSampleReviewEntry[];
+  vcf: string;
+};
+
+export type CohortSampleReview = {
+  sample_entries: number;
+  carrier_observations: number;
+  records: number;
+  analysis_scope: "exome" | "whole_genome";
+  files: CohortSampleReviewVcf[];
+  warnings: string[];
+};
+
 export type CohortQuery = {
   mode: "variant" | "gene";
   query?: string;
@@ -424,7 +560,73 @@ export type CohortQuery = {
   exclude_repeat?: boolean;
   exclude_segdup?: boolean;
   zygosity?: "all" | "heterozygous" | "homozygous" | "hemizygous";
+  analysis_scopes?: ("exome" | "whole_genome")[];
+  profile_hashes?: string[];
   limit?: number;
+};
+
+export type SampleLibraryDataset = {
+  id: string;
+  sample_id: string;
+  sample_label: string;
+  individual_id: string | null;
+  vcf_sample_name: string;
+  original_name: string;
+  original_path: string;
+  managed_path: string;
+  managed_index_path: string | null;
+  managed_checksum: string;
+  managed_size_bytes: number;
+  analysis_scope: "exome" | "whole_genome";
+  index_scope: "compact" | "full";
+  annotation_bundle: Record<string, unknown>;
+  resource_versions: Record<string, unknown>;
+  qc_settings: Record<string, unknown>;
+  prefilter_settings: WgsPrefilterOptions | Record<string, unknown>;
+  retention_routes: string[];
+  complete_settings: Record<string, unknown>;
+  settings_hash: string;
+  profile_label: string;
+  source_record_count: number | null;
+  retained_record_count: number | null;
+  include_in_cohort: boolean;
+  cohort_file_id: number | null;
+  cohort_index_status: "ready" | "not_included" | "needs_repair";
+  status: string;
+  warnings: string[];
+  imported_at: string;
+  updated_at: string;
+};
+
+export type SampleLibraryImportSource = {
+  path?: string;
+  review_id?: string;
+  original_path?: string;
+  original_name?: string;
+  source_record_count?: number;
+  retained_record_count?: number;
+};
+
+export type SampleLibraryImportResult = {
+  imports: {
+    datasets: Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id">[];
+    managed_path: string;
+    deduplicated_file: boolean;
+    profile_label: string;
+    profile_hash: string;
+    warnings: string[];
+  }[];
+  datasets: Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id">[];
+};
+
+export type StorageStats = {
+  state_dir: string;
+  locations: Record<string, number>;
+  total_bytes: number;
+  datasets: number;
+  managed_unique_files: number;
+  database_page_bytes: number;
+  database_reclaimable_bytes: number;
 };
 
 export type PhenotypeField =
@@ -456,6 +658,50 @@ export type PhenotypeIndividual = {
   created_at: string;
   updated_at: string;
 };
+
+function phenotypeStringList(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  if (typeof value === "string") {
+    return value.split(/[;,\n]/).map((item) => item.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+function normalizePhenotypeIndividual(
+  record: Partial<PhenotypeIndividual> | null | undefined,
+): PhenotypeIndividual {
+  const value = record ?? {};
+  const finiteNumber = (item: unknown) => {
+    if (item === null || item === undefined || item === "") return null;
+    const number = Number(item);
+    return Number.isFinite(number) ? number : null;
+  };
+  const text = (item: unknown) => item === null || item === undefined ? "" : String(item);
+  return {
+    individual_id: text(value.individual_id),
+    sample_ids: phenotypeStringList(value.sample_ids),
+    sex_at_birth: text(value.sex_at_birth),
+    age_at_evaluation: finiteNumber(value.age_at_evaluation),
+    age_at_evaluation_unit: text(value.age_at_evaluation_unit),
+    age_at_onset: finiteNumber(value.age_at_onset),
+    age_at_onset_unit: text(value.age_at_onset_unit),
+    reported_race: phenotypeStringList(value.reported_race),
+    reported_ethnicity: phenotypeStringList(value.reported_ethnicity),
+    phenotype_summary: text(value.phenotype_summary),
+    present_features: phenotypeStringList(value.present_features),
+    absent_features: phenotypeStringList(value.absent_features),
+    current_diagnosis: text(value.current_diagnosis),
+    notes: text(value.notes),
+    source_date: text(value.source_date),
+    custom_fields: value.custom_fields && typeof value.custom_fields === "object" && !Array.isArray(value.custom_fields)
+      ? value.custom_fields : {},
+    source_name: text(value.source_name),
+    created_at: text(value.created_at),
+    updated_at: text(value.updated_at),
+  };
+}
 
 export type PhenotypeStats = {
   individuals: number;
@@ -615,6 +861,31 @@ export async function getCcreContext(
   });
 }
 
+export async function getScreenContextCatalog() {
+  return request<ScreenContextCatalog>("/api/screen-context/catalog");
+}
+
+export async function getScreenContext(
+  variant: { chrom: string; pos: number; ref: string; alt: string },
+) {
+  return request<ScreenContextEvidence>("/api/screen-context", {
+    method: "POST",
+    body: JSON.stringify(variant),
+  });
+}
+
+export async function filterScreenContext(payload: {
+  variants: { key: string; chrom: string; pos: number; ref: string; alt: string }[];
+  tissue_ids: string[];
+  immune_context_ids: string[];
+  mode: "any" | "all";
+}) {
+  return request<{ available: boolean; matching_keys: string[]; tested: number }>(
+    "/api/screen-context/filter",
+    { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
 export async function getWgsReviewJob(jobId: string) {
   return request<WgsReviewJob>(`/api/wgs-review/${encodeURIComponent(jobId)}`);
 }
@@ -636,6 +907,10 @@ export async function openWgsReviewFile(reviewId: string, fallbackName: string) 
 
 export async function getCohortStats() {
   return request<CohortStats>("/api/cohort/stats");
+}
+
+export async function getCohortProfiles() {
+  return (await request<{ profiles: CohortProfile[] }>("/api/cohort/profiles")).profiles;
 }
 
 export async function importCohort(
@@ -661,6 +936,7 @@ export async function startCohortImport(
   force = false,
   allowUnknownAssembly = false,
   importProfile: "full" | "prefiltered" = "full",
+  analysisScope: "exome" | "whole_genome" = "exome",
   filters?: WgsPrefilterOptions,
 ) {
   return request<CohortImportJob>("/api/cohort/import-jobs", {
@@ -671,6 +947,7 @@ export async function startCohortImport(
       force,
       allow_unknown_assembly: allowUnknownAssembly,
       import_profile: importProfile,
+      analysis_scope: importProfile === "prefiltered" ? "whole_genome" : analysisScope,
       filters,
     }),
   });
@@ -703,6 +980,13 @@ export async function getCohortReviewRecords(
   });
 }
 
+export async function getCohortSampleReview(sampleIds: number[]) {
+  return request<CohortSampleReview>("/api/cohort/sample-review", {
+    method: "POST",
+    body: JSON.stringify({ sample_ids: sampleIds }),
+  });
+}
+
 export async function getCohortSamples(query = "", limit = 500) {
   const params = new URLSearchParams({ query, limit: String(limit) });
   return (await request<{ samples: CohortSample[] }>(
@@ -717,20 +1001,120 @@ export async function removeCohortSamples(sampleIds: number[]) {
   });
 }
 
+export async function getSampleLibrary(query = "") {
+  const params = new URLSearchParams({ query, limit: "1000" });
+  return (await request<{ datasets: SampleLibraryDataset[] }>(
+    `/api/sample-library?${params.toString()}`,
+  )).datasets;
+}
+
+export async function getSampleLibraryPhenotype(datasetId: string) {
+  const phenotype = (await request<{ phenotype: PhenotypeIndividual | null }>(
+    `/api/sample-library/${encodeURIComponent(datasetId)}/phenotype`,
+  )).phenotype;
+  return phenotype ? normalizePhenotypeIndividual(phenotype) : null;
+}
+
+export async function importSampleLibrary(payload: {
+  sources: SampleLibraryImportSource[];
+  analysis_scope: "exome" | "whole_genome";
+  index_scope?: "compact" | "full";
+  include_in_cohort: boolean;
+  qc_settings?: Record<string, unknown>;
+  prefilter_settings?: WgsPrefilterOptions | Record<string, unknown>;
+  retention_routes?: string[];
+  annotation_bundle?: Record<string, unknown>;
+  resource_versions?: Record<string, unknown>;
+}) {
+  return request<SampleLibraryImportResult>("/api/sample-library/import", {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function openSampleLibraryFile(datasetId: string, fallbackName: string) {
+  const response = await fetch(`${SERVICE_URL}/api/sample-library/${encodeURIComponent(datasetId)}/file`);
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error ?? `Local service returned ${response.status}`);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+  return new File([await response.blob()], name, {
+    type: response.headers.get("Content-Type") || "application/octet-stream",
+  });
+}
+
+export async function mapSampleLibraryIdentity(
+  datasetId: string,
+  payload: { mode: "existing" | "create" | "unavailable"; individual_id?: string },
+) {
+  return request<SampleLibraryDataset>(`/api/sample-library/${encodeURIComponent(datasetId)}/identity`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function updateSampleLibraryMetadata(
+  datasetId: string,
+  payload: { sample_label?: string },
+) {
+  return request<SampleLibraryDataset>(`/api/sample-library/${encodeURIComponent(datasetId)}/metadata`, {
+    method: "POST", body: JSON.stringify(payload),
+  });
+}
+
+export async function reindexSampleLibraryDataset(datasetId: string, fullWgs = false) {
+  return request<{ dataset: SampleLibraryDataset; cohort: CohortImportFile }>(
+    `/api/sample-library/${encodeURIComponent(datasetId)}/reindex`,
+    { method: "POST", body: JSON.stringify({ full_wgs: fullWgs }) },
+  );
+}
+
+export async function removeSampleLibraryDatasetFromCohort(datasetId: string) {
+  return request<SampleLibraryDataset>(
+    `/api/sample-library/${encodeURIComponent(datasetId)}/cohort/remove`,
+    { method: "POST", body: "{}" },
+  );
+}
+
+export async function removeSampleLibraryDataset(datasetId: string, removeManagedFile = true) {
+  return request<{ removed_dataset: string; removed_files: string[] }>(
+    `/api/sample-library/${encodeURIComponent(datasetId)}/remove`,
+    { method: "POST", body: JSON.stringify({ remove_managed_file: removeManagedFile }) },
+  );
+}
+
+export async function getStorageStats() {
+  return request<StorageStats>("/api/storage");
+}
+
+export async function cleanupStorage(categories: string[]) {
+  return request<{ removed_files: number; freed_bytes: number; storage: StorageStats }>(
+    "/api/storage/cleanup", { method: "POST", body: JSON.stringify({ categories }) },
+  );
+}
+
+export async function compactStorage() {
+  return request<StorageStats>("/api/storage/compact", {
+    method: "POST", body: JSON.stringify({ confirmation: "COMPACT" }),
+  });
+}
+
 export async function getPhenotypeStats() {
   return request<PhenotypeStats>("/api/phenotypes/stats");
 }
 
 export async function getPhenotypeIndividuals(query = "") {
-  return (await request<{ individuals: PhenotypeIndividual[] }>(
+  const individuals = (await request<{ individuals: PhenotypeIndividual[] }>(
     `/api/phenotypes?query=${encodeURIComponent(query)}`,
   )).individuals;
+  return individuals.map(normalizePhenotypeIndividual);
 }
 
 export async function getPhenotypesBySample(sampleId: string) {
-  return (await request<{ individuals: PhenotypeIndividual[] }>(
+  const individuals = (await request<{ individuals: PhenotypeIndividual[] }>(
     `/api/phenotypes/by-sample/${encodeURIComponent(sampleId)}`,
   )).individuals;
+  return individuals.map(normalizePhenotypeIndividual);
 }
 
 export async function getPhenotypeProfiles() {
@@ -742,10 +1126,11 @@ export async function getPhenotypeProfiles() {
 export async function savePhenotypeIndividual(
   payload: Partial<PhenotypeIndividual> & { individual_id: string },
 ) {
-  return request<PhenotypeIndividual>("/api/phenotypes/individual", {
+  const individual = await request<PhenotypeIndividual>("/api/phenotypes/individual", {
     method: "POST",
     body: JSON.stringify(payload),
   });
+  return normalizePhenotypeIndividual(individual);
 }
 
 export async function previewPhenotypeInput(payload: PhenotypeUploadPayload) {

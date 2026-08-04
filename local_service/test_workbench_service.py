@@ -117,6 +117,24 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.service.shutdown()
         self.temp.cleanup()
 
+    def test_sample_library_service_import_records_bundle_and_identity(self):
+        review = self.root / "review.vcf"
+        write_vcf(review)
+        self.service.cohort.hts_backend = None
+        result = self.service.import_sample_library({
+            "sources": [{"path": str(review), "original_name": "review.vcf"}],
+            "analysis_scope": "exome",
+            "index_scope": "compact",
+            "include_in_cohort": False,
+            "qc_settings": {"minDp": 10},
+            "retention_routes": ["exome region"],
+        })
+        self.assertEqual(len(result["datasets"]), 2)
+        stored = self.service.sample_library.get(result["datasets"][0]["id"])
+        self.assertEqual(stored["annotation_bundle"]["workbench_service"], "0.10.0")
+        self.assertIn("foundations", stored["annotation_bundle"])
+        self.assertEqual(self.service.sample_library.storage_stats()["datasets"], 2)
+
     def _write_script(self, name, body):
         path = self.root / "scripts" / name
         path.write_text(body)
@@ -487,11 +505,21 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 f"http://127.0.0.1:{port}/api/phenotypes/stats", timeout=2
             ) as response:
                 phenotypes = json.load(response)
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/sample-library", timeout=2
+            ) as response:
+                library = json.load(response)
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/storage", timeout=2
+            ) as response:
+                storage = json.load(response)
             self.assertTrue(health["ok"])
             self.assertEqual(jobs, {"jobs": []})
             self.assertEqual(resource_jobs, {"jobs": []})
             self.assertEqual(cohort["individuals"], 0)
             self.assertEqual(phenotypes["individuals"], 0)
+            self.assertEqual(library, {"datasets": []})
+            self.assertEqual(storage["datasets"], 0)
         finally:
             server.shutdown()
             server.server_close()
@@ -553,6 +581,14 @@ class AnnotationJobServiceTests(unittest.TestCase):
             self.assertEqual(review["resolved"], 1)
             self.assertIn("1\t100\trsExact\tA\tG", review["files"][0]["vcf"])
             self.assertNotIn("\tP2\n", review["files"][0]["vcf"])
+            sample_review = post("/api/cohort/sample-review", {
+                "sample_ids": [result["rows"][0]["sample_entry_id"]],
+            })
+            self.assertEqual(sample_review["sample_entries"], 1)
+            self.assertEqual(sample_review["records"], 3)
+            self.assertEqual(sample_review["analysis_scope"], "exome")
+            self.assertIn("1\t400\t.\tT\tC", sample_review["files"][0]["vcf"])
+            self.assertNotIn("\tP2\n", sample_review["files"][0]["vcf"])
 
             individual = post("/api/phenotypes/individual", {
                 "individual_id": "CASE-P1",
@@ -592,6 +628,37 @@ class AnnotationJobServiceTests(unittest.TestCase):
             })
             self.assertEqual(imported_phenotypes["created"], 1)
 
+            library_import = post("/api/sample-library/import", {
+                "sources": [{"path": str(cohort_vcf)}],
+                "analysis_scope": "exome",
+                "index_scope": "compact",
+                "include_in_cohort": False,
+                "retention_routes": ["exome region"],
+            })
+            self.assertEqual(len(library_import["datasets"]), 2)
+            p1_dataset = next(
+                item for item in library_import["datasets"]
+                if item["vcf_sample_name"] == "P1"
+            )
+            mapped = post(
+                f"/api/sample-library/{p1_dataset['id']}/identity",
+                {"mode": "existing", "individual_id": "CASE-P1"},
+            )
+            self.assertEqual(mapped["individual_id"], "CASE-P1")
+            with urllib.request.urlopen(
+                base + f"/api/sample-library/{p1_dataset['id']}/phenotype",
+                timeout=5,
+            ) as response:
+                stable_phenotype = json.load(response)
+            self.assertEqual(
+                stable_phenotype["phenotype"]["individual_id"], "CASE-P1"
+            )
+            with urllib.request.urlopen(
+                base + "/api/sample-library/profiles", timeout=5
+            ) as response:
+                profiles = json.load(response)["profiles"]
+            self.assertEqual(profiles[0]["datasets"], 2)
+
             with urllib.request.urlopen(
                 base + "/api/cohort/samples", timeout=5
             ) as response:
@@ -606,6 +673,19 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 "/api/cohort/query", {"mode": "variant", "query": "1:100:A:G"}
             )
             self.assertEqual(removed_query["total"], 0)
+
+            repaired = post(
+                f"/api/sample-library/{p1_dataset['id']}/reindex", {}
+            )
+            self.assertEqual(
+                repaired["dataset"]["cohort_index_status"], "ready"
+            )
+            excluded_from_cohort = post(
+                f"/api/sample-library/{p1_dataset['id']}/cohort/remove", {}
+            )
+            self.assertEqual(
+                excluded_from_cohort["cohort_index_status"], "not_included"
+            )
         finally:
             server.shutdown()
             server.server_close()

@@ -1,0 +1,110 @@
+{
+  "schema_version": 1,
+  "registry": "SCREEN Registry V4",
+  "assembly": "GRCh38",
+  "purpose": "Content-alignment regression: bind exact cCRE catalog rows and categorical matrix bytes to named immune and tissue columns without making biological positive/negative-control claims.",
+  "matrix_sha256": {
+    "immune_matrix": "9d7eb30061f305df68425cfab6ddd24c8ee0994464ecc30076eb30d6b4ad6add",
+    "tissue_matrix": "a3b3848d0ac3594d36e0711ce765d59c1a657ac70a42a457c3a02c9bc896dba9"
+  },
+  "immune_profiles": [
+    {
+      "index": 0,
+      "screen_name": "Homo_sapiens_naive_thymus-derived_CD4-positive,_alpha-beta_T_cell_male_adult_35_years_ENCDO374BBL",
+      "ontology_id": "CL:0000895",
+      "evidence_tier": "partial_classification"
+    },
+    {
+      "index": 40,
+      "screen_name": "Homo_sapiens_common_myeloid_progenitor,_CD34-positive_male_adult_36_years_ENCDO441UHQ",
+      "ontology_id": "CL:0001059",
+      "evidence_tier": "partial_classification"
+    },
+    {
+      "index": 42,
+      "screen_name": "Homo_sapiens_CD14-positive_monocyte_female_ENCDO265AAA",
+      "ontology_id": "CL:0001054",
+      "evidence_tier": "full_classification"
+    },
+    {
+      "index": 63,
+      "screen_name": "Homo_sapiens_CD4-positive,_CD25-positive,_alpha-beta_regulatory_T_cell_male_adult_56_years_ENCDO100JZM",
+      "ontology_id": "CL:0000792",
+      "evidence_tier": "accessibility_only"
+    },
+    {
+      "index": 102,
+      "screen_name": "Homo_sapiens_common_myeloid_progenitor,_CD34-positive_male_adult_ENCDO642MQK",
+      "ontology_id": "CL:0001059",
+      "evidence_tier": "partial_classification"
+    },
+    {
+      "index": 133,
+      "screen_name": "Homo_sapiens_T-helper_1_cell_ENCDO334AAA",
+      "ontology_id": "CL:0000545",
+      "evidence_tier": "accessibility_only"
+    },
+    {
+      "index": 240,
+      "screen_name": "Homo_sapiens_CD1c-positive_myeloid_dendritic_cell_ENCDO820BXZ",
+      "ontology_id": "CL:0002399",
+      "evidence_tier": "accessibility_only"
+    },
+    {
+      "index": 447,
+      "screen_name": "Homo_sapiens_T-cell_male_adult_34_years_ENCDO712ENO",
+      "ontology_id": "CL:0000084",
+      "evidence_tier": "accessibility_only"
+    }
+  ],
+  "tissues": [
+    {"index": 0, "name": "adipose"},
+    {"index": 2, "name": "blood"},
+    {"index": 5, "name": "bone marrow"},
+    {"index": 19, "name": "lymphoid tissue"},
+    {"index": 31, "name": "spleen"},
+    {"index": 34, "name": "thymus"},
+    {"index": 37, "name": "vagina"}
+  ],
+  "rows": [
+    {
+      "row_index": 0,
+      "chrom": "1",
+      "start": 10033,
+      "end": 10250,
+      "rdhs_accession": "EH38D4327497",
+      "ccre_accession": "EH38E2776516",
+      "overall_class": "pELS",
+      "immune_row_sha256": "6069ac5bc0cf998c17a6a20385edd822fad00a59b61fac5d34fd776780823ee4",
+      "tissue_row_sha256": "c712b3d4f9d8ee1d5f9ee7d84634e414fa46da38b21d1bc208b3f9493ebc3d07",
+      "immune_profile_codes": {"0": 7, "40": 0, "42": 0, "63": 7, "102": 0, "133": 0, "240": 0, "447": 0},
+      "tissue_codes": {"0": 0, "2": 2, "5": 7, "19": 0, "31": 0, "34": 0, "37": 0}
+    },
+    {
+      "row_index": 63,
+      "chrom": "1",
+      "start": 778570,
+      "end": 778919,
+      "rdhs_accession": "EH38D4327580",
+      "ccre_accession": "EH38E2776539",
+      "overall_class": "PLS",
+      "immune_row_sha256": "2fb2d2f1ff17fb1c78a592f6968f6ccb83e6cf53d009ff1313895b59bfecdde6",
+      "tissue_row_sha256": "3ede4cf49d56334bb8247519d5bae43c25996168b259b6ae93df30a6e4383839",
+      "immune_profile_codes": {"0": 1, "40": 1, "42": 1, "63": 7, "102": 1, "133": 7, "240": 7, "447": 7},
+      "tissue_codes": {"0": 1, "2": 1, "5": 1, "19": 7, "31": 1, "34": 1, "37": 1}
+    },
+    {
+      "row_index": 410,
+      "chrom": "1",
+      "start": 1013282,
+      "end": 1013630,
+      "rdhs_accession": "EH38D4327935",
+      "ccre_accession": "EH38E2776806",
+      "overall_class": "PLS",
+      "immune_row_sha256": "8ad82e3c3972a1ee856d8fb244d08ea2a6fb0a77594ce7c1ac4be05fa73bbddd",
+      "tissue_row_sha256": "a6792f1640ed2dd0501d7cc5628ee8984fb17a332b3fe05aae3c54826e0ce634",
+      "immune_profile_codes": {"0": 1, "40": 1, "42": 1, "63": 7, "102": 1, "133": 7, "240": 7, "447": 7},
+      "tissue_codes": {"0": 1, "2": 1, "5": 1, "19": 7, "31": 1, "34": 1, "37": 0}
+    }
+  ]
+}

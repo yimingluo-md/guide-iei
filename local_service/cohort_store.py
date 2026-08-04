@@ -35,6 +35,7 @@ IMPACT_ORDER = {"HIGH": 1, "MODERATE": 2, "LOW": 3, "MODIFIER": 4, "UNKNOWN": 5}
 ALLOWED_IMPACTS = set(IMPACT_ORDER)
 DEFAULT_INDEX_READERS = 4
 DEFAULT_STAGE_BATCH_RECORDS = 2_000
+MAX_BROWSER_SAMPLE_REVIEW_CARRIERS = 200_000
 
 
 @dataclass(frozen=True)
@@ -922,6 +923,7 @@ class CohortStore:
         self.stage_batch_records = max(100, stage_batch_records)
         self._import_jobs: dict[str, dict] = {}
         self._import_jobs_lock = threading.Lock()
+        self._maintenance_lock = threading.Lock()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -966,9 +968,13 @@ class CohortStore:
                     ,reader_count INTEGER NOT NULL DEFAULT 1
                     ,preparation_warning TEXT NOT NULL DEFAULT ''
                     ,import_profile TEXT NOT NULL DEFAULT 'full'
+                    ,analysis_scope TEXT NOT NULL DEFAULT 'unknown'
                     ,prefilter_options TEXT NOT NULL DEFAULT '{}'
                     ,prefilter_records_scanned INTEGER NOT NULL DEFAULT 0
                     ,prefilter_records_retained INTEGER NOT NULL DEFAULT 0
+                    ,profile_label TEXT NOT NULL DEFAULT ''
+                    ,profile_hash TEXT NOT NULL DEFAULT ''
+                    ,profile_json TEXT NOT NULL DEFAULT '{}'
                 );
 
                 CREATE TABLE IF NOT EXISTS cohort_samples (
@@ -1141,14 +1147,23 @@ class CohortStore:
                 ("reader_count", "INTEGER NOT NULL DEFAULT 1"),
                 ("preparation_warning", "TEXT NOT NULL DEFAULT ''"),
                 ("import_profile", "TEXT NOT NULL DEFAULT 'full'"),
+                ("analysis_scope", "TEXT NOT NULL DEFAULT 'unknown'"),
                 ("prefilter_options", "TEXT NOT NULL DEFAULT '{}'"),
                 ("prefilter_records_scanned", "INTEGER NOT NULL DEFAULT 0"),
                 ("prefilter_records_retained", "INTEGER NOT NULL DEFAULT 0"),
+                ("profile_label", "TEXT NOT NULL DEFAULT ''"),
+                ("profile_hash", "TEXT NOT NULL DEFAULT ''"),
+                ("profile_json", "TEXT NOT NULL DEFAULT '{}'"),
             ):
                 if column not in file_columns:
                     connection.execute(
                         f"ALTER TABLE cohort_files ADD COLUMN {column} {declaration}"
                     )
+            connection.execute(
+                "UPDATE cohort_files SET analysis_scope = 'whole_genome' "
+                "WHERE import_profile = 'prefiltered' "
+                "AND analysis_scope != 'whole_genome'"
+            )
             variant_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -1217,6 +1232,41 @@ class CohortStore:
             ).fetchone()
         return dict(row)
 
+    def has_active_import(self) -> bool:
+        with self._import_jobs_lock:
+            return any(
+                job["status"] in {"queued", "running"}
+                for job in self._import_jobs.values()
+            )
+
+    def profiles(self) -> list[dict]:
+        """Return import profiles without deriving cohort allele frequencies."""
+        with self._session() as connection:
+            rows = connection.execute(
+                """
+                SELECT COALESCE(NULLIF(profile_hash, ''),
+                                import_profile || ':' || analysis_scope) AS profile_hash,
+                       COALESCE(NULLIF(profile_label, ''),
+                                CASE WHEN analysis_scope='whole_genome' THEN 'WGS' ELSE 'WES/exome' END
+                                || ' ' || CASE WHEN import_profile='full' THEN 'full' ELSE 'candidate' END
+                       ) AS profile_label,
+                       analysis_scope,import_profile,profile_json,
+                       COUNT(*) AS files, SUM(sample_count) AS sample_entries
+                FROM cohort_files
+                GROUP BY 1,2,3,4,5
+                ORDER BY sample_entries DESC,profile_label
+                """
+            ).fetchall()
+        result = []
+        for row in rows:
+            item = dict(row)
+            try:
+                item["settings"] = json.loads(item.pop("profile_json") or "{}")
+            except json.JSONDecodeError:
+                item["settings"] = {}
+            result.append(item)
+        return result
+
     def list_samples(self, query: str = "", limit: int = 500) -> list[dict]:
         """List exact sample entries so duplicate names remain distinguishable."""
         limit = max(1, min(int(limit), 5_000))
@@ -1227,7 +1277,8 @@ class CohortStore:
             rows = connection.execute(
                 f"""
                 SELECT s.id, s.name, s.file_id, f.path AS source_path,
-                       f.import_profile, f.imported_at,
+                       f.import_profile, f.analysis_scope, f.imported_at,
+                       f.profile_label,f.profile_hash,
                        COUNT(g.id) AS carrier_observations
                 FROM cohort_samples s
                 JOIN cohort_files f ON f.id = s.file_id
@@ -1261,6 +1312,41 @@ class CohortStore:
             raise ValueError("select at least one sample to remove")
         if len(selected) > 5_000:
             raise ValueError("a single removal is limited to 5,000 sample entries")
+        with self._maintenance_lock:
+            return self._remove_samples(selected)
+
+    def _reset_cohort_tables(self) -> None:
+        """Quickly clear the cohort index while preserving phenotype tables.
+
+        Dropping empty-bound cohort b-trees avoids millions of row-level
+        foreign-key cascades when every indexed sample is being removed. The
+        database pages remain reusable by a later import; a VACUUM is not run
+        because reclaiming filesystem space would itself be a long operation.
+        """
+        connection = self._connect()
+        try:
+            connection.execute("PRAGMA foreign_keys=OFF")
+            connection.executescript(
+                """
+                BEGIN EXCLUSIVE;
+                DROP TABLE cohort_genotypes;
+                DROP TABLE cohort_annotations;
+                DROP TABLE cohort_variants;
+                DROP TABLE cohort_samples;
+                DROP TABLE cohort_files;
+                COMMIT;
+                """
+            )
+        except Exception:
+            connection.rollback()
+            raise
+        finally:
+            connection.close()
+        self._initialize()
+        with self._session() as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    def _remove_samples(self, selected: list[int]) -> dict:
         placeholders = ",".join("?" for _ in selected)
         with self._session() as connection:
             rows = connection.execute(
@@ -1279,6 +1365,22 @@ class CohortStore:
                 raise ValueError(
                     "sample entries were not found: " + ", ".join(map(str, missing))
                 )
+            cohort_counts = connection.execute(
+                """
+                SELECT (SELECT COUNT(*) FROM cohort_samples) AS samples,
+                       (SELECT COUNT(*) FROM cohort_variants) AS variants
+                """
+            ).fetchone()
+        if cohort_counts["samples"] == len(selected):
+            self._reset_cohort_tables()
+            return {
+                "removed": [dict(row) for row in rows],
+                "removed_count": len(rows),
+                "orphan_variants_removed": cohort_counts["variants"],
+                "stats": self.stats(),
+            }
+
+        with self._session() as connection:
             file_ids = sorted({row["file_id"] for row in rows})
             connection.execute(
                 f"DELETE FROM cohort_samples WHERE id IN ({placeholders})",
@@ -1393,13 +1495,18 @@ class CohortStore:
         self, raw_paths: list[str], recursive: bool = True, force: bool = False,
         allow_unknown_assembly: bool = False,
         import_profile: str = "full",
+        analysis_scope: str = "exome",
         prefilter_options: dict | None = None,
         prefilter: Callable[[Path, Callable[[dict], None]], tuple[Path, dict]] | None = None,
     ) -> dict:
         if import_profile not in {"full", "prefiltered"}:
             raise ValueError("import_profile must be 'full' or 'prefiltered'")
+        if analysis_scope not in {"exome", "whole_genome"}:
+            raise ValueError("analysis_scope must be 'exome' or 'whole_genome'")
         if import_profile == "prefiltered" and prefilter is None:
             raise ValueError("prefiltered cohort import requires a prefilter")
+        if import_profile == "prefiltered":
+            analysis_scope = "whole_genome"
         paths = self.expand_paths(raw_paths, recursive)
         with self._import_jobs_lock:
             if any(
@@ -1428,6 +1535,7 @@ class CohortStore:
                 "reader_count": 1,
                 "prepared_path": "",
                 "import_profile": import_profile,
+                "analysis_scope": analysis_scope,
                 "prefilter_options": prefilter_options or {},
                 "prefilter_records_scanned": 0,
                 "prefilter_records_retained": 0,
@@ -1445,7 +1553,7 @@ class CohortStore:
             target=self._run_import_job,
             args=(
                 job_id, paths, force, allow_unknown_assembly, import_profile,
-                prefilter_options or {}, prefilter,
+                analysis_scope, prefilter_options or {}, prefilter,
             ),
             name=f"cohort-import-{job_id[:8]}",
             daemon=True,
@@ -1467,6 +1575,7 @@ class CohortStore:
         self, job_id: str, paths: list[Path], force: bool,
         allow_unknown_assembly: bool,
         import_profile: str,
+        analysis_scope: str,
         prefilter_options: dict,
         prefilter: Callable[[Path, Callable[[dict], None]], tuple[Path, dict]] | None,
     ) -> None:
@@ -1599,6 +1708,7 @@ class CohortStore:
                         progress=progress,
                         source_path=path,
                         import_profile=import_profile,
+                        analysis_scope=analysis_scope,
                         prefilter_options=prefilter_options,
                         prefilter_metadata=prefilter_metadata,
                     )
@@ -1653,6 +1763,7 @@ class CohortStore:
     def _import_vcf_rowwise(
         self, path: Path, force: bool = False, allow_unknown_assembly: bool = False,
         progress: Callable[[dict], None] | None = None,
+        import_profile: str = "full", analysis_scope: str = "exome",
     ) -> dict:
         """Legacy single-stream importer retained as an explicit fallback."""
         path = path.resolve()
@@ -1676,6 +1787,8 @@ class CohortStore:
                 existing and not force
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
+                and existing["import_profile"] == import_profile
+                and existing["analysis_scope"] == analysis_scope
             ):
                 result = dict(existing)
                 try:
@@ -1698,14 +1811,16 @@ class CohortStore:
                 """
                 INSERT INTO cohort_files(
                   path, size_bytes, mtime_ns, imported_at, assembly,
-                  lifted_from_assembly
+                  lifted_from_assembly, import_profile, analysis_scope
                 )
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(path), stat.st_size, stat.st_mtime_ns, utc_now(),
                     "GRCh38",
                     "GRCh37" if assembly["lifted_from_grch37"] else None,
+                    import_profile,
+                    analysis_scope,
                 ),
             ).lastrowid
 
@@ -2079,6 +2194,8 @@ class CohortStore:
             "excluded_records": excluded_records,
             "variant_count": variant_count,
             "carrier_count": carrier_count,
+            "import_profile": import_profile,
+            "analysis_scope": analysis_scope,
         }
 
     def _prepare_indexed_vcf(
@@ -2166,6 +2283,51 @@ class CohortStore:
     ) -> PreparedVcf:
         """Return an indexed BGZF source or cached working copy when possible."""
         return self._prepare_indexed_vcf(path.resolve(), progress)
+
+    def prepare_managed_vcf(
+        self, source: Path, destination_directory: Path, content_key: str
+    ) -> tuple[Path, Path | None, str]:
+        """Create an owned review VCF and index for persistent Sample Library.
+
+        The cohort preparation directory is a cache and may be cleaned. This
+        method therefore copies the prepared representation into a separate,
+        content-addressed managed directory before returning it.
+        """
+        source = source.resolve()
+        destination_directory.mkdir(parents=True, exist_ok=True)
+        prepared = self._prepare_indexed_vcf(source)
+        compressed = prepared.path.name.lower().endswith((".gz", ".bgz"))
+        destination = destination_directory / (
+            f"{content_key}.vcf.gz" if compressed else f"{content_key}.vcf"
+        )
+        if not destination.is_file():
+            temporary = destination.with_name(destination.name + ".partial")
+            shutil.copy2(prepared.path, temporary)
+            os.replace(temporary, destination)
+
+        index: Path | None = None
+        if prepared.index_path and prepared.index_path.is_file():
+            suffix = ".csi" if prepared.index_path.name.endswith(".csi") else ".tbi"
+            index = Path(f"{destination}{suffix}")
+            if not index.is_file():
+                temporary_index = Path(f"{index}.partial")
+                shutil.copy2(prepared.index_path, temporary_index)
+                os.replace(temporary_index, index)
+        elif compressed and self.hts_backend is not None:
+            index = self.hts_backend.validate_index(destination)
+            if index is None:
+                try:
+                    index = self.hts_backend.create_index(destination)
+                except RuntimeError:
+                    index = None
+
+        warning = prepared.warning
+        if compressed and index is None:
+            warning = "; ".join(filter(None, [
+                warning,
+                "managed review VCF retained without a tabix/CSI index",
+            ]))
+        return destination, index, warning
 
     @staticmethod
     def _compressed_position(handle, path: Path) -> int:
@@ -2272,6 +2434,7 @@ class CohortStore:
         import_mode: str,
         reader_count: int,
         import_profile: str,
+        analysis_scope: str,
         prefilter_options_json: str,
         prefilter_metadata: dict,
     ) -> tuple[int, int]:
@@ -2303,9 +2466,9 @@ class CohortStore:
                   path, size_bytes, mtime_ns, imported_at, assembly,
                   lifted_from_assembly, prepared_path, index_path,
                   import_mode, reader_count, preparation_warning,
-                  import_profile, prefilter_options,
+                  import_profile, analysis_scope, prefilter_options,
                   prefilter_records_scanned, prefilter_records_retained
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(source_path), stat.st_size, stat.st_mtime_ns, utc_now(),
@@ -2314,7 +2477,7 @@ class CohortStore:
                     str(prepared.path),
                     str(prepared.index_path) if prepared.index_path else None,
                     import_mode, reader_count, prepared.warning,
-                    import_profile, prefilter_options_json,
+                    import_profile, analysis_scope, prefilter_options_json,
                     int(prefilter_metadata.get("records_scanned", 0) or 0),
                     int(prefilter_metadata.get("records_retained", 0) or 0),
                 ),
@@ -2508,16 +2671,23 @@ class CohortStore:
         progress: Callable[[dict], None] | None = None,
         source_path: Path | None = None,
         import_profile: str = "full",
+        analysis_scope: str = "exome",
         prefilter_options: dict | None = None,
         prefilter_metadata: dict | None = None,
     ) -> dict:
         if import_profile not in {"full", "prefiltered"}:
             raise ValueError("import_profile must be 'full' or 'prefiltered'")
+        if analysis_scope not in {"exome", "whole_genome"}:
+            raise ValueError("analysis_scope must be 'exome' or 'whole_genome'")
+        if import_profile == "prefiltered":
+            analysis_scope = "whole_genome"
         if os.environ.get("IEI_COHORT_LEGACY_IMPORT") == "1" and source_path is None:
             return self._import_vcf_rowwise(
                 path, force=force,
                 allow_unknown_assembly=allow_unknown_assembly,
                 progress=progress,
+                import_profile=import_profile,
+                analysis_scope=analysis_scope,
             )
         path = path.resolve()
         source_path = (source_path or path).resolve()
@@ -2546,6 +2716,7 @@ class CohortStore:
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
                 and existing["import_profile"] == import_profile
+                and existing["analysis_scope"] == analysis_scope
                 and existing["prefilter_options"] == prefilter_options_json
             ):
                 result = dict(existing)
@@ -2613,6 +2784,7 @@ class CohortStore:
                 import_mode=import_mode,
                 reader_count=reader_count,
                 import_profile=import_profile,
+                analysis_scope=analysis_scope,
                 prefilter_options_json=prefilter_options_json,
                 prefilter_metadata=prefilter_metadata,
             )
@@ -2638,6 +2810,7 @@ class CohortStore:
             "preparation_warning": prepared.warning,
             "cache_hit": prepared.cache_hit,
             "import_profile": import_profile,
+            "analysis_scope": analysis_scope,
             "prefilter_options": prefilter_options or {},
             "prefilter_records_scanned": int(
                 prefilter_metadata.get("records_scanned", 0) or 0
@@ -2787,6 +2960,27 @@ class CohortStore:
             genotype_conditions.append("g.zygosity = ?")
             genotype_parameters.append(zygosity)
 
+        analysis_scopes = [
+            str(value) for value in payload.get("analysis_scopes", [])
+            if str(value) in {"exome", "whole_genome"}
+        ]
+        if analysis_scopes:
+            genotype_conditions.append(
+                "f.analysis_scope IN (" + ",".join("?" for _ in analysis_scopes) + ")"
+            )
+            genotype_parameters.extend(analysis_scopes)
+        profile_hashes = [
+            str(value).strip() for value in payload.get("profile_hashes", [])
+            if str(value).strip()
+        ]
+        if profile_hashes:
+            genotype_conditions.append(
+                "COALESCE(NULLIF(f.profile_hash, ''), "
+                "f.import_profile || ':' || f.analysis_scope) IN ("
+                + ",".join("?" for _ in profile_hashes) + ")"
+            )
+            genotype_parameters.extend(profile_hashes)
+
         variant_where = " AND ".join(variant_conditions) if variant_conditions else "1"
         annotation_where = (
             " AND ".join(annotation_conditions) if annotation_conditions else "1"
@@ -2850,7 +3044,7 @@ class CohortStore:
             a.mane, a.picked, a.repeat_masker, a.segdup,
             s.id AS sample_entry_id, s.name AS sample,
             f.id AS source_file_id, f.path AS source_path,
-            f.import_profile,
+            f.import_profile, f.analysis_scope,f.profile_label,f.profile_hash,
             g.genotype, g.zygosity, g.phased, g.dp, g.gq,
             g.allele_balance, g.qual, g.haplotype_frame_status,
             g.haplotype_frame_partners, g.haplotype_protein_change,
@@ -2892,6 +3086,10 @@ class CohortStore:
                 """,
                 parameters,
             ).fetchone()
+        represented_profiles = sorted({
+            row.get("profile_hash") or f"{row.get('import_profile')}:{row.get('analysis_scope')}"
+            for row in rows
+        })
         return {
             "mode": mode,
             "total": totals["n"],
@@ -2900,6 +3098,13 @@ class CohortStore:
             "individuals": totals["individuals"],
             "variants": totals["variants"],
             "rows": rows,
+            "represented_profiles": represented_profiles,
+            "comparability_warning": (
+                "Carrier findings span multiple import profiles. Samples not represented "
+                "under a comparable assay and retention profile are not interpreted as negative."
+                if len(represented_profiles) > 1 else
+                "Absence from this candidate index is not evidence that an individual lacks the variant."
+            ),
         }
 
     def variant_detail(self, variant_key_value: str) -> dict:
@@ -3163,6 +3368,178 @@ class CohortStore:
             "resolved": len(resolved),
             "files": files,
             "unresolved": unresolved,
+            "warnings": warnings,
+        }
+
+    def sample_review_files(self, sample_ids: list[int]) -> dict:
+        """Return complete stored review sets for selected cohort samples.
+
+        This projects only the selected sample columns from each indexed source
+        and retains PASS records where at least one selected sample carries an
+        alternate allele. A hard carrier-count bound prevents a full WGS index
+        from being materialized in browser memory.
+        """
+        if not isinstance(sample_ids, list):
+            raise ValueError("sample_ids must be a list")
+        try:
+            selected = sorted({int(value) for value in sample_ids})
+        except (TypeError, ValueError) as error:
+            raise ValueError("sample_ids must contain integers") from error
+        if not selected:
+            raise ValueError("select at least one cohort individual")
+        if len(selected) > 50:
+            raise ValueError("a single browser review is limited to 50 sample entries")
+
+        placeholders = ",".join("?" for _ in selected)
+        with self._session() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT s.id AS sample_entry_id, s.name AS sample,
+                       s.file_id AS source_file_id,
+                       f.path AS source_path, f.prepared_path,
+                       f.import_profile, f.analysis_scope,
+                       f.prefilter_options, f.imported_at,
+                       COUNT(g.id) AS carrier_observations
+                FROM cohort_samples s
+                JOIN cohort_files f ON f.id = s.file_id
+                LEFT JOIN cohort_genotypes g ON g.sample_id = s.id
+                WHERE s.id IN ({placeholders})
+                GROUP BY s.id
+                ORDER BY f.id, s.name
+                """,
+                selected,
+            ).fetchall()
+        if len(rows) != len(selected):
+            found = {row["sample_entry_id"] for row in rows}
+            missing = [value for value in selected if value not in found]
+            raise ValueError(
+                "sample entries were not found: " + ", ".join(map(str, missing))
+            )
+
+        total_carriers = sum(int(row["carrier_observations"] or 0) for row in rows)
+        if total_carriers > MAX_BROWSER_SAMPLE_REVIEW_CARRIERS:
+            raise ValueError(
+                f"the selected stored review sets contain {total_carriers:,} carrier "
+                f"observations; browser review is limited to "
+                f"{MAX_BROWSER_SAMPLE_REVIEW_CARRIERS:,}. Review the matched findings "
+                "instead, or index the WGS using the compact candidate profile"
+            )
+
+        grouped: dict[int, list[sqlite3.Row]] = {}
+        for row in rows:
+            grouped.setdefault(row["source_file_id"], []).append(row)
+
+        files: list[dict] = []
+        warnings: list[str] = []
+        total_records = 0
+        for source_file_id, group in grouped.items():
+            source_path = Path(group[0]["source_path"])
+            prepared_value = group[0]["prepared_path"]
+            prepared_path = Path(prepared_value) if prepared_value else source_path
+            if not prepared_path.is_file():
+                raise ValueError(
+                    f"{source_path.name}: the stored review VCF is missing; "
+                    "refresh this cohort source before loading the individual"
+                )
+            header = read_vcf_header(prepared_path)
+            header_lines = read_vcf_header_lines(prepared_path)
+            header_columns = header_lines[-1].split("\t")
+            sample_column = {
+                sample: index + 9 for index, sample in enumerate(header.samples)
+            }
+            selected_samples = [
+                row["sample"] for row in group if row["sample"] in sample_column
+            ]
+            missing_samples = [
+                row["sample"] for row in group if row["sample"] not in sample_column
+            ]
+            if missing_samples:
+                raise ValueError(
+                    f"{source_path.name}: selected samples are absent from the stored "
+                    f"VCF header: {', '.join(missing_samples)}"
+                )
+
+            records: list[str] = []
+            opener = gzip.open if prepared_path.name.lower().endswith((".gz", ".bgz")) else open
+            with opener(prepared_path, "rt", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if line.startswith("#") or not line.strip():
+                        continue
+                    columns = line.rstrip("\r\n").split("\t")
+                    if len(columns) < 9 + len(header.samples) or columns[6] != "PASS":
+                        continue
+                    alternate_count = len(columns[4].split(","))
+                    carries = False
+                    for sample in selected_samples:
+                        sample_value = columns[sample_column[sample]]
+                        if any(
+                            parse_genotype(columns[8], sample_value, alt_index)["carrier"]
+                            for alt_index in range(alternate_count)
+                        ):
+                            carries = True
+                            break
+                    if not carries:
+                        continue
+                    records.append("\t".join(
+                        columns[:9] + [columns[sample_column[sample]] for sample in selected_samples]
+                    ))
+                    if total_records + len(records) > MAX_BROWSER_SAMPLE_REVIEW_CARRIERS:
+                        raise ValueError(
+                            "the projected review exceeds the browser record limit; "
+                            "review the matched findings instead"
+                        )
+
+            total_records += len(records)
+            try:
+                prefilter_options = json.loads(group[0]["prefilter_options"] or "{}")
+            except json.JSONDecodeError:
+                prefilter_options = {}
+                warnings.append(
+                    f"{source_path.name}: stored prefilter settings could not be decoded"
+                )
+            projected_header = [*header_lines[:-1], "\t".join(
+                header_columns[:9] + selected_samples
+            )]
+            review_name = f"cohort-samples-{source_file_id}-{source_path.name}"
+            for suffix in (".vcf.gz", ".vcf.bgz", ".vcf", ".gz", ".bgz"):
+                if review_name.lower().endswith(suffix):
+                    review_name = review_name[:-len(suffix)]
+                    break
+            files.append({
+                "source_file_id": source_file_id,
+                "source_path": str(source_path),
+                "prepared_path": str(prepared_path),
+                "name": review_name + ".vcf",
+                "import_profile": group[0]["import_profile"],
+                "analysis_scope": group[0]["analysis_scope"],
+                "prefilter_options": prefilter_options,
+                "imported_at": group[0]["imported_at"],
+                "record_count": len(records),
+                "samples": [
+                    {
+                        "sample_entry_id": row["sample_entry_id"],
+                        "sample": row["sample"],
+                        "carrier_observations": row["carrier_observations"],
+                    }
+                    for row in group
+                ],
+                "vcf": "\n".join([*projected_header, *records, ""]),
+            })
+
+        return {
+            "sample_entries": len(rows),
+            "carrier_observations": total_carriers,
+            "records": total_records,
+            "analysis_scope": (
+                "whole_genome"
+                if any(
+                    row["analysis_scope"] == "whole_genome"
+                    or row["import_profile"] == "prefiltered"
+                    for row in rows
+                )
+                else "exome"
+            ),
+            "files": files,
             "warnings": warnings,
         }
 

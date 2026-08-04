@@ -131,6 +131,9 @@ export type VariantRow = {
   key: string;
   source: string;
   sample: string;
+  libraryDatasetId?: string;
+  librarySampleId?: string;
+  libraryIndividualId?: string | null;
   id: string;
   chrom: string;
   pos: number;

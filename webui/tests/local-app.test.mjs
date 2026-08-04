@@ -37,6 +37,9 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /Exome region only/);
   assert.match(source, /Whole genome/);
   assert.match(source, /analysisScope === "whole_genome"/);
+  assert.match(source, /DEFAULT_WGS_ANNOTATION_SOURCES = new Set\(\["cadd_wgs", "promoterai"\]\)/);
+  assert.equal(source.match(/annotationSourceIsEnabled\(source, analysisScope, sourceEnabled\)/g)?.length, 2);
+  assert.match(source, /CADD and promoterAI on by default/);
   assert.match(source, /Indexing and prefiltering WGS/);
   assert.match(source, /Whole-genome indexing and prefiltering progress/);
   assert.match(source, /PASS\/QC AND \(popmax ≤ threshold OR popmax unavailable\)/);
@@ -52,7 +55,7 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /PASS records only/);
   assert.match(source, /not read yet/);
   assert.match(source, /Import and review variants/);
-  assert.match(source, /onImportFiles\(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths\)/);
+  assert.match(source, /onImportFiles\(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths, \{ keep:/);
   assert.match(source, /Recommended for very large files: use existing workstation paths/);
   assert.match(source, /Input genome build/);
   assert.match(source, /useState<"GRCh38" \| "GRCh37" \| "auto">\("auto"\)/);
@@ -68,6 +71,41 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(service, /\/api\/wgs-review/);
   assert.match(service, /getWgsReviewJob/);
   assert.match(service, /http:\/\/127\.0\.0\.1:43117/);
+});
+
+test("provides a persistent Sample Library, stable identity mapping, and storage controls", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(source, />Sample library</);
+  assert.match(source, /Keep in Sample Library/);
+  assert.match(source, /Review once/);
+  assert.match(source, /Include qualifying variants in Cohort Search/);
+  assert.doesNotMatch(source, /Optional sequencing metadata/);
+  assert.doesNotMatch(source, /Capture kit \/ assay/);
+  assert.doesNotMatch(source, /Target BED path/);
+  assert.match(source, /Who does .* belong to/);
+  assert.match(source, /Link existing individual/);
+  assert.match(source, /Phenotype unavailable for now/);
+  assert.match(source, /Included in Cohort Search/);
+  assert.match(source, /Add to Cohort Search/);
+  assert.match(source, /Repair Cohort Search/);
+  assert.match(source, /More actions/);
+  assert.match(source, /Rebuild search index/);
+  assert.match(source, /Remove from Cohort Search/);
+  assert.doesNotMatch(source, /Refresh cohort index/);
+  assert.match(service, /cohort_index_status/);
+  assert.match(service, /cohort\/remove/);
+  assert.match(source, /setView\("variants"\); setSelected\(null\)/);
+  assert.match(source, /Build full WGS index/);
+  assert.match(source, /Advanced full index/);
+  assert.match(source, /Assay and import profile filters/);
+  assert.match(source, /not interpreted as negative|not evidence that the individual lacks a variant/);
+  assert.match(source, />Storage</);
+  assert.match(source, /Clean temporary data/);
+  assert.match(source, /Compact database/);
+  assert.match(service, /\/api\/sample-library/);
+  assert.match(service, /\/api\/storage/);
+  assert.doesNotMatch(source, /cohort allele frequency/i);
 });
 
 test("provides annotation dataset setup and constrained local downloads", async () => {
@@ -98,8 +136,43 @@ test("provides annotation dataset setup and constrained local downloads", async 
 
 test("builds compound-het candidates only from rows surviving active filters", async () => {
   const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
-  assert.match(source, /candidateCompoundHetKeys\(eligibleRows\)/);
+  assert.match(source, /candidateCompoundHetKeys\(screenFilteredRows\)/);
   assert.doesNotMatch(source, /candidateCompoundHetKeys\(rows\)/);
+});
+
+test("keeps SCREEN observed context separate and exposes defensible positive-evidence filtering", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const regulatory = await readFile(new URL("app/regulatory-evidence.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(source, /Regulatory evidence/);
+  assert.match(source, /RegulatoryFilterControl/);
+  assert.match(source, /mode: "any"/);
+  assert.match(regulatory, /SCREEN observed/);
+  assert.match(regulatory, /Element–gene links · to be developed/);
+  assert.match(regulatory, /Gene-specific variant-effect prediction · to be developed/);
+  assert.doesNotMatch(regulatory, /Gene links · not installed/);
+  assert.match(source, /reviewAnalysisScope === "whole_genome"/);
+  assert.match(source, /analysisScope === "whole_genome" && reviewSection === "regulatory"/);
+  assert.match(source, /analysisScope === "whole_genome" && <RegulatorySummary/);
+  assert.ok(source.indexOf("RawVcfEvidencePanel evidence={selected.rawVcfEvidence}") < source.indexOf("analysisScope === \"whole_genome\" && <RegulatorySummary"));
+  assert.match(regulatory, /item\.state_label/);
+  assert.match(regulatory, /classification unavailable/);
+  assert.match(regulatory, /Classifier assays/);
+  assert.match(regulatory, /Require positive SCREEN evidence/);
+  assert.match(regulatory, />Immune context</);
+  assert.match(regulatory, /any immune-related tissue aggregate or curated immune-cell context/);
+  assert.match(regulatory, /setActiveSetId\(immuneAll\.id\)/);
+  assert.match(regulatory, /Other context filters/);
+  assert.match(regulatory, /any selected tissue or cell context has positive evidence/);
+  assert.doesNotMatch(regulatory, /Selected contexts must match/);
+  assert.doesNotMatch(regulatory, /<option value="all">ALL/);
+  assert.match(regulatory, /Manage named context sets/);
+  assert.match(regulatory, /Display context set/);
+  assert.match(regulatory, /assign a target gene/);
+  assert.match(regulatory, /Why are both coding and regulatory annotations shown/);
+  assert.match(regulatory, /same gene, another gene, or multiple genes/);
+  assert.match(service, /\/api\/screen-context\/catalog/);
+  assert.match(service, /\/api\/screen-context\/filter/);
 });
 
 test("provides a full variant review workspace with configurable evidence", async () => {
@@ -121,6 +194,8 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /Does not overlap a/);
   assert.match(source, /proximity is not a target-gene assignment/);
   assert.match(source, /Every gene below is listed only because its gene-level TSS lies within/);
+  assert.match(source, /simultaneously have a transcript-specific coding consequence and be a regulatory element/);
+  assert.match(source, /same gene, another gene, or multiple genes/);
   assert.match(source, /Include non-protein-coding genes/);
   assert.match(source, /Protein-coding genes are shown by default/);
   assert.match(source, /shown ·.*total.*protein-coding.*other/);
@@ -173,19 +248,29 @@ test("provides persistent genotype-first cohort indexing and carrier search", as
   assert.match(service, /\/api\/cohort\/samples/);
   assert.match(service, /\/api\/cohort\/variant-detail/);
   assert.match(service, /\/api\/cohort\/review-records/);
+  assert.match(service, /\/api\/cohort\/sample-review/);
   assert.match(source, /Manage cohort samples/);
   assert.match(source, /Remove selected/);
-  assert.match(source, /REVIEW SELECTED/);
-  assert.match(source, /REVIEW ALL CARRIERS OF THIS VARIANT/);
+  assert.match(source, /unique variant/);
+  assert.match(source, /Matched carriers/);
+  assert.match(source, /Review selected findings/);
+  assert.match(source, /LOAD SELECTED INDIVIDUALS/);
+  assert.match(source, /REVIEW THIS VARIANT/);
+  assert.match(source, /Complete stored review sets were loaded using each source's original cohort import profile/);
   assert.match(source, /Full source INFO, VEP CSQ, and sample FORMAT annotations were loaded on demand/);
   assert.match(source, /All source VCF annotations/);
   assert.match(source, /Variant details/);
   assert.match(source, /Compact WGS/);
   assert.match(source, /Compact WGS candidate import/);
+  assert.match(source, /Source variant scope/);
+  assert.match(source, /This provenance label controls whether regulatory evidence is available/);
+  assert.match(source, /Full WGS index/);
+  assert.match(service, /analysis_scope/);
   assert.match(source, /selected noncoding region route/);
   assert.match(source, /prefilter_records_retained/);
   assert.match(styles, /\.workspace\.cohort-mode/);
   assert.match(styles, /\.cohort-table/);
+  assert.match(styles, /\.cohort-variant-table/);
   assert.match(styles, /\.cohort-variant-detail/);
   assert.match(styles, /\.cohort-sample-manager/);
 });
@@ -226,4 +311,21 @@ test("provides local manual and mapped spreadsheet phenotype intake", async () =
   assert.match(service, /\/api\/phenotypes\/import/);
   assert.match(styles, /\.workspace\.phenotype-mode/);
   assert.match(styles, /\.mapping-grid/);
+});
+
+test("links phenotype records from a dedicated variant-review tab", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  const styles = await readFile(new URL("app/globals.css", root), "utf8");
+  assert.match(source, /reviewSection === "phenotype"/);
+  assert.match(source, />Phenotype<\/button>/);
+  assert.match(source, /PhenotypeReviewPanel/);
+  assert.match(source, /getPhenotypesBySample\(sample\)/);
+  assert.match(service, /normalizePhenotypeIndividual/);
+  assert.match(service, /sample_ids: phenotypeStringList\(value\.sample_ids\)/);
+  assert.match(source, /Manage phenotype data/);
+  assert.match(source, /Present features/);
+  assert.match(source, /Explicitly absent/);
+  assert.doesNotMatch(source, /function PhenotypeSummary/);
+  assert.match(styles, /\.phenotype-review-panel/);
 });

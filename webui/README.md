@@ -9,16 +9,16 @@ hosted website.
 - The user interface is opened in a browser at `http://127.0.0.1:3000`.
 - The UI and annotation service bind to loopback only and are not exposed to
   the LAN.
-- Already annotated VCFs are parsed inside the browser session and are not
-  uploaded.
+- Already annotated VCFs are parsed locally. A browser-selected file is copied
+  only to the loopback workstation service when the user keeps it in the
+  Sample Library or requests server-side WGS preparation.
 - Raw VCF annotation is executed by the existing local VEP container pipeline.
 - Browser-selected raw VCFs are streamed directly into workstation-local job
   storage; they are never sent to an external service.
 - Annotation job metadata and logs persist in `~/.iei-variant-review/`.
-- VCF review remains browser-local. When a user deliberately adds annotated
-  VCFs to the genotype-first cohort, normalized variants, annotations, and
-  non-reference sample calls are indexed in
-  `~/.iei-variant-review/cohort.sqlite3`; raw VCF files are not copied.
+- The Sample Library owns content-addressed managed review VCFs under
+  `~/.iei-variant-review/sample-library/`. The genotype-first cohort is a
+  rebuildable derivative in `~/.iei-variant-review/cohort.sqlite3`.
 - This is local workstation software, not a hosted website.
 
 The application lands on **Import VCF**, with **Run VEP first** selected by
@@ -28,6 +28,8 @@ default and two deliberately separate paths:
 2. **VEP-annotated VCF → review** directly in the browser.
 3. **Many annotated VCFs → persistent cohort index** for genotype-first carrier
    searches.
+4. **Retained review → Sample Library** with stable individual/sample/dataset
+   identity, provenance, and storage controls.
 
 ## Current MVP
 
@@ -55,6 +57,10 @@ default and two deliberately separate paths:
 - provides gene, candidate compound-het and saved-candidate views plus TSV export
 - indexes directories containing hundreds or thousands of annotated VCFs into
   local SQLite, skipping unchanged files on refresh
+- retains compact review VCFs in a persistent Sample Library by default, with
+  Review once as an explicit temporary option
+- labels and filters heterogeneous cohort profiles by assay and settings hash;
+  it does not calculate cohort allele frequencies
 - finds carriers by exact GRCh38 variant/locus/rsID or by qualifying variants
   in a gene, with impact, gnomAD popmax, predictor, ClinVar, genotype, MANE,
   RepeatMasker and SegDup filters
@@ -106,6 +112,13 @@ absolute workstation paths.
 
 ## Genotype-first cohort search
 
+For routine intake, retain a sample in **Sample Library** and leave **Include
+qualifying variants in Cohort Search** enabled. The library can later reopen,
+relink, or add that dataset to Cohort Search. Indexed samples show a status
+badge rather than a routine maintenance button; repair and rebuild actions
+appear only when needed or under **More actions**. Direct path-based cohort indexing remains
+available for existing collections.
+
 Open **Cohort search** in the workbench and enter one or more annotated VCF
 paths, or a directory containing them. Directories can be scanned recursively.
 The indexer accepts single- and multi-sample `.vcf` / `.vcf.gz` files, retains
@@ -133,6 +146,12 @@ aid, not a substitute for confirming sample identity, relatedness, callability,
 or orthogonal validation. A missing carrier means no qualifying non-reference
 call was indexed; it does not prove that the sample is confidently homozygous
 reference at that locus.
+
+Compact WGS is the recommended default. Full WGS indexing is an advanced
+option because indexing every PASS carrier can require about 10 GB per genome.
+The **Storage** page reports managed files, temporary uploads, caches, logs, and
+reclaimable SQLite space; cleanup and database compaction are explicit actions.
+See `../docs/SAMPLE_LIBRARY_AND_STORAGE.md`.
 
 ## Trio analysis
 

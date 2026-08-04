@@ -34,10 +34,12 @@ from urllib.parse import parse_qs, unquote, urlparse
 from local_service.ccre_context import CcreContextStore
 from local_service.cohort_store import CohortStore
 from local_service.phenotype_store import PhenotypeStore
+from local_service.screen_context import ScreenContextStore
+from local_service.sample_library import SampleLibrary
 from local_service.wgs_review import WgsPrefilterOptions, WgsReviewStore
 
 
-SERVICE_VERSION = "0.9.0"
+SERVICE_VERSION = "0.10.0"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 ALLOWED_PROFILES = {"local", "wsl-local"}
 ANNOTATION_SOURCE_PATHS = {
@@ -429,11 +431,13 @@ class AnnotationJobService:
         )
         self.wgs_review = WgsReviewStore(self.state_dir, self.cohort)
         self.ccre_context_store = CcreContextStore(self.cohort.hts_backend)
+        self.screen_context_store = ScreenContextStore()
         self._wgs_review_files: dict[str, Path] = {}
         self._wgs_review_jobs: dict[str, dict] = {}
         self._wgs_review_threads: dict[str, threading.Thread] = {}
         self._wgs_review_lock = threading.Lock()
         self.phenotypes = PhenotypeStore(self.state_dir / "cohort.sqlite3")
+        self.sample_library = SampleLibrary(self.state_dir, self.cohort)
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._processes: dict[str, subprocess.Popen] = {}
         self._process_lock = threading.Lock()
@@ -475,6 +479,7 @@ class AnnotationJobService:
             "pipeline_root": str(self.pipeline_root),
             "cohort_database": str(self.cohort.database_path),
             "phenotype_database": str(self.phenotypes.database_path),
+            "sample_library_directory": str(self.sample_library.root),
             "container_runtimes": runtimes,
             "hardware": hardware,
             "profiles": [profile],
@@ -502,6 +507,52 @@ class AnnotationJobService:
             },
             "annotation_profile": annotation_profile,
         }
+
+    def import_sample_library(self, payload: dict) -> dict:
+        sources = payload.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise ValueError("sources must contain at least one review VCF")
+        results = []
+        profile = self._annotation_profile()
+        installed_versions = {
+            source["id"]: source.get("version", "")
+            for source in profile.get("sources", [])
+            if source.get("installed") or source.get("available")
+        }
+        bundle = {
+            "workbench_service": SERVICE_VERSION,
+            "foundations": {
+                item["id"]: item.get("version")
+                for item in profile.get("foundations", [])
+                if item.get("available")
+            },
+            "provenance_note": (
+                "Installed workstation bundle at import time; an externally annotated "
+                "VCF may contain annotations from a different bundle."
+            ),
+        }
+        for source in sources:
+            if not isinstance(source, dict):
+                raise ValueError("each source must be an object")
+            if source.get("review_id"):
+                path = self.wgs_review_file(str(source["review_id"]))
+            else:
+                path = Path(str(source.get("path") or "")).expanduser().resolve()
+            options = {**payload, **source}
+            options.pop("sources", None)
+            options.setdefault("annotation_bundle", bundle)
+            options.setdefault("resource_versions", installed_versions)
+            results.append(self.sample_library.import_vcf(path, options))
+        return {"imports": results, "datasets": [dataset for result in results for dataset in result["datasets"]]}
+
+    def cleanup_storage(self, categories: list[str]) -> dict:
+        with self._wgs_review_lock:
+            if any(
+                job.get("status") in {"queued", "running"}
+                for job in self._wgs_review_jobs.values()
+            ):
+                raise ValueError("wait for the active WGS review import before cleaning caches")
+        return self.sample_library.cleanup(categories)
 
     def resource_downloads(self) -> list[dict]:
         with self._resource_lock:
@@ -805,6 +856,40 @@ class AnnotationJobService:
         except OSError as exc:
             raise ValueError(f"cCRE context resource could not be read: {exc}") from exc
 
+    def _screen_context_manifest(self, config: dict) -> Path | None:
+        configured = (
+            ((config.get("wgs_review") or {}).get("screen_context") or {})
+            .get("manifest")
+        )
+        environment = os.environ.get("IEI_SCREEN_CONTEXT_MANIFEST", "")
+        return self._resolved_reference_path(environment or configured)
+
+    def screen_context_catalog(self, payload: dict | None = None) -> dict:
+        payload = payload or {}
+        config_value = payload.get("config_path") or (
+            self.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        config = self._load_config(Path(config_value).expanduser().resolve())
+        return self.screen_context_store.catalog(self._screen_context_manifest(config))
+
+    def screen_context(self, payload: dict) -> dict:
+        config_value = payload.get("config_path") or (
+            self.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        config = self._load_config(Path(config_value).expanduser().resolve())
+        return self.screen_context_store.evidence(
+            self._screen_context_manifest(config), payload
+        )
+
+    def filter_screen_context(self, payload: dict) -> dict:
+        config_value = payload.get("config_path") or (
+            self.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        config = self._load_config(Path(config_value).expanduser().resolve())
+        return self.screen_context_store.filter_variants(
+            self._screen_context_manifest(config), payload
+        )
+
     def start_cohort_import(self, payload: dict) -> dict:
         """Start a full or conservatively prefiltered cohort import."""
         paths = payload.get("paths")
@@ -813,6 +898,13 @@ class AnnotationJobService:
         profile = str(payload.get("import_profile") or "full")
         if profile not in {"full", "prefiltered"}:
             raise ValueError("import_profile must be 'full' or 'prefiltered'")
+        analysis_scope = str(payload.get("analysis_scope") or (
+            "whole_genome" if profile == "prefiltered" else "exome"
+        ))
+        if analysis_scope not in {"exome", "whole_genome"}:
+            raise ValueError("analysis_scope must be 'exome' or 'whole_genome'")
+        if profile == "prefiltered":
+            analysis_scope = "whole_genome"
         filters = payload.get("filters") or {}
         if not isinstance(filters, dict):
             raise ValueError("filters must be an object")
@@ -847,6 +939,7 @@ class AnnotationJobService:
                 payload.get("allow_unknown_assembly", False)
             ),
             import_profile=profile,
+            analysis_scope=analysis_scope,
             prefilter_options=normalized_filters,
             prefilter=prefilter,
         )
@@ -1754,6 +1847,38 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json({"jobs": self.service.resource_downloads()})
         elif path == "/api/cohort/stats":
             self._json(self.service.cohort.stats())
+        elif path == "/api/cohort/profiles":
+            self._json({"profiles": self.service.cohort.profiles()})
+        elif path == "/api/sample-library":
+            self._json({"datasets": self.service.sample_library.list(
+                query=(query.get("query") or [""])[0],
+                limit=int((query.get("limit") or ["500"])[0]),
+            )})
+        elif path == "/api/sample-library/profiles":
+            self._json({"profiles": self.service.sample_library.profiles()})
+        elif path == "/api/storage":
+            self._json(self.service.sample_library.storage_stats())
+        elif path.startswith("/api/sample-library/") and path.endswith("/file"):
+            dataset_id = path.split("/")[3]
+            try:
+                self._file(self.service.sample_library.file(dataset_id))
+            except KeyError:
+                self._json({"error": "library dataset not found"}, HTTPStatus.NOT_FOUND)
+            except FileNotFoundError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        elif path.startswith("/api/sample-library/") and path.endswith("/phenotype"):
+            dataset_id = path.split("/")[3]
+            phenotype = self.service.sample_library.phenotype(dataset_id)
+            self._json({"phenotype": phenotype})
+        elif path.startswith("/api/sample-library/"):
+            dataset_id = path.removeprefix("/api/sample-library/")
+            record = self.service.sample_library.get(dataset_id)
+            self._json(
+                record if record else {"error": "library dataset not found"},
+                HTTPStatus.OK if record else HTTPStatus.NOT_FOUND,
+            )
+        elif path == "/api/screen-context/catalog":
+            self._json(self.service.screen_context_catalog())
         elif path == "/api/cohort/samples":
             self._json({"samples": self.service.cohort.list_samples(
                 query=(query.get("query") or [""])[0],
@@ -1854,6 +1979,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/ccre-context":
                 self._json(self.service.ccre_context(self._body()))
                 return
+            if path == "/api/screen-context":
+                self._json(self.service.screen_context(self._body()))
+                return
+            if path == "/api/screen-context/filter":
+                self._json(self.service.filter_screen_context(self._body()))
+                return
             if path.startswith("/api/resource-downloads/"):
                 resource_id = unquote(
                     path.removeprefix("/api/resource-downloads/")
@@ -1889,6 +2020,49 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     ),
                 ))
                 return
+            if path == "/api/sample-library/import":
+                self._json(
+                    self.service.import_sample_library(self._body()),
+                    HTTPStatus.CREATED,
+                )
+                return
+            if path.startswith("/api/sample-library/") and path.endswith("/identity"):
+                dataset_id = path.split("/")[3]
+                self._json(self.service.sample_library.map_identity(dataset_id, self._body()))
+                return
+            if path.startswith("/api/sample-library/") and path.endswith("/metadata"):
+                dataset_id = path.split("/")[3]
+                self._json(self.service.sample_library.update_metadata(dataset_id, self._body()))
+                return
+            if path.startswith("/api/sample-library/") and path.endswith("/reindex"):
+                dataset_id = path.split("/")[3]
+                body = self._body()
+                self._json(self.service.sample_library.reindex(
+                    dataset_id, full_wgs=bool(body.get("full_wgs", False))
+                ))
+                return
+            if path.startswith("/api/sample-library/") and path.endswith("/cohort/remove"):
+                dataset_id = path.split("/")[3]
+                self._json(self.service.sample_library.exclude_from_cohort(dataset_id))
+                return
+            if path.startswith("/api/sample-library/") and path.endswith("/remove"):
+                dataset_id = path.split("/")[3]
+                body = self._body()
+                self._json(self.service.sample_library.remove(
+                    dataset_id,
+                    remove_managed_file=bool(body.get("remove_managed_file", True)),
+                ))
+                return
+            if path == "/api/storage/cleanup":
+                body = self._body()
+                self._json(self.service.cleanup_storage(body.get("categories") or []))
+                return
+            if path == "/api/storage/compact":
+                body = self._body()
+                if body.get("confirmation") != "COMPACT":
+                    raise ValueError("confirmation must be COMPACT")
+                self._json(self.service.sample_library.compact_database())
+                return
             if path == "/api/cohort/import-jobs":
                 self._json(
                     self.service.start_cohort_import(self._body()),
@@ -1914,6 +2088,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 body = self._body()
                 self._json(self.service.cohort.review_records(
                     body.get("selections")
+                ))
+                return
+            if path == "/api/cohort/sample-review":
+                body = self._body()
+                self._json(self.service.cohort.sample_review_files(
+                    body.get("sample_ids")
                 ))
                 return
             if path == "/api/phenotypes/preview":
