@@ -671,10 +671,18 @@ def lineage_coverage(profiles: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Document important IEI lineage presence without inferring missing cells."""
     rows = []
     for label, expected_lineages in IEI_LINEAGE_COVERAGE.items():
-        def matches(profile: dict[str, Any]) -> bool:
-            if profile["lineage"] in expected_lineages:
+        def matches(
+            profile: dict[str, Any],
+            *,
+            _expected=expected_lineages,
+            _label=label,
+        ) -> bool:
+            # loop variables bound by value (ruff B023): the closure is
+            # consumed in-iteration today, but this shape breaks silently
+            # under refactor when captured by name
+            if profile["lineage"] in _expected:
                 return True
-            if label != "Plasma cell":
+            if _label != "Plasma cell":
                 return False
             text = " ".join((
                 profile.get("screen_name", ""), profile.get("display_name", ""),

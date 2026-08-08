@@ -13,8 +13,21 @@ import json
 import re
 import sqlite3
 import uuid
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+
+
+
+def _open_ro(path):
+    """Read-only sqlite connection with a percent-encoded file: URI.
+
+    URI mode parses '?' as the query string, '#' as a fragment, and decodes
+    '%', so interpolating a raw filesystem path truncates or redirects the
+    open for paths containing those characters. Path.as_uri() encodes them.
+    """
+    from pathlib import Path as _Path
+    return sqlite3.connect(f"{_Path(path).resolve().as_uri()}?mode=ro", uri=True)
 
 
 SCHEMA_VERSION = 2
@@ -257,8 +270,9 @@ def build_public_database(
         for row in dosage_rows:
             source_symbol = row.get("Gene Symbol", "")
             hgnc_id, symbol = resolve(source_symbol)
-            hi_pmids = "|".join(row.get(f"Haploinsufficiency PMID{i}", "") for i in range(1, 7)).strip("|")
-            ts_pmids = "|".join(row.get(f"Triplosensitivity PMID{i}", "") for i in range(1, 7)).strip("|")
+            # filter() drops blank middle slots ("123||456" -> "123|456")
+            hi_pmids = "|".join(filter(None, (row.get(f"Haploinsufficiency PMID{i}", "") for i in range(1, 7))))
+            ts_pmids = "|".join(filter(None, (row.get(f"Triplosensitivity PMID{i}", "") for i in range(1, 7))))
             connection.execute(
                 "INSERT OR REPLACE INTO clingen_dosage VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (hgnc_id, symbol or source_symbol.upper(), row.get("Gene ID", ""), row.get("cytoBand", ""),
@@ -407,7 +421,7 @@ class GeneKnowledgeStore:
         error = ""
         if self.public_database.is_file():
             try:
-                with sqlite3.connect(f"file:{self.public_database}?mode=ro", uri=True) as connection:
+                with closing(_open_ro(self.public_database)) as connection:
                     resources = self._rows(connection, "SELECT * FROM resources ORDER BY id")
             except sqlite3.Error as exc:
                 error = f"Public gene-knowledge database could not be read: {exc}"
@@ -416,7 +430,7 @@ class GeneKnowledgeStore:
         omim: dict[str, object] = {"installed": False, "license": "User installation required; OMIM data are not shipped"}
         if self.private_database.is_file():
             try:
-                with sqlite3.connect(f"file:{self.private_database}?mode=ro", uri=True) as connection:
+                with closing(_open_ro(self.private_database)) as connection:
                     metadata = dict(connection.execute("SELECT key,value FROM metadata"))
                     omim = {
                         "installed": True, "installed_at": metadata.get("installed_at", ""),
@@ -455,7 +469,7 @@ class GeneKnowledgeStore:
         }
         if not self.public_database.is_file():
             return result
-        with sqlite3.connect(f"file:{self.public_database}?mode=ro", uri=True) as connection:
+        with closing(_open_ro(self.public_database)) as connection:
             identity = self._identity(connection, identifier)
             symbol = (identity or {}).get("symbol", identifier.upper())
             result.update({
@@ -467,7 +481,7 @@ class GeneKnowledgeStore:
             dosage = self._rows(connection, "SELECT * FROM clingen_dosage WHERE gene_symbol=? COLLATE NOCASE", (symbol,))
             result["clingen_dosage"] = dosage[0] if dosage else None
         if self.private_database.is_file():
-            with sqlite3.connect(f"file:{self.private_database}?mode=ro", uri=True) as connection:
+            with closing(_open_ro(self.private_database)) as connection:
                 result["omim"] = self._rows(
                     connection,
                     "SELECT p.*,g.title AS gene_title FROM phenotypes p LEFT JOIN genes g USING(gene_mim,symbol) WHERE p.symbol=? COLLATE NOCASE ORDER BY p.phenotype",
@@ -478,7 +492,7 @@ class GeneKnowledgeStore:
     def filter_catalog(self) -> dict[str, object]:
         if not self.public_database.is_file():
             return {"iuis_categories": [], "iuis_category_genes": {}, "omim_genes": []}
-        with sqlite3.connect(f"file:{self.public_database}?mode=ro", uri=True) as connection:
+        with closing(_open_ro(self.public_database)) as connection:
             iuis_categories = self._rows(connection, "SELECT major_category AS category,count(DISTINCT gene_symbol) AS genes FROM iuis_assertions WHERE gene_symbol<>'' GROUP BY major_category ORDER BY major_category")
             iuis_category_genes: dict[str, list[str]] = {}
             for item in iuis_categories:
@@ -490,7 +504,7 @@ class GeneKnowledgeStore:
                 ]
         omim_genes: list[str] = []
         if self.private_database.is_file():
-            with sqlite3.connect(f"file:{self.private_database}?mode=ro", uri=True) as connection:
+            with closing(_open_ro(self.private_database)) as connection:
                 omim_genes = [row[0] for row in connection.execute("SELECT DISTINCT symbol FROM phenotypes ORDER BY symbol")]
         return {
             "iuis_categories": iuis_categories,

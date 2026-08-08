@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
 import sqlite3
 import uuid
 from contextlib import contextmanager

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import sys
 import gzip
 import os
 import re
@@ -39,6 +40,7 @@ def build_gene_tss(
     if not gtf_path.is_file():
         raise ValueError(f"Ensembl GTF was not found: {gtf_path}")
     rows: dict[str, tuple[str, int, str, str, str, str]] = {}
+    collisions = 0
     with open_text(gtf_path) as handle:
         for line in handle:
             if not line or line.startswith("#"):
@@ -66,9 +68,20 @@ def build_gene_tss(
                 or "unknown"
             )
             tss = start if columns[6] == "+" else end
+            if gene_id in rows and rows[gene_id][0] != chrom:
+                # A version-stripped base ID repeated on another contig
+                # (e.g. an unsuffixed PAR copy) silently overwrote the
+                # earlier row; make the collision visible at build time.
+                collisions += 1
             rows[gene_id] = (
                 chrom, tss, gene_name, gene_id, columns[6], biotype,
             )
+    if collisions:
+        print(
+            f"WARN  {collisions} gene record(s) share a version-stripped "
+            "gene ID across contigs; the last GTF occurrence wins",
+            file=sys.stderr,
+        )
     if not rows:
         raise ValueError(f"no primary-contig gene records were parsed from {gtf_path}")
 

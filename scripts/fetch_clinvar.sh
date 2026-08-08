@@ -20,6 +20,13 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 CONFIG="${1:-${ROOT}/config/annotation.config.yaml}"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
+# hts() falls back to the container when host bgzip/tabix/samtools are absent;
+# honour the configured runtime/image instead of the docker/vep-annotate:latest
+# defaults (a podman-only host previously failed here despite correct config).
+RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
+IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
+export RUNTIME IMAGE
+
 ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh38}"
 AUTO="$(yaml_get "$CONFIG" clinvar.auto_fetch)"
 DEST_DIR="$(yaml_get "$CONFIG" clinvar.dest_dir)"; DEST_DIR="${DEST_DIR:-references/clinvar}"

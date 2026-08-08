@@ -294,7 +294,7 @@ fi
 RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
 IMAGE="$(yaml_get "$CONFIG" container.image)"; IMAGE="${IMAGE:-vep-annotate:latest}"
 command -v "$RUNTIME" >/dev/null 2>&1 || die "container runtime not found: $RUNTIME"
-CHECK='for tool in vep haplo bgzip tabix bcftools samtools; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }; done; bcftools plugin -l | grep -qx liftover || { echo "missing bcftools +liftover plugin" >&2; exit 2; }'
+CHECK='for tool in vep haplo bgzip tabix bcftools samtools; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }; done; bcftools plugin -l 2>&1 | grep -qw liftover || { echo "missing bcftools +liftover plugin" >&2; exit 2; }'
 if [[ "$(yaml_get "$CONFIG" plugins.PromoterAI.enabled)" == "true" ]]; then
     CHECK+='; test -r /plugins/PromoterAI.pm || { echo "missing bundled PromoterAI VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
 fi

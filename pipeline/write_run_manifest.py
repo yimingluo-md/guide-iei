@@ -76,9 +76,14 @@ def main() -> int:
     cfg = load_config(args.config)
     plan = json.loads(args.plan_json)
     version_path = os.path.join(args.base_dir, "VERSION")
+    if os.path.isfile(version_path):
+        with open(version_path) as version_handle:
+            pipeline_version = version_handle.read().strip()
+    else:
+        pipeline_version = "unknown"
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "pipeline_version": open(version_path).read().strip() if os.path.isfile(version_path) else "unknown",
+        "pipeline_version": pipeline_version,
         "config": {"path": os.path.abspath(args.config), "sha256": sha256(args.config)},
         "input": file_metadata(args.input),
         "output": file_metadata(args.output),

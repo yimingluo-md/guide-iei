@@ -68,13 +68,12 @@ PY
 python3 "${ROOT}/pipeline/prepare_clingen_erepo.py" --source "$SOURCE" \
     --clinvar-vcf "$CLINVAR" --regions-out "$REGIONS"
 if [[ -s "$REGIONS" ]]; then
-    if command -v samtools >/dev/null 2>&1; then
-        samtools faidx -r "$REGIONS" "$FASTA" > "$SEQUENCES"
-    else
-        log "samtools is unavailable; using the dependency-free sequential FASTA extractor"
-        python3 "${ROOT}/pipeline/extract_fasta_regions.py" --fasta "$FASTA" \
-            --regions "$REGIONS" --output "$SEQUENCES"
-    fi
+    # Always use the bundled extractor: a host `samtools faidx -r` branch had
+    # different failure modes (older samtools lacks -r, and case/wrapping
+    # conventions were never verified equivalent), which made the extracted
+    # sequence — and therefore the constructed indel alleles — host-dependent.
+    python3 "${ROOT}/pipeline/extract_fasta_regions.py" --fasta "$FASTA" \
+        --regions "$REGIONS" --output "$SEQUENCES"
 else
     : > "$SEQUENCES"
 fi

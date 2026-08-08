@@ -32,7 +32,9 @@ def main() -> int:
     if not args.database.is_file():
         raise ValueError(f"ClinGen Evidence Repository database is missing: {args.database}")
 
-    connection = sqlite3.connect(f"file:{args.database}?mode=ro", uri=True)
+    connection = sqlite3.connect(
+        f"{args.database.resolve().as_uri()}?mode=ro", uri=True
+    )
     query = """
       SELECT uuid,caid,assertion,disease,mondo_id,mode_of_inheritance,
              expert_panel,approval_date

@@ -291,7 +291,7 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
         lp = lof.get("loftee_path", "auto")
         kv.append(f"loftee_path:{'$LOFTEE_DIR' if lp == 'auto' else (mapper.map(lp) if mapper.container else os.path.abspath(lp))}")
         ok = True
-        for key, label in [("human_ancestor_fa", "human_ancestor_fa"),
+        for key, _label in [("human_ancestor_fa", "human_ancestor_fa"),
                            ("conservation_file", "conservation_file"),
                            ("gerp_bigwig", "gerp_bigwig")]:
             hp = lof.get(key)

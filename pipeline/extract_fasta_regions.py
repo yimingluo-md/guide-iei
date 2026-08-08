@@ -25,7 +25,10 @@ def main() -> int:
         if not match:
             raise ValueError(f"invalid FASTA region: {line}")
         chrom, start, end = match.group(1), int(match.group(2)), int(match.group(3))
-        requested[chrom].append((start, end))
+        # Deduplicate: a region listed twice previously double-collected
+        # into one bucket and aborted with a misleading byte-count error.
+        if (start, end) not in requested[chrom]:
+            requested[chrom].append((start, end))
     collected = {(chrom, start, end): [] for chrom, values in requested.items() for start, end in values}
     opener = gzip.open if args.fasta.name.endswith(".gz") else open
     chrom = ""

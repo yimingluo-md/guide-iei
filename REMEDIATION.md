@@ -229,58 +229,72 @@ execution is the equivalent verification.
 
 ## Phase 5 — Long tail (mediums/lows, hygiene, cleanup)
 
+> **Status (2026-08-08): complete** on `fix/phase-5-long-tail`, with two
+> deliberate remainders. (1) **P5-5 / D6**: write_run_manifest.py's handle
+> leak is fixed but the wire-into-driver-or-delete decision stays open.
+> (2) **P5-39 / D7**: lint debt reduced 212→210 errors (rules-of-hooks,
+> unescaped entity, and stale directives fixed); the remaining 210 are
+> exclusively react-hooks/refs (203) and set-state-in-effect (7) — new
+> React-compiler-era rules needing architectural refactors, per the D7
+> baseline-vs-rewrite decision. Notable choices: update_clingen_erepo.sh
+> now always uses the bundled FASTA extractor (host-samtools branch
+> removed); the inert config keys liftover.engine and region.source were
+> dropped; client list limits raised to the server cap (5000);
+> bgzfChunks streams BGZF in bounded slices instead of materializing the
+> file. Full sweep green incl. perl -c on both plugins via stub modules.
+
 ### 5A. SQLite / resource handling
-- [ ] **P5-1** (MED) `local_service/screen_context.py:108` + `gene_knowledge.py:456,468` — path interpolated into sqlite `file:` URI unescaped; `?`/`#`/`%` break or redirect the open [SVC-20]
-- [ ] **P5-2** (MED) `pipeline/clingen_erepo_annotate.py:32-35` — same URI defect; creates stray zero-byte files [AUX-M1]
-- [ ] **P5-3** (MED) `local_service/gene_knowledge.py:456,468,408` — `with sqlite3.connect(...)` leaks connections (2 fds per gene lookup) → EMFILE in long-lived service [SVC-19]
-- [ ] **P5-4** (LOW) `pipeline/prepare_promoterai.py:61-67,105-106,249-252` — `open_text` gzip raw handle never closed by callers [AUX-L3]
-- [ ] **P5-5** (LOW) `pipeline/write_run_manifest.py:81` — bare `open().read()`; module also has no caller [AUX-L5] *(per D6)*
+- [x] **P5-1** (MED) `local_service/screen_context.py:108` + `gene_knowledge.py:456,468` — path interpolated into sqlite `file:` URI unescaped; `?`/`#`/`%` break or redirect the open [SVC-20]
+- [x] **P5-2** (MED) `pipeline/clingen_erepo_annotate.py:32-35` — same URI defect; creates stray zero-byte files [AUX-M1]
+- [x] **P5-3** (MED) `local_service/gene_knowledge.py:456,468,408` — `with sqlite3.connect(...)` leaks connections (2 fds per gene lookup) → EMFILE in long-lived service [SVC-19]
+- [x] **P5-4** (LOW) `pipeline/prepare_promoterai.py:61-67,105-106,249-252` — `open_text` gzip raw handle never closed by callers [AUX-L3]
+- [x] **P5-5** (LOW) `pipeline/write_run_manifest.py:81` — bare `open().read()`; module also has no caller [AUX-L5] *(per D6)*
 
 ### 5B. Service mediums/lows
-- [ ] **P5-6** (HIGH, needs domain confirmation) `local_service/screen_context.py:300` — tissue matrix stride from catalog row count, not stored `shape[1]`; misaligned reads if bundle skews [SVC-6]
-- [ ] **P5-7** (MED) `local_service/workbench_service.py:1817-1818` — directory branch hardcodes ClinVar filename for every resource's disk-space probe [SVC-23]
-- [ ] **P5-8** (MED) `local_service/workbench_service.py:2229-2232` — WGS review registry pruned to 30 without deleting backing files; links 404 for files still on disk [SVC-24]
-- [ ] **P5-9** (MED, needs domain confirmation) `scripts/build_workbench_reference_data.py:141` — required-column guard narrower than columns the parser reads [SVC-27]
-- [ ] **P5-10** (MED) `scripts/build_workbench_reference_data.py:218` — row-count sanity check runs after the output is already written; validate before write or write-to-temp [SVC-28]
-- [ ] **P5-11** (LOW) `local_service/gene_knowledge.py:257-258` — PMID join leaves empty middle elements (`123||456`) [SVC-30]
-- [ ] **P5-12** (LOW) `local_service/phenotype_store.py:319` — `header_row=0` treated as absent (`or` on falsy); use `is None` [SVC-31]
-- [ ] **P5-13** (LOW) `local_service/workbench_service.py:2593-2596` — output extension check case-sensitive while input check isn't [SVC-32]
+- [x] **P5-6** (HIGH, needs domain confirmation) `local_service/screen_context.py:300` — tissue matrix stride from catalog row count, not stored `shape[1]`; misaligned reads if bundle skews [SVC-6]
+- [x] **P5-7** (MED) `local_service/workbench_service.py:1817-1818` — directory branch hardcodes ClinVar filename for every resource's disk-space probe [SVC-23]
+- [x] **P5-8** (MED) `local_service/workbench_service.py:2229-2232` — WGS review registry pruned to 30 without deleting backing files; links 404 for files still on disk [SVC-24]
+- [x] **P5-9** (MED, needs domain confirmation) `scripts/build_workbench_reference_data.py:141` — required-column guard narrower than columns the parser reads [SVC-27]
+- [x] **P5-10** (MED) `scripts/build_workbench_reference_data.py:218` — row-count sanity check runs after the output is already written; validate before write or write-to-temp [SVC-28]
+- [x] **P5-11** (LOW) `local_service/gene_knowledge.py:257-258` — PMID join leaves empty middle elements (`123||456`) [SVC-30]
+- [x] **P5-12** (LOW) `local_service/phenotype_store.py:319` — `header_row=0` treated as absent (`or` on falsy); use `is None` [SVC-31]
+- [x] **P5-13** (LOW) `local_service/workbench_service.py:2593-2596` — output extension check case-sensitive while input check isn't [SVC-32]
 
 ### 5C. Pipeline aux mediums/lows
-- [ ] **P5-14** (MED, needs domain confirmation) `pipeline/build_gene_tss.py:59,69-71,97` — version-stripped gene IDs silently overwrite on collision; log collisions or key on (gene_id, chrom) [AUX-M5]
-- [ ] **P5-15** (MED) `pipeline/cell_ontology.py:25-28,55-57,78-80` — `ontology_ancestors` returns dangling parent IDs (obsolete/UBERON/GO) absent from `terms` [AUX-M6]
-- [ ] **P5-16** (MED) `pipeline/prepare_clingen_erepo.py:344-346` — ZeroDivisionError when every export row is retracted; neighbouring code already guards with `max(1,…)` [AUX-M7]
-- [ ] **P5-17** (LOW) `pipeline/extract_fasta_regions.py:22-29,43-55` — duplicate region lines → misleading byte-count abort; dedupe or report [AUX-L4]
-- [ ] **P5-18** (LOW) `pipeline/validate_vep_output.py:18` (+ `validate_regression_annotations.py:38`) — CSQ header matched by loose prefix; align on `##INFO=<ID=CSQ,` [AUX-L6]
+- [x] **P5-14** (MED, needs domain confirmation) `pipeline/build_gene_tss.py:59,69-71,97` — version-stripped gene IDs silently overwrite on collision; log collisions or key on (gene_id, chrom) [AUX-M5]
+- [x] **P5-15** (MED) `pipeline/cell_ontology.py:25-28,55-57,78-80` — `ontology_ancestors` returns dangling parent IDs (obsolete/UBERON/GO) absent from `terms` [AUX-M6]
+- [x] **P5-16** (MED) `pipeline/prepare_clingen_erepo.py:344-346` — ZeroDivisionError when every export row is retracted; neighbouring code already guards with `max(1,…)` [AUX-M7]
+- [x] **P5-17** (LOW) `pipeline/extract_fasta_regions.py:22-29,43-55` — duplicate region lines → misleading byte-count abort; dedupe or report [AUX-L4]
+- [x] **P5-18** (LOW) `pipeline/validate_vep_output.py:18` (+ `validate_regression_annotations.py:38`) — CSQ header matched by loose prefix; align on `##INFO=<ID=CSQ,` [AUX-L6]
 
 ### 5D. Pipeline core mediums/lows
-- [ ] **P5-19** (MED) `pipeline/screen_ccre_dataset.py:768-770` — rtree stores coords as float32 (exact only to 2^24); use `rtree_i32` or document superset-filter contract [CORE-15]
-- [ ] **P5-20** (LOW) `pipeline/clinvar_aa_match.py:136` — `csq_present` measures reference-set emptiness, not CSQ presence [CORE-21]
-- [ ] **P5-21** (LOW, needs domain confirmation) `screen_ccre_dataset.py:857` vs `local_service/ccre_context.py:67` — two live cCRE coordinate conventions (0-based catalog / 1-based context); record convention in metadata [CORE-22]
+- [x] **P5-19** (MED) `pipeline/screen_ccre_dataset.py:768-770` — rtree stores coords as float32 (exact only to 2^24); use `rtree_i32` or document superset-filter contract [CORE-15]
+- [x] **P5-20** (LOW) `pipeline/clinvar_aa_match.py:136` — `csq_present` measures reference-set emptiness, not CSQ presence [CORE-21]
+- [x] **P5-21** (LOW, needs domain confirmation) `screen_ccre_dataset.py:857` vs `local_service/ccre_context.py:67` — two live cCRE coordinate conventions (0-based catalog / 1-based context); record convention in metadata [CORE-22]
 
 ### 5E. Scripts / config lows
-- [ ] **P5-22** (MED) `scripts/update_clingen_erepo.sh:70-77` — samtools `-r` vs Python fallback: asymmetric failure modes; diff the two extractors' output on a fixture [SH-14]
-- [ ] **P5-23** (MED) `scripts/install_recommended_datasets.sh:43-44` — `VEP_RELEASE` missing the `:-113` default every sibling script applies [SH-18]
-- [ ] **P5-24** (LOW, needs domain confirmation) `scripts/preflight.sh:297` — `bcftools plugin -l | grep -qx liftover` may never match (format check); verify against the container [SH-19]
-- [ ] **P5-25** (LOW) `scripts/lib.sh:61,68-69` — 5 of 6 caller scripts never set/export `IMAGE`/`RUNTIME`; container fallback ignores configured runtime on standalone invocation [SH-20]
-- [ ] **P5-26** (LOW) `config/annotation.config.yaml:52` — `liftover.engine` read by nothing; wire or drop [SH-21]
-- [ ] **P5-27** (LOW) `config/annotation.config.yaml:88` — `region.source` read by nothing; documented switch unimplemented [SH-22]
+- [x] **P5-22** (MED) `scripts/update_clingen_erepo.sh:70-77` — samtools `-r` vs Python fallback: asymmetric failure modes; diff the two extractors' output on a fixture [SH-14]
+- [x] **P5-23** (MED) `scripts/install_recommended_datasets.sh:43-44` — `VEP_RELEASE` missing the `:-113` default every sibling script applies [SH-18]
+- [x] **P5-24** (LOW, needs domain confirmation) `scripts/preflight.sh:297` — `bcftools plugin -l | grep -qx liftover` may never match (format check); verify against the container [SH-19]
+- [x] **P5-25** (LOW) `scripts/lib.sh:61,68-69` — 5 of 6 caller scripts never set/export `IMAGE`/`RUNTIME`; container fallback ignores configured runtime on standalone invocation [SH-20]
+- [x] **P5-26** (LOW) `config/annotation.config.yaml:52` — `liftover.engine` read by nothing; wire or drop [SH-21]
+- [x] **P5-27** (LOW) `config/annotation.config.yaml:88` — `region.source` read by nothing; documented switch unimplemented [SH-22]
 
 ### 5F. Static-analysis hygiene (from static_findings.md; no behavioral change expected)
-- [ ] **P5-28** (HIGH-fragility) `local_service/cohort_store.py` — 12 B023 late-binding closure sites (lines 1630-1699); bind via default args [ST-H2]
-- [ ] **P5-29** `pipeline/clinvar_aa_match.py:152` — same B023 pattern on `fields` [ST-H3]
-- [ ] **P5-30** `pipeline/screen_immune_curation.py:670,672` — same B023 pattern in `matches()` [ST-M2]
-- [ ] **P5-31** (MED-verify) `pipeline/loftee_ptc_50bp.py:649` — `chrom` unpacked and unused in PTC re-eval path; verify not a dropped contig lookup, else rename `_chrom` [ST-M1]
-- [ ] **P5-32** Unused imports/vars: `sample_library.py:12` shutil, `screen_ccre_dataset.py:22,28` os/sys, `build_workbench_reference_data.py:19` defaultdict, `test_clingen_erepo.py:7` annotate_main (placeholder? no test exercises CLI main), `build_coding_bed.sh:64` FAI (dropped feature?), `run_annotation.sh:56` ORIGINAL_INPUT [ST-L1]
-- [ ] **P5-33** `scripts/start_workbench.sh:88` — SC2155 declare/assign split [ST-L2]
-- [ ] **P5-34** `raise` without `from` ×3 (B904): `cohort_store.py:199`, `logofunc_dataset.py:289`, `prepare_promoterai.py:376` [ST-L3]
-- [ ] **P5-35** `build_vep_command.py:294` — unused loop var `label` (B007) [ST-L5]
+- [x] **P5-28** (HIGH-fragility) `local_service/cohort_store.py` — 12 B023 late-binding closure sites (lines 1630-1699); bind via default args [ST-H2]
+- [x] **P5-29** `pipeline/clinvar_aa_match.py:152` — same B023 pattern on `fields` [ST-H3]
+- [x] **P5-30** `pipeline/screen_immune_curation.py:670,672` — same B023 pattern in `matches()` [ST-M2]
+- [x] **P5-31** (MED-verify) `pipeline/loftee_ptc_50bp.py:649` — `chrom` unpacked and unused in PTC re-eval path; verify not a dropped contig lookup, else rename `_chrom` [ST-M1]
+- [x] **P5-32** Unused imports/vars: `sample_library.py:12` shutil, `screen_ccre_dataset.py:22,28` os/sys, `build_workbench_reference_data.py:19` defaultdict, `test_clingen_erepo.py:7` annotate_main (placeholder? no test exercises CLI main), `build_coding_bed.sh:64` FAI (dropped feature?), `run_annotation.sh:56` ORIGINAL_INPUT [ST-L1]
+- [x] **P5-33** `scripts/start_workbench.sh:88` — SC2155 declare/assign split [ST-L2]
+- [x] **P5-34** `raise` without `from` ×3 (B904): `cohort_store.py:199`, `logofunc_dataset.py:289`, `prepare_promoterai.py:376` [ST-L3]
+- [x] **P5-35** `build_vep_command.py:294` — unused loop var `label` (B007) [ST-L5]
 
 ### 5G. WebUI perf/robustness lows + lint debt
-- [ ] **P5-36** (LOW) `webui/app/VariantWorkbench.tsx:3578-3584` — bare filename `slice(0,-1)` truncates into a directory name [UI-19]
-- [ ] **P5-37** (LOW) `webui/app/vcf.ts:737-753,843,897` — every VCF read twice; BGZF fully materialized in memory (whole-genome tab OOM) [UI-20]
-- [ ] **P5-38** Silent truncation: `getSampleLibrary` limit 1000 / `getCohortSamples` 500 vs server cap 5000, no `truncated` flag (webui report, latent note)
-- [ ] **P5-39** eslint: 212 errors in `VariantWorkbench.tsx` incl. one `rules-of-hooks` violation (hook in callback, line 2799) [B-5] *(per D7)*
+- [x] **P5-36** (LOW) `webui/app/VariantWorkbench.tsx:3578-3584` — bare filename `slice(0,-1)` truncates into a directory name [UI-19]
+- [x] **P5-37** (LOW) `webui/app/vcf.ts:737-753,843,897` — every VCF read twice; BGZF fully materialized in memory (whole-genome tab OOM) [UI-20]
+- [x] **P5-38** Silent truncation: `getSampleLibrary` limit 1000 / `getCohortSamples` 500 vs server cap 5000, no `truncated` flag (webui report, latent note)
+- [x] **P5-39** eslint: 212 errors in `VariantWorkbench.tsx` incl. one `rules-of-hooks` violation (hook in callback, line 2799) [B-5] *(per D7)*
 
 ---
 

@@ -342,6 +342,11 @@ def main() -> int:
             methods["unresolved"] += 1
 
     active_rows = [row for row in rows if row["Retracted"].lower() != "true"]
+    if not active_rows:
+        raise ValueError(
+            "every ClinGen export row is retracted — refusing to build an "
+            "empty assertion database (likely a truncated or corrupt export)"
+        )
     mapped_active = sum(row["Uuid"] in mappings for row in active_rows)
     rate = mapped_active / len(active_rows)
     if rate < args.minimum_mapping_rate:

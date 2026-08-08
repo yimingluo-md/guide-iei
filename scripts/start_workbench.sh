@@ -85,7 +85,8 @@ fi
 
 cd "${ROOT}/webui"
 export NEXT_PUBLIC_IEI_SERVICE_URL="http://127.0.0.1:${SERVICE_PORT}"
-export PATH="$(dirname "$NODE_BIN"):${PATH}"
+NODE_DIR="$(dirname "$NODE_BIN")"
+export PATH="${NODE_DIR}:${PATH}"
 
 if command -v npm >/dev/null 2>&1; then
     npm run dev

@@ -53,7 +53,6 @@ done
 INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
-ORIGINAL_INPUT="$INPUT"
 WORKDIR="$(dirname "$OUTPUT")"
 INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="${INPUT_BASE%.vcf}"
 

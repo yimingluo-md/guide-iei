@@ -133,7 +133,7 @@ def annotate(in_path: str, out_path: str, ref: set[tuple[str, str]],
     """Stream the VCF, add the INFO flag, return summary counts."""
     header: list[str] = []
     stats = {"records": 0, "matched": 0, "missense": 0,
-             "csq_present": bool(ref) and True, "ref_size": len(ref)}
+             "csq_present": False, "ref_size": len(ref)}
 
     with _open_r(in_path) as fin, _open_w(out_path) as fout:
         fields = None
@@ -148,8 +148,10 @@ def annotate(in_path: str, out_path: str, ref: set[tuple[str, str]],
                 # finalize header: parse CSQ + inject our new INFO line
                 fields = parse_csq_format(header)
                 if fields:
-                    def _fi(name):
-                        return fields.index(name) if name in fields else -1
+                    # bind the resolved schema by value: a later rebind of
+                    # `fields` must not silently change column resolution
+                    def _fi(name, _fields=fields):
+                        return _fields.index(name) if name in _fields else -1
                     idx_sym = _fi("SYMBOL")
                     idx_pos = _fi("Protein_position")
                     idx_csq = _fi("Consequence")
@@ -165,6 +167,10 @@ def annotate(in_path: str, out_path: str, ref: set[tuple[str, str]],
                 fout.write(line)  # the #CHROM line
                 wrote_header = True
                 usable = fields is not None and idx_sym >= 0 and idx_pos >= 0 and idx_csq >= 0
+                # csq_present now reports what its name says: whether the VCF
+                # declared a CSQ schema (it previously mirrored reference-set
+                # emptiness, an unrelated quantity).
+                stats["csq_present"] = fields is not None
                 stats["csq_usable"] = usable
                 continue
 

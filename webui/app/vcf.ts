@@ -797,21 +797,47 @@ async function* streamChunks(stream: ReadableStream<Uint8Array>) {
 }
 
 async function* bgzfChunks(file: File) {
-  const bytes = new Uint8Array(await file.arrayBuffer());
-  let offset = 0;
+  // Stream compressed bytes in bounded slices instead of materializing the
+  // whole file: a single arrayBuffer() call held the entire compressed
+  // whole-genome VCF (alongside the inflated chunks and parsed rows) in one
+  // tab, turning a slow import into an out-of-memory crash that surfaced as
+  // the import "hanging". The carry buffer holds at most one slice plus one
+  // incomplete trailing block.
+  const SLICE_BYTES = 8 * 1024 * 1024;
+  let filePosition = 0;
+  let carry = new Uint8Array(0);
 
-  while (offset < bytes.length) {
+  for (;;) {
+    let offset = 0;
     const batch: Uint8Array[] = [];
-    while (offset < bytes.length && batch.length < 32) {
-      const blockSize = bgzfBlockSize(bytes, offset);
-      if (!blockSize || offset + blockSize > bytes.length) {
-        throw new Error(`invalid or truncated BGZF block at byte ${offset}`);
-      }
-      batch.push(bytes.subarray(offset, offset + blockSize));
+    while (batch.length < 32) {
+      const blockSize = bgzfBlockSize(carry, offset);
+      if (blockSize === null || offset + blockSize > carry.length) break;
+      batch.push(carry.subarray(offset, offset + blockSize));
       offset += blockSize;
     }
-    const inflated = await Promise.all(batch.map(decompressMember));
-    for (const chunk of inflated) yield chunk;
+    if (batch.length) {
+      const inflated = await Promise.all(batch.map(decompressMember));
+      for (const chunk of inflated) yield chunk;
+      carry = carry.slice(offset); // copy: don't pin the consumed buffer
+      continue;
+    }
+    if (filePosition >= file.size) {
+      if (carry.length) {
+        throw new Error(
+          `invalid or truncated BGZF block at byte ${file.size - carry.length}`,
+        );
+      }
+      return;
+    }
+    const slice = new Uint8Array(
+      await file.slice(filePosition, filePosition + SLICE_BYTES).arrayBuffer(),
+    );
+    filePosition += slice.length;
+    const merged = new Uint8Array(carry.length + slice.length);
+    merged.set(carry, 0);
+    merged.set(slice, carry.length);
+    carry = merged;
   }
 }
 

@@ -19,13 +19,11 @@ import concurrent.futures
 import gzip
 import hashlib
 import json
-import os
 import platform
 import re
 import shutil
 import sqlite3
 import subprocess
-import sys
 import tarfile
 import tempfile
 import time
@@ -803,7 +801,10 @@ def build_catalog(ccre_bed: Path, database: Path, manifest: dict[str, Any]) -> l
             ccre_accession TEXT NOT NULL UNIQUE,
             overall_class TEXT NOT NULL
         );
-        CREATE VIRTUAL TABLE ccre_interval USING rtree(
+        -- rtree_i32, not rtree: the default stores coordinates as
+        -- 32-bit floats (exact only to 2^24), which rounds every cCRE
+        -- bound past 16.8 Mb; genomic positions reach 2.5e8.
+        CREATE VIRTUAL TABLE ccre_interval USING rtree_i32(
             row_index, contig_min, contig_max, start, end
         );
         CREATE TABLE class_code(
@@ -848,6 +849,10 @@ def build_catalog(ccre_bed: Path, database: Path, manifest: dict[str, Any]) -> l
         ("registry", REGISTRY), ("assembly", ASSEMBLY),
         ("matrix_layout", "ccre-major contiguous uint8 rows"),
         ("zero_semantics", "Low-DNase/inactive; not deletion or missing genotype"),
+        # Two conventions are live in this codebase: this catalog mirrors
+        # the source BED, while local_service/ccre_context.py converts to
+        # 1-based inclusive. Record ours so joins are deliberate.
+        ("coordinate_convention", "BED 0-based half-open (start, end)"),
     ):
         connection.execute("INSERT INTO metadata VALUES(?,?)", (key, value))
     connection.executemany(

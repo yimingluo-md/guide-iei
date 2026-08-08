@@ -286,7 +286,7 @@ def main() -> None:
         arguments.func(arguments)
     except (OSError, ValueError, urllib.error.URLError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from error
 
 
 if __name__ == "__main__":

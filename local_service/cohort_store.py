@@ -1664,7 +1664,18 @@ class CohortStore:
                 )
 
                 if prefilter is not None:
-                    def prefilter_progress(update: dict) -> None:
+                    # This iteration's running totals are bound as defaults:
+                    # captured by name they would silently attribute bytes and
+                    # records to the wrong file if the callback ever fired
+                    # after the loop advanced (ruff B023).
+                    def prefilter_progress(
+                        update: dict,
+                        *,
+                        _completed_bytes=completed_bytes,
+                        _file_size=file_size,
+                        _total_scanned=total_prefilter_scanned,
+                        _total_retained=total_prefilter_retained,
+                    ) -> None:
                         nonlocal file_prefilter_scanned, file_prefilter_retained
                         file_prefilter_scanned = int(
                             update.get("records_scanned", file_prefilter_scanned)
@@ -1677,19 +1688,19 @@ class CohortStore:
                         )
                         self._update_import_job(
                             job_id,
-                            processed_bytes=completed_bytes + int(
-                                file_size * 0.65 * percent / 100.0
+                            processed_bytes=_completed_bytes + int(
+                                _file_size * 0.65 * percent / 100.0
                             ),
                             current_file_bytes=int(
-                                file_size * 0.65 * percent / 100.0
+                                _file_size * 0.65 * percent / 100.0
                             ),
                             phase=str(update.get("phase") or "prefiltering"),
                             reader_count=int(update.get("reader_count", 1) or 1),
                             prefilter_records_scanned=(
-                                total_prefilter_scanned + file_prefilter_scanned
+                                _total_scanned + file_prefilter_scanned
                             ),
                             prefilter_records_retained=(
-                                total_prefilter_retained + file_prefilter_retained
+                                _total_retained + file_prefilter_retained
                             ),
                         )
 
@@ -1729,24 +1740,33 @@ class CohortStore:
                         )
                     )
 
-                def progress(update: dict) -> None:
+                # Same default-arg binding rationale as prefilter_progress.
+                def progress(
+                    update: dict,
+                    *,
+                    _completed_bytes=completed_bytes,
+                    _file_size=file_size,
+                    _total_records=total_records,
+                    _total_pass=total_pass,
+                    _total_carriers=total_carriers,
+                ) -> None:
                     nonlocal file_records, file_pass, file_carriers
                     file_records = int(update.get("records_processed", file_records))
                     file_pass = int(update.get("pass_records", file_pass))
                     file_carriers = int(update.get("carrier_count", file_carriers))
                     import_bytes = min(
-                        file_size, int(update.get("processed_bytes", 0))
+                        _file_size, int(update.get("processed_bytes", 0))
                     )
                     current_bytes = (
-                        int(file_size * 0.65 + import_bytes * 0.35)
+                        int(_file_size * 0.65 + import_bytes * 0.35)
                         if prefilter is not None else import_bytes
                     )
                     changes = {
-                        "processed_bytes": completed_bytes + current_bytes,
+                        "processed_bytes": _completed_bytes + current_bytes,
                         "current_file_bytes": current_bytes,
-                        "records_processed": total_records + file_records,
-                        "pass_records": total_pass + file_pass,
-                        "carrier_count": total_carriers + file_carriers,
+                        "records_processed": _total_records + file_records,
+                        "pass_records": _total_pass + file_pass,
+                        "carrier_count": _total_carriers + file_carriers,
                         "phase": str(update.get("phase") or "indexing"),
                         "reader_count": int(update.get("reader_count", 1) or 1),
                     }

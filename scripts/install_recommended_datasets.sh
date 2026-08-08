@@ -41,7 +41,7 @@ files_ready() {
 # but some large resources perform checksum verification when invoked; do not
 # invoke them at all once the complete configured installation is present.
 VEP_TAG="$(yaml_get "$CONFIG" container.vep_image_tag)"
-VEP_RELEASE="$(printf '%s' "$VEP_TAG" | sed -E 's/[^0-9]*([0-9]+).*/\1/')"
+VEP_RELEASE="$(printf '%s' "$VEP_TAG" | sed -E 's/[^0-9]*([0-9]+).*/\1/')"; VEP_RELEASE="${VEP_RELEASE:-113}"
 ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh38}"
 VEP_CACHE="$(abs_path "$(yaml_get "$CONFIG" reference.vep_cache_dir)")"
 FASTA="$(abs_path "$(yaml_get "$CONFIG" reference.fasta.path)")"

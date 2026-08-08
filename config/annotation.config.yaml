@@ -52,7 +52,6 @@ input:
 
 liftover:
   enabled: true
-  engine: bcftools_liftover
   bcftools_version: "1.20"   # pinned in docker/Dockerfile
   # Exact published plugin source used by the validated container build.
   plugin_commit: "909d23019e19aeadf3bf6fe1407fd6afc094592a"
@@ -82,10 +81,10 @@ liftover:
 # variant, so it gives no speedup. The speedup comes from the BED pre-filter.
 region:
   coding_only: true          # DEFAULT. false => annotate all variants (WGS/non-coding; HPC-scale)
-  # How the coding+splice BED is built. `ensembl_gtf` uses the CDS features from
-  # the release-matched Ensembl GTF (same coordinates as your VEP cache — no
-  # contig-name mismatch). Rebuilt by scripts/build_coding_bed.sh.
-  source: ensembl_gtf        # ensembl_gtf | bed
+  # The coding+splice BED is built from the CDS features of the
+  # release-matched Ensembl GTF (same coordinates as your VEP cache — no
+  # contig-name mismatch) by scripts/build_coding_bed.sh; to use your own
+  # regions instead, set region.custom_bed below.
   # Padding (bp) added to each side of every CDS block, to capture splice sites.
   # 8 bp matches the splice consensus window dbNSFP annotates (-3..+8) and the
   # Sequence Ontology splice_region definition (3 exonic / 8 intronic). The

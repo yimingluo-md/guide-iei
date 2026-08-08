@@ -43,6 +43,13 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
+# hts() falls back to the container when host bgzip/tabix/samtools are absent;
+# honour the configured runtime/image instead of the docker/vep-annotate:latest
+# defaults (a podman-only host previously failed here despite correct config).
+RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
+IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
+export RUNTIME IMAGE
+
 want() { [[ -z "$ONLY" ]] || [[ ",$ONLY," == *",$1,"* ]]; }
 
 # --- versions / assembly ------------------------------------------------------

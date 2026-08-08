@@ -16,7 +16,6 @@ import hashlib
 import json
 import re
 import zipfile
-from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -148,6 +147,13 @@ def build_gnomad(source: Path, destination: Path) -> dict[str, object]:
             "lof.oe",
             "lof.oe_ci.upper",
             "lof.pLI",
+            "lof.obs",
+            "lof.exp",
+            "gene_flags",
+            "constraint_flags",
+            "gene_quality_metrics.exome_prop_bp_AN90",
+            "gene_quality_metrics.exome_prop_segdup",
+            "gene_quality_metrics.exome_prop_LCR",
         }
         missing = required.difference(reader.fieldnames or [])
         if missing:
@@ -161,6 +167,13 @@ def build_gnomad(source: Path, destination: Path) -> dict[str, object]:
             if current is None or transcript_priority(row) > transcript_priority(current):
                 best[gene] = row
 
+    # Validate BEFORE writing: a truncated or mis-parsed source must not
+    # leave a plausible-looking reference file at the final path.
+    if len(best) != 19_638 or source_rows != 221_898:
+        raise SystemExit(
+            "unexpected gnomAD row counts "
+            f"(source={source_rows}, selected_genes={len(best)})"
+        )
     fields = [
         "gene_symbol",
         "ensembl_gene_id",
@@ -215,11 +228,6 @@ def build_gnomad(source: Path, destination: Path) -> dict[str, object]:
                 }
             )
 
-    if len(best) != 19_638 or source_rows != 221_898:
-        raise SystemExit(
-            "unexpected gnomAD row counts "
-            f"(source={source_rows}, selected_genes={len(best)})"
-        )
     return {
         "source_rows": source_rows,
         "selected_genes": len(best),

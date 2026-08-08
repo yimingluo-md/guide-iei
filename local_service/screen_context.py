@@ -16,6 +16,18 @@ from pathlib import Path
 from typing import Any
 
 
+
+def _open_ro(path):
+    """Read-only sqlite connection with a percent-encoded file: URI.
+
+    URI mode parses '?' as the query string, '#' as a fragment, and decodes
+    '%', so interpolating a raw filesystem path truncates or redirects the
+    open for paths containing those characters. Path.as_uri() encodes them.
+    """
+    from pathlib import Path as _Path
+    return sqlite3.connect(f"{_Path(path).resolve().as_uri()}?mode=ro", uri=True)
+
+
 CLASS_LABELS = {
     0: "inactive",
     1: "PLS",
@@ -105,7 +117,7 @@ class ScreenContextStore:
             if missing:
                 raise ValueError("prepared SCREEN artifact is missing: " + ", ".join(missing))
 
-            catalog = sqlite3.connect(f"file:{catalog_path}?mode=ro", uri=True)
+            catalog = _open_ro(catalog_path)
             catalog.row_factory = sqlite3.Row
             tissues = [
                 {
@@ -118,7 +130,7 @@ class ScreenContextStore:
             ]
             catalog.close()
 
-            context_db = sqlite3.connect(f"file:{context_database}?mode=ro", uri=True)
+            context_db = _open_ro(context_database)
             context_db.row_factory = sqlite3.Row
             immune_contexts: list[dict[str, Any]] = []
             for row in context_db.execute(
@@ -170,7 +182,7 @@ class ScreenContextStore:
 
     @staticmethod
     def _catalog_connection(path: Path) -> sqlite3.Connection:
-        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        connection = _open_ro(path)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -297,7 +309,11 @@ class ScreenContextStore:
 
     def _tissue_evidence(self, configured: dict[str, Any], row_index: int) -> list[dict[str, Any]]:
         tissues = configured["tissues"]
-        codes = self._read_matrix_row(configured["tissue_matrix"], len(tissues), row_index)
+        # Row stride must come from the stored matrix shape, not the
+        # catalog row count: on a bundle/catalog skew every row after the
+        # first would be read at the wrong offset (silent misalignment).
+        tissue_columns = configured["prepared"]["tissue_matrix"]["shape"][1]
+        codes = self._read_matrix_row(configured["tissue_matrix"], tissue_columns, row_index)
         result = []
         for tissue in tissues:
             code = codes[tissue["index"]]

@@ -316,7 +316,7 @@ def parse_table(
     if not rows or not any(any(clean(value) for value in row) for row in rows):
         raise ValueError("phenotype input contains no data")
     suggested = suggest_header_row(rows)
-    chosen = int(header_row or suggested)
+    chosen = int(suggested if header_row is None else header_row)
     if chosen < 1 or chosen > len(rows):
         raise ValueError("header_row is outside the input")
     columns = unique_headers(rows[chosen - 1])

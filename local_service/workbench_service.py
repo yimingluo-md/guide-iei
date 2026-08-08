@@ -1849,8 +1849,11 @@ class AnnotationJobService:
             # Bulk installers may target an extracted VEP cache or a directory
             # containing an already installed snapshot. Count allocated files
             # rather than demanding the full first-install allowance again.
+            # _directory_size already counts everything allocated inside
+            # the directory (including in-progress .part files); probing a
+            # hardcoded ClinVar filename mis-credited every other
+            # directory resource (VEP cache, dbNSFP).
             directory_credit = _directory_size(path) if path.is_dir() else 0
-            candidates.append(path / "clinvar.download.vcf.gz")
         else:
             directory_credit = 0
             candidates.append(path)
@@ -2264,7 +2267,15 @@ class AnnotationJobService:
         with self._wgs_review_lock:
             self._wgs_review_files[review_id] = output_path
             for stale_id in list(self._wgs_review_files)[:-30]:
-                self._wgs_review_files.pop(stale_id, None)
+                # Delete the backing file with its registry entry:
+                # otherwise outputs accumulate forever while their
+                # download links 404 for files still on disk.
+                stale_path = self._wgs_review_files.pop(stale_id, None)
+                if stale_path is not None:
+                    try:
+                        stale_path.unlink(missing_ok=True)
+                    except OSError:
+                        pass
         return {
             **{key: value for key, value in result.items() if key != "path"},
             "id": review_id,
@@ -2627,7 +2638,7 @@ class AnnotationJobService:
         input_name = input_path.name.lower()
         if not (input_name.endswith(".vcf") or input_name.endswith(".vcf.gz")):
             raise ValueError("input_path must end in .vcf or .vcf.gz")
-        if output_path.suffixes[-2:] != [".vcf", ".gz"]:
+        if [suffix.lower() for suffix in output_path.suffixes[-2:]] != [".vcf", ".gz"]:
             raise ValueError("output_path must end in .vcf.gz")
         if input_path == output_path:
             raise ValueError("input_path and output_path must be different")

@@ -30,6 +30,13 @@ CONFIG="${2:-${ROOT}/config/annotation.config.yaml}"
 CONSUME_SOURCE="${3:-}"
 [[ -d "$SRC_DIR" ]] || die "dbNSFP source dir not found: $SRC_DIR"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
+
+# hts() falls back to the container when host bgzip/tabix/samtools are absent;
+# honour the configured runtime/image instead of the docker/vep-annotate:latest
+# defaults (a podman-only host previously failed here despite correct config).
+RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
+IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
+export RUNTIME IMAGE
 [[ -z "$CONSUME_SOURCE" || "$CONSUME_SOURCE" == "--remove-source-after-success" ]] \
     || die "unknown preparation option: $CONSUME_SOURCE"
 

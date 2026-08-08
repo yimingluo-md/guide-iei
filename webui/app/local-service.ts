@@ -1217,7 +1217,9 @@ export async function getCohortSampleReview(sampleIds: number[]) {
   });
 }
 
-export async function getCohortSamples(query = "", limit = 500) {
+// Default to the server's cap (5000): a smaller client limit truncated
+// silently with no flag on either side, so a large cohort looked complete.
+export async function getCohortSamples(query = "", limit = 5000) {
   const params = new URLSearchParams({ query, limit: String(limit) });
   return (await request<{ samples: CohortSample[] }>(
     `/api/cohort/samples?${params.toString()}`,
@@ -1232,7 +1234,8 @@ export async function removeCohortSamples(sampleIds: number[]) {
 }
 
 export async function getSampleLibrary(query = "") {
-  const params = new URLSearchParams({ query, limit: "1000" });
+  // Server cap; see getCohortSamples on why the client must not ask for less.
+  const params = new URLSearchParams({ query, limit: "5000" });
   return (await request<{ datasets: SampleLibraryDataset[] }>(
     `/api/sample-library?${params.toString()}`,
   )).datasets;

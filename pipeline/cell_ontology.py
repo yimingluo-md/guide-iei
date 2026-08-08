@@ -76,6 +76,11 @@ def ontology_ancestors(ontology: dict[str, Any]) -> dict[str, set[str]]:
             raise RuntimeError(f"cycle in Cell Ontology at {term_id}")
         result: set[str] = set()
         for parent in terms.get(term_id, {}).get("parents", []):
+            # is_a targets include obsolete CL terms and non-CL IDs
+            # (UBERON/GO/PATO); only admitted terms are valid ancestors —
+            # dangling IDs made consumers KeyError or silently miss.
+            if parent not in terms:
+                continue
             result.add(parent)
             result.update(one(parent, visiting | {term_id}))
         cache[term_id] = result

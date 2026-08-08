@@ -35,7 +35,7 @@ def load_vcf(path: Path) -> tuple[list[str], dict[str, dict]]:
     records = {}
     with open_text(path) as handle:
         for line in handle:
-            if line.startswith("##INFO=<ID=CSQ"):
+            if line.startswith("##INFO=<ID=CSQ,"):
                 match = re.search(r"Format:\s*([^\">]+)", line)
                 if not match:
                     raise ValueError("CSQ header has no Format field list")

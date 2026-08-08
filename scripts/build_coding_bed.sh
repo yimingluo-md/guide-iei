@@ -25,6 +25,13 @@ FORCE=0
 for a in "$@"; do [[ "$a" == "--force" ]] && FORCE=1; done
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
+# hts() falls back to the container when host bgzip/tabix/samtools are absent;
+# honour the configured runtime/image instead of the docker/vep-annotate:latest
+# defaults (a podman-only host previously failed here despite correct config).
+RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
+IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
+export RUNTIME IMAGE
+
 absdir() { local p="$1"; [[ "$p" = /* ]] && echo "$p" || echo "${ROOT}/${p}"; }
 
 ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh38}"
@@ -63,12 +70,9 @@ if [[ ! -s "$RAW" ]]; then
     fetch "$GTF_URL" "$RAW" || die "Ensembl GTF download failed: $GTF_URL"
 fi
 
-# Need a contig-length file so padding never runs off the chromosome ends.
-# Derive it from the FASTA .fai if present; else pad and let bedtools/awk clamp
-# at >=0 (right end clamped by merge against real feature extents is not
-# possible without lengths, so we clamp low end to 0 and leave high end — VEP
-# tolerates a region end past the contig).
-FAI="$(absdir "$(yaml_get "$CONFIG" reference.fasta.path)").fai"
+# Padding is clamped to >= 0 at the low end only; a right end past the contig
+# is tolerated by VEP. (A planned .fai-derived contig-length clamp was never
+# implemented — the dangling FAI= assignment that documented it is removed.)
 
 TMP="$(mktemp)"
 MERGED=""

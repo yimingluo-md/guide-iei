@@ -104,6 +104,7 @@ def read_tss(path: Path, output_map: Path):
             by_tss.setdefault((chrom, pos, strand), []).append(cleaned)
     finally:
         text.close()
+        raw.close()  # the gzip branch's underlying handle is not closed by text.close()
 
     if not exact_rows:
         raise ValueError("tss.tsv has no data rows")
@@ -248,6 +249,7 @@ def compact_scores(
         flush_locus()
     finally:
         text.close()
+        raw.close()  # the gzip branch's underlying handle is not closed by text.close()
         for handle in handles.values():
             handle.close()
 
@@ -373,4 +375,4 @@ if __name__ == "__main__":
         raise SystemExit(main())
     except (OSError, ValueError, subprocess.CalledProcessError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from exc

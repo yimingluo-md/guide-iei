@@ -15,6 +15,13 @@ CONSUME_SOURCE="${3:-}"
 SOURCE_DIR="$(cd "${SOURCE_DIR}" && pwd -P)"
 CONFIG="$(cd "$(dirname "${CONFIG}")" && pwd -P)/$(basename "${CONFIG}")"
 
+# hts() falls back to the container when host bgzip/tabix/samtools are absent;
+# honour the configured runtime/image instead of the docker/vep-annotate:latest
+# defaults (a podman-only host previously failed here despite correct config).
+RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
+IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
+export RUNTIME IMAGE
+
 TSS_SOURCE="${SOURCE_DIR}/tss.tsv"
 SCORE_SOURCE="${SOURCE_DIR}/promoterAI_tss500.tsv.gz"
 [[ -s "${TSS_SOURCE}" ]] || die "missing Illumina transcript table: ${TSS_SOURCE}"

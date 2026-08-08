@@ -654,7 +654,9 @@ def process_vcf(
             if len(columns) < 8:
                 raise ValueError(f"malformed VCF record: {line.rstrip()}")
             counters["records"] += 1
-            chrom, pos_raw, ref, alt_raw = columns[0], columns[1], columns[3], columns[4]
+            # transcripts are keyed by Feature id, so the record contig is
+            # deliberately unused here
+            _chrom, pos_raw, ref, alt_raw = columns[0], columns[1], columns[3], columns[4]
             pos = int(pos_raw)
             alts = alt_raw.split(",")
             info = info_map(columns[7])
