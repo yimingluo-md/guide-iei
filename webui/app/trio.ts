@@ -110,8 +110,35 @@ export function parsePedigree(
     });
   });
 
-  const trios = members
-    .filter((member) => member.fatherId && member.motherId)
+  // Only affected members are offered as probands: an unaffected sibling
+  // included for segregation must not silently become a second "proband"
+  // whose healthy variants get labelled de novo candidates. When the PED
+  // marks nobody affected, fall back to every child with two parents and
+  // say so.
+  const childCandidates = members.filter((member) => member.fatherId && member.motherId);
+  const affectedCandidates = childCandidates.filter(
+    (member) => member.affected === "affected",
+  );
+  const probandCandidates = affectedCandidates.length ? affectedCandidates : childCandidates;
+  if (!affectedCandidates.length && childCandidates.length) {
+    warnings.push(
+      "No affected member has two parents listed; every child in the PED is offered as a proband.",
+    );
+  } else if (affectedCandidates.length < childCandidates.length) {
+    const excluded = childCandidates
+      .filter((member) => member.affected !== "affected")
+      .map((member) => member.sampleId);
+    warnings.push(
+      `Unaffected/unknown-status member(s) not offered as probands: ${excluded.join(", ")}.`,
+    );
+  }
+
+  // Parents named in the PED must exist somewhere — as loaded VCF samples
+  // when those are known, otherwise at least as PED members. A trio built
+  // around parents that exist nowhere would silently analyse nothing.
+  const memberIds = new Set(members.map((member) => member.sampleId));
+  const knownSamples = availableSamples.size > 0 ? availableSamples : memberIds;
+  const trios = probandCandidates
     .map((member) => ({
       familyId: member.familyId,
       proband: member.sampleId,
@@ -122,9 +149,10 @@ export function parsePedigree(
     } satisfies TrioDefinition))
     .filter((trio) => {
       const missing = [trio.proband, trio.mother, trio.father]
-        .filter((sample) => availableSamples.size > 0 && !availableSamples.has(sample));
+        .filter((sample) => !knownSamples.has(sample));
       if (missing.length) {
-        warnings.push(`Family ${trio.familyId}: VCF sample(s) not found: ${missing.join(", ")}.`);
+        const pool = availableSamples.size > 0 ? "VCF sample(s)" : "PED member(s)";
+        warnings.push(`Family ${trio.familyId}: ${pool} not found: ${missing.join(", ")}.`);
         return false;
       }
       return true;
@@ -136,6 +164,40 @@ export function parsePedigree(
 
 function alleles(evidence: GenotypeEvidence | null) {
   return evidence?.gt.split(/[|/]/).filter((value) => /^\d+$/.test(value)).map(Number) ?? [];
+}
+
+// GRCh38 pseudoautosomal region bounds on chrX (PAR1 ends at 2,781,479;
+// PAR2 starts at 155,701,383). Inside the PARs a male is diploid.
+const GRCH38_PAR1_END = 2_781_479;
+const GRCH38_PAR2_START = 155_701_383;
+
+function normalizedTrioContig(chrom: string) {
+  const trimmed = chrom.replace(/^chr/i, "").toUpperCase();
+  return trimmed === "M" ? "MT" : trimmed;
+}
+
+/**
+ * A male proband is hemizygous for non-PAR X (transmitting parent: mother)
+ * and for Y (transmitting parent: father). Applying the autosomal diploid
+ * model there misclassifies the most common IEI presentation: an X-linked
+ * de novo written as 1/1 hits the "hom-alt child" conflict branch, and a
+ * true haploid 1 fails the heterozygous allele-balance gate at AB ~1.0.
+ */
+function hemizygousContextFor(
+  row: VariantRow,
+  trio: TrioDefinition,
+): "x" | "y" | null {
+  if (trio.probandSex !== "male") return null;
+  const contig = normalizedTrioContig(row.chrom);
+  if (contig === "Y") return "y";
+  if (
+    contig === "X"
+    && row.pos > GRCH38_PAR1_END
+    && row.pos < GRCH38_PAR2_START
+  ) {
+    return "x";
+  }
+  return null;
 }
 
 function isHomRef(evidence: GenotypeEvidence | null) {
@@ -190,14 +252,33 @@ export function assessDeNovo(
   if (!child?.carrier) {
     return { ...base, status: "not_proband", reasons: ["The proband does not carry this ALT allele."] };
   }
-  if (mother?.carrier || father?.carrier) {
-    const carriers = [
-      mother?.carrier ? "mother" : "",
-      father?.carrier ? "father" : "",
-    ].filter(Boolean);
-    return { ...base, status: "inherited", reasons: [`ALT allele is present in the ${carriers.join(" and ")}.`] };
+
+  // In a hemizygous context only the transmitting parent's genotype is
+  // informative: a male proband's X comes from the mother, his Y from the
+  // father. The other parent's carrier state neither establishes
+  // inheritance nor gates the de novo call.
+  const hemiContext = hemizygousContextFor(row, trio);
+  const relevantParents: Array<["mother" | "father", GenotypeEvidence | null]> =
+    hemiContext === "x"
+      ? [["mother", mother]]
+      : hemiContext === "y"
+        ? [["father", father]]
+        : [["mother", mother], ["father", father]];
+
+  const carrierParents = relevantParents
+    .filter(([, evidence]) => evidence?.carrier)
+    .map(([label]) => label);
+  if (carrierParents.length) {
+    return { ...base, status: "inherited", reasons: [`ALT allele is present in the ${carrierParents.join(" and ")}.`] };
   }
-  if (alleles(child).length === 2 && alleles(child).every((value) => value > 0)) {
+  if (
+    !hemiContext
+    && alleles(child).length === 2
+    && alleles(child).every((value) => value > 0)
+  ) {
+    // Autosomes only: a hemizygous male X/Y call is routinely written as
+    // 1/1 by diploid-model callers and is the expected de novo shape, not
+    // a Mendelian conflict.
     return {
       ...base,
       status: "mendelian_conflict",
@@ -207,31 +288,32 @@ export function assessDeNovo(
   if (!adequate(child, thresholds.childMinDp, thresholds.minGq)) {
     return { ...base, status: "likely_artifact", reasons: ["Proband DP or GQ is below the configured threshold."] };
   }
+  // A hemizygous call is expected near allele balance 1.0, so only the
+  // lower bound applies; the diploid upper bound would misfile every true
+  // hemizygous call as an artifact.
   if (
     child.alleleBalance === null
     || child.alleleBalance < thresholds.childAbMin
-    || child.alleleBalance > thresholds.childAbMax
+    || (!hemiContext && child.alleleBalance > thresholds.childAbMax)
   ) {
     return { ...base, status: "likely_artifact", reasons: ["Proband allele balance is missing or outside the configured range."] };
   }
 
-  const missingParents = [
-    !mother?.called ? "mother" : "",
-    !father?.called ? "father" : "",
-  ].filter(Boolean);
+  const missingParents = relevantParents
+    .filter(([, evidence]) => !evidence?.called)
+    .map(([label]) => label);
   if (missingParents.length) {
     return { ...base, status: "possible", reasons: [`No callable genotype for ${missingParents.join(" and ")} at this site.`] };
   }
-  if (!isHomRef(mother) || !isHomRef(father)) {
+  if (relevantParents.some(([, evidence]) => !isHomRef(evidence))) {
     return { ...base, status: "mendelian_conflict", reasons: ["Parental genotypes are not compatible with a simple de novo model."] };
   }
 
-  const mosaicParents = [
-    mother?.alleleBalance !== null && mother?.alleleBalance !== undefined
-      && mother.alleleBalance > thresholds.parentAbMax ? "mother" : "",
-    father?.alleleBalance !== null && father?.alleleBalance !== undefined
-      && father.alleleBalance > thresholds.parentAbMax ? "father" : "",
-  ].filter(Boolean);
+  const mosaicParents = relevantParents
+    .filter(([, evidence]) => evidence?.alleleBalance !== null
+      && evidence?.alleleBalance !== undefined
+      && evidence.alleleBalance > thresholds.parentAbMax)
+    .map(([label]) => label);
   if (mosaicParents.length) {
     return {
       ...base,
@@ -240,14 +322,12 @@ export function assessDeNovo(
     };
   }
 
-  const lowQualityParents = [
-    !adequate(mother, thresholds.parentMinDp, thresholds.minGq) ? "mother" : "",
-    !adequate(father, thresholds.parentMinDp, thresholds.minGq) ? "father" : "",
-  ].filter(Boolean);
-  const missingAlleleDepth = [
-    mother?.adAlt === null ? "mother" : "",
-    father?.adAlt === null ? "father" : "",
-  ].filter(Boolean);
+  const lowQualityParents = relevantParents
+    .filter(([, evidence]) => !adequate(evidence, thresholds.parentMinDp, thresholds.minGq))
+    .map(([label]) => label);
+  const missingAlleleDepth = relevantParents
+    .filter(([, evidence]) => evidence?.adAlt === null)
+    .map(([label]) => label);
   if (lowQualityParents.length || missingAlleleDepth.length) {
     const reasons = [];
     if (lowQualityParents.length) reasons.push(`Parental DP or GQ is insufficient for the ${lowQualityParents.join(" and ")}.`);
@@ -258,7 +338,11 @@ export function assessDeNovo(
   return {
     ...base,
     status: "high_confidence",
-    reasons: ["Proband ALT and two well-supported homozygous-reference parental genotypes are present in the loaded callset."],
+    reasons: [
+      hemiContext
+        ? "Proband hemizygous ALT with a well-supported homozygous-reference transmitting parent in the loaded callset."
+        : "Proband ALT and two well-supported homozygous-reference parental genotypes are present in the loaded callset.",
+    ],
   };
 }
 
@@ -274,7 +358,10 @@ function originFor(row: VariantRow, trio: TrioDefinition): CompoundOrigin {
   if (mother?.carrier && isHomRef(father)) return "maternal";
   if (father?.carrier && isHomRef(mother)) return "paternal";
   const deNovo = assessDeNovo(row, trio);
-  if (deNovo.status === "high_confidence" || deNovo.status === "possible") return "de_novo";
+  // "possible" covers the missing-parental-genotype case: converting "we do
+  // not know the parental genotype" into "this arose de novo" promoted
+  // unphaseable pairs to possible_trans. Only a high-confidence call counts.
+  if (deNovo.status === "high_confidence") return "de_novo";
   return "unknown";
 }
 

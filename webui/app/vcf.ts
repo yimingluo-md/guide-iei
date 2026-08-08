@@ -305,14 +305,20 @@ export function variantQcFailures(
   qcBelow(failures, "alternate depth", row.adAlt, settings.minAltDepth);
   qcAbove(failures, "DP", row.dp, settings.maxDp);
 
+  const fallbackTokens = row.genotype.split(/[|/]/);
+  const fallbackFullyCalled = fallbackTokens.length > 0
+    && fallbackTokens.every((allele) => /^\d+$/.test(allele));
+  // Uncalled (./.), partially called, and reference-only (0, 0/0) genotypes
+  // must not be routed into allele-balance QC computed for a call that was
+  // never made.
   const genotypeClass = row.genotypeClass
-    ?? (row.genotype.split(/[|/]/).length === 1
-      ? "hemizygous"
-      : row.genotype.split(/[|/]/).every(
-          (allele) => allele === row.genotype.split(/[|/]/)[0] && allele !== "0",
-        )
-        ? "homozygous_alt"
-        : "heterozygous");
+    ?? (!fallbackFullyCalled || fallbackTokens.every((allele) => allele === "0")
+      ? "other"
+      : fallbackTokens.length === 1
+        ? "hemizygous"
+        : fallbackTokens.every((allele) => allele === fallbackTokens[0])
+          ? "homozygous_alt"
+          : "heterozygous");
   if (genotypeClass === "heterozygous") {
     qcBelow(failures, "reference depth", row.adRef, settings.minHetRefDepth);
     qcBelow(failures, "allele balance", row.alleleBalance, settings.hetAbMin);
@@ -368,8 +374,16 @@ export function variantQcFailures(
 }
 
 export function isHeterozygousGenotype(genotype: string) {
+  // Two different called alleles are a heterozygote by definition — that
+  // includes 1/2, whose two distinct ALT alleles are necessarily in trans
+  // and are the most informative compound-het genotype there is. Requiring
+  // a reference allele excluded exactly that case.
   const alleles = genotype.split(/[|/]/);
-  return alleles.length === 2 && alleles[0] !== alleles[1] && alleles.includes("0");
+  return (
+    alleles.length === 2
+    && alleles[0] !== alleles[1]
+    && alleles.every((allele) => /^\d+$/.test(allele))
+  );
 }
 
 export function candidateCompoundHetKeys(rows: VariantRow[]) {
@@ -409,7 +423,16 @@ export function preferredClinicalTranscriptRows(rows: VariantRow[]) {
 const EMPTY = new Set(["", ".", "-"]);
 
 function decode(value: string | undefined) {
-  return decodeURIComponent((value ?? "").replaceAll("+", " "));
+  // VEP CSQ fields are percent-encoded only: '+' is a literal character and
+  // load-bearing in HGVS (c.730+1G>A). Form-decoding it to a space corrupts
+  // every intronic coordinate. A stray '%' that is not a valid escape must
+  // degrade to the raw value for this one field, never abort a whole import.
+  const raw = value ?? "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
 }
 
 function number(value: string | undefined): number | null {
@@ -518,6 +541,30 @@ function maximum(record: Record<string, string>, keys: string[]) {
   return values.length ? Math.max(...values) : null;
 }
 
+function alleleIndexedInfo(
+  info: Record<string, string>,
+  altIndex: number,
+  altCount: number,
+) {
+  // Record-level per-allele INFO fields (Number=A) carry one comma-separated
+  // value per ALT in ALT order. Reducing across that list with max() assigns
+  // the highest allele's value (e.g. a common allele's gnomAD AF) to every
+  // allele, which then removes the rare candidate via the popmax filter.
+  // Select this ALT's token when the comma arity matches the ALT count; any
+  // other shape cannot be attributed and is left as-is.
+  if (altCount <= 1) return info;
+  const indexed: Record<string, string> = {};
+  for (const [key, value] of Object.entries(info)) {
+    if (key === "CSQ") {
+      indexed[key] = value;
+      continue;
+    }
+    const tokens = value.split(",");
+    indexed[key] = tokens.length === altCount ? tokens[altIndex] : value;
+  }
+  return indexed;
+}
+
 function preferredMaximum(record: Record<string, string>, keyGroups: string[][]) {
   for (const keys of keyGroups) {
     const value = maximum(record, keys);
@@ -564,27 +611,41 @@ function parseGenotype(
   const gt = fields.GT || "./.";
   const alleleNumber = altIndex + 1;
   const alleleTokens = gt.split(/[|/]/);
-  const called = alleleTokens.length > 0 && alleleTokens.every((allele) => /^\d+$/.test(allele));
-  const carrier = called && alleleTokens.some((allele) => Number(allele) === alleleNumber);
-  const altCopies = alleleTokens.filter((allele) => Number(allele) === alleleNumber).length;
+  const numericTokens = alleleTokens.filter((allele) => /^\d+$/.test(allele));
+  const called = alleleTokens.length > 0 && numericTokens.length === alleleTokens.length;
+  // A half-call such as ./1 demonstrably carries the ALT even though the
+  // second allele is unresolved; carrier must come from the present numeric
+  // tokens, with `called` retained separately to drive QC downgrades.
+  const carrier = numericTokens.some((allele) => Number(allele) === alleleNumber);
+  const altCopies = numericTokens.filter((allele) => Number(allele) === alleleNumber).length;
   const genotypeClass: GenotypeEvidence["genotypeClass"] = (
-    alleleTokens.length === 1 && altCopies === 1
-      ? "hemizygous"
-      : alleleTokens.length >= 2 && altCopies === alleleTokens.length
-        ? "homozygous_alt"
-        : altCopies > 0
-          ? "heterozygous"
-          : "other"
+    !called
+      ? "other"
+      : alleleTokens.length === 1 && altCopies === 1
+        ? "hemizygous"
+        : alleleTokens.length >= 2 && altCopies === alleleTokens.length
+          ? "homozygous_alt"
+          : altCopies > 0
+            ? "heterozygous"
+            : "other"
   );
+  // "." (or an absent AD) means depth was not measured — it must parse to
+  // null, not 0: a fabricated 0 reads as strong hom-alt evidence and fails
+  // depth QC as if it were a real measurement. Note Number("") === 0.
   const ad = (fields.AD || "").split(",").map((value) => {
-    const parsed = Number(value);
+    const trimmed = value.trim();
+    if (!trimmed || trimmed === ".") return null;
+    const parsed = Number(trimmed);
     return Number.isFinite(parsed) ? parsed : null;
   });
   const numericAd = ad.filter((value): value is number => value !== null);
   const totalDepth = numericAd.reduce((sum, value) => sum + value, 0);
   const adRef = ad[0] ?? null;
   const adAlt = ad[alleleNumber] ?? null;
-  const plValues = (fields.PL || "").split(",").map((value) => Number(value));
+  const plTokens = (fields.PL || "").split(",")
+    .map((value) => value.trim())
+    .filter((value) => value !== "" && value !== ".");
+  const plValues = plTokens.map(Number);
   const pl = plValues.length > 0 && plValues.every(Number.isFinite) ? plValues : null;
   let phaseHaplotype: 0 | 1 | null = null;
   if (gt.includes("|") && alleleTokens.length === 2) {
@@ -974,7 +1035,10 @@ export async function parseVcfFiles(
           throw new Error(`${file.name}: invalid GT '${gt}' for ${altRaw} at ${chrom}:${pos}`);
         }
       }
-      if (filter !== "PASS") {
+      // FILTER "." means no filtering was applied (VCFv4.x), not a failed
+      // filter — unfiltered callsets and liftover intermediates must not be
+      // silently emptied.
+      if (filter !== "PASS" && filter !== ".") {
         excludedNonPass += 1;
         continue;
       }
@@ -985,7 +1049,10 @@ export async function parseVcfFiles(
       const sampleValues = columns.slice(9);
 
       alts.forEach((alt, altIndex) => {
-        const variantEvidenceKey = `${chrom}:${posRaw}:${ref}:${alt}`;
+        // Contig naming must be normalized in the merge key, or a trio split
+        // across a chr-prefixed and an unprefixed VCF never merges evidence.
+        const variantEvidenceKey = `${normalizedContig(chrom)}:${posRaw}:${ref}:${alt}`;
+        const alleleInfo = alleleIndexedInfo(info, altIndex, alts.length);
         const sampleGenotypes = Object.fromEntries(fallbackSamples.map((sample, sampleIndex) => [
           sample,
           samples.length
@@ -1005,7 +1072,14 @@ export async function parseVcfFiles(
         const mergedEvidence = evidenceByVariant.get(variantEvidenceKey) ?? {};
         Object.entries(sampleGenotypes).forEach(([sample, evidence]) => {
           const previous = mergedEvidence[sample];
-          if (!previous || (!previous.called && evidence.called) || (evidence.gq ?? -1) > (previous.gq ?? -1)) {
+          // The GQ tiebreak must never let an uncalled genotype (./., which
+          // joint callers routinely emit with a non-trivial GQ) overwrite a
+          // real called genotype.
+          if (
+            !previous
+            || (!previous.called && evidence.called)
+            || (evidence.called === previous.called && (evidence.gq ?? -1) > (previous.gq ?? -1))
+          ) {
             mergedEvidence[sample] = evidence;
           }
         });
@@ -1021,12 +1095,22 @@ export async function parseVcfFiles(
             const alleleNum = Number(csq.ALLELE_NUM || 0);
             return alleleNum ? alleleNum === altIndex + 1 : !csq.Allele || csq.Allele === alt;
           });
-          const selected = matching.length ? matching : consequences;
+          // A single-ALT record's consequences necessarily describe this ALT
+          // even when VEP's minimised Allele string (e.g. "-" for indels)
+          // does not equal the raw ALT. On a multi-allelic record with no
+          // allele match, falling back to ALL consequences would attach the
+          // other alleles' genes, HGVS, and scores to this allele — emit one
+          // unannotated row instead so the carrier stays visible.
+          const selected = matching.length
+            ? matching
+            : alts.length === 1
+              ? consequences
+              : [{} as Record<string, string>];
           const legacyFallbackGenes = new Set<string>();
           if (!csqFields.includes("PICK")) {
             const byGene = new Map<string, Record<string, string>[]>();
             selected.forEach((csq) => {
-              const combined = { ...info, ...csq };
+              const combined = { ...alleleInfo, ...csq };
               const gene = first(combined, ["SYMBOL", "Gene", "HGNC"]) || "—";
               byGene.set(gene, [...(byGene.get(gene) ?? []), combined]);
             });
@@ -1040,7 +1124,7 @@ export async function parseVcfFiles(
             });
           }
           selected.forEach((csq, transcriptIndex) => {
-            const combined = { ...info, ...csq };
+            const combined = { ...alleleInfo, ...csq };
             const currentVariant = `${chrom}:${posRaw}:${ref}:${alt}`;
             const haplotypeFrame = haplotypeFrameEvidence(
               info.IEI_HAPLOTYPE_FRAME,
@@ -1239,7 +1323,9 @@ export async function parseVcfFiles(
   rows.forEach((row) => {
     row.sampleGenotypes = {
       ...(row.sampleGenotypes ?? {}),
-      ...(evidenceByVariant.get(`${row.chrom}:${row.pos}:${row.ref}:${row.alt}`) ?? {}),
+      ...(evidenceByVariant.get(
+        `${normalizedContig(row.chrom)}:${row.pos}:${row.ref}:${row.alt}`,
+      ) ?? {}),
     };
   });
 

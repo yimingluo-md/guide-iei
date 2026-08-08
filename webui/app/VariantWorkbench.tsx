@@ -3736,19 +3736,22 @@ function cohortRowForReview(row: CohortQueryRow): VariantRow {
     ? "homozygous_alt" as const
     : row.zygosity === "hemizygous"
       ? "hemizygous" as const
-      : "heterozygous" as const;
-  const adAlt = row.dp !== null && row.allele_balance !== null
-    ? Math.round(row.dp * row.allele_balance)
-    : null;
-  const adRef = row.dp !== null && adAlt !== null ? row.dp - adAlt : null;
+      : row.zygosity === "heterozygous"
+        ? "heterozygous" as const
+        : "other" as const;
+  // The cohort DB stores DP and allele balance but not per-allele AD.
+  // DP x AB is NOT the ALT depth (the service computes AB against sum(AD),
+  // which routinely differs from DP), and a derived integer rendered in the
+  // "REF, ALT depth" column is indistinguishable from a measured one. Report
+  // the depths as unavailable instead of fabricating them.
   const genotypeEvidence = {
     gt: row.genotype,
     called: true,
     carrier: true,
     dp: row.dp,
     gq: row.gq,
-    adRef,
-    adAlt,
+    adRef: null,
+    adAlt: null,
     alleleBalance: row.allele_balance,
     pl: null,
     phased: row.phased,
@@ -3814,8 +3817,8 @@ function cohortRowForReview(row: CohortQueryRow): VariantRow {
     genotype: row.genotype,
     dp: row.dp,
     gq: row.gq,
-    adRef,
-    adAlt,
+    adRef: null,
+    adAlt: null,
     alleleBalance: row.allele_balance,
     genotypeClass,
     genotypeFilter: "",

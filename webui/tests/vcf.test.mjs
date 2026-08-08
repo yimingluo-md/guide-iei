@@ -11,6 +11,7 @@ const compiled = ts.transpileModule(source, {
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
 const {
   candidateCompoundHetKeys,
+  isHeterozygousGenotype,
   STANDARD_VARIANT_QC,
   parseVcfFiles,
   preferredClinicalTranscriptRows,
@@ -547,4 +548,173 @@ test("streams a full WGS review BGZF without materializing decompressed text", {
   ]);
   assert.ok(result.summary.passRecords > 100000);
   assert.ok(result.rows.length >= result.summary.passRecords);
+});
+
+// ---- 2026-08 audit regression tests (Phase 1, webui) ----
+
+test("preserves literal '+' in HGVS and survives a stray '%' in one CSQ field", async () => {
+  // Audit UI-1/UI-2: decode() form-decoded '+' to a space (corrupting every
+  // intronic HGVS) and an invalid escape aborted the whole import.
+  const vcf = VCF
+    .replace("ENST:c.1A>G", "ENST:c.730+1G>A")
+    .replace("ENSP:p.Lys1Arg", "ENSP:p.M1V%");
+  const result = await parseVcfFiles([new File([vcf], "hgvs.vcf")]);
+  assert.equal(result.rows[0].hgvsC, "ENST:c.730+1G>A");
+  assert.equal(result.rows[0].hgvsP, "ENSP:p.M1V%");
+});
+
+test("retains FILTER='.' records instead of discarding them as non-PASS", async () => {
+  // Audit UI-3: '.' means "no filtering applied", not a failed filter.
+  const vcf = VCF.replace(
+    `1\t100\trs1\tA\tG\t99\tPASS\t`,
+    `1\t100\trs1\tA\tG\t99\t.\t`,
+  );
+  const result = await parseVcfFiles([new File([vcf], "unfiltered.vcf")]);
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.summary.excludedNonPass, 1); // only the LowQual record
+});
+
+test("indexes Number=A INFO values by allele instead of taking the maximum", async () => {
+  // Audit UI-8: the rare ALT inherited the common ALT's gnomAD AF and was
+  // removed by the popmax filter.
+  const fields = ["Allele", "Consequence", "IMPACT", "SYMBOL"];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\tG,T\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1,T|missense_variant|MODERATE|GENE1;gnomADg_AF=0.30,0.00001\tGT\t1/2",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "multiallelic.vcf")]);
+  const byAlt = new Map(result.rows.map((row) => [row.alt, row]));
+  assert.equal(byAlt.get("G").gnomadPopmax, 0.3);
+  assert.equal(byAlt.get("T").gnomadPopmax, 0.00001);
+});
+
+test("does not cross-assign consequences on a multi-allelic allele-match failure", async () => {
+  // Audit UI-4: without ALLELE_NUM, a minimised indel Allele ('-') matches no
+  // raw ALT and every consequence was previously attached to every allele.
+  const fields = ["Allele", "Consequence", "IMPACT", "SYMBOL"];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tCTT\tC,CT\t99\tPASS\tCSQ=-|frameshift_variant|HIGH|GENEA,-|inframe_deletion|MODERATE|GENEB\tGT\t1/2",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "indel.vcf")]);
+  assert.equal(result.rows.length, 2); // both carrier alleles stay visible
+  for (const row of result.rows) {
+    assert.equal(row.gene, "—"); // but with no fabricated annotation
+    assert.notEqual(row.gene, "GENEA");
+  }
+});
+
+test("emits a row for a half-called carrier genotype", async () => {
+  // Audit UI-6: ./1 was treated as a non-carrier and silently dropped.
+  const vcf = VCF.replace("\tGT:DP:GQ:AD\t0/1:40:99:20,20", "\tGT:DP:GQ:AD\t./1:40:99:20,20");
+  const result = await parseVcfFiles([new File([vcf], "halfcall.vcf")]);
+  assert.equal(result.rows.length, 1);
+  const evidence = result.rows[0].sampleGenotypes.PATIENT;
+  assert.equal(evidence.carrier, true);
+  assert.equal(evidence.called, false);
+  assert.equal(evidence.genotypeClass, "other");
+});
+
+test("a no-call with higher GQ does not overwrite a real called genotype", async () => {
+  // Audit UI-5: the merge's GQ tiebreak was not gated on callability.
+  const fields = ["Allele", "Consequence", "IMPACT", "SYMBOL"];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT\tMOTHER",
+    "1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1\tGT:GQ\t0/1:99\t0/0:50",
+    "1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1\tGT:GQ\t./.:80\t./.:80",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "dupes.vcf")]);
+  const mother = result.rows[0].sampleGenotypes.MOTHER;
+  assert.equal(mother.gt, "0/0");
+  assert.equal(mother.gq, 50);
+  assert.equal(result.rows[0].sampleGenotypes.PATIENT.gt, "0/1");
+});
+
+test("absent AD and PL parse to null, not fabricated zeros", async () => {
+  // Audit UI-7: Number("") === 0 made a missing AD read as measured zero depth.
+  const vcf = VCF.replace("\tGT:DP:GQ:AD\t0/1:40:99:20,20", "\tGT:DP:GQ\t0/1:40:99");
+  const result = await parseVcfFiles([new File([vcf], "noad.vcf")]);
+  const evidence = result.rows[0].sampleGenotypes.PATIENT;
+  assert.equal(evidence.adRef, null);
+  assert.equal(evidence.adAlt, null);
+  assert.equal(evidence.pl, null);
+  assert.equal(result.rows[0].adRef, null);
+});
+
+test("counts 1/2 as heterozygous for compound-het candidacy", () => {
+  // Audit UI-11: two distinct ALT alleles at one locus are necessarily in
+  // trans; the reference-allele requirement excluded exactly that case.
+  assert.equal(isHeterozygousGenotype("1/2"), true);
+  assert.equal(isHeterozygousGenotype("0/1"), true);
+  assert.equal(isHeterozygousGenotype("1/1"), false);
+  assert.equal(isHeterozygousGenotype("./1"), false);
+  const rows = [
+    { sample: "S", gene: "G1", genotype: "1/2", chrom: "1", pos: 100, ref: "A", alt: "G" },
+    { sample: "S", gene: "G1", genotype: "1/2", chrom: "1", pos: 100, ref: "A", alt: "T" },
+  ];
+  assert.equal(candidateCompoundHetKeys(rows).has("S:G1"), true);
+});
+
+test("QC genotype-class fallback does not classify uncalled or ref genotypes as hom-alt", () => {
+  // Audit UI-12: ./. and haploid 0 were routed into hom-alt allele-balance QC.
+  const base = {
+    dp: 30, gq: 99, adRef: 15, adAlt: 15, alleleBalance: 0.5,
+    qual: 99, qd: null, mq: null, fs: null, sor: null,
+    mqRankSum: null, readPosRankSum: null, baseQRankSum: null,
+    genotypeFilter: "",
+  };
+  for (const genotype of ["./.", "0", "0/0"]) {
+    const failures = variantQcFailures({ ...base, genotype }, STANDARD_VARIANT_QC);
+    assert.equal(
+      failures.some((failure) => failure.includes("allele balance")),
+      false,
+      `${genotype}: ${failures.join("; ")}`,
+    );
+  }
+});
+
+test("merges genotype evidence across chr-prefixed and unprefixed files", async () => {
+  // Audit UI-17: the evidence merge key was not contig-normalized, so a trio
+  // delivered as mixed-naming single-sample VCFs never merged.
+  const fields = ["Allele", "Consequence", "IMPACT", "SYMBOL"];
+  const header = (contig) => [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##contig=<ID=${contig},length=248956422>`,
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+  ];
+  const proband = [
+    ...header("chr1"),
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tCHILD",
+    "chr1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1\tGT\t0/1",
+    "",
+  ].join("\n");
+  const parent = [
+    ...header("1"),
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tMOTHER",
+    "1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1\tGT\t0/0",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([
+    new File([proband], "child.vcf"),
+    new File([parent], "mother.vcf"),
+  ]);
+  const childRow = result.rows.find((row) => row.sample === "CHILD");
+  assert.ok(childRow.sampleGenotypes.MOTHER, "mother evidence merged across naming styles");
+  assert.equal(childRow.sampleGenotypes.MOTHER.gt, "0/0");
 });

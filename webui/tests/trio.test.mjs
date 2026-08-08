@@ -149,3 +149,137 @@ test("requires opposite parental origins or phase for confirmed trans pairs", ()
   ], trio);
   assert.equal(sameParent[0].phase, "cis");
 });
+
+// ---- 2026-08 audit regression tests (Phase 1, webui) ----
+
+const maleTrio = { ...trio, probandSex: "male" };
+
+test("male proband non-PAR X de novo is not a mendelian conflict or artifact", () => {
+  // Audit UI-9: an X-linked de novo written as 1/1 hit the hom-alt conflict
+  // branch, and a haploid 1 failed the diploid allele-balance upper bound.
+  const diploidStyle = row({
+    chrom: "X",
+    pos: 71108276,
+    alleleBalance: 1,
+    sampleGenotypes: {
+      CHILD: evidence("1/1", 30, 99, 0, 30),
+      MOTHER: evidence("0/0", 32, 99, 32, 0),
+      FATHER: evidence("0/0", 28, 99, 28, 0),
+    },
+  });
+  assert.equal(assessDeNovo(diploidStyle, maleTrio).status, "high_confidence");
+
+  const haploidStyle = row({
+    chrom: "chrX",
+    pos: 71108276,
+    alleleBalance: 1,
+    sampleGenotypes: {
+      CHILD: evidence("1", 30, 99, 0, 30),
+      MOTHER: evidence("0/0", 32, 99, 32, 0),
+      FATHER: evidence("0/0", 28, 99, 28, 0),
+    },
+  });
+  assert.equal(assessDeNovo(haploidStyle, maleTrio).status, "high_confidence");
+});
+
+test("male X assessment depends only on the transmitting mother", () => {
+  // The father contributes the Y, so his X-locus genotype must not gate the
+  // call — even when it is missing entirely.
+  const fatherless = row({
+    chrom: "X",
+    pos: 71108276,
+    alleleBalance: 1,
+    sampleGenotypes: {
+      CHILD: evidence("1/1", 30, 99, 0, 30),
+      MOTHER: evidence("0/0", 32, 99, 32, 0),
+    },
+  });
+  assert.equal(assessDeNovo(fatherless, maleTrio).status, "high_confidence");
+
+  const maternallyInherited = row({
+    chrom: "X",
+    pos: 71108276,
+    alleleBalance: 1,
+    sampleGenotypes: {
+      CHILD: evidence("1/1", 30, 99, 0, 30),
+      MOTHER: evidence("0/1", 32, 99, 16, 16),
+      FATHER: evidence("0/0", 28, 99, 28, 0),
+    },
+  });
+  assert.equal(assessDeNovo(maternallyInherited, maleTrio).status, "inherited");
+});
+
+test("female proband X and male PAR X keep the diploid model", () => {
+  const femaleX = row({
+    chrom: "X",
+    pos: 71108276,
+    alleleBalance: 1,
+    sampleGenotypes: {
+      CHILD: evidence("1/1", 30, 99, 0, 30),
+      MOTHER: evidence("0/0", 32, 99, 32, 0),
+      FATHER: evidence("0/0", 28, 99, 28, 0),
+    },
+  });
+  assert.equal(assessDeNovo(femaleX, trio).status, "mendelian_conflict");
+
+  const par1 = row({
+    chrom: "X",
+    pos: 1000000,
+    alleleBalance: 1,
+    sampleGenotypes: {
+      CHILD: evidence("1/1", 30, 99, 0, 30),
+      MOTHER: evidence("0/0", 32, 99, 32, 0),
+      FATHER: evidence("0/0", 28, 99, 28, 0),
+    },
+  });
+  assert.equal(assessDeNovo(par1, maleTrio).status, "mendelian_conflict");
+});
+
+test("absent parental genotypes no longer promote pairs to possible_trans", () => {
+  // Audit UI-10: "we do not know the parental genotype" was converted into
+  // "this arose de novo", labelling unphaseable pairs possible_trans.
+  const unknownParents = row({
+    key: "unknown",
+    pos: 100,
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: evidence("./.", 0, 0, 0, 0),
+      FATHER: evidence("./.", 0, 0, 0, 0),
+    },
+  });
+  const paternal = row({
+    key: "paternal",
+    pos: 200,
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: evidence("0/0", 32, 99, 32, 0),
+      FATHER: evidence("0/1", 28, 99, 14, 14),
+    },
+  });
+  const pairs = compoundHetPairs([unknownParents, paternal], trio);
+  assert.equal(pairs.length, 1);
+  assert.equal(pairs[0].phase, "phase_unknown");
+});
+
+test("only affected members are offered as probands", () => {
+  // Audit UI-15: an unaffected sibling with two listed parents became a
+  // second proband whose healthy variants were analysed as de novo.
+  const result = parsePedigree(
+    "F1 CHILD FATHER MOTHER 2 2\nF1 SIB FATHER MOTHER 1 1\nF1 FATHER 0 0 1 1\nF1 MOTHER 0 0 2 1\n",
+    new Set(["CHILD", "SIB", "MOTHER", "FATHER"]),
+  );
+  assert.equal(result.trios.length, 1);
+  assert.equal(result.trios[0].proband, "CHILD");
+  assert.equal(result.warnings.some((warning) => warning.includes("SIB")), true);
+});
+
+test("parents that exist nowhere produce a warning, not a silent empty trio", () => {
+  // Audit UI-15: ghost parents previously yielded a trio and zero warnings.
+  const result = parsePedigree("F1 CHILD GHOST_DAD GHOST_MOM 1 2\n");
+  assert.equal(result.trios.length, 0);
+  assert.equal(
+    result.warnings.some((warning) => warning.includes("GHOST_DAD")),
+    true,
+    result.warnings.join(" | "),
+  );
+});
