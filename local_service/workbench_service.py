@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import platform
@@ -21,6 +22,7 @@ import socketserver
 import sqlite3
 import subprocess
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import asdict
@@ -32,14 +34,24 @@ from typing import Callable
 from urllib.parse import parse_qs, unquote, urlparse
 
 from local_service.ccre_context import CcreContextStore
+from local_service.clingen_erepo import ClinGenErepoStore
 from local_service.cohort_store import CohortStore
+from local_service.gene_knowledge import GeneKnowledgeStore
 from local_service.phenotype_store import PhenotypeStore
 from local_service.screen_context import ScreenContextStore
 from local_service.sample_library import SampleLibrary
+from local_service.storage_locations import (
+    STORAGE_KINDS,
+    STORAGE_MARKER,
+    StorageLocationRegistry,
+    StorageRegistryError,
+    path_is_dir,
+    storage_path_warning,
+)
 from local_service.wgs_review import WgsPrefilterOptions, WgsReviewStore
 
 
-SERVICE_VERSION = "0.10.0"
+SERVICE_VERSION = "0.13.0"
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 ALLOWED_PROFILES = {"local", "wsl-local"}
 ANNOTATION_SOURCE_PATHS = {
@@ -56,8 +68,25 @@ ANNOTATION_SOURCE_PATHS = {
     "clinvar_aa_match": ("post_processing", "clinvar_aa_match"),
     "liftover": ("liftover", "grch37_to_grch38"),
     "ccre": ("wgs_review", "ccre"),
+    "clingen_erepo": ("clingen_erepo", None),
 }
-REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp"}
+REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp", "clingen_erepo"}
+SOURCE_RECOMMENDATION_DEFAULTS = {
+    "dbnsfp": "required",
+    "loftee": "required",
+    "spliceai": "required",
+    "repeatmasker": "included",
+    "segdup": "included",
+    "promoterai": "optional",
+    "cadd_wgs": "recommended_wgs",
+    "logofunc": "optional",
+    "clinvar": "recommended",
+    "loftee_ptc_50bp": "included",
+    "clinvar_aa_match": "included",
+    "liftover": "included",
+    "ccre": "included",
+    "clingen_erepo": "required",
+}
 DBNSFP_OPTIONAL_PREDICTORS = [
     {"id": "sift4g", "label": "SIFT4G", "category": "Established", "columns": ["SIFT4G_score", "SIFT4G_pred"], "recommended": True},
     {"id": "polyphen_hvar", "label": "PolyPhen HVAR", "category": "Established", "columns": ["Polyphen2_HVAR_score", "Polyphen2_HVAR_pred"], "recommended": True},
@@ -88,6 +117,9 @@ DBNSFP_OPTIONAL_PREDICTORS = [
 ANNOTATION_SOURCE_SETUP = {
     "dbnsfp": {
         "setup_mode": "manual",
+        "prepare_id": "dbnsfp",
+        "access": "registration",
+        "recommendation": "required",
         "reference_url": "https://www.dbnsfp.org/download",
         "reference_label": "dbNSFP academic download registration",
         "size_hint": "approximately 50 GB after preparation",
@@ -95,7 +127,9 @@ ANNOTATION_SOURCE_SETUP = {
             "Register with an institutional email at the dbNSFP academic download page.",
             "Use the emailed access code to request the current academic release links.",
             "Download and extract dbNSFP 5.3.1a for GRCh38.",
-            "In a terminal, run: bash scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir",
+            "Select Choose folder and pick the extracted dbNSFP release; no path typing or terminal command is required.",
+            "Preparation re-sorts the full release on GRCh38 coordinates and may require about 220 GiB of temporary/output space.",
+            "Only after the managed table and tabix index are successfully created, the downloaded per-chromosome source files are removed to reclaim space.",
             "Return here and confirm that both the configured .gz file and its .tbi index are detected.",
         ],
     },
@@ -151,6 +185,8 @@ ANNOTATION_SOURCE_SETUP = {
     },
     "promoterai": {
         "setup_mode": "prepare",
+        "access": "license",
+        "recommendation": "optional",
         "prepare_id": "promoterai",
         "reference_url": "https://github.com/Illumina/PromoterAI",
         "reference_label": "Illumina PromoterAI access information",
@@ -158,13 +194,16 @@ ANNOTATION_SOURCE_SETUP = {
         "instructions": [
             "Request PromoterAI access from Illumina and obtain tss.tsv plus promoterAI_tss500.tsv.gz.",
             "Keep both licensed files in one local folder; this software does not upload, redistribute, or copy them into its repository.",
-            "Enter that folder below and select Prepare local files. Basic schema, coordinate, allele, and score checks run automatically.",
+            "Select Choose folder and pick that download folder. Basic schema, coordinate, allele, and score checks run automatically.",
             "The local preparation collapses transcripts sharing a TSS, BGZF-compresses and indexes the score table, and records source and derived-file checksums.",
+            "Only after every managed output is published successfully, the two selected Illumina source files are removed to reclaim space.",
             "PromoterAI can be enabled only for whole-genome annotation; it is intentionally unavailable for Exome region only.",
         ],
     },
     "cadd_wgs": {
         "setup_mode": "download",
+        "access": "terms",
+        "recommendation": "recommended_wgs",
         "download_id": "cadd_wgs",
         "reference_url": "https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/",
         "reference_label": "CADD v1.7 downloads",
@@ -179,14 +218,16 @@ ANNOTATION_SOURCE_SETUP = {
     },
     "logofunc": {
         "setup_mode": "prepare",
+        "access": "terms",
+        "recommendation": "optional",
         "download_id": "logofunc",
         "prepare_id": "logofunc",
         "reference_url": "https://zenodo.org/records/13835271",
         "reference_label": "LoGoFunc Zenodo record 13835271",
         "size_hint": "3.66 GB plus tabix index; GRCh38 canonical missense SNVs",
         "instructions": [
-            "Select Download / resume to fetch the pinned Zenodo table and index, or enter an existing file/folder below.",
-            "The existing-file option validates checksums and creates ignored local links; it does not copy or upload the multi-gigabyte source.",
+            "Select Download from Zenodo to fetch the pinned table and index directly into Annotation datasets storage, or use Choose file for a file downloaded elsewhere.",
+            "The existing-file option validates checksums and moves the table and adjacent index into configured Annotation datasets storage; the originals are removed from the selected location and are never uploaded.",
             "Annotation requires an exact allele, Ensembl transcript, residue position, and amino-acid substitution match.",
             "The source description states academic use only; commercial users should contact the corresponding author.",
             "LoGoFunc predicts missense mechanism and does not replace LOFTEE or clinical variant classification.",
@@ -226,13 +267,16 @@ ANNOTATION_SOURCE_SETUP = {
         ],
     },
     "liftover": {
-        "setup_mode": "download",
+        "setup_mode": "bundled",
         "download_id": "liftover",
+        "access": "bundled",
+        "recommendation": "included",
         "reference_url": "https://github.com/freeseek/score#liftover-vcfs",
         "reference_label": "BCFtools/liftover documentation and publication",
-        "size_hint": "approximately 1 GB; required only for hg19/GRCh37 input",
+        "size_hint": "approximately 915 MB; included with the software",
         "instructions": [
-            "Select Download / resume to install the exact UCSC hg19 primary FASTA and hg19-to-GRCh38 chain.",
+            "The exact UCSC hg19 primary FASTA and hg19-to-GRCh38 chain are included in the native software bundle.",
+            "If either bundled file is reported missing, select Repair bundled files to restore the pinned public copy.",
             "The downloader retains primary chromosomes and normalizes contig names to the pipeline convention.",
             "The pinned BCFtools/liftover plugin remaps GT, AD, PL, and other allele-indexed fields when REF/ALT changes.",
             "Calls that become GRCh38 reference are kept in a separate audit VCF and do not enter VEP or candidate lists.",
@@ -240,18 +284,35 @@ ANNOTATION_SOURCE_SETUP = {
         ],
     },
     "ccre": {
-        "setup_mode": "download",
+        "setup_mode": "bundled",
         "download_id": "ccre",
+        "access": "bundled",
+        "recommendation": "included",
         "reference_url": "https://downloads.wenglab.org/Registry-V4/GRCh38-cCREs.bed",
         "reference_label": "ENCODE SCREEN Registry V4 GRCh38 cCRE BED",
-        "size_hint": "approximately 30 MB after preparation",
+        "size_hint": "approximately 25 MB; included with the software",
         "instructions": [
-            "Select Download to install the public SCREEN Registry V4 GRCh38 cCRE regions.",
+            "The prepared public SCREEN Registry V4 GRCh38 cCRE regions and index are included in the native software bundle.",
+            "If the bundled files are reported missing, select Repair bundled files to restore the pinned public copy.",
             "The software retains primary contigs, cCRE accessions, and overall cCRE classes, then creates a BGZF/tabix BED.",
             "It also derives a compact gene-level TSS table from the release-matched Ensembl GTF for local +/-500 kb context.",
             "This BED is used by the local WGS import filter; it is not added as a VEP transcript annotation.",
             "Nearby genes are proximity context only; the nearest or VEP-annotated gene is not necessarily regulated by the cCRE.",
             "The exact release is pinned so an upstream SCREEN update cannot silently change an existing import.",
+        ],
+    },
+    "clingen_erepo": {
+        "setup_mode": "download",
+        "download_id": "clingen_erepo",
+        "reference_url": "https://erepo.clinicalgenome.org/evrepo/",
+        "reference_label": "ClinGen Evidence Repository",
+        "size_hint": "approximately 35 MB source; compact local VCF and SQLite snapshot",
+        "instructions": [
+            "Select Install latest or Update snapshot to download the official public classification export.",
+            "The updater validates the schema, resolves exact GRCh38 alleles, preserves every disease- and inheritance-specific expert-panel assertion, and records checksums and mapping coverage.",
+            "A failed update leaves the previous working snapshot unchanged.",
+            "Annotation uses only the installed local snapshot; patient variants are never sent to ClinGen.",
+            "Retracted rows remain in the audit database but are not emitted as active variant evidence.",
         ],
     },
 }
@@ -262,6 +323,58 @@ RESOURCE_DOWNLOAD_COMMANDS = {
     "liftover": ("scripts/download_references.sh", "--only", "liftover"),
     "logofunc": ("scripts/download_logofunc.sh",),
     "ccre": ("scripts/download_references.sh", "--only", "ccre"),
+    "gene_knowledge": ("scripts/update_gene_knowledge.sh",),
+    "clingen_erepo": ("scripts/update_clingen_erepo.sh",),
+    "recommended_exome": ("scripts/install_recommended_datasets.sh", "exome"),
+    "recommended_wgs": ("scripts/install_recommended_datasets.sh", "whole_genome"),
+    "refresh_updates": ("scripts/update_refreshable_datasets.sh",),
+}
+# Conservative minimum free-space checks for downloads started from the UI.
+# The downloaders themselves remain resumable; this guard prevents starting a
+# large resource on a volume that clearly cannot hold its finished payload.
+GIB = 1024 ** 3
+RESOURCE_DOWNLOAD_OUTPUTS = {
+    "spliceai": [(("plugins", "SpliceAI", "snv"), 30 * GIB, False)],
+    # Check the two CADD payloads together when they share a filesystem.
+    "cadd_wgs": [
+        (("plugins", "CADD_WGS", "snv"), 75 * GIB, False),
+        (("plugins", "CADD_WGS", "indels"), 15 * GIB, False),
+    ],
+    "clinvar": [(("clinvar", "dest_dir"), 2 * GIB, True)],
+    "liftover": [
+        (("liftover", "grch37_to_grch38", "source_fasta"), int(1.5 * GIB), False),
+        (("liftover", "grch37_to_grch38", "chain"), int(0.5 * GIB), False),
+    ],
+    "logofunc": [(("plugins", "LoGoFunc", "file"), 5 * GIB, False)],
+    # SCREEN preparation also downloads the release-matched Ensembl GTF used
+    # to derive the bundled +/-500 kb gene-TSS context table.
+    "ccre": [(("wgs_review", "ccre", "bed"), 3 * GIB, False)],
+    "clingen_erepo": [(("clingen_erepo", "dest_dir"), 1 * GIB, True)],
+    "recommended_exome": [
+        (("reference", "vep_cache_dir"), 35 * GIB, True),
+        (("reference", "fasta", "path"), 2 * GIB, False),
+        (("plugins", "LoF", "human_ancestor_fa"), 20 * GIB, False),
+        (("plugins", "SpliceAI", "snv"), 30 * GIB, False),
+        (("clinvar", "dest_dir"), 2 * GIB, True),
+        (("clingen_erepo", "dest_dir"), 1 * GIB, True),
+    ],
+    "recommended_wgs": [
+        (("reference", "vep_cache_dir"), 35 * GIB, True),
+        (("reference", "fasta", "path"), 2 * GIB, False),
+        (("plugins", "LoF", "human_ancestor_fa"), 20 * GIB, False),
+        (("plugins", "SpliceAI", "snv"), 30 * GIB, False),
+        (("plugins", "CADD_WGS", "snv"), 75 * GIB, False),
+        (("plugins", "CADD_WGS", "indels"), 15 * GIB, False),
+        (("clinvar", "dest_dir"), 2 * GIB, True),
+        (("clingen_erepo", "dest_dir"), 1 * GIB, True),
+    ],
+    "refresh_updates": [
+        (("clinvar", "dest_dir"), 2 * GIB, True),
+        (("clingen_erepo", "dest_dir"), 1 * GIB, True),
+    ],
+    "dbnsfp_prepare": [
+        (("plugins", "dbNSFP", "path"), 220 * GIB, False),
+    ],
 }
 
 
@@ -278,6 +391,28 @@ def default_state_dir() -> Path:
     if override:
         return Path(override).expanduser()
     return Path.home() / ".iei-variant-review"
+
+
+def _directory_size(path: Path) -> int:
+    try:
+        exists = path.exists()
+    except OSError:
+        return 0
+    if not exists:
+        return 0
+    total = 0
+    try:
+        for root, _directories, files in os.walk(path, onerror=lambda _error: None):
+            for name in files:
+                item = Path(root) / name
+                try:
+                    if not item.is_symlink():
+                        total += item.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        pass
+    return total
 
 
 class JobStore:
@@ -417,9 +552,69 @@ class JobStore:
 
 
 class AnnotationJobService:
-    def __init__(self, pipeline_root: Path, state_dir: Path, start_worker: bool = True):
+    def __init__(
+        self,
+        pipeline_root: Path,
+        state_dir: Path,
+        start_worker: bool = True,
+        storage_registry: StorageLocationRegistry | None = None,
+    ):
         self.pipeline_root = pipeline_root.resolve()
         self.state_dir = state_dir.resolve()
+        self.storage_registry = storage_registry or StorageLocationRegistry(
+            self.pipeline_root,
+            self.state_dir,
+            registry_path=self.state_dir.parent / f".{self.state_dir.name}.storage-registry.json",
+            persist=True,
+        )
+        # Roots are intentionally captured at service start. A location change
+        # is persisted safely, but takes effect after a workbench restart so a
+        # running job can never switch filesystems halfway through a run.
+        self.annotation_root = self.storage_registry.root("annotation")
+        self.workspace_dir = (
+            self.state_dir
+            if self.storage_registry.describe("temporary").get("follows_data_root")
+            else self.storage_registry.root("temporary")
+        )
+        if (
+            path_is_dir(self.state_dir)
+            and self.storage_registry.root("data") == self.state_dir
+            and not self.storage_registry.is_default("data")
+        ):
+            self.storage_registry.ensure_marker_identity(
+                "data", self.state_dir, required=True, service=SERVICE_VERSION
+            )
+        if (
+            path_is_dir(self.workspace_dir)
+            and self.storage_registry.root("temporary") == self.workspace_dir
+            and not self.storage_registry.is_default("temporary")
+        ):
+            self.storage_registry.ensure_marker_identity(
+                "temporary", self.workspace_dir, required=True, service=SERVICE_VERSION
+            )
+        if not path_is_dir(self.state_dir) and (
+            self.storage_registry.root("data") == self.state_dir
+            and not self.storage_registry.is_default("data")
+        ):
+            raise ValueError(
+                "configured Sample Library & Cohort storage is unavailable. "
+                "Reconnect the selected drive; the workbench will not create a fallback database."
+            )
+        if not path_is_dir(self.workspace_dir) and (
+            self.storage_registry.root("temporary") == self.workspace_dir
+            and not self.storage_registry.is_default("temporary")
+        ):
+            raise ValueError(
+                "configured temporary workspace is unavailable. Reconnect the selected drive; "
+                "the workbench will not fall back to a different folder."
+            )
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise ValueError(
+                f"configured workbench storage is unavailable or not writable: {exc}"
+            ) from exc
         self.logs_dir = self.state_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.resource_logs_dir = self.state_dir / "resource-logs"
@@ -428,16 +623,32 @@ class AnnotationJobService:
         self.cohort = CohortStore(
             self.state_dir / "cohort.sqlite3",
             enable_auto_index=True,
+            workspace_dir=self.workspace_dir,
         )
-        self.wgs_review = WgsReviewStore(self.state_dir, self.cohort)
+        self.wgs_review = WgsReviewStore(
+            self.state_dir, self.cohort, workspace_dir=self.workspace_dir
+        )
         self.ccre_context_store = CcreContextStore(self.cohort.hts_backend)
         self.screen_context_store = ScreenContextStore()
+        self.screen_context_pointer = self.state_dir / "screen-context.json"
         self._wgs_review_files: dict[str, Path] = {}
         self._wgs_review_jobs: dict[str, dict] = {}
         self._wgs_review_threads: dict[str, threading.Thread] = {}
         self._wgs_review_lock = threading.Lock()
         self.phenotypes = PhenotypeStore(self.state_dir / "cohort.sqlite3")
-        self.sample_library = SampleLibrary(self.state_dir, self.cohort)
+        self.sample_library = SampleLibrary(
+            self.state_dir, self.cohort, workspace_dir=self.workspace_dir
+        )
+        gene_knowledge_override = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
+        self.gene_knowledge = GeneKnowledgeStore(
+            gene_knowledge_override if gene_knowledge_override.is_file() else
+            self.pipeline_root / "webui" / "public" / "bundled-data" / "gene_knowledge_public.sqlite3",
+            self.state_dir / "gene-knowledge" / "omim.sqlite3",
+        )
+        self.clingen_erepo = ClinGenErepoStore(
+            self.annotation_root / "clingen_erepo" / "clingen_erepo.sqlite3",
+            self.annotation_root / "clingen_erepo" / "manifest.json",
+        )
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._processes: dict[str, subprocess.Popen] = {}
         self._process_lock = threading.Lock()
@@ -445,7 +656,16 @@ class AnnotationJobService:
         self._resource_processes: dict[str, subprocess.Popen] = {}
         self._resource_threads: dict[str, threading.Thread] = {}
         self._resource_lock = threading.Lock()
+        self._storage_jobs: dict[str, dict] = {}
+        self._storage_threads: dict[str, threading.Thread] = {}
+        self._storage_lock = threading.Lock()
+        self._storage_transition = threading.Condition(threading.Lock())
+        self._active_storage_mutations = 0
+        self._migration_reserved = False
+        self._storage_usage_cache: dict[str, tuple[float, int]] = {}
+        self._storage_usage_lock = threading.Lock()
         self._stop = threading.Event()
+        self._recover_stale_storage_migrations()
         self._worker: threading.Thread | None = None
         for job_id in self.store.queued_ids():
             self._queue.put(job_id)
@@ -454,6 +674,57 @@ class AnnotationJobService:
                 target=self._worker_loop, name="annotation-worker", daemon=True
             )
             self._worker.start()
+
+    def _recover_stale_storage_migrations(self) -> None:
+        """Remove only staging roots recorded by an interrupted prior process."""
+        for record in self.storage_registry.migration_history():
+            if record.get("status") not in {"queued", "running"}:
+                continue
+            job_id = str(record.get("id") or "")
+            kind = str(record.get("kind") or "")
+            destination_text = str(record.get("destination") or "")
+            if not job_id or kind not in STORAGE_KINDS or not destination_text:
+                continue
+            destination = Path(destination_text).expanduser().resolve(strict=False)
+            staging = destination.parent / f".{destination.name}.iei-migrating-{job_id[:12]}"
+            configured = self.storage_registry.root(kind)
+            recovered_active = configured == destination and destination.is_dir()
+            cleanup_error = ""
+            if not recovered_active:
+                for candidate in (staging, destination):
+                    if not candidate.exists():
+                        continue
+                    # The exact destination is deleted only when it carries the
+                    # marker written by this workbench. An arbitrary user folder
+                    # is never a recovery target.
+                    if candidate == destination:
+                        try:
+                            marker = self.storage_registry.marker(candidate)
+                        except StorageRegistryError:
+                            marker = None
+                        if (
+                            not marker
+                            or marker.get("kind") != kind
+                            or marker.get("migration_id") != job_id
+                        ):
+                            continue
+                    try:
+                        shutil.rmtree(candidate)
+                    except OSError as exc:
+                        cleanup_error = f"; partial copy remains at {candidate}: {exc}"
+            updated = {
+                **record,
+                "status": "succeeded" if recovered_active else "interrupted",
+                "finished_at": utc_now(),
+                "restart_required": recovered_active,
+                "staging_path": "" if not cleanup_error else str(staging),
+                "message": (
+                    "Recovered an activated migration after an interrupted shutdown."
+                    if recovered_active else "Interrupted migration staging was cleaned; the original location remains active."
+                ),
+                "error": cleanup_error.lstrip("; "),
+            }
+            self.storage_registry.record_migration(updated)
 
     def capabilities(self) -> dict:
         in_wsl = is_wsl()
@@ -480,6 +751,10 @@ class AnnotationJobService:
             "cohort_database": str(self.cohort.database_path),
             "phenotype_database": str(self.phenotypes.database_path),
             "sample_library_directory": str(self.sample_library.root),
+            # The annotation screen only needs root state. Avoid walking a
+            # multi-gigabyte cache every time capabilities are refreshed; the
+            # Storage page obtains fresh size values explicitly.
+            "storage": self.storage_configuration(include_usage=False),
             "container_runtimes": runtimes,
             "hardware": hardware,
             "profiles": [profile],
@@ -509,6 +784,7 @@ class AnnotationJobService:
         }
 
     def import_sample_library(self, payload: dict) -> dict:
+        self._ensure_active_storage_available(require_workspace=True)
         sources = payload.get("sources")
         if not isinstance(sources, list) or not sources:
             raise ValueError("sources must contain at least one review VCF")
@@ -546,13 +822,884 @@ class AnnotationJobService:
         return {"imports": results, "datasets": [dataset for result in results for dataset in result["datasets"]]}
 
     def cleanup_storage(self, categories: list[str]) -> dict:
+        if self.storage_migration_active():
+            raise ValueError("wait for the active storage migration before cleaning cache files")
+        self._ensure_storage_idle()
         with self._wgs_review_lock:
             if any(
                 job.get("status") in {"queued", "running"}
                 for job in self._wgs_review_jobs.values()
             ):
                 raise ValueError("wait for the active WGS review import before cleaning caches")
-        return self.sample_library.cleanup(categories)
+        result = self.sample_library.cleanup(categories)
+        self._invalidate_storage_size_cache(self.state_dir, self.workspace_dir)
+        return result
+
+    def compact_storage(self) -> dict:
+        if self.storage_migration_active():
+            raise ValueError("wait for the active storage migration before compacting SQLite")
+        result = self.sample_library.compact_database()
+        self._invalidate_storage_size_cache(self.state_dir)
+        return result
+
+    # ------------------------------------------------------------------
+    # Workstation storage locations
+    # ------------------------------------------------------------------
+    def _cached_storage_size(self, path: Path, max_age_seconds: float = 300.0) -> int:
+        key = str(path.resolve(strict=False))
+        now = time.monotonic()
+        # Keep the scan itself under the lock. Storage usage is requested
+        # infrequently and this prevents concurrent HTTP requests from starting
+        # duplicate recursive walks over a large annotation bundle.
+        with self._storage_usage_lock:
+            cached = self._storage_usage_cache.get(key)
+            if cached and now - cached[0] < max_age_seconds:
+                return cached[1]
+            value = _directory_size(path)
+            self._storage_usage_cache[key] = (now, value)
+        return value
+
+    def _invalidate_storage_size_cache(self, *paths: Path) -> None:
+        keys = {str(path.resolve(strict=False)) for path in paths}
+        with self._storage_usage_lock:
+            for key in keys:
+                self._storage_usage_cache.pop(key, None)
+
+    def storage_configuration(self, *, include_usage: bool = True) -> dict:
+        """Describe configured locations without creating a fallback store."""
+        configuration = self.storage_registry.as_dict(
+            active_data_root=self.state_dir,
+            active_annotation_root=self.annotation_root,
+            active_temporary_root=self.workspace_dir,
+        )
+        configured_annotation_root = self.storage_registry.root("annotation")
+        configured_data_root = self.storage_registry.root("data")
+        configured_temporary_root = self.storage_registry.root("temporary")
+        annotation_bytes = (
+            self._cached_storage_size(configured_annotation_root)
+            if include_usage else None
+        )
+        data_bytes = (
+            self._cached_storage_size(configured_data_root)
+            if include_usage else None
+        )
+        workspace_is_within_data = (
+            configured_temporary_root == configured_data_root
+            or configured_data_root in configured_temporary_root.parents
+        )
+        temporary_bytes = (
+            None if workspace_is_within_data or not include_usage
+            else self._cached_storage_size(configured_temporary_root)
+        )
+        for location in configuration["locations"]:
+            if location["id"] == "annotation":
+                location["used_bytes"] = annotation_bytes
+                location["included_with_data"] = False
+            elif location["id"] == "data":
+                location["used_bytes"] = data_bytes
+                location["included_with_data"] = False
+            else:
+                location["used_bytes"] = temporary_bytes
+                location["included_with_data"] = workspace_is_within_data
+        configuration["annotation_bytes"] = annotation_bytes
+        configuration["active_data_root"] = str(self.state_dir)
+        configuration["active_annotation_root"] = str(self.annotation_root)
+        configuration["active_temporary_root"] = str(self.workspace_dir)
+        return configuration
+
+    def _ensure_active_storage_available(
+        self, *, require_workspace: bool = False, require_annotation_root: bool = False
+    ) -> None:
+        if self.storage_restart_required():
+            raise ValueError(
+                "A storage location change is pending. Restart the workbench before starting or changing data."
+            )
+        if self.storage_migration_active():
+            raise ValueError(
+                "A storage migration is running. Wait for the verified copy to finish before starting or changing workbench data."
+            )
+        if not path_is_dir(self.state_dir) or not os.access(self.state_dir, os.W_OK):
+            raise ValueError(
+                "Sample Library & Cohort storage is unavailable. Reconnect the selected drive; "
+                "the workbench will not create a fallback database."
+            )
+        if require_workspace and (
+            not path_is_dir(self.workspace_dir)
+            or not os.access(self.workspace_dir, os.W_OK)
+        ):
+            raise ValueError(
+                "Temporary workspace is unavailable. Reconnect the selected drive; "
+                "the workbench will not fall back to a different folder."
+            )
+        if require_annotation_root and (
+            not path_is_dir(self.annotation_root)
+            or not os.access(self.annotation_root, os.R_OK)
+        ):
+            raise ValueError(
+                "Annotation dataset storage is unavailable. Reconnect the selected drive before downloading or annotating."
+            )
+
+    def storage_stats(self) -> dict:
+        configuration = self.storage_configuration()
+        if not path_is_dir(self.state_dir):
+            # Keep the Storage page useful when a selected external drive was
+            # unplugged after startup. Do not open SQLite or create a fallback
+            # database merely to produce a status response.
+            stats = {
+                "state_dir": str(self.state_dir),
+                "workspace_dir": str(self.workspace_dir),
+                "locations": {
+                    "database": 0,
+                    "managed_library": 0,
+                    "uploads": 0,
+                    "cohort_cache": 0,
+                    "wgs_review_cache": 0,
+                    "logs": 0,
+                    "other": 0,
+                },
+                "total_bytes": 0,
+                "datasets": 0,
+                "managed_unique_files": 0,
+                "database_page_bytes": 0,
+                "database_reclaimable_bytes": 0,
+                "storage_error": "Sample Library & Cohort storage is unavailable. Reconnect the selected drive.",
+            }
+        else:
+            try:
+                stats = self.sample_library.storage_stats()
+            except (OSError, sqlite3.Error) as exc:
+                stats = {
+                    "state_dir": str(self.state_dir),
+                    "workspace_dir": str(self.workspace_dir),
+                    "locations": {
+                        "database": 0,
+                        "managed_library": 0,
+                        "uploads": 0,
+                        "cohort_cache": 0,
+                        "wgs_review_cache": 0,
+                        "logs": 0,
+                        "other": 0,
+                    },
+                    "total_bytes": 0,
+                    "datasets": 0,
+                    "managed_unique_files": 0,
+                    "database_page_bytes": 0,
+                    "database_reclaimable_bytes": 0,
+                    "storage_error": f"Sample Library & Cohort storage could not be read: {exc}",
+                }
+        stats["storage_configuration"] = configuration
+        stats["annotation_bytes"] = configuration["annotation_bytes"] or 0
+        return stats
+
+    @staticmethod
+    def _storage_kind(value: object) -> str:
+        kind = str(value or "").strip().lower()
+        if kind not in STORAGE_KINDS:
+            raise ValueError("storage location must be annotation, data, or temporary")
+        return kind
+
+    def _safe_storage_path(self, raw: object) -> Path:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError("a local folder path is required")
+        text = raw.strip()
+        # A WSL user may paste the Windows spelling shown by the Storage page.
+        # Translate the common mounted-drive form rather than creating a folder
+        # literally named ``C:\\...`` beneath the Linux working directory.
+        windows_path = re.match(r"^([A-Za-z]):[\\/]?(.*)$", text)
+        if is_wsl() and windows_path:
+            drive, remainder = windows_path.groups()
+            text = "/mnt/" + drive.lower() + "/" + remainder.replace("\\", "/")
+        elif windows_path and os.name != "nt":
+            raise ValueError(
+                "Windows drive paths can be used from Windows or WSL only; choose a local macOS/Linux path here"
+            )
+        try:
+            path = Path(text).expanduser().resolve(strict=False)
+        except OSError as exc:
+            raise ValueError(f"storage path cannot be inspected: {text} ({exc})") from exc
+        home = Path.home().resolve()
+        protected = {Path(path.anchor), home, self.pipeline_root}
+        if path in protected:
+            raise ValueError("choose a dedicated subfolder, not a filesystem root, home folder, or the software folder")
+        return path
+
+    @staticmethod
+    def _is_empty_directory(path: Path) -> bool:
+        try:
+            if not path.is_dir():
+                return False
+            ignored = {".DS_Store", "Thumbs.db", STORAGE_MARKER}
+            return not any(item.name not in ignored for item in path.iterdir())
+        except OSError:
+            return False
+
+    @staticmethod
+    def _paths_overlap(first: Path, second: Path) -> bool:
+        first = first.resolve(strict=False)
+        second = second.resolve(strict=False)
+        return first == second or first in second.parents or second in first.parents
+
+    def _test_storage_path(self, kind: str, path: Path, *, allow_missing: bool = True) -> dict:
+        try:
+            path_exists = path.exists()
+        except OSError as exc:
+            raise ValueError(f"storage path cannot be inspected: {path} ({exc})") from exc
+        parent = path if path_exists else path.parent
+        if not path_is_dir(parent):
+            raise ValueError(f"parent folder does not exist: {parent}")
+        if kind == "annotation" and path_is_dir(path):
+            if not os.access(path, os.R_OK):
+                raise ValueError(f"annotation folder is not readable: {path}")
+        else:
+            if not os.access(parent, os.W_OK):
+                raise ValueError(f"folder is not writable: {parent}")
+            probe = parent / f".iei-workbench-write-test-{uuid.uuid4().hex}"
+            try:
+                probe.write_text("ok", encoding="utf-8")
+                probe.unlink()
+            except OSError as exc:
+                raise ValueError(f"folder is not writable: {parent} ({exc})") from exc
+        try:
+            usage = shutil.disk_usage(parent)
+            free_bytes, total_bytes = usage.free, usage.total
+        except OSError:
+            free_bytes = total_bytes = None
+        return {
+            "id": kind,
+            "path": str(path),
+            "parent": str(parent),
+            "exists": path_is_dir(path),
+            "empty": self._is_empty_directory(path) if path_exists else True,
+            "free_bytes": free_bytes,
+            "total_bytes": total_bytes,
+            "warning": storage_path_warning(path, kind),
+            "ready": True,
+            "allow_missing": allow_missing,
+        }
+
+    def test_storage_location(self, payload: dict) -> dict:
+        kind = self._storage_kind(payload.get("kind"))
+        path = self._safe_storage_path(payload.get("path"))
+        result = self._test_storage_path(kind, path)
+        # Path-specific warning rather than the current configured-root warning.
+        result["warning"] = storage_path_warning(path, kind)
+        return result
+
+    def _write_storage_marker(
+        self, path: Path, kind: str, *, storage_id: str | None = None,
+        migration_id: str = "",
+    ) -> str:
+        return self.storage_registry.write_marker(
+            path, kind, storage_id=storage_id, service=SERVICE_VERSION,
+            migration_id=migration_id,
+        )
+
+    def set_storage_location(self, payload: dict) -> dict:
+        """Persist a future location without moving existing files.
+
+        A restart is deliberately required: this prevents a running SQLite
+        connection, tabix reader, or VEP process from seeing mixed roots.
+        """
+        kind = self._storage_kind(payload.get("kind"))
+        if kind == "temporary" and bool(payload.get("follow_data_root")):
+            self._ensure_storage_idle()
+            self.storage_registry.set_root("temporary", None)
+            restart_required = self.workspace_dir != self.state_dir
+            return {
+                "storage": self.storage_configuration(),
+                "restart_required": restart_required,
+                "message": (
+                    "Temporary workspace will follow Sample Library & Cohort storage after restart."
+                    if restart_required else "Temporary workspace already follows Sample Library & Cohort storage."
+                ),
+            }
+        path = self._safe_storage_path(payload.get("path"))
+        self._ensure_storage_idle()
+        self._test_storage_path(kind, path)
+        if path.exists() and not path.is_dir():
+            raise ValueError("storage path exists but is not a folder")
+        # Data and temporary locations are created as dedicated roots. Existing
+        # non-empty resource roots are valid because users may already have
+        # installed VEP datasets there.
+        marker = self.storage_registry.marker(path) if path.exists() else None
+        if marker is not None and marker.get("kind") != kind:
+            raise ValueError(
+                f"this folder is marked for {marker.get('kind') or 'another storage type'}, not {kind}"
+            )
+        if kind in {"data", "temporary"} and path.exists() and not self._is_empty_directory(path):
+            if marker is None:
+                raise ValueError(
+                    "choose an empty dedicated folder or a previously managed workbench folder with a valid storage marker"
+                )
+        data_root = self.storage_registry.root("data")
+        temporary_root = self.storage_registry.root("temporary")
+        if kind == "temporary" and self._paths_overlap(path, data_root):
+            raise ValueError(
+                "choose a temporary workspace that is separate from and does not contain the Sample Library location"
+            )
+        if (
+            kind == "data"
+            and temporary_root != data_root
+            and self._paths_overlap(path, temporary_root)
+        ):
+            raise ValueError(
+                "choose a Sample Library location that is separate from the configured temporary workspace"
+            )
+        if not path.exists():
+            path.mkdir(parents=True, exist_ok=False)
+        storage_id = str((marker or {}).get("storage_id") or "")
+        if not storage_id and os.access(path, os.W_OK):
+            storage_id = self._write_storage_marker(path, kind)
+        elif kind in {"data", "temporary"} and not storage_id:
+            raise ValueError("managed Sample Library and temporary folders must be writable and carry an identity marker")
+        self.storage_registry.set_root(kind, path, storage_id=storage_id)
+        active = {"annotation": self.annotation_root, "data": self.state_dir, "temporary": self.workspace_dir}[kind]
+        restart_required = active != path
+        return {
+            "storage": self.storage_configuration(),
+            "restart_required": restart_required,
+            "message": (
+                "Location saved. Restart the workbench before starting another import, download, or annotation job."
+                if restart_required else "This location is already active."
+            ),
+        }
+
+    def _ensure_storage_idle(self, *, ignore_migration_reservation: bool = False) -> None:
+        if self.storage_migration_active() or (
+            self._migration_reserved and not ignore_migration_reservation
+        ):
+            raise ValueError("wait for the active storage migration before changing storage")
+        running_jobs = [
+            job["id"] for job in self.store.list(500)
+            if job["status"] in {"queued", "running"}
+        ]
+        with self._resource_lock:
+            running_resources = [
+                job["resource_id"] for job in self._resource_jobs.values()
+                if job["status"] in {"queued", "running"}
+            ]
+        with self._wgs_review_lock:
+            running_wgs = [
+                job["id"] for job in self._wgs_review_jobs.values()
+                if job["status"] in {"queued", "running"}
+            ]
+        if running_jobs or running_resources or running_wgs or self.cohort.has_active_import():
+            details = []
+            if running_jobs:
+                details.append("annotation job")
+            if running_resources:
+                details.append("annotation dataset download")
+            if running_wgs:
+                details.append("whole-genome prefilter")
+            if self.cohort.has_active_import():
+                details.append("cohort import")
+            raise ValueError("wait for the active " + ", ".join(details) + " before changing storage")
+
+    def storage_restart_required(self) -> bool:
+        return any((
+            self.storage_registry.root("annotation") != self.annotation_root,
+            self.storage_registry.root("data") != self.state_dir,
+            self.storage_registry.root("temporary") != self.workspace_dir,
+        ))
+
+    def begin_storage_mutation(self, *, allow_pending_restart: bool = False) -> None:
+        """Reserve a normal state mutation against a migration snapshot."""
+        with self._storage_transition:
+            if self._migration_reserved or self.storage_migration_active():
+                raise ValueError(
+                    "a storage migration is running; wait for it to finish before changing workbench data"
+                )
+            if self.storage_restart_required() and not allow_pending_restart:
+                raise ValueError(
+                    "a storage location change is pending; restart the workbench before changing workbench data"
+                )
+            self._active_storage_mutations += 1
+
+    def end_storage_mutation(self) -> None:
+        with self._storage_transition:
+            self._active_storage_mutations = max(0, self._active_storage_mutations - 1)
+            self._storage_transition.notify_all()
+
+    def storage_migration_active(self) -> bool:
+        with self._storage_lock:
+            return any(
+                job["status"] in {"queued", "running"}
+                for job in self._storage_jobs.values()
+            )
+
+    def storage_migrations(self) -> list[dict]:
+        with self._storage_lock:
+            in_memory = [self._storage_job_copy(job) for job in sorted(
+                self._storage_jobs.values(), key=lambda job: job["created_at"], reverse=True
+            )]
+        seen = {job["id"] for job in in_memory}
+        persisted = [
+            job for job in self.storage_registry.migration_history()
+            if job.get("id") not in seen
+        ]
+        return sorted(
+            [*in_memory, *persisted],
+            key=lambda job: str(job.get("created_at") or ""),
+            reverse=True,
+        )
+
+    @staticmethod
+    def _storage_job_copy(job: dict) -> dict:
+        value = dict(job)
+        value.pop("_source", None)
+        value.pop("_destination", None)
+        return value
+
+    def _update_storage_job(self, job_id: str, **values) -> None:
+        with self._storage_lock:
+            job = self._storage_jobs.get(job_id)
+            if job:
+                job.update(values)
+
+    def start_storage_migration(self, payload: dict) -> dict:
+        with self._storage_transition:
+            if self._migration_reserved or self.storage_migration_active():
+                raise ValueError("another storage migration is already running")
+            if self.storage_restart_required():
+                raise ValueError("restart the workbench before starting another storage migration")
+            if self._active_storage_mutations:
+                raise ValueError("wait for the active import or data change before migrating storage")
+            self._migration_reserved = True
+        try:
+            return self._start_storage_migration_reserved(payload)
+        finally:
+            with self._storage_transition:
+                self._migration_reserved = False
+                self._storage_transition.notify_all()
+
+    def _start_storage_migration_reserved(self, payload: dict) -> dict:
+        kind = self._storage_kind(payload.get("kind"))
+        destination = self._safe_storage_path(payload.get("path"))
+        self._ensure_storage_idle(ignore_migration_reservation=True)
+        source = {
+            "annotation": self.annotation_root,
+            "data": self.state_dir,
+            "temporary": self.workspace_dir,
+        }[kind]
+        if not source.is_dir():
+            raise ValueError(f"current {kind} storage is unavailable: {source}")
+        if destination.exists():
+            raise ValueError("migration destination must be a new folder path that does not yet exist")
+        location_test = self._test_storage_path(kind, destination)
+        if self._paths_overlap(source, destination):
+            raise ValueError("migration destination must not be inside the current storage location")
+        with self._storage_lock:
+            if any(job["status"] in {"queued", "running"} for job in self._storage_jobs.values()):
+                raise ValueError("another storage migration is already running")
+            job_id = uuid.uuid4().hex
+            total_bytes = self._migration_total_bytes(kind, source)
+            # A small safety margin covers SQLite snapshots, metadata, and
+            # filesystem allocation overhead. The final copy still verifies
+            # every ordinary file before atomically switching the registry.
+            required_free_bytes = total_bytes + max(512 * 1024 ** 2, total_bytes // 20)
+            if (
+                location_test["free_bytes"] is not None
+                and location_test["free_bytes"] < required_free_bytes
+            ):
+                raise ValueError(
+                    "not enough free space for a verified migration: "
+                    f"need at least {required_free_bytes:,} bytes, "
+                    f"found {location_test['free_bytes']:,} bytes"
+                )
+            job = {
+                "id": job_id,
+                "kind": kind,
+                "source": str(source),
+                "destination": str(destination),
+                "status": "queued",
+                "progress": 0.0,
+                "bytes_total": total_bytes,
+                "required_free_bytes": required_free_bytes,
+                "bytes_copied": 0,
+                "message": "Queued safe storage migration.",
+                "created_at": utc_now(),
+                "started_at": None,
+                "finished_at": None,
+                "error": "",
+                "restart_required": False,
+                "staging_path": str(
+                    destination.parent / f".{destination.name}.iei-migrating-{job_id[:12]}"
+                ),
+                "_source": source,
+                "_destination": destination,
+            }
+            self.storage_registry.record_migration(self._storage_job_copy(job))
+            self._storage_jobs[job_id] = job
+            thread = threading.Thread(
+                target=self._run_storage_migration,
+                args=(job_id,),
+                name=f"storage-migration-{job_id[:8]}",
+                daemon=True,
+            )
+            self._storage_threads[job_id] = thread
+            thread.start()
+            return self._storage_job_copy(job)
+
+    @staticmethod
+    def _migration_named_roots() -> tuple[str, ...]:
+        return ("uploads", "cohort-vcf-cache", "cohort-staging", "wgs-review-cache")
+
+    def _migration_total_bytes(self, kind: str, source: Path) -> int:
+        if kind != "temporary":
+            return _directory_size(source)
+        return sum(_directory_size(source / name) for name in self._migration_named_roots())
+
+    def _run_storage_migration(self, job_id: str) -> None:
+        with self._storage_lock:
+            job = self._storage_jobs.get(job_id)
+            if not job:
+                return
+            kind = job["kind"]
+            source = job["_source"]
+            destination = job["_destination"]
+        staging = destination.parent / f".{destination.name}.iei-migrating-{job_id[:12]}"
+        self._update_storage_job(job_id, status="running", started_at=utc_now(), message="Preparing verified copy…")
+        with self._storage_lock:
+            self.storage_registry.record_migration(self._storage_job_copy(self._storage_jobs[job_id]))
+        activated = False
+        temporary_paths_rewritten = False
+        try:
+            if staging.exists() or destination.exists():
+                raise ValueError("migration staging or destination path already exists")
+            staging.mkdir(parents=False)
+
+            def copied(amount: int) -> None:
+                with self._storage_lock:
+                    live = self._storage_jobs.get(job_id)
+                    if not live:
+                        return
+                    total = max(1, int(live["bytes_total"]))
+                    bytes_copied = int(live.get("bytes_copied", 0)) + amount
+                    live.update({
+                        "bytes_copied": bytes_copied,
+                        "progress": min(99.0, 100.0 * bytes_copied / total),
+                        "message": "Copying and verifying files…",
+                    })
+
+            if kind == "annotation":
+                self._copy_tree_verified(source, staging, copied)
+            elif kind == "data":
+                self._copy_data_root_verified(source, staging, copied)
+                self._rewrite_data_root_paths(staging, source, destination)
+            else:
+                self._copy_temporary_root_verified(source, staging, copied)
+
+            storage_id = self._write_storage_marker(
+                staging, kind, migration_id=job_id
+            )
+            if self._stop.is_set():
+                raise RuntimeError("the local service stopped before migration could be activated")
+            staging.replace(destination)
+            activated = True
+            if kind == "temporary":
+                # The copied workspace must exist before live database paths
+                # can point at it. This update is transactional and is reversed
+                # if registry activation fails.
+                self._rewrite_temporary_paths(source, destination)
+                temporary_paths_rewritten = True
+            self.storage_registry.set_root(kind, destination, storage_id=storage_id)
+            with self._storage_lock:
+                live = self._storage_jobs[job_id]
+                live.update(
+                    status="succeeded",
+                    progress=100.0,
+                    bytes_copied=max(int(live["bytes_total"]), int(live["bytes_copied"])),
+                    message="Copy verified. The original location was preserved; restart the workbench to use the new location.",
+                    finished_at=utc_now(),
+                    restart_required=True,
+                    original_retained=True,
+                    staging_path="",
+                )
+                completed = self._storage_job_copy(self._storage_jobs[job_id])
+            try:
+                self.storage_registry.record_migration(completed)
+            except OSError as history_exc:
+                # The root switch itself was already persisted by set_root;
+                # failure to append audit history must not roll it back or
+                # delete the verified destination.
+                self._update_storage_job(
+                    job_id,
+                    message=(
+                        "Copy verified and location activated; migration history could not be updated: "
+                        f"{history_exc}. Restart the workbench to use the new location."
+                    ),
+                )
+                return
+        except Exception as exc:
+            rollback_error = ""
+            if temporary_paths_rewritten:
+                try:
+                    self._rewrite_temporary_paths(destination, source)
+                except Exception as rollback_exc:  # pragma: no cover - catastrophic I/O failure
+                    rollback_error = f"; temporary path rollback failed: {rollback_exc}"
+            cleanup_target = destination if activated else staging
+            try:
+                if cleanup_target.exists():
+                    shutil.rmtree(cleanup_target)
+            except OSError as cleanup_exc:
+                rollback_error += f"; partial copy remains at {cleanup_target}: {cleanup_exc}"
+            self._update_storage_job(
+                job_id,
+                status="failed",
+                message="Storage migration failed; the original location remains active.",
+                finished_at=utc_now(),
+                error=str(exc) + rollback_error,
+                staging_path=str(cleanup_target) if cleanup_target.exists() else "",
+            )
+            with self._storage_lock:
+                failed = self._storage_job_copy(self._storage_jobs[job_id])
+            self.storage_registry.record_migration(failed)
+
+    def _copy_temporary_root_verified(self, source: Path, destination: Path, copied: Callable[[int], None]) -> None:
+        for name in self._migration_named_roots():
+            child = source / name
+            if child.exists():
+                self._copy_tree_verified(child, destination / name, copied)
+
+    def _copy_data_root_verified(self, source: Path, destination: Path, copied: Callable[[int], None]) -> None:
+        database_names = {"cohort.sqlite3", "workbench.sqlite3"}
+
+        def skip(relative: Path) -> bool:
+            name = relative.name
+            return (
+                relative.parent == Path(".")
+                and (
+                    name in database_names
+                    or name.endswith((".sqlite3-wal", ".sqlite3-shm", ".sqlite3-journal"))
+                )
+            )
+
+        self._copy_tree_verified(source, destination, copied, skip=skip)
+        for name in database_names:
+            source_database = source / name
+            if source_database.is_file():
+                destination_database = destination / name
+                self._backup_sqlite(source_database, destination_database)
+                copied(source_database.stat().st_size)
+
+    @staticmethod
+    def _backup_sqlite(source: Path, destination: Path) -> None:
+        source_connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+        destination_connection = sqlite3.connect(destination)
+        try:
+            source_connection.backup(destination_connection)
+            result = destination_connection.execute("PRAGMA integrity_check").fetchone()[0]
+            if result != "ok":
+                raise RuntimeError(f"SQLite integrity check failed for {source.name}: {result}")
+        finally:
+            destination_connection.close()
+            source_connection.close()
+
+    def _copy_tree_verified(
+        self,
+        source: Path,
+        destination: Path,
+        copied: Callable[[int], None],
+        *,
+        skip: Callable[[Path], bool] | None = None,
+    ) -> None:
+        source = source.resolve()
+        for root, directories, files in os.walk(source):
+            if self._stop.is_set():
+                raise RuntimeError("the local service stopped during storage migration")
+            root_path = Path(root)
+            relative_root = root_path.relative_to(source)
+            directories[:] = [
+                name for name in directories
+                if not (skip and skip(relative_root / name))
+            ]
+            target_root = destination / relative_root
+            target_root.mkdir(parents=True, exist_ok=True)
+            # ``os.walk`` does not descend into directory symlinks. Preserve
+            # their link text explicitly rather than silently making an empty
+            # destination directory.
+            for name in list(directories):
+                source_child = root_path / name
+                if source_child.is_symlink():
+                    self._copy_symlink_verified(source_child, target_root / name)
+                    directories.remove(name)
+            for name in files:
+                relative = relative_root / name
+                if skip and skip(relative):
+                    continue
+                self._copy_file_verified(root_path / name, target_root / name)
+                try:
+                    copied((root_path / name).stat().st_size)
+                except FileNotFoundError:
+                    pass
+
+    def _copy_file_verified(self, source: Path, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if source.is_symlink():
+            self._copy_symlink_verified(source, destination)
+            return
+        source_before = source.stat()
+        source_hash = hashlib.sha256()
+        with source.open("rb") as input_handle, destination.open("xb") as output_handle:
+            while block := input_handle.read(8 * 1024 * 1024):
+                if self._stop.is_set():
+                    raise RuntimeError("the local service stopped during storage migration")
+                output_handle.write(block)
+                source_hash.update(block)
+            output_handle.flush()
+            os.fsync(output_handle.fileno())
+        source_after = source.stat()
+        if (
+            source_before.st_size != source_after.st_size
+            or source_before.st_mtime_ns != source_after.st_mtime_ns
+        ):
+            raise RuntimeError(f"source changed during storage migration: {source}")
+        destination_hash = hashlib.sha256()
+        with destination.open("rb") as handle:
+            while block := handle.read(8 * 1024 * 1024):
+                if self._stop.is_set():
+                    raise RuntimeError("the local service stopped during storage migration")
+                destination_hash.update(block)
+        if source_hash.digest() != destination_hash.digest():
+            raise RuntimeError(f"checksum verification failed for {source}")
+        shutil.copystat(source, destination, follow_symlinks=False)
+
+    @staticmethod
+    def _copy_symlink_verified(source: Path, destination: Path) -> None:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        link_target = os.readlink(source)
+        os.symlink(link_target, destination)
+        if not destination.is_symlink() or os.readlink(destination) != link_target:
+            raise RuntimeError(f"symlink verification failed for {source}")
+
+    @staticmethod
+    def _rewrite_prefixed_path(value: object, old_root: Path, new_root: Path) -> str | None:
+        if not isinstance(value, str) or not value:
+            return None
+        try:
+            old_value = Path(value).expanduser().resolve(strict=False)
+            relative = old_value.relative_to(old_root)
+        except ValueError:
+            return None
+        return str(new_root / relative)
+
+    def _rewrite_data_root_paths(self, destination_root: Path, old_root: Path, new_root: Path) -> None:
+        cohort_database = destination_root / "cohort.sqlite3"
+        if cohort_database.is_file():
+            connection = sqlite3.connect(cohort_database)
+            try:
+                try:
+                    for column in ("managed_path", "managed_index_path", "original_path"):
+                        rows = connection.execute(
+                            f"SELECT id,{column} FROM library_datasets WHERE {column} IS NOT NULL"
+                        ).fetchall()
+                        for row_id, value in rows:
+                            replacement = self._rewrite_prefixed_path(value, old_root, new_root)
+                            if replacement:
+                                # Library paths under the selected data root
+                                # are intentionally portable across a drive
+                                # mount-path change.
+                                replacement = Path(replacement).relative_to(new_root).as_posix()
+                                connection.execute(
+                                    f"UPDATE library_datasets SET {column}=? WHERE id=?",
+                                    (replacement, row_id),
+                                )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    for column in ("path", "prepared_path", "index_path"):
+                        rows = connection.execute(
+                            f"SELECT id,{column} FROM cohort_files WHERE {column} IS NOT NULL"
+                        ).fetchall()
+                        for row_id, value in rows:
+                            replacement = self._rewrite_prefixed_path(value, old_root, new_root)
+                            if replacement:
+                                connection.execute(
+                                    f"UPDATE cohort_files SET {column}=? WHERE id=?",
+                                    (replacement, row_id),
+                                )
+                except sqlite3.OperationalError:
+                    pass
+                connection.commit()
+            finally:
+                connection.close()
+        workbench_database = destination_root / "workbench.sqlite3"
+        if workbench_database.is_file():
+            connection = sqlite3.connect(workbench_database)
+            try:
+                try:
+                    for column in ("input_path", "output_path", "config_path", "log_path", "final_output_path"):
+                        rows = connection.execute(
+                            f"SELECT id,{column} FROM annotation_jobs WHERE {column} IS NOT NULL"
+                        ).fetchall()
+                        for row_id, value in rows:
+                            replacement = self._rewrite_prefixed_path(value, old_root, new_root)
+                            if replacement:
+                                connection.execute(
+                                    f"UPDATE annotation_jobs SET {column}=? WHERE id=?",
+                                    (replacement, row_id),
+                                )
+                except sqlite3.OperationalError:
+                    pass
+                connection.commit()
+            finally:
+                connection.close()
+
+    def _rewrite_temporary_paths(self, old_root: Path, new_root: Path) -> None:
+        # The service remains on the old workspace until restart, but database
+        # records are updated now so the new process will reopen the copied
+        # indexed VCF cache rather than a stale absolute path.
+        if self.cohort.database_path.is_file():
+            connection = sqlite3.connect(self.cohort.database_path)
+            try:
+                try:
+                    for column in ("path", "prepared_path", "index_path"):
+                        rows = connection.execute(
+                            f"SELECT id,{column} FROM cohort_files WHERE {column} IS NOT NULL"
+                        ).fetchall()
+                        for row_id, value in rows:
+                            replacement = self._rewrite_prefixed_path(value, old_root, new_root)
+                            if replacement:
+                                connection.execute(
+                                    f"UPDATE cohort_files SET {column}=? WHERE id=?",
+                                    (replacement, row_id),
+                                )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    rows = connection.execute(
+                        "SELECT id,original_path FROM library_datasets WHERE original_path IS NOT NULL"
+                    ).fetchall()
+                    for row_id, value in rows:
+                        replacement = self._rewrite_prefixed_path(value, old_root, new_root)
+                        if replacement:
+                            # A temporary source is outside the Sample Library
+                            # root, so it remains an absolute path after move.
+                            connection.execute(
+                                "UPDATE library_datasets SET original_path=? WHERE id=?",
+                                (replacement, row_id),
+                            )
+                except sqlite3.OperationalError:
+                    pass
+                connection.commit()
+            finally:
+                connection.close()
+
+    def open_storage_location(self, payload: dict) -> dict:
+        kind = self._storage_kind(payload.get("kind"))
+        path = self.storage_registry.root(kind)
+        if not path.is_dir():
+            raise ValueError(f"configured {kind} storage is unavailable: {path}")
+        try:
+            if os.name == "nt":
+                os.startfile(str(path))  # type: ignore[attr-defined]
+            elif platform.system() == "Darwin":
+                subprocess.Popen(["open", str(path)])
+            else:
+                subprocess.Popen(["xdg-open", str(path)])
+        except OSError as exc:
+            raise ValueError(f"could not open folder: {exc}") from exc
+        return {"opened": str(path)}
 
     def resource_downloads(self) -> list[dict]:
         with self._resource_lock:
@@ -563,19 +1710,158 @@ class AnnotationJobService:
         return sorted(jobs, key=lambda job: job["created_at"], reverse=True)
 
     def start_resource_download(self, resource_id: str) -> dict:
+        self._ensure_active_storage_available(require_annotation_root=True)
         if resource_id not in RESOURCE_DOWNLOAD_COMMANDS:
             raise ValueError(f"resource cannot be downloaded from the UI: {resource_id}")
+        installed_profile = False
+        if resource_id in {"recommended_exome", "recommended_wgs"}:
+            profile_name = (
+                "exome" if resource_id == "recommended_exome" else "whole_genome"
+            )
+            installed_profile = bool(
+                self._annotation_profile()
+                .get("recommended_profiles", {})
+                .get(profile_name, {})
+                .get("installed", False)
+            )
+        # Avoid walking large installed cache directories merely to calculate
+        # first-install disk allowance. The fast installer will record a
+        # successful no-op and point users to the separate update action.
+        if not installed_profile:
+            self._ensure_annotation_download_space(resource_id)
         specification = RESOURCE_DOWNLOAD_COMMANDS[resource_id]
-        config_path = self.pipeline_root / "config" / "annotation.config.yaml"
-        command = [
-            "bash",
-            str(self.pipeline_root / specification[0]),
-            str(config_path),
-            *specification[1:],
-        ]
+        if resource_id == "gene_knowledge":
+            destination = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
+            command = [
+                "bash", str(self.pipeline_root / specification[0]), str(destination),
+                str(destination.with_name("manifest.json")),
+            ]
+        else:
+            config_path = self._write_resource_config(resource_id)
+            command = [
+                "bash", str(self.pipeline_root / specification[0]), str(config_path),
+                *specification[1:],
+            ]
         return self._start_resource_job(resource_id, command, "download")
 
+    def _ensure_annotation_download_space(self, resource_id: str) -> None:
+        output_specs = RESOURCE_DOWNLOAD_OUTPUTS.get(resource_id)
+        if not output_specs:
+            return
+        config = self._load_config(
+            self.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        locations: dict[int, dict] = {}
+        for key_path, required, is_directory in output_specs:
+            value: object = config
+            for key in key_path:
+                value = value.get(key) if isinstance(value, dict) else None
+            resolved = self._resolved_reference_path(value)
+            destination = (
+                resolved
+                if resolved is not None and is_directory
+                else resolved.parent if resolved is not None
+                else self.annotation_root
+            )
+            probe = destination
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            if not probe.is_dir():
+                raise ValueError(
+                    f"configured destination parent does not exist for {resource_id}: {destination}"
+                )
+            try:
+                device = probe.stat().st_dev
+            except OSError as exc:
+                raise ValueError(
+                    f"configured destination cannot be inspected for {resource_id}: {destination} ({exc})"
+                ) from exc
+            entry = locations.setdefault(device, {
+                "probe": probe,
+                "required": 0,
+                "destinations": [],
+            })
+            credit = self._resumable_download_credit(resolved, is_directory)
+            entry["required"] += max(0, required - credit)
+            entry["destinations"].append(destination)
+
+        for entry in locations.values():
+            probe = entry["probe"]
+            required = entry["required"]
+            try:
+                free = shutil.disk_usage(probe).free
+            except OSError as exc:
+                raise ValueError(
+                    "available space for annotation datasets could not be measured: "
+                    f"{probe} ({exc})"
+                ) from exc
+            if free < required:
+                destination_text = ", ".join(
+                    str(path) for path in dict.fromkeys(entry["destinations"])
+                )
+                raise ValueError(
+                    f"{resource_id} needs at least {required / GIB:.0f} GiB free at "
+                    f"{destination_text}; only {free / GIB:.1f} GiB is available. "
+                    "Choose a larger annotation location in Storage first."
+                )
+
+    @staticmethod
+    def _resumable_download_credit(path: Path | None, is_directory: bool) -> int:
+        if path is None:
+            return 0
+        candidates: list[Path] = []
+        if is_directory:
+            # Bulk installers may target an extracted VEP cache or a directory
+            # containing an already installed snapshot. Count allocated files
+            # rather than demanding the full first-install allowance again.
+            directory_credit = _directory_size(path) if path.is_dir() else 0
+            candidates.append(path / "clinvar.download.vcf.gz")
+        else:
+            directory_credit = 0
+            candidates.append(path)
+        credit = directory_credit
+        for candidate in candidates:
+            try:
+                if candidate.is_file():
+                    credit = max(credit, candidate.stat().st_size)
+            except OSError:
+                pass
+            part = Path(str(candidate) + ".part")
+            try:
+                if part.is_file():
+                    credit = max(credit, part.stat().st_size)
+            except OSError:
+                pass
+            # parallel_fetch preallocates this sparse file to the complete
+            # remote size. Its apparent size is therefore not download
+            # progress. When range metadata is unavailable, credit only blocks
+            # already allocated on disk; those blocks will be overwritten and
+            # do not require a second allocation during a conservative restart.
+            parallel = Path(str(candidate) + ".parallel")
+            try:
+                if parallel.is_file():
+                    status = parallel.stat()
+                    allocated = int(getattr(status, "st_blocks", 0) or 0) * 512
+                    credit = max(credit, min(status.st_size, allocated))
+            except OSError:
+                pass
+            state_path = Path(str(candidate) + ".ranges.json")
+            try:
+                state = json.loads(state_path.read_text(encoding="utf-8"))
+                total = int(state.get("size") or 0)
+                chunk_size = int(state.get("chunk_size") or 0)
+                completed = {int(index) for index in state.get("completed", [])}
+                completed_bytes = sum(
+                    max(0, min(chunk_size, total - index * chunk_size))
+                    for index in completed
+                )
+                credit = max(credit, completed_bytes)
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                pass
+        return credit
+
     def start_promoterai_preparation(self, payload: dict) -> dict:
+        self._ensure_active_storage_available(require_annotation_root=True)
         source_value = payload.get("source_dir") if isinstance(payload, dict) else None
         if not isinstance(source_value, str) or not source_value.strip():
             raise ValueError("select the local folder containing the two Illumina PromoterAI files")
@@ -589,23 +1875,152 @@ class AnnotationJobService:
         missing = [str(path) for path in required_files if not path.is_file() or path.stat().st_size == 0]
         if missing:
             raise ValueError("PromoterAI source folder is missing: " + ", ".join(missing))
-        config_path = self.pipeline_root / "config" / "annotation.config.yaml"
+        config_path = self._write_resource_config("promoterai")
         command = [
             "bash",
             str(self.pipeline_root / "scripts" / "prepare_promoterai.sh"),
             str(source_dir),
             str(config_path),
+            "--remove-source-after-success",
         ]
         return self._start_resource_job("promoterai", command, "preparation")
 
+    @staticmethod
+    def _selected_source_path(raw: str) -> Path:
+        """Normalize a native picker result, including Windows paths in WSL."""
+        text = raw.strip()
+        windows_path = re.match(r"^([A-Za-z]):[\\/]?(.*)$", text)
+        if is_wsl() and windows_path:
+            drive, remainder = windows_path.groups()
+            text = "/mnt/" + drive.lower() + "/" + remainder.replace("\\", "/")
+        return Path(text).expanduser().resolve()
+
+    def choose_local_resource_source(self, payload: dict) -> dict:
+        """Open the workstation's native file/folder chooser.
+
+        Browsers intentionally hide absolute local paths. Because this service
+        is loopback-only, a native chooser is both faster and safer than
+        uploading tens of gigabytes through a browser merely to recover a path.
+        """
+        resource_id = str(payload.get("resource_id") or "").strip().lower()
+        choices = {
+            "dbnsfp": ("folder", "Choose the unzipped dbNSFP release folder"),
+            "promoterai": ("folder", "Choose the folder containing the two PromoterAI files"),
+            "logofunc": ("file", "Choose the downloaded LoGoFunc .csv.gz file"),
+            "omim": ("folder", "Choose the folder containing the four OMIM data files"),
+        }
+        if resource_id not in choices:
+            raise ValueError("resource picker supports dbNSFP, PromoterAI, LoGoFunc, or OMIM")
+        selection_type, prompt = choices[resource_id]
+        system = platform.system()
+        command: list[str]
+        if system == "Darwin":
+            verb = "choose folder" if selection_type == "folder" else "choose file"
+            escaped_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
+            command = [
+                "osascript", "-e",
+                f'POSIX path of ({verb} with prompt "{escaped_prompt}")',
+            ]
+        elif os.name == "nt" or is_wsl():
+            powershell = "powershell.exe"
+            if is_wsl() and not shutil.which(powershell):
+                candidate = Path(
+                    "/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+                )
+                powershell = str(candidate) if candidate.is_file() else powershell
+            if selection_type == "folder":
+                script = (
+                    "Add-Type -AssemblyName System.Windows.Forms;"
+                    "$d=New-Object System.Windows.Forms.FolderBrowserDialog;"
+                    f"$d.Description={json.dumps(prompt)};"
+                    "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+                    "{[Console]::Write($d.SelectedPath)}"
+                )
+            else:
+                script = (
+                    "Add-Type -AssemblyName System.Windows.Forms;"
+                    "$d=New-Object System.Windows.Forms.OpenFileDialog;"
+                    f"$d.Title={json.dumps(prompt)};"
+                    "$d.Filter='Compressed table (*.csv.gz)|*.csv.gz|All files (*.*)|*.*';"
+                    "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
+                    "{[Console]::Write($d.FileName)}"
+                )
+            command = [powershell, "-NoProfile", "-STA", "-Command", script]
+        elif shutil.which("zenity"):
+            command = ["zenity", "--file-selection", f"--title={prompt}"]
+            if selection_type == "folder":
+                command.append("--directory")
+        elif shutil.which("kdialog"):
+            command = [
+                "kdialog",
+                "--getexistingdirectory" if selection_type == "folder" else "--getopenfilename",
+                str(Path.home()),
+            ]
+        else:
+            raise ValueError(
+                "a native file chooser is unavailable; install zenity or kdialog, then try again"
+            )
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, timeout=600, check=False
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise ValueError(f"could not open the local file chooser: {exc}") from exc
+        selected = result.stdout.strip()
+        if result.returncode != 0 or not selected:
+            diagnostic = f"{result.stderr}\n{result.stdout}".lower()
+            if not selected and (
+                result.returncode in {0, 1}
+                or "cancel" in diagnostic
+                or "user canceled" in diagnostic
+            ):
+                return {"cancelled": True, "resource_id": resource_id}
+            raise ValueError(result.stderr.strip() or "the local file chooser did not return a selection")
+        path = self._selected_source_path(selected)
+        valid = path.is_dir() if selection_type == "folder" else path.is_file()
+        if not valid:
+            raise ValueError(f"the selected {selection_type} is no longer available: {path}")
+        return {
+            "cancelled": False,
+            "resource_id": resource_id,
+            "selection_type": selection_type,
+            "path": str(path),
+            "name": path.name,
+        }
+
+    def start_dbnsfp_preparation(self, payload: dict) -> dict:
+        self._ensure_active_storage_available(require_annotation_root=True)
+        source_value = payload.get("source_dir") if isinstance(payload, dict) else None
+        if not isinstance(source_value, str) or not source_value.strip():
+            raise ValueError("select the unzipped dbNSFP release folder")
+        source_dir = Path(source_value).expanduser().resolve()
+        if not source_dir.is_dir():
+            raise ValueError(f"dbNSFP source folder does not exist: {source_dir}")
+        chromosome_files = list(source_dir.glob("dbNSFP*variant.chr*"))
+        if not chromosome_files:
+            raise ValueError(
+                "the selected folder does not contain dbNSFP per-chromosome variant files"
+            )
+        self._ensure_annotation_download_space("dbnsfp_prepare")
+        config_path = self._write_resource_config("dbnsfp")
+        command = [
+            "bash",
+            str(self.pipeline_root / "scripts" / "prepare_dbnsfp.sh"),
+            str(source_dir),
+            str(config_path),
+            "--remove-source-after-success",
+        ]
+        return self._start_resource_job("dbnsfp", command, "preparation")
+
     def start_logofunc_preparation(self, payload: dict) -> dict:
+        self._ensure_active_storage_available(require_annotation_root=True)
         source_value = payload.get("source_path") if isinstance(payload, dict) else None
         if not isinstance(source_value, str) or not source_value.strip():
             raise ValueError("select the downloaded LoGoFunc file or its containing folder")
         source_path = Path(source_value).expanduser().resolve()
         if not source_path.exists():
             raise ValueError(f"LoGoFunc source does not exist: {source_path}")
-        config_path = self.pipeline_root / "config" / "annotation.config.yaml"
+        config_path = self._write_resource_config("logofunc")
         command = [
             "bash",
             str(self.pipeline_root / "scripts" / "prepare_logofunc.sh"),
@@ -718,6 +2133,15 @@ class AnnotationJobService:
                 exit_code = process.wait()
             if exit_code:
                 raise RuntimeError(last_line or f"download exited with code {exit_code}")
+            if resource_id == "gene_knowledge":
+                updated = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
+                if not updated.is_file():
+                    raise RuntimeError("gene-knowledge update did not create its database")
+                self.gene_knowledge.public_database = updated
+            elif resource_id == "clingen_erepo":
+                status = self.clingen_erepo.status()
+                if not status.get("available"):
+                    raise RuntimeError(status.get("error") or "ClinGen snapshot validation failed")
             self._update_resource_job(
                 job_id,
                 status="succeeded",
@@ -765,6 +2189,7 @@ class AnnotationJobService:
         self, payload: dict, progress: Callable[[dict], None] | None = None
     ) -> dict:
         """Create a cached, indexed WGS review VCF using chromosome readers."""
+        self._ensure_active_storage_available(require_workspace=True)
         source = self._required_path(payload, "path", must_exist=True)
         if not re.search(r"\.vcf(?:\.gz)?$", source.name, re.IGNORECASE):
             raise ValueError("path must end in .vcf or .vcf.gz")
@@ -862,7 +2287,62 @@ class AnnotationJobService:
             .get("manifest")
         )
         environment = os.environ.get("IEI_SCREEN_CONTEXT_MANIFEST", "")
-        return self._resolved_reference_path(environment or configured)
+        selected = environment or configured
+        if selected:
+            return self._resolved_reference_path(selected)
+        if self.screen_context_pointer.is_file():
+            try:
+                pointer = json.loads(
+                    self.screen_context_pointer.read_text(encoding="utf-8")
+                )
+                manifest = str(pointer.get("manifest_path") or "").strip()
+                return Path(manifest).expanduser().resolve() if manifest else None
+            except (OSError, json.JSONDecodeError, AttributeError):
+                return None
+        return None
+
+    @staticmethod
+    def _screen_context_manifest_candidate(value: str) -> Path:
+        path = Path(value).expanduser().resolve()
+        if path.is_dir():
+            candidates = (
+                path / "screen.registry-v4.immune-contexts.json",
+                path / "prepared" / "screen.registry-v4.immune-contexts.json",
+            )
+            path = next((candidate for candidate in candidates if candidate.is_file()), candidates[0])
+        return path
+
+    def install_screen_context(self, payload: dict) -> dict:
+        """Validate and remember an existing prepared SCREEN context bundle.
+
+        The large matrices remain at their user-selected annotation location;
+        only a small local pointer is stored with workbench state.
+        """
+        manifest_value = str(payload.get("manifest_path") or "").strip()
+        if not manifest_value:
+            raise ValueError("a prepared SCREEN manifest or folder path is required")
+        manifest = self._screen_context_manifest_candidate(manifest_value)
+        if not manifest.is_file():
+            raise ValueError(
+                "screen.registry-v4.immune-contexts.json was not found at the selected location"
+            )
+        catalog = self.screen_context_store.catalog(manifest)
+        if not catalog.get("available"):
+            raise ValueError(str(catalog.get("message") or "SCREEN context bundle is unavailable"))
+        value = {
+            "schema_version": 1,
+            "manifest_path": str(manifest),
+            "installed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        temporary = self.screen_context_pointer.with_name(
+            f".{self.screen_context_pointer.name}.{uuid.uuid4().hex}.partial"
+        )
+        try:
+            temporary.write_text(json.dumps(value, indent=2) + "\n", encoding="utf-8")
+            temporary.replace(self.screen_context_pointer)
+        finally:
+            temporary.unlink(missing_ok=True)
+        return {**catalog, "manifest_path": str(manifest)}
 
     def screen_context_catalog(self, payload: dict | None = None) -> dict:
         payload = payload or {}
@@ -892,6 +2372,7 @@ class AnnotationJobService:
 
     def start_cohort_import(self, payload: dict) -> dict:
         """Start a full or conservatively prefiltered cohort import."""
+        self._ensure_active_storage_available(require_workspace=True)
         paths = payload.get("paths")
         if not isinstance(paths, list):
             raise ValueError("paths must be a list of VCF files or directories")
@@ -946,6 +2427,7 @@ class AnnotationJobService:
 
     def start_wgs_review(self, payload: dict) -> dict:
         """Run indexed WGS preparation in the background for progress polling."""
+        self._ensure_active_storage_available(require_workspace=True)
         with self._wgs_review_lock:
             if any(
                 job["status"] in {"queued", "running"}
@@ -1093,6 +2575,7 @@ class AnnotationJobService:
         return active_cache_release, container_release
 
     def submit(self, payload: dict) -> dict:
+        self._ensure_active_storage_available(require_workspace=True, require_annotation_root=True)
         with self._resource_lock:
             downloading = [
                 job["resource_id"]
@@ -1172,6 +2655,7 @@ class AnnotationJobService:
         self, filename: str, relative_path: str, batch_id: str, length: int, stream
     ) -> dict:
         """Stream a browser-selected VCF into workstation-local job storage."""
+        self._ensure_active_storage_available(require_workspace=True)
         if length < 1:
             raise ValueError("the selected file is empty")
         if length > 2_000_000_000_000:
@@ -1203,7 +2687,7 @@ class AnnotationJobService:
         if not (lower_name.endswith(".vcf") or lower_name.endswith(".vcf.gz")):
             raise ValueError("only .vcf and .vcf.gz files can be staged")
 
-        batch_root = (self.state_dir / "uploads" / safe_batch).resolve()
+        batch_root = (self.workspace_dir / "uploads" / safe_batch).resolve()
         destination = (batch_root.joinpath(*safe_parts)).resolve()
         if batch_root not in destination.parents:
             raise ValueError("invalid relative file path")
@@ -1243,27 +2727,196 @@ class AnnotationJobService:
         if not isinstance(value, str) or not value.strip():
             return None
         path = Path(value).expanduser()
-        return path.resolve() if path.is_absolute() else (self.pipeline_root / path).resolve()
+        if path.is_absolute():
+            return path.resolve()
+        # All stock configuration resource paths are intentionally relative to
+        # ``references/``. Resolve that prefix through the user-selected
+        # annotation root while retaining arbitrary project-relative paths.
+        normalized = value.replace("\\", "/")
+        while normalized.startswith("./"):
+            normalized = normalized[2:]
+        if normalized == "references" or normalized.startswith("references/"):
+            suffix = normalized.removeprefix("references").lstrip("/")
+            return (self.annotation_root / suffix).resolve()
+        return (self.pipeline_root / path).resolve()
 
-    def _container_image_available(self, config: dict) -> bool:
+    def _absolutize_annotation_paths(self, value):
+        """Return a config value with managed ``references/`` paths absolute."""
+        if isinstance(value, dict):
+            return {key: self._absolutize_annotation_paths(item) for key, item in value.items()}
+        if isinstance(value, list):
+            return [self._absolutize_annotation_paths(item) for item in value]
+        if isinstance(value, str):
+            normalized = value.replace("\\", "/")
+            while normalized.startswith("./"):
+                normalized = normalized[2:]
+            if normalized == "references" or normalized.startswith("references/"):
+                resolved = self._resolved_reference_path(value)
+                return str(resolved) if resolved else value
+        return value
+
+    def _managed_preparation_paths(self, config: dict, resource_id: str) -> dict[str, str]:
+        """Canonical destinations for user-supplied annotation datasets."""
+        if resource_id == "dbnsfp":
+            current = str(
+                ((config.get("plugins") or {}).get("dbNSFP") or {}).get("path")
+                or "dbNSFP5.3.1a_grch38.gz"
+            )
+            name = Path(current).name
+            return {"path": str(self.annotation_root / "dbnsfp" / name)}
+        if resource_id == "promoterai":
+            root = self.annotation_root / "promoterai"
+            return {
+                "file": str(root / "promoterai_scores.tsv.gz"),
+                "transcript_map": str(root / "promoterai_transcripts.tsv"),
+                "manifest": str(root / "promoterai.manifest.json"),
+            }
+        if resource_id == "logofunc":
+            current = str(
+                ((config.get("plugins") or {}).get("LoGoFunc") or {}).get("file")
+                or "LoGoFuncVotingEnsemble_metadata_preds_final.csv.gz"
+            )
+            root = self.annotation_root / "logofunc"
+            return {
+                "file": str(root / Path(current).name),
+                "manifest": str(root / "logofunc.manifest.json"),
+            }
+        return {}
+
+    def _set_managed_preparation_paths(
+        self, config: dict, resource_id: str, *, require_installed: bool
+    ) -> None:
+        paths = self._managed_preparation_paths(config, resource_id)
+        if not paths:
+            return
+        primary = Path(paths["path"] if resource_id == "dbnsfp" else paths["file"])
+        required = [primary, Path(str(primary) + ".tbi")]
+        if resource_id in {"promoterai", "logofunc"}:
+            required.append(Path(paths["manifest"]))
+        if resource_id == "promoterai":
+            required.append(Path(paths["transcript_map"]))
+        if require_installed and not all(path.is_file() for path in required):
+            return
+        plugin_name = {
+            "dbnsfp": "dbNSFP",
+            "promoterai": "PromoterAI",
+            "logofunc": "LoGoFunc",
+        }[resource_id]
+        config.setdefault("plugins", {}).setdefault(plugin_name, {}).update(paths)
+
+    def _prefer_installed_managed_resources(self, config: dict) -> dict:
+        for resource_id in ("dbnsfp", "promoterai", "logofunc"):
+            self._set_managed_preparation_paths(
+                config, resource_id, require_installed=True
+            )
+        return config
+
+    def _container_image_status(self, config: dict) -> dict:
         container = config.get("container") or {}
         runtime = str(container.get("runtime") or "docker")
         image = str(container.get("image") or "vep-annotate:latest")
+        runtime_label = {
+            "docker": "Docker",
+            "podman": "Podman",
+            "apptainer": "Apptainer",
+            "singularity": "Singularity",
+        }.get(runtime, runtime)
         if not shutil.which(runtime):
-            return False
+            return {
+                "available": False,
+                "state": "runtime_missing",
+                "runtime": runtime,
+                "image": image,
+                "message": (
+                    f"{runtime_label} is not installed or is not available to the local service."
+                ),
+            }
         if runtime in {"docker", "podman"}:
             try:
                 result = subprocess.run(
-                    [runtime, "image", "ls", "--quiet", "--no-trunc", image],
+                    [runtime, "image", "inspect", image],
                     capture_output=True,
                     text=True,
                     timeout=5,
                     check=False,
                 )
-            except (OSError, subprocess.SubprocessError):
-                return False
-            return result.returncode == 0 and bool(result.stdout.strip())
-        return Path(image).expanduser().is_file()
+            except subprocess.TimeoutExpired:
+                return {
+                    "available": False,
+                    "state": "runtime_unavailable",
+                    "runtime": runtime,
+                    "image": image,
+                    "message": f"{runtime_label} did not respond. Start or restart it, then refresh this page.",
+                }
+            except OSError as exc:
+                return {
+                    "available": False,
+                    "state": "runtime_unavailable",
+                    "runtime": runtime,
+                    "image": image,
+                    "message": f"{runtime_label} could not be checked: {exc}",
+                }
+            if result.returncode == 0:
+                return {
+                    "available": True,
+                    "state": "ready",
+                    "runtime": runtime,
+                    "image": image,
+                    "message": "Available",
+                }
+            diagnostic = f"{result.stderr}\n{result.stdout}".lower()
+            connection_markers = (
+                "cannot connect to the docker daemon",
+                "failed to connect to the docker api",
+                "is the docker daemon running",
+                "error during connect",
+                "docker daemon is not running",
+                "cannot connect to podman",
+                "unable to connect to podman",
+                "podman.sock",
+                "docker.sock",
+                "connection refused",
+            )
+            if any(marker in diagnostic for marker in connection_markers):
+                start_hint = "Start Docker Desktop" if runtime == "docker" else "Start the Podman machine"
+                return {
+                    "available": False,
+                    "state": "runtime_unavailable",
+                    "runtime": runtime,
+                    "image": image,
+                    "message": f"{runtime_label} is installed but is not running. {start_hint}, then refresh this page.",
+                }
+            if "permission denied" in diagnostic:
+                return {
+                    "available": False,
+                    "state": "runtime_unavailable",
+                    "runtime": runtime,
+                    "image": image,
+                    "message": f"{runtime_label} is installed, but the local service cannot access it. Check runtime permissions, then refresh this page.",
+                }
+            return {
+                "available": False,
+                "state": "image_missing",
+                "runtime": runtime,
+                "image": image,
+                "message": f"Pinned VEP image {image} is not installed. Build it with: bash docker/build.sh",
+            }
+        available = Path(image).expanduser().is_file()
+        return {
+            "available": available,
+            "state": "ready" if available else "image_missing",
+            "runtime": runtime,
+            "image": image,
+            "message": (
+                "Available"
+                if available
+                else f"Pinned VEP image file is missing: {Path(image).expanduser()}"
+            ),
+        }
+
+    def _container_image_available(self, config: dict) -> bool:
+        """Compatibility wrapper for callers that need only readiness."""
+        return bool(self._container_image_status(config)["available"])
 
     def _dbnsfp_header_columns(self, config: dict) -> set[str]:
         block = ((config.get("plugins") or {}).get("dbNSFP") or {})
@@ -1293,15 +2946,24 @@ class AnnotationJobService:
             "clinvar_aa_match": ("ClinVar residue match", "Known pathogenic missense at the same amino-acid residue"),
             "liftover": ("hg19 input bundle", "Assembly-gap-aware conversion to canonical GRCh38"),
             "ccre": ("ENCODE cCRE regions", "Native SCREEN region filter for whole-genome import"),
+            "clingen_erepo": ("ClinGen variant curations", "Disease-specific expert-panel classifications from the Evidence Repository"),
         }
         try:
-            config = self._load_config(config_path)
+            config = self._prefer_installed_managed_resources(
+                self._load_config(config_path)
+            )
         except ValueError as exc:
             return {
                 "ready": False,
+                "datasets_ready": False,
+                "execution_ready": False,
                 "error": str(exc),
                 "foundations": [],
                 "sources": [],
+                "recommended_profiles": {
+                    "exome": {"installed": False, "missing": []},
+                    "whole_genome": {"installed": False, "missing": []},
+                },
                 "dbnsfp_predictors": [],
                 "defaults": {"fork": 8},
             }
@@ -1341,6 +3003,8 @@ class AnnotationJobService:
                     block.get("bed"),
                     ((config.get("wgs_review") or {}).get("gene_tss") or {}).get("path"),
                 ]
+            elif source_id == "clingen_erepo":
+                values = [block.get("database"), block.get("vcf"), block.get("manifest")]
             else:
                 values = [block.get("file")]
             return [
@@ -1351,7 +3015,7 @@ class AnnotationJobService:
         sources = []
         for source_id, location in ANNOTATION_SOURCE_PATHS.items():
             parent = config.get(location[0]) or {}
-            block = parent.get(location[1]) or {}
+            block = parent if location[1] is None else parent.get(location[1]) or {}
             paths = source_path(source_id, block)
             enabled = bool(block.get("enabled", False))
             required = source_id in REQUIRED_DIAGNOSTIC_SOURCES or bool(
@@ -1404,6 +3068,10 @@ class AnnotationJobService:
                     )
                     and all(path.exists() for path in paths[1:])
                 )
+            if installed and source_id == "clingen_erepo" and paths:
+                database, vcf, manifest = paths
+                installed = database.is_file() and vcf.is_file() and manifest.is_file() \
+                    and self.clingen_erepo.status().get("available", False)
             if installed and source_id == "liftover" and paths:
                 source_fasta = paths[0]
                 installed = (
@@ -1415,6 +3083,18 @@ class AnnotationJobService:
             available = auto_fetch or installed
             label, description = labels[source_id]
             setup = ANNOTATION_SOURCE_SETUP[source_id]
+            access = str(setup.get("access") or (
+                "bundled" if setup.get("setup_mode") == "bundled" else "public"
+            ))
+            recommendation = str(
+                setup.get("recommendation")
+                or SOURCE_RECOMMENDATION_DEFAULTS.get(source_id)
+                or ("required" if required else "optional")
+            )
+            source_version = str(block.get("version") or "")
+            if source_id == "clingen_erepo" and installed:
+                generated = str(self.clingen_erepo.status().get("generated_utc") or "")
+                source_version = generated[:10]
             available_in = (
                 ["whole_genome"]
                 if source_id in {"promoterai", "cadd_wgs", "ccre"}
@@ -1429,8 +3109,10 @@ class AnnotationJobService:
                 "available": available,
                 "installed": installed,
                 "configured_paths": [str(path) for path in paths],
-                "version": str(block.get("version") or ""),
+                "version": source_version,
                 "available_in": available_in,
+                "access": access,
+                "recommendation": recommendation,
                 **setup,
                 "status": (
                     "ready" if installed else
@@ -1445,7 +3127,8 @@ class AnnotationJobService:
         )
         fasta_path = self._resolved_reference_path(fasta.get("path"))
         cache_release, container_release = self._installed_vep_releases(config)
-        container_available = self._container_image_available(config)
+        container_status = self._container_image_status(config)
+        container_available = bool(container_status["available"])
         foundations = [
             {
                 "id": "vep_container",
@@ -1453,6 +3136,8 @@ class AnnotationJobService:
                 "available": container_available,
                 "required": True,
                 "version": container_release,
+                "state": container_status["state"],
+                "message": container_status["message"],
             },
             {
                 "id": "vep_cache",
@@ -1469,13 +3154,43 @@ class AnnotationJobService:
                 "version": None,
             },
         ]
-        ready = all(
-            item["available"] for item in foundations
-        ) and all(
+        dataset_foundations_ready = all(
+            item["available"]
+            for item in foundations
+            if item["id"] != "vep_container"
+        )
+        required_sources_ready = all(
             source["available"]
             for source in sources
             if source["enabled"] and source["required"]
         )
+        datasets_ready = dataset_foundations_ready and required_sources_ready
+        execution_ready = container_available
+        ready = datasets_ready and execution_ready
+
+        source_by_id = {source["id"]: source for source in sources}
+        automatic_exome_ids = (
+            "loftee", "spliceai", "repeatmasker", "segdup", "clinvar",
+            "clingen_erepo",
+        )
+
+        def automatic_profile(source_ids: tuple[str, ...]) -> dict:
+            missing = []
+            for item in foundations:
+                if item["id"] != "vep_container" and not item["available"]:
+                    missing.append(item["id"])
+            for source_id in source_ids:
+                source = source_by_id.get(source_id)
+                if not source or not source["installed"]:
+                    missing.append(source_id)
+            return {"installed": not missing, "missing": missing}
+
+        recommended_profiles = {
+            "exome": automatic_profile(automatic_exome_ids),
+            "whole_genome": automatic_profile(
+                automatic_exome_ids + ("cadd_wgs",)
+            ),
+        }
         dbnsfp_header = self._dbnsfp_header_columns(config)
         dbnsfp_predictors = [
             {
@@ -1488,13 +3203,15 @@ class AnnotationJobService:
         ]
         return {
             "ready": ready,
-            "error": (
-                ""
-                if container_available
-                else "Pinned VEP 113 container is not installed. Run: bash docker/build.sh"
-            ),
+            # Runtime/image problems are shown once on the container foundation
+            # row. They block VEP execution, but are not annotation-dataset
+            # installation errors and must not be duplicated as a page alert.
+            "datasets_ready": datasets_ready,
+            "execution_ready": execution_ready,
+            "error": "",
             "foundations": foundations,
             "sources": sources,
+            "recommended_profiles": recommended_profiles,
             "dbnsfp_predictors": dbnsfp_predictors,
             "defaults": {
                 "fork": int((config.get("run") or {}).get("fork", 8)),
@@ -1504,7 +3221,11 @@ class AnnotationJobService:
     def _write_job_config(
         self, job_id: str, base_config_path: Path, options: dict
     ) -> Path:
-        config = self._load_config(base_config_path)
+        config = self._absolutize_annotation_paths(
+            self._prefer_installed_managed_resources(
+                self._load_config(base_config_path)
+            )
+        )
         analysis_scope = str(options.get("analysis_scope") or "exome")
         if analysis_scope not in {"exome", "whole_genome"}:
             raise ValueError("analysis_scope must be exome or whole_genome")
@@ -1605,6 +3326,30 @@ class AnnotationJobService:
         destination = config_dir / f"{job_id}.annotation.yaml"
         destination.write_text(
             "# Generated by IEI Variant Review from UI settings.\n"
+            + yaml.safe_dump(config, sort_keys=False),
+            encoding="utf-8",
+        )
+        return destination
+
+    def _write_resource_config(self, resource_id: str) -> Path:
+        """Write a short-lived, root-resolved config for a UI resource action."""
+        import yaml
+
+        config = self._load_config(
+            self.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        if resource_id in {"dbnsfp", "promoterai", "logofunc"}:
+            self._set_managed_preparation_paths(
+                config, resource_id, require_installed=False
+            )
+        else:
+            config = self._prefer_installed_managed_resources(config)
+        config = self._absolutize_annotation_paths(config)
+        config_dir = self.state_dir / "resource-configs"
+        config_dir.mkdir(parents=True, exist_ok=True)
+        destination = config_dir / f"{resource_id}.{uuid.uuid4().hex}.yaml"
+        destination.write_text(
+            "# Generated by IEI Variant Review for a local dataset action.\n"
             + yaml.safe_dump(config, sort_keys=False),
             encoding="utf-8",
         )
@@ -1791,7 +3536,7 @@ class AnnotationJobService:
                         os.killpg(process.pid, signal.SIGTERM)
                     else:
                         process.terminate()
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     pass
                 self.store.update(
                     job_id,
@@ -1802,6 +3547,8 @@ class AnnotationJobService:
         with self._resource_lock:
             resource_running = list(self._resource_processes.items())
             resource_threads = list(self._resource_threads.values())
+        with self._storage_lock:
+            storage_threads = list(self._storage_threads.values())
         for job_id, process in resource_running:
             if process.poll() is None:
                 try:
@@ -1809,7 +3556,7 @@ class AnnotationJobService:
                         os.killpg(process.pid, signal.SIGTERM)
                     else:
                         process.terminate()
-                except ProcessLookupError:
+                except (ProcessLookupError, PermissionError):
                     pass
                 self._update_resource_job(
                     job_id,
@@ -1822,6 +3569,10 @@ class AnnotationJobService:
             self._worker.join(timeout=5)
         for thread in resource_threads:
             thread.join(timeout=2)
+        # Storage copies inspect ``_stop`` between chunks and never activate
+        # the new root after shutdown. The original source remains untouched.
+        for thread in storage_threads:
+            thread.join(timeout=5)
 
 
 class WorkbenchRequestHandler(BaseHTTPRequestHandler):
@@ -1845,6 +3596,26 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json({"jobs": self.service.store.list()})
         elif path == "/api/resource-downloads":
             self._json({"jobs": self.service.resource_downloads()})
+        elif path == "/api/gene-knowledge/status":
+            self._json(self.service.gene_knowledge.status())
+        elif path == "/api/gene-knowledge/filters":
+            self._json(self.service.gene_knowledge.filter_catalog())
+        elif path.startswith("/api/gene-knowledge/gene/"):
+            identifier = unquote(path.removeprefix("/api/gene-knowledge/gene/"))
+            self._json(self.service.gene_knowledge.gene(identifier))
+        elif path == "/api/clingen-erepo/status":
+            self._json(self.service.clingen_erepo.status())
+        elif path == "/api/clingen-erepo/variant":
+            try:
+                chrom = (query.get("chrom") or [""])[0]
+                pos = int((query.get("pos") or ["0"])[0])
+                ref = (query.get("ref") or [""])[0]
+                alt = (query.get("alt") or [""])[0]
+                if not chrom or pos < 1 or not ref or not alt:
+                    raise ValueError("chrom, pos, ref, and alt are required")
+                self._json(self.service.clingen_erepo.variant(chrom, pos, ref, alt))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         elif path == "/api/cohort/stats":
             self._json(self.service.cohort.stats())
         elif path == "/api/cohort/profiles":
@@ -1857,7 +3628,11 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/sample-library/profiles":
             self._json({"profiles": self.service.sample_library.profiles()})
         elif path == "/api/storage":
-            self._json(self.service.sample_library.storage_stats())
+            self._json(self.service.storage_stats())
+        elif path == "/api/storage/locations":
+            self._json(self.service.storage_configuration(include_usage=False))
+        elif path == "/api/storage/migrations":
+            self._json({"jobs": self.service.storage_migrations()})
         elif path.startswith("/api/sample-library/") and path.endswith("/file"):
             dataset_id = path.split("/")[3]
             try:
@@ -1953,7 +3728,38 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         path = urlparse(self.path).path
+        mutation_started = False
         try:
+            # Migration takes a point-in-time verified copy. Do not permit a
+            # concurrent endpoint to mutate SQLite or cache files after that
+            # point; read-only GET endpoints remain available for progress.
+            storage_mutation = (
+                path in {
+                    "/api/annotation-files/stage",
+                    "/api/jobs",
+                    "/api/wgs-review",
+                    "/api/cohort/import",
+                    "/api/sample-library/import",
+                    "/api/storage/cleanup",
+                    "/api/storage/location",
+                    "/api/storage/migrate",
+                    "/api/storage/compact",
+                    "/api/cohort/import-jobs",
+                    "/api/cohort/samples/remove",
+                    "/api/phenotypes/import",
+                    "/api/phenotypes/individual",
+                    "/api/gene-knowledge/omim/install",
+                }
+                or path.startswith("/api/resource-downloads/")
+                or path.startswith("/api/resource-preparations/")
+                or path.startswith("/api/sample-library/")
+                or (path.startswith("/api/jobs/") and path.endswith("/cancel"))
+            )
+            if storage_mutation and path != "/api/storage/migrate":
+                self.service.begin_storage_mutation(
+                    allow_pending_restart=path == "/api/storage/location"
+                )
+                mutation_started = True
             if path == "/api/annotation-files/stage":
                 length = int(self.headers.get("Content-Length", "0"))
                 self._json(
@@ -1985,6 +3791,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/screen-context/filter":
                 self._json(self.service.filter_screen_context(self._body()))
                 return
+            if path == "/api/screen-context/install":
+                self._json(self.service.install_screen_context(self._body()))
+                return
             if path.startswith("/api/resource-downloads/"):
                 resource_id = unquote(
                     path.removeprefix("/api/resource-downloads/")
@@ -1994,9 +3803,18 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.ACCEPTED,
                 )
                 return
+            if path == "/api/local-resource-source/choose":
+                self._json(self.service.choose_local_resource_source(self._body()))
+                return
             if path == "/api/resource-preparations/promoterai":
                 self._json(
                     self.service.start_promoterai_preparation(self._body()),
+                    HTTPStatus.ACCEPTED,
+                )
+                return
+            if path == "/api/resource-preparations/dbnsfp":
+                self._json(
+                    self.service.start_dbnsfp_preparation(self._body()),
                     HTTPStatus.ACCEPTED,
                 )
                 return
@@ -2004,6 +3822,16 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 self._json(
                     self.service.start_logofunc_preparation(self._body()),
                     HTTPStatus.ACCEPTED,
+                )
+                return
+            if path == "/api/gene-knowledge/omim/install":
+                body = self._body()
+                source_dir = str(body.get("source_dir") or "").strip()
+                if not source_dir:
+                    raise ValueError("source_dir is required")
+                self._json(
+                    self.service.gene_knowledge.install_omim(Path(source_dir)),
+                    HTTPStatus.CREATED,
                 )
                 return
             if path == "/api/cohort/import":
@@ -2057,11 +3885,23 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 body = self._body()
                 self._json(self.service.cleanup_storage(body.get("categories") or []))
                 return
+            if path == "/api/storage/test-location":
+                self._json(self.service.test_storage_location(self._body()))
+                return
+            if path == "/api/storage/location":
+                self._json(self.service.set_storage_location(self._body()))
+                return
+            if path == "/api/storage/migrate":
+                self._json(self.service.start_storage_migration(self._body()), HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/storage/open":
+                self._json(self.service.open_storage_location(self._body()))
+                return
             if path == "/api/storage/compact":
                 body = self._body()
                 if body.get("confirmation") != "COMPACT":
                     raise ValueError("confirmation must be COMPACT")
-                self._json(self.service.sample_library.compact_database())
+                self._json(self.service.compact_storage())
                 return
             if path == "/api/cohort/import-jobs":
                 self._json(
@@ -2126,6 +3966,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
         except (ValueError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        finally:
+            if mutation_started:
+                self.service.end_storage_mutation()
 
     def _body(self, max_bytes: int = 1_000_000) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
@@ -2204,7 +4047,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=43117, type=int)
-    parser.add_argument("--state-dir", type=Path, default=default_state_dir())
+    parser.add_argument("--state-dir", type=Path)
+    parser.add_argument("--storage-registry", type=Path)
     parser.add_argument(
         "--pipeline-root", type=Path, default=Path(__file__).resolve().parents[1]
     )
@@ -2212,7 +4056,96 @@ def main() -> None:
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("this workstation service may bind only to a loopback address")
 
-    service = AnnotationJobService(args.pipeline_root, args.state_dir)
+    pipeline_root = args.pipeline_root.resolve()
+    default_data_root = default_state_dir()
+    try:
+        registry = StorageLocationRegistry(
+            pipeline_root,
+            default_data_root,
+            registry_path=args.storage_registry,
+            persist=True,
+        )
+    except StorageRegistryError as exc:
+        parser.error(str(exc))
+    environment_override = os.environ.get("IEI_WORKBENCH_STATE_DIR", "").strip()
+    state_dir = (
+        args.state_dir.expanduser().resolve()
+        if args.state_dir else
+        Path(environment_override).expanduser().resolve()
+        if environment_override else registry.root("data")
+    )
+    try:
+        state_exists = state_dir.exists()
+        state_is_directory = state_dir.is_dir()
+    except OSError as exc:
+        parser.error(
+            f"configured Sample Library & Cohort storage cannot be inspected: {state_dir} ({exc})"
+        )
+    if not state_exists:
+        if not registry.is_default("data") and not args.state_dir and not environment_override:
+            parser.error(
+                "configured Sample Library & Cohort storage is unavailable: "
+                f"{state_dir}. Reconnect the selected drive; the service will not create a fallback database."
+            )
+        try:
+            state_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            parser.error(f"state directory cannot be created: {state_dir} ({exc})")
+        state_is_directory = True
+    if not state_is_directory:
+        parser.error(f"state directory is not a folder: {state_dir}")
+    if not args.state_dir and not environment_override and not registry.is_default("data"):
+        try:
+            registry.ensure_marker_identity(
+                "data", state_dir, required=True, service=SERVICE_VERSION
+            )
+        except StorageRegistryError as exc:
+            parser.error(str(exc))
+    workspace_dir = (
+        state_dir if registry.describe("temporary").get("follows_data_root")
+        else registry.root("temporary")
+    )
+    try:
+        workspace_exists = workspace_dir.exists()
+        workspace_is_directory = workspace_dir.is_dir()
+    except OSError as exc:
+        parser.error(
+            f"configured temporary workspace cannot be inspected: {workspace_dir} ({exc})"
+        )
+    if not workspace_exists:
+        if not registry.is_default("temporary"):
+            parser.error(
+                "configured temporary workspace is unavailable: "
+                f"{workspace_dir}. Reconnect the selected drive; the service will not fall back."
+            )
+        try:
+            workspace_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            parser.error(f"temporary workspace cannot be created: {workspace_dir} ({exc})")
+        workspace_is_directory = True
+    if not workspace_is_directory:
+        parser.error(f"temporary workspace is not a folder: {workspace_dir}")
+    if not registry.is_default("temporary"):
+        try:
+            registry.ensure_marker_identity(
+                "temporary", workspace_dir, required=True, service=SERVICE_VERSION
+            )
+        except StorageRegistryError as exc:
+            parser.error(str(exc))
+    annotation_root = registry.root("annotation")
+    if not registry.is_default("annotation") and annotation_root.is_dir():
+        try:
+            registry.ensure_marker_identity(
+                "annotation", annotation_root,
+                required=bool(registry.storage_id("annotation")),
+                service=SERVICE_VERSION,
+            )
+        except StorageRegistryError as exc:
+            parser.error(str(exc))
+
+    service = AnnotationJobService(
+        pipeline_root, state_dir, storage_registry=registry
+    )
     server = create_server(service, args.host, args.port)
     print(f"IEI local service listening on http://{args.host}:{args.port}")
     print(f"State: {service.state_dir}")

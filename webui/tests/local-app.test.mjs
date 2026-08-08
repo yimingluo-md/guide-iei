@@ -16,10 +16,15 @@ test("keeps the clinical review defaults visible", async () => {
   assert.match(source, /useState<VariantRow\[\]>\(\[\]\)/);
   assert.doesNotMatch(source, /demoVariants/);
   assert.match(source, /Clinical transcripts \(MANE \+ PICK fallback\)/);
+  assert.doesNotMatch(source, /setManeOnly\(false\)/);
+  assert.match(source, /excludeConfirmedFrameRestored, setExcludeConfirmedFrameRestored\] = useState\(true\)/);
+  assert.match(source, /Hidden by default; possible\/unphased events always remain visible/);
   assert.match(source, /Exclude RepeatMasker/);
   assert.match(source, /Exclude SegDup/);
   assert.match(source, /ClinVar P \/ LP only/);
   assert.match(source, /Candidate compound het/);
+  assert.match(source, /current-review-table/);
+  assert.match(source, /<VariantIdentifier row=\{row\}\/>/);
 });
 
 test("provides separate local annotation and annotated-VCF review paths", async () => {
@@ -101,10 +106,20 @@ test("provides a persistent Sample Library, stable identity mapping, and storage
   assert.match(source, /Assay and import profile filters/);
   assert.match(source, /not interpreted as negative|not evidence that the individual lacks a variant/);
   assert.match(source, />Storage</);
+  assert.match(source, /Where data live/);
+  assert.match(source, /Annotation datasets/);
+  assert.match(source, /Sample Library & Cohort/);
+  assert.match(source, /Temporary workspace/);
+  assert.match(source, /Use for future data/);
+  assert.match(source, /Copy existing data/);
+  assert.match(source, /Folder check passed/);
+  assert.match(source, /Original locations retained/);
   assert.match(source, /Clean temporary data/);
   assert.match(source, /Compact database/);
   assert.match(service, /\/api\/sample-library/);
   assert.match(service, /\/api\/storage/);
+  assert.match(service, /\/api\/storage\/migrate/);
+  assert.match(service, /getStorageConfiguration/);
   assert.doesNotMatch(source, /cohort allele frequency/i);
 });
 
@@ -112,7 +127,19 @@ test("provides annotation dataset setup and constrained local downloads", async 
   const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
   const service = await readFile(new URL("app/local-service.ts", root), "utf8");
   assert.match(source, /Set up annotation datasets/);
+  assert.match(source, /Recommended for exome/);
+  assert.match(source, /Recommended for WGS/);
+  assert.match(source, /Update installed datasets/);
+  assert.match(source, /Registration or license required/);
+  assert.match(source, /Shipped with the software/);
+  assert.match(source, /Additional research annotations/);
+  assert.match(source, /Repair bundled files/);
   assert.match(source, /Registration and setup instructions/);
+  assert.match(source, /Prepare and install dbNSFP/);
+  assert.match(source, /Choose folder/);
+  assert.match(service, /\/api\/local-resource-source\/choose/);
+  assert.match(service, /chooseLocalResourceSource/);
+  assert.match(source, /220 GiB/);
   assert.match(source, /Download \/ resume/);
   assert.match(source, /Download \/ resume 83 GiB/);
   assert.match(service, /"cadd_wgs"/);
@@ -121,14 +148,17 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /downloadJob\.progress/);
   assert.match(service, /\/api\/resource-downloads/);
   assert.match(service, /startResourceDownload/);
-  assert.match(source, /Prepare local files/);
+  assert.match(service, /\/api\/resource-preparations\/dbnsfp/);
+  assert.match(service, /startDbnsfpPreparation/);
+  assert.match(source, /Prepare and install/);
   assert.match(source, /promoterAI_tss500\.tsv\.gz/);
   assert.match(service, /\/api\/resource-preparations\/promoterai/);
   assert.match(service, /startPromoterAiPreparation/);
   assert.match(source, /PromoterAI \|score\| ≥/);
   assert.match(source, /Math\.abs\(row\.promoterAI\) < promoterAbsMin/);
-  assert.match(source, /Existing LoGoFunc \.csv\.gz file or containing folder/);
-  assert.match(source, /Use existing source/);
+  assert.match(source, /Choose the downloaded LoGoFunc \.csv\.gz file/);
+  assert.match(source, /Import LoGoFunc/);
+  assert.match(source, /Download from Zenodo/);
   assert.match(service, /\/api\/resource-preparations\/logofunc/);
   assert.match(service, /startLoGoFuncPreparation/);
   assert.match(source, /LoGoFunc predicted class/);
@@ -171,7 +201,10 @@ test("keeps SCREEN observed context separate and exposes defensible positive-evi
   assert.match(regulatory, /assign a target gene/);
   assert.match(regulatory, /Why are both coding and regulatory annotations shown/);
   assert.match(regulatory, /same gene, another gene, or multiple genes/);
+  assert.match(regulatory, /Use prepared bundle/);
+  assert.match(regulatory, /stores only a local pointer/);
   assert.match(service, /\/api\/screen-context\/catalog/);
+  assert.match(service, /\/api\/screen-context\/install/);
   assert.match(service, /\/api\/screen-context\/filter/);
 });
 
@@ -190,6 +223,15 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /phastCons 100-way/);
   assert.match(source, /All gnomAD population frequencies/);
   assert.match(source, /Loaded automatically from bundled gnomAD/);
+  assert.match(source, /Reference-disrupted transcript/);
+  assert.match(source, /reference transcript CDS is already disrupted/);
+  assert.match(source, /not a conventional pLoF baseline/);
+  assert.match(source, /Splicing evidence/);
+  assert.match(source, /isHighImpactSpliceVariant/);
+  assert.match(source, /start-loss is outside LOFTEE scope/);
+  assert.match(source, /No PVS1 conclusion is assigned here/);
+  assert.match(source, /Not applicable · single-exon transcript/);
+  assert.match(source, /no downstream exon–exon junction/);
   assert.match(source, /ENCODE SCREEN cCRE/);
   assert.match(source, /Does not overlap a/);
   assert.match(source, /proximity is not a target-gene assignment/);
@@ -227,6 +269,28 @@ test("uses editable gene sets and compact coordinate-based variant IDs", async (
   assert.match(source, /`\$\{row\.chrom\}:\$\{row\.pos\}:\$\{row\.ref\}:\$\{row\.alt\}`/);
   assert.match(source, /compactAllele/);
   assert.doesNotMatch(source, /row\.pos\.toLocaleString\(\).*row\.ref/);
+});
+
+test("keeps source-specific gene knowledge local and reviewable", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(source, />Gene knowledge</);
+  assert.match(source, /No IUIS category filter/);
+  assert.doesNotMatch(source, /ClinGen gene–disease validity<\/label>/);
+  assert.doesNotMatch(source, /ClinGen sufficient HI evidence/);
+  assert.doesNotMatch(source, /ClinGen sufficient TS evidence/);
+  assert.match(source, /OMIM dataset not installed/);
+  assert.match(source, /OMIM data are not shipped or downloaded by this software/);
+  assert.match(source, /Gene evidence is not variant evidence/);
+  assert.match(source, /Score 30 denotes a gene associated with an autosomal-recessive phenotype/);
+  assert.doesNotMatch(source, /Inheritance and GOF\/DN are preserved per IUIS disease row/);
+  assert.match(source, /Associated features/);
+  assert.match(source, /Major category/);
+  assert.match(source, /Subcategory/);
+  assert.match(source, /Other affected cells/);
+  assert.match(service, /\/api\/gene-knowledge\/status/);
+  assert.match(service, /\/api\/gene-knowledge\/filters/);
+  assert.match(service, /\/api\/gene-knowledge\/omim\/install/);
 });
 
 test("provides persistent genotype-first cohort indexing and carrier search", async () => {

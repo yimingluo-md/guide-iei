@@ -1,0 +1,36 @@
+{
+  "counts": {
+    "clingen_dosage": 1521,
+    "clingen_validity": 3659,
+    "hgnc": 45031,
+    "iuis": 591
+  },
+  "path": "webui/public/bundled-data/gene_knowledge_public.sqlite3",
+  "resources": {
+    "clingen_dosage": {
+      "record_count": 1521,
+      "release": "2026-08-06",
+      "source_sha256": "a0de15ee40093ef6c79aaf624acc947118706e5a56f614ff3b0cf0faad8568a9",
+      "source_url": "https://ftp.clinicalgenome.org/ClinGen_gene_curation_list_GRCh38.tsv"
+    },
+    "clingen_validity": {
+      "record_count": 3659,
+      "release": "2026-08-06",
+      "source_sha256": "f288cc495b624b185f395e5b1f962c367a718ab4ae2ad870e51ea2dd3d4761f4",
+      "source_url": "https://search.clinicalgenome.org/kb/gene-validity/download"
+    },
+    "hgnc": {
+      "record_count": 45031,
+      "release": "2026-08-06",
+      "source_sha256": "2106d1f237d6c542a85a4c399225e011ee9c5822199e7a400b7b9f842c8c8ca0",
+      "source_url": "https://storage.googleapis.com/public-download-files/hgnc/tsv/tsv/hgnc_complete_set.txt"
+    },
+    "iuis": {
+      "record_count": 591,
+      "release": "October 2024",
+      "source_sha256": "5a74fbdc7d4b8fe2f3d80bf23729e44fd42315c0023a67fee6ff98467c231adc",
+      "source_url": "https://iuis.org/committees/iei/"
+    }
+  },
+  "schema_version": 2
+}

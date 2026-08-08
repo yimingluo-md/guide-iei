@@ -181,7 +181,9 @@ def build_gnomad(source: Path, destination: Path) -> dict[str, object]:
     ]
     destination.parent.mkdir(parents=True, exist_ok=True)
     with destination.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
+        writer = csv.DictWriter(
+            handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
+        )
         writer.writeheader()
         for gene in sorted(best):
             row = best[gene]
@@ -309,6 +311,12 @@ def build_iuis(
         "Inheritance",
         "GOF/DN",
         "OMIM",
+        "T cell count",
+        "B cell count",
+        "Immunoglobulin levels",
+        "Neutrophil count",
+        "Other affected cells",
+        "Associated features",
         "Major category",
         "Subcategory",
     }
@@ -346,15 +354,25 @@ def build_iuis(
                     "is_recessive": str(is_recessive).lower(),
                     "is_x_linked": str(is_x_linked).lower(),
                     "omim": normalized_space(padded[index["OMIM"]]),
+                    "t_cell_count": normalized_space(padded[index["T cell count"]]),
+                    "b_cell_count": normalized_space(padded[index["B cell count"]]),
+                    "immunoglobulin_levels": normalized_space(padded[index["Immunoglobulin levels"]]),
+                    "neutrophil_count": normalized_space(padded[index["Neutrophil count"]]),
+                    "other_affected_cells": normalized_space(padded[index["Other affected cells"]]),
+                    "associated_features": normalized_space(padded[index["Associated features"]]),
                     "major_category": normalized_space(padded[index["Major category"]]),
                     "subcategory": normalized_space(padded[index["Subcategory"]]),
                 }
             )
 
-    fields = list(output_rows[0])
+    # Keep the always-populated source row last so version-controlled TSV lines
+    # never end in whitespace when optional final fields are blank.
+    fields = [field for field in output_rows[0] if field != "source_row"] + ["source_row"]
     classification_destination.parent.mkdir(parents=True, exist_ok=True)
     with classification_destination.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fields, delimiter="\t")
+        writer = csv.DictWriter(
+            handle, fieldnames=fields, delimiter="\t", lineterminator="\n"
+        )
         writer.writeheader()
         writer.writerows(output_rows)
     genes_destination.write_text("\n".join(sorted(all_genes)) + "\n", encoding="utf-8")

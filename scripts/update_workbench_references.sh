@@ -22,3 +22,7 @@ python3 "${HERE}/build_workbench_reference_data.py" \
     --gnomad "${STAGE}/gnomad.v4.1.1.constraint_metrics.tsv.bgz" \
     --iuis "${STAGE}/IUIS-IEI-list-for-web-site-July-2024V2.xlsx" \
     --output "${ROOT}/webui/public/bundled-data"
+
+# Build the richer public gene-knowledge layer after the reviewed IUIS table
+# has been regenerated. OMIM is intentionally not part of this update.
+bash "${HERE}/update_gene_knowledge.sh"

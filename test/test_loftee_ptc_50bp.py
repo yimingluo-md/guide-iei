@@ -23,6 +23,7 @@ def model() -> Transcript:
         chrom="1",
         version=1,
         strand=1,
+        biotype="protein_coding",
         blocks=[(100, 117, 0)],
         cds="ATGAAACCCGGGTTTTAA",
         utr3="ATGATAATAA",
@@ -147,11 +148,49 @@ def test_version_mismatch_is_refused():
     assert result["rule"] == ""
 
 
+def test_reference_disrupted_transcript_biotype_is_refused_before_cds_scoring():
+    transcript = model()
+    transcript.biotype = "protein_coding_LoF"
+    transcript.problems = ["cds_not_multiple_of_3", "cds_internal_stop"]
+    result = calculate(
+        transcript,
+        102,
+        "GA",
+        "G",
+        "frameshift_variant",
+        "ENST00000000001.1:c.4del",
+        50,
+    )
+    assert result["status"] == "unsupported_transcript_biotype:protein_coding_LoF"
+    assert result["rule"] == ""
+
+
+def test_single_exon_transcript_keeps_ptc_but_does_not_apply_junction_rule():
+    transcript = model()
+    transcript.exons = [(100, 127)]
+    result = calculate(
+        transcript,
+        102,
+        "GA",
+        "G",
+        "frameshift_variant",
+        "ENST00000000001.1:c.4del",
+        50,
+    )
+    assert result["status"] == "not_applicable_single_exon_transcript"
+    assert result["ptc_cds"] == 19
+    assert result["ptc_aa"] == 7
+    assert result["dist"] is None
+    assert result["rule"] == ""
+
+
 if __name__ == "__main__":
     tests = [
         test_frameshift_is_scored_at_downstream_ptc,
         test_successful_recomputation_replaces_lof_info_and_preserves_original,
         test_version_mismatch_is_refused,
+        test_reference_disrupted_transcript_biotype_is_refused_before_cds_scoring,
+        test_single_exon_transcript_keeps_ptc_but_does_not_apply_junction_rule,
     ]
     for test in tests:
         with tempfile.TemporaryDirectory() as directory:

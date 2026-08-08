@@ -310,6 +310,11 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 clinvar_significance.update(terms)
             if info.get("ClinVar_path_aa_match") == "1":
                 counters["clinvar_pathogenic_aa_match_records"] += 1
+            if present(info.get("ClinGen_ERepo")):
+                counters["clingen_erepo_match_records"] += 1
+                counters["clingen_erepo_assertions"] += len(
+                    info.get("ClinGen_ERepo", "").split(",")
+                )
             haplotype_entries = info.get("IEI_HAPLOTYPE_FRAME", "").split(",")
             haplotype_statuses = {
                 item.split("|")[3]
@@ -483,6 +488,28 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         logofunc_exact_metric["status"] = "WARN"
     metrics.extend((logofunc_allele_metric, logofunc_exact_metric))
 
+    clingen_config = config.get("clingen_erepo") or {}
+    clingen_schema = all(
+        field in header_info_fields
+        for field in ("ClinGen_ERepo", "ClinGen_ERepo_count")
+    )
+    metrics.append({
+        "name": "ClinGen Evidence Repository exact allele annotation",
+        "eligible_records": counters["records"],
+        "annotated_records": counters["clingen_erepo_match_records"],
+        "assertions": counters["clingen_erepo_assertions"],
+        "coverage": None,
+        "warning_threshold": None,
+        "schema_present": clingen_schema,
+        "status": (
+            "SKIPPED_DISABLED" if not clingen_config.get("enabled")
+            else "PASS" if clingen_schema
+            else "FAIL" if clingen_config.get("required")
+            else "SKIPPED_NOT_INSTALLED"
+        ),
+        "note": "Match count is descriptive; absence of a ClinGen assertion is not an annotation failure.",
+    })
+
     statuses = {item["status"] for item in metrics}
     overall = "FAIL" if "FAIL" in statuses else "WARN" if "WARN" in statuses else "PASS"
     promoter_schema = any(field in csq_fields for field in PROMOTERAI_FIELDS)
@@ -516,6 +543,9 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             ),
             "SpliceAI_required": bool(
                 ((config.get("plugins") or {}).get("SpliceAI") or {}).get("required")
+            ),
+            "ClinGen_ERepo_required": bool(
+                (config.get("clingen_erepo") or {}).get("required")
             ),
             "LoGoFunc_version": logofunc_config.get("version"),
             "LOFTEE_PTC_50BP_required": bool(

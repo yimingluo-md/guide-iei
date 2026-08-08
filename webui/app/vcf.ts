@@ -24,6 +24,17 @@ export type RawVcfEvidence = {
   format: Record<string, string>;
 };
 
+export type ClinGenErepoCompact = {
+  uuid: string;
+  caid: string;
+  assertion: string;
+  disease: string;
+  mondoId: string;
+  modeOfInheritance: string;
+  expertPanel: string;
+  approvalDate: string;
+};
+
 export type VariantQcSettings = {
   minDp: number | null;
   minGq: number | null;
@@ -179,6 +190,8 @@ export type VariantRow = {
   gnomadFrequencies?: Record<string, number>;
   gnomadPopmaxPopulation?: string;
   loftee: string;
+  lofteeFilter: string;
+  lofteeFlags: string;
   loftee50bp: string;
   loftee50bpOriginal: string;
   loftee50bpChanged: boolean;
@@ -189,6 +202,7 @@ export type VariantRow = {
   clinvarReviewStatus?: string;
   clinvarDisease?: string;
   clinvarAaMatch?: boolean;
+  clingenErepo?: ClinGenErepoCompact[];
   haplotypeFrameStatus?: "FRAME_RESTORED_CONFIRMED" | "FRAME_RESTORATION_PARTIAL_CONFIRMED" | "FRAME_RESTORING_POSSIBLE_UNPHASED" | "";
   haplotypeFramePartners?: string[];
   haplotypeProteinChange?: string;
@@ -423,6 +437,20 @@ function alleleInfoReasons(
   const value = (info[key] ?? "").split(",")[altIndex] ?? "";
   if (!value || EMPTY.has(value)) return [];
   return value.split("&").map(decode).filter((item) => item && !EMPTY.has(item));
+}
+
+function clinGenErepoAssertions(raw: string | undefined, alt: string): ClinGenErepoCompact[] {
+  return (raw ?? "").split(",").flatMap((token) => {
+    const fields = token.split("|").map((value) => {
+      try { return decodeURIComponent(value); } catch { return value; }
+    });
+    if (fields.length !== 9 || fields[0] !== alt) return [];
+    return [{
+      uuid: fields[1], caid: fields[2], assertion: fields[3], disease: fields[4],
+      mondoId: fields[5], modeOfInheritance: fields[6], expertPanel: fields[7],
+      approvalDate: fields[8],
+    }];
+  });
 }
 
 function populatedFields(record: Record<string, string>, exclude: string[] = []) {
@@ -1123,6 +1151,8 @@ export async function parseVcfFiles(
               availableDbnsfpPredictors,
               dbnsfpPredictors,
               loftee: first(combined, ["LoF", "LOFTEE"]),
+              lofteeFilter: first(combined, ["LoF_filter"]),
+              lofteeFlags: first(combined, ["LoF_flags"]),
               loftee50bp: first(combined, [
                 "LoF_50_BP_RULE_PTC", "50_BP_RULE_recomputed",
               ]),
@@ -1143,6 +1173,7 @@ export async function parseVcfFiles(
               clinvarReviewStatus: first(combined, ["ClinVar_CLNREVSTAT", "CLNREVSTAT"]),
               clinvarDisease: first(combined, ["ClinVar_CLNDN", "CLNDN"]),
               clinvarAaMatch: truthy(first(combined, ["ClinVar_path_aa_match"])),
+              clingenErepo: clinGenErepoAssertions(info.ClinGen_ERepo, alt),
               haplotypeFrameStatus: haplotypeFrame.status,
               haplotypeFramePartners: haplotypeFrame.partners,
               haplotypeProteinChange: haplotypeFrame.protein,

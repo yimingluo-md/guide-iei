@@ -286,7 +286,7 @@ plugins:
   # allele, Ensembl transcript, residue position, and amino-acid substitution
   # match, protecting against VEP 106 -> 113 transcript/protein drift.
   LoGoFunc:
-    enabled: true
+    enabled: false            # optional research annotation; enable explicitly in the UI
     required: false
     version: "Zenodo 13835271 (2024-09-24)"
     file: "references/logofunc/LoGoFuncVotingEnsemble_metadata_preds_final.csv.gz"
@@ -342,6 +342,22 @@ clinvar:
   url: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_{ASSEMBLY}/clinvar.vcf.gz"
   dest_dir: "references/clinvar"
   keep_dated_copy: true      # keep clinvar_<releasedate>.GRCh38.vcf.gz alongside latest
+
+# -----------------------------------------------------------------------------
+# ClinGen Evidence Repository expert-panel variant classifications
+# -----------------------------------------------------------------------------
+# Installed as a versioned local snapshot from the official public export.
+# Exact GRCh38 allele matching is applied after VEP; one allele may retain
+# multiple disease/MOI-specific expert-panel assertions. No patient data leave
+# the workstation and no live API is used during annotation.
+clingen_erepo:
+  enabled: true
+  required: true
+  url: "https://erepo.clinicalgenome.org/evrepo/api/summary/classifications/download?type=csv"
+  dest_dir: "references/clingen_erepo"
+  database: "references/clingen_erepo/clingen_erepo.sqlite3"
+  vcf: "references/clingen_erepo/clingen_erepo.GRCh38.vcf"
+  manifest: "references/clingen_erepo/manifest.json"
 
 # -----------------------------------------------------------------------------
 # Post-processing (after VEP)

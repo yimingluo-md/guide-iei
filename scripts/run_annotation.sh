@@ -19,7 +19,8 @@
 #   4. frameshift PTC-based LOFTEE 50-bp correction  -> loftee_ptc_50bp.py
 #   5. sample-specific haplotype consequences         -> Haplosaurus
 #   6. ClinVar amino-acid-match post-processing       -> clinvar_aa_match.py
-#   7. annotation completeness certificate            -> annotation_qc.py
+#   7. exact allele-level ClinGen expert assertions    -> clingen_erepo_annotate.py
+#   8. annotation completeness certificate            -> annotation_qc.py
 #
 # Output is an annotated VCF (INFO/CSQ), preserving sample GT/zygosity.
 # =============================================================================
@@ -526,7 +527,34 @@ else
 fi
 
 # ============================================================================ #
-# 7. Annotation completeness certificate
+# 7. ClinGen Evidence Repository expert-panel assertions
+# ============================================================================ #
+if [[ "$(yaml_get "$CONFIG" clingen_erepo.enabled)" == "true" ]]; then
+    log "=== ClinGen Evidence Repository exact allele annotation ==="
+    CLINGEN_DB="$(yaml_get "$CONFIG" clingen_erepo.database)"
+    [[ "$CLINGEN_DB" = /* ]] || CLINGEN_DB="${ROOT}/${CLINGEN_DB}"
+    CLINGEN_REQUIRED="$(yaml_get "$CONFIG" clingen_erepo.required)"
+    CLINGEN_TMP="${FINAL_OUTPUT%.gz}.clingen.tmp"
+    if [[ -s "$CLINGEN_DB" ]] && python3 "${ROOT}/pipeline/clingen_erepo_annotate.py" \
+        --input "$FINAL_OUTPUT" --output "$CLINGEN_TMP" --database "$CLINGEN_DB"; then
+        if [[ "$FINAL_OUTPUT" == *.gz ]]; then
+            hts bgzip -f "$CLINGEN_TMP" || die "ClinGen annotation bgzip failed"
+            mv "${CLINGEN_TMP}.gz" "$FINAL_OUTPUT"
+            hts tabix -p vcf -f "$FINAL_OUTPUT" || die "ClinGen annotation tabix failed"
+        else
+            mv "$CLINGEN_TMP" "$FINAL_OUTPUT"
+        fi
+        log "ClinGen expert-panel assertions applied -> $FINAL_OUTPUT"
+    elif [[ "$CLINGEN_REQUIRED" == "true" ]]; then
+        die "required ClinGen Evidence Repository annotation failed"
+    else
+        warn "optional ClinGen Evidence Repository annotation failed"
+        rm -f "$CLINGEN_TMP"
+    fi
+fi
+
+# ============================================================================ #
+# 8. Annotation completeness certificate
 # ============================================================================ #
 if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
     log "=== annotation completeness certificate ==="

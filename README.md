@@ -49,6 +49,9 @@ portable, config-toggled local setup.
   **automatic latest-ClinVar fetch** on every run.
 - **ClinVar amino-acid-match** post-processing, adapted from the original awk
   step to work on VCF (`INFO/ClinVar_path_aa_match`).
+- **ClinGen Evidence Repository variant curations** as an updateable local
+  snapshot, preserving separate disease/MOI expert-panel assertions and full
+  interpretation provenance without sending patient variants to an API.
 - **PTC-based LOFTEE 50-bp correction** for frameshifts, calculated locally
   from the release-matched GTF and indexed FASTA.
 - **Sample-specific Haplosaurus post-processing** so nearby indels that restore
@@ -61,6 +64,9 @@ config/annotation.config.yaml   administrator defaults used by CLI and the UI
 docker/Dockerfile               VEP 113 + LOFTEE grch38 + samtools + DBD::SQLite
 docker/build.sh                 build the image (docker or podman)
 scripts/download_references.sh  fetch VEP cache / FASTA / LOFTEE / RepeatMasker / SegDup
+scripts/install_recommended_datasets.sh  one-click exome/WGS public dataset setup
+scripts/update_refreshable_datasets.sh  refresh ClinVar + ClinGen variant curations
+scripts/build_native_reference_bundle.sh  package shipped SCREEN + hg19 resources
 scripts/build_coding_bed.sh     build coding+splice BED (Ensembl GTF) for region restriction
 scripts/prepare_dbnsfp.sh       rebuild a downloaded dbNSFP release for GRCh38 (one-time)
 scripts/fetch_clinvar.sh        download + version-stamp the latest ClinVar
@@ -68,11 +74,14 @@ scripts/run_annotation.sh       main entry point: config -> VEP -> annotated VCF
 scripts/liftover_grch37_to_grch38.sh  controlled legacy-VCF intake into GRCh38
 scripts/build_clinvar_aa_reference.sh   build the aa-match catalog from ClinVar
 scripts/update_workbench_references.sh  rebuild bundled gnomAD/IUIS UI resources
+scripts/update_gene_knowledge.sh  rebuild public HGNC/IUIS/ClinGen gene knowledge
+scripts/update_clingen_erepo.sh   safely install/update ClinGen expert variant assertions
 scripts/sync_to_onedrive.sh     copy the working tree (no .git) to a cloud-synced folder
 pipeline/build_vep_command.py   translate the config into VEP argv + bind-mounts
 pipeline/loftee_ptc_50bp.py     replace frameshift 50_BP_RULE using the resulting PTC
 pipeline/haplotype_consequences.py validate sample GT/phase for frame-restoring haplotypes
 pipeline/clinvar_aa_match.py    add INFO/ClinVar_path_aa_match to the VCF
+pipeline/clingen_erepo_annotate.py  add exact allele-level ClinGen assertion IDs
 pipeline/reduce_vep_to_aa_reference.py  VEP-tab -> aa-match catalog
 local_service/                  loopback API + persistent SQLite job queue
 webui/                          local IEI variant-review workbench
@@ -81,6 +90,7 @@ docs/GRCH37_INPUT.md             assembly detection, liftover QC, provenance, li
 docs/TRIO_ANALYSIS.md            pedigree input, de novo tiers, compound-het phase
 docs/SAMPLE_LIBRARY_AND_STORAGE.md  persistent identity, cohort profiles, disk management
 docs/BUNDLED_WORKBENCH_REFERENCES.md  gnomAD constraint + IUIS provenance
+docs/GENE_KNOWLEDGE.md                HGNC/IUIS/ClinGen + private OMIM handling
 test/                           tiny VCF + config + tests (no container needed)
 ```
 
@@ -297,17 +307,31 @@ compact candidate WGS storage is typically about 30–120 MB per sample (roughly
 annotated VCFs. Full-WGS cohort indexing can instead reach hundreds of GB for
 100 samples and terabyte scale for several hundred.
 
-The workbench includes compact, versioned gnomAD v4.1.1 gene-constraint and
-IUIS October 2024 IEI resources. It joins pLI/LOEUF and related gene metrics by
-gene symbol and loads the IUIS IEI/dominant filters automatically; these
-gene-level resources do not need to be added to the VCF. See
-`docs/BUNDLED_WORKBENCH_REFERENCES.md`.
+Storage can be configured from that page without editing YAML: **Annotation
+datasets**, **Sample Library & Cohort**, and an optional **Temporary workspace**
+can use separate local SSD locations. A safe **Copy existing data** migration
+checks free space, verifies copied files, preserves the original location, and
+requires a restart before the new root becomes active. The application never
+silently creates an empty default cohort database when a configured external
+library drive is disconnected. See
+[`docs/SAMPLE_LIBRARY_AND_STORAGE.md`](docs/SAMPLE_LIBRARY_AND_STORAGE.md#configurable-workstation-locations).
+
+The workbench includes compact, versioned gnomAD v4.1.1 constraint, HGNC,
+IUIS October 2024, and ClinGen gene-disease-validity/dosage resources. The
+variant screen provides source-specific filters and a dedicated **Gene** tab;
+these resources are joined during review and do not need to be added to the
+VCF. Licensed OMIM files are never shipped or downloaded automatically, but
+can be indexed from a user-selected local folder under **Gene knowledge**. See
+`docs/BUNDLED_WORKBENCH_REFERENCES.md` and `docs/GENE_KNOWLEDGE.md`.
 
 VEP annotation resources can be checked and set up from **Run VEP first → Set
-up annotation datasets**. The UI provides dbNSFP registration and preparation
-instructions, resumable SpliceAI MANE download, latest-ClinVar download, local
-path/index checks, bundled-resource provenance links, and visible download
-status. See [`docs/REFERENCE_SETUP.md`](docs/REFERENCE_SETUP.md).
+up annotation datasets**. One-click actions install the recommended automatic
+downloads for either exome or whole-genome analysis and refresh changing public
+sources such as ClinVar. dbNSFP registration and licensed PromoterAI setup are
+shown separately with direct source links and guided instructions. SCREEN
+Registry V4 cCRE regions and the hg19 input bundle ship with the native release;
+LoGoFunc remains an optional research annotation. See
+[`docs/REFERENCE_SETUP.md`](docs/REFERENCE_SETUP.md).
 
 The local workbench also stores individual demographics and plain-text
 phenotypes separately from sequencing samples. Records may be entered manually

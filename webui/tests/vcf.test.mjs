@@ -127,6 +127,21 @@ test("imports a real gzip-compressed .vcf.gz file", async () => {
   assert.equal(result.summary.intakeQc.every((check) => check.status === "pass"), true);
 });
 
+test("preserves separate disease-specific ClinGen expert assertions", async () => {
+  const tokens = [
+    ["G", "uuid-a", "CA1", "Pathogenic", "Disease A", "MONDO:1", "Autosomal dominant inheritance", "Panel A", "2026-01-01"],
+    ["G", "uuid-b", "CA1", "Uncertain Significance", "Disease B", "MONDO:2", "Autosomal recessive inheritance", "Panel A", "2026-02-01"],
+  ].map((fields) => fields.map((value) => encodeURIComponent(value)).join("|")).join(",");
+  const vcf = VCF.replace(
+    `CSQ=${PASS_CSQ};IEI_UNSCORED_INDEL=SpliceAI_intronic&PromoterAI_promoter`,
+    `CSQ=${PASS_CSQ};ClinGen_ERepo=${tokens}`,
+  );
+  const result = await parseVcfFiles([new File([vcf], "clingen.vcf")]);
+  assert.equal(result.rows[0].clingenErepo.length, 2);
+  assert.deepEqual(result.rows[0].clingenErepo.map((item) => item.disease), ["Disease A", "Disease B"]);
+  assert.equal(result.rows[0].clingenErepo[0].modeOfInheritance, "Autosomal dominant inheritance");
+});
+
 test("prefers the selected WGS CADD plugin over a duplicate dbNSFP value", async () => {
   const fields = [
     "Allele", "Consequence", "IMPACT", "SYMBOL",
@@ -267,6 +282,31 @@ test("parses sample- and transcript-specific frame-restoration evidence", async 
     result.rows[0].clinvarConflictingEvidence,
     "Pathogenic(1)&Uncertain_significance(2)",
   );
+});
+
+test("retains transcript-specific LOFTEE reasons, flags, and PTC recalculation", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Feature", "PICK",
+    "LoF", "LoF_filter", "LoF_flags", "LoF_50_BP_RULE_PTC",
+    "LoF_50_BP_RULE_original", "LoF_50_BP_RULE_changed",
+    "PTC_dist_from_last_exon", "PTC_calc_status",
+  ];
+  const lofteeVcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=19,length=58617616>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "19\t44274643\t.\tGT\tG\t99\tPASS\tCSQ=-|frameshift_variant|HIGH|ZNF233|ENST00000683810|1|LC|END_TRUNC%26ANC_ALLELE|PHYLOCSF_WEAK|FAIL|PASS|1|-1874|ok\tGT:DP:GQ:AD\t1/1:85:99:0,85",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([lofteeVcf], "loftee.vcf")]);
+  assert.equal(result.rows[0].loftee, "LC");
+  assert.equal(result.rows[0].lofteeFilter, "END_TRUNC&ANC_ALLELE");
+  assert.equal(result.rows[0].lofteeFlags, "PHYLOCSF_WEAK");
+  assert.equal(result.rows[0].loftee50bp, "FAIL");
+  assert.equal(result.rows[0].ptcDistanceFromLastExon, -1874);
+  assert.equal(result.rows[0].ptcCalcStatus, "ok");
 });
 
 test("reports an invalid file named .vcf.gz", async () => {

@@ -462,6 +462,21 @@ def score_edit(
     if ptc is None:
         return empty_result("no_stop_found")
 
+    # The conventional 50/55-nt NMD rule is defined relative to a downstream
+    # exon-exon junction. A single-exon transcript has no such junction. Keep
+    # the reconstructed PTC for auditability, but do not manufacture a
+    # distance/rule or replace LOFTEE's original annotation.
+    if len(model.exons) == 1:
+        return {
+            "ptc_cds": ptc,
+            "ptc_aa": (ptc - 1) // 3 + 1,
+            "dist": None,
+            "rule": "",
+            "dist_coding": None,
+            "rule_coding": "",
+            "status": "not_applicable_single_exon_transcript",
+        }
+
     def shifted(junction: int | None) -> int | None:
         if junction is not None and cds_start < junction:
             return junction + delta
@@ -505,6 +520,14 @@ def calculate(
 ) -> dict:
     if model is None:
         return empty_result("no_transcript_model")
+    # LOFTEE itself only evaluates transcripts whose biotype is exactly
+    # protein_coding. In particular, protein_coding_LoF transcripts have an
+    # ORF disrupted on the reference haplotype, so they are not a valid intact
+    # baseline for a patient-specific frameshift/PTC simulation.
+    if model.biotype != "protein_coding":
+        return empty_result(
+            "unsupported_transcript_biotype:" + (model.biotype or "unknown")
+        )
     if not model.ok:
         return empty_result("bad_transcript_model:" + "+".join(model.problems))
     if "start_lost" in consequence.split("&"):

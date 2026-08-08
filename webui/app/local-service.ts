@@ -32,6 +32,7 @@ export type ServiceCapabilities = {
   pipeline_root: string;
   cohort_database: string;
   phenotype_database: string;
+  storage: StorageConfiguration;
   container_runtimes: string[];
   hardware: {
     logical_cpus: number;
@@ -53,6 +54,8 @@ export type ServiceCapabilities = {
   };
   annotation_profile: {
     ready: boolean;
+    datasets_ready: boolean;
+    execution_ready: boolean;
     error: string;
     foundations: {
       id: string;
@@ -60,6 +63,8 @@ export type ServiceCapabilities = {
       available: boolean;
       required: boolean;
       version: number | null;
+      state?: "ready" | "runtime_missing" | "runtime_unavailable" | "image_missing";
+      message?: string;
     }[];
     sources: {
       id: string;
@@ -72,15 +77,21 @@ export type ServiceCapabilities = {
       configured_paths: string[];
       version: string;
       available_in: ("exome" | "whole_genome")[];
+      access: "public" | "bundled" | "registration" | "license" | "terms";
+      recommendation: "required" | "included" | "recommended" | "recommended_wgs" | "optional";
       status: "ready" | "required_missing" | "optional_missing";
       setup_mode: "manual" | "download" | "prepare" | "bundled" | "deferred";
       download_id?: string;
-      prepare_id?: "promoterai" | "logofunc";
+      prepare_id?: "dbnsfp" | "promoterai" | "logofunc";
       reference_url: string;
       reference_label: string;
       size_hint: string;
       instructions: string[];
     }[];
+    recommended_profiles: {
+      exome: { installed: boolean; missing: string[] };
+      whole_genome: { installed: boolean; missing: string[] };
+    };
     dbnsfp_predictors: {
       id: string;
       label: string;
@@ -99,7 +110,7 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre";
+  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre" | "gene_knowledge" | "clingen_erepo" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
   operation?: "download" | "preparation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;
@@ -110,6 +121,92 @@ export type ResourceDownloadJob = {
   exit_code: number | null;
   error: string;
   log: string;
+};
+
+export type GeneKnowledgeResource = {
+  id: "hgnc" | "iuis" | "clingen_validity" | "clingen_dosage";
+  release: string;
+  source_url: string;
+  source_sha256: string;
+  record_count: number;
+  imported_at: string;
+};
+
+export type GeneKnowledgeStatus = {
+  available: boolean;
+  error: string;
+  resources: GeneKnowledgeResource[];
+  omim: {
+    installed: boolean;
+    installed_at?: string;
+    source_dir?: string;
+    genes?: number;
+    phenotypes?: number;
+    license: string;
+    error?: string;
+  };
+};
+
+export type ClinGenErepoAssertion = {
+  uuid: string; variation: string; clinvar_variation_id: string; caid: string;
+  hgvs_expressions: string; gene: string; disease: string; mondo_id: string;
+  mode_of_inheritance: string; assertion: string; evidence_met: string;
+  evidence_not_met: string; interpretation_summary: string; pubmed: string;
+  expert_panel: string; guideline: string; approval_date: string;
+  published_date: string; retracted: string; evidence_repo_link: string;
+  mapping_method: string;
+};
+
+export type ClinGenErepoVariant = {
+  available: boolean; error: string; generated_utc?: string; api_version?: string;
+  source_rows?: number; active_rows?: number; mapped_active_rows?: number;
+  mapping_rate?: number; alleles?: number; source_sha256?: string;
+  assertions: ClinGenErepoAssertion[];
+};
+
+export type GeneKnowledgeFilters = {
+  iuis_categories: { category: string; genes: number }[];
+  iuis_category_genes: Record<string, string[]>;
+  omim_genes: string[];
+};
+
+export type GeneKnowledgeGene = {
+  query: string;
+  found: boolean;
+  identity: null | {
+    hgnc_id: string;
+    symbol: string;
+    name: string;
+    ensembl_gene_id: string;
+    entrez_id: string;
+    locus_type: string;
+    status: string;
+  };
+  aliases: { alias: string; kind: string }[];
+  iuis: {
+    disease: string; inheritance: string; mechanism: string; omim: string;
+    t_cell_count: string; t_cell_summary: string;
+    b_cell_count: string; b_cell_summary: string;
+    immunoglobulin_levels: string; immunoglobulin_summary: string;
+    neutrophil_count: string; neutrophil_summary: string;
+    other_affected_cells: string; other_affected_cell_groups: string;
+    associated_features: string;
+    major_category: string; subcategory: string; source_gene: string;
+  }[];
+  clingen_validity: {
+    disease: string; mondo_id: string; moi: string; sop: string;
+    classification: string; report_url: string; classification_date: string; expert_panel: string;
+  }[];
+  clingen_dosage: null | {
+    hi_score: string; hi_description: string; hi_disease_id: string;
+    ts_score: string; ts_description: string; ts_disease_id: string;
+    date_last_evaluated: string; hi_pmids: string; ts_pmids: string;
+  };
+  omim: {
+    gene_mim: string; phenotype_mim: string; phenotype: string;
+    mapping_key: string; inheritance: string; cytoband: string; gene_title: string;
+  }[];
+  omim_installed: boolean;
 };
 
 export type SubmitJob = {
@@ -152,7 +249,7 @@ export type WgsReviewResult = {
 
 export type WgsReviewJob = {
   id: string;
-  status: "queued" | "running" | "succeeded" | "failed";
+  status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   phase: "queued" | "preparing_index" | "filtering" | "merging" | "compressing" | "indexing_output" | "complete" | "failed";
   progress: number;
   message: string;
@@ -621,12 +718,78 @@ export type SampleLibraryImportResult = {
 
 export type StorageStats = {
   state_dir: string;
+  workspace_dir: string;
   locations: Record<string, number>;
   total_bytes: number;
   datasets: number;
   managed_unique_files: number;
   database_page_bytes: number;
   database_reclaimable_bytes: number;
+  annotation_bytes: number;
+  storage_configuration: StorageConfiguration;
+  storage_error?: string;
+};
+
+export type StorageLocationKind = "annotation" | "data" | "temporary";
+
+export type StorageLocation = {
+  id: StorageLocationKind;
+  path: string;
+  exists: boolean;
+  writable: boolean;
+  available: boolean;
+  free_bytes: number | null;
+  total_bytes: number | null;
+  warning: string;
+  uses_default: boolean;
+  follows_data_root: boolean;
+  active_path: string;
+  restart_required: boolean;
+  used_bytes: number | null;
+  included_with_data: boolean;
+  windows_path: string | null;
+};
+
+export type StorageConfiguration = {
+  registry_path: string;
+  locations: StorageLocation[];
+  annotation_bytes: number | null;
+  active_data_root: string;
+  active_annotation_root: string;
+  active_temporary_root: string;
+};
+
+export type StorageLocationTest = {
+  id: StorageLocationKind;
+  path: string;
+  parent: string;
+  exists: boolean;
+  empty: boolean;
+  free_bytes: number | null;
+  total_bytes: number | null;
+  warning: string;
+  ready: boolean;
+  allow_missing: boolean;
+};
+
+export type StorageMigrationJob = {
+  id: string;
+  kind: StorageLocationKind;
+  source: string;
+  destination: string;
+  status: "queued" | "running" | "succeeded" | "failed";
+  progress: number;
+  bytes_total: number;
+  required_free_bytes?: number;
+  bytes_copied: number;
+  message: string;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+  error: string;
+  restart_required: boolean;
+  original_retained?: boolean;
+  staging_path?: string;
 };
 
 export type PhenotypeField =
@@ -775,15 +938,63 @@ export async function getResourceDownloads() {
   return (await request<{ jobs: ResourceDownloadJob[] }>("/api/resource-downloads")).jobs;
 }
 
-export async function startResourceDownload(resourceId: "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "logofunc" | "ccre") {
+export async function getGeneKnowledgeStatus() {
+  return request<GeneKnowledgeStatus>("/api/gene-knowledge/status");
+}
+
+export async function getGeneKnowledgeFilters() {
+  return request<GeneKnowledgeFilters>("/api/gene-knowledge/filters");
+}
+
+export async function getGeneKnowledgeGene(identifier: string) {
+  return request<GeneKnowledgeGene>(`/api/gene-knowledge/gene/${encodeURIComponent(identifier)}`);
+}
+
+export async function installOmimGeneKnowledge(sourceDir: string) {
+  return request<{ installed: boolean; counts: { genes: number; phenotypes: number }; path: string }>(
+    "/api/gene-knowledge/omim/install",
+    { method: "POST", body: JSON.stringify({ source_dir: sourceDir }) },
+  );
+}
+
+export async function startResourceDownload(resourceId: ResourceDownloadJob["resource_id"]) {
   return request<ResourceDownloadJob>(
     `/api/resource-downloads/${encodeURIComponent(resourceId)}`,
     { method: "POST", body: "{}" },
   );
 }
 
+export type LocalResourceSelection = {
+  cancelled: boolean;
+  resource_id: "dbnsfp" | "promoterai" | "logofunc" | "omim";
+  selection_type?: "file" | "folder";
+  path?: string;
+  name?: string;
+};
+
+export async function chooseLocalResourceSource(
+  resourceId: LocalResourceSelection["resource_id"],
+) {
+  return request<LocalResourceSelection>("/api/local-resource-source/choose", {
+    method: "POST",
+    body: JSON.stringify({ resource_id: resourceId }),
+  });
+}
+
+export async function getClinGenErepoVariant(chrom: string, pos: number, ref: string, alt: string) {
+  const query = new URLSearchParams({ chrom, pos: String(pos), ref, alt });
+  return request<ClinGenErepoVariant>(`/api/clingen-erepo/variant?${query.toString()}`);
+}
+
 export async function startPromoterAiPreparation(sourceDir: string) {
   return request<ResourceDownloadJob>("/api/resource-preparations/promoterai", {
+    method: "POST",
+    body: JSON.stringify({ source_dir: sourceDir }),
+  });
+}
+
+export async function startDbnsfpPreparation(sourceDir: string) {
+  return request<ResourceDownloadJob>("/api/resource-preparations/dbnsfp", {
     method: "POST",
     body: JSON.stringify({ source_dir: sourceDir }),
   });
@@ -863,6 +1074,13 @@ export async function getCcreContext(
 
 export async function getScreenContextCatalog() {
   return request<ScreenContextCatalog>("/api/screen-context/catalog");
+}
+
+export async function installScreenContext(manifestPath: string) {
+  return request<ScreenContextCatalog & { manifest_path: string }>(
+    "/api/screen-context/install",
+    { method: "POST", body: JSON.stringify({ manifest_path: manifestPath }) },
+  );
 }
 
 export async function getScreenContext(
@@ -1085,6 +1303,42 @@ export async function removeSampleLibraryDataset(datasetId: string, removeManage
 
 export async function getStorageStats() {
   return request<StorageStats>("/api/storage");
+}
+
+export async function getStorageConfiguration() {
+  return request<StorageConfiguration>("/api/storage/locations");
+}
+
+export async function getStorageMigrations() {
+  return (await request<{ jobs: StorageMigrationJob[] }>("/api/storage/migrations")).jobs;
+}
+
+export async function testStorageLocation(kind: StorageLocationKind, path: string) {
+  return request<StorageLocationTest>("/api/storage/test-location", {
+    method: "POST", body: JSON.stringify({ kind, path }),
+  });
+}
+
+export async function setStorageLocation(payload: {
+  kind: StorageLocationKind;
+  path?: string;
+  follow_data_root?: boolean;
+}) {
+  return request<{ storage: StorageConfiguration; restart_required: boolean; message: string }>(
+    "/api/storage/location", { method: "POST", body: JSON.stringify(payload) },
+  );
+}
+
+export async function startStorageMigration(kind: StorageLocationKind, path: string) {
+  return request<StorageMigrationJob>("/api/storage/migrate", {
+    method: "POST", body: JSON.stringify({ kind, path }),
+  });
+}
+
+export async function openStorageLocation(kind: StorageLocationKind) {
+  return request<{ opened: string }>("/api/storage/open", {
+    method: "POST", body: JSON.stringify({ kind }),
+  });
 }
 
 export async function cleanupStorage(categories: string[]) {

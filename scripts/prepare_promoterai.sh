@@ -8,7 +8,10 @@ source "${HERE}/lib.sh"
 
 SOURCE_DIR="${1:-}"
 CONFIG="${2:-${ROOT}/config/annotation.config.yaml}"
+CONSUME_SOURCE="${3:-}"
 [[ -n "${SOURCE_DIR}" ]] || die "usage: scripts/prepare_promoterai.sh /path/to/PromoterAI [config.yaml]"
+[[ -z "${CONSUME_SOURCE}" || "${CONSUME_SOURCE}" == "--remove-source-after-success" ]] \
+    || die "unknown preparation option: ${CONSUME_SOURCE}"
 SOURCE_DIR="$(cd "${SOURCE_DIR}" && pwd -P)"
 CONFIG="$(cd "$(dirname "${CONFIG}")" && pwd -P)/$(basename "${CONFIG}")"
 
@@ -68,6 +71,13 @@ mv "${TEMP_BGZF}" "${SCORE_OUTPUT}"
 mv "${TEMP_BGZF}.tbi" "${SCORE_OUTPUT}.tbi"
 mv "${TEMP_MAP}" "${MAP_OUTPUT}"
 mv "${TEMP_MANIFEST}" "${MANIFEST_OUTPUT}"
+
+if [[ "${CONSUME_SOURCE}" == "--remove-source-after-success" ]]; then
+    [[ -s "${SCORE_OUTPUT}" && -s "${SCORE_OUTPUT}.tbi" && -s "${MAP_OUTPUT}" && -s "${MANIFEST_OUTPUT}" ]] \
+        || die "refusing to remove PromoterAI source before every managed output is present"
+    rm -f -- "${TSS_SOURCE}" "${SCORE_SOURCE}"
+    log "removed the two downloaded PromoterAI source files after successful managed installation"
+fi
 
 printf '100.0%% PromoterAI preparation complete\n'
 log "scores: ${SCORE_OUTPUT}"

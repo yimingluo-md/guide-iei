@@ -221,15 +221,20 @@ the complete dataset into memory.
 
 ## Variant-review interface and filtering
 
-The local workbench uses the prepared context manifest configured at
-`wgs_review.screen_context.manifest`. `IEI_SCREEN_CONTEXT_MANIFEST` can
-override that path without editing YAML. The smaller Registry V4 BED remains
+The local workbench uses a validated pointer to the prepared context manifest.
+The preferred local setup is **Regulatory evidence → Use prepared bundle**:
+select either the prepared folder or
+`screen.registry-v4.immune-contexts.json`. The large matrices remain at their
+existing annotation location and only the manifest path is retained in local
+workbench state. `wgs_review.screen_context.manifest` and
+`IEI_SCREEN_CONTEXT_MANIFEST` remain available for scripted deployments, with
+the environment variable taking precedence. The smaller Registry V4 BED remains
 the whole-genome import/prefilter resource; the matrices are read only when a
 variant is reviewed or the user explicitly enables a context filter.
 
 The distributed configuration intentionally leaves the manifest path empty so
-it never embeds a developer-specific filesystem location. A local installation
-can either set the YAML value or launch the workbench with, for example:
+it never embeds a developer-specific filesystem location. An automated local
+installation can still launch the workbench with, for example:
 
 ```bash
 IEI_SCREEN_CONTEXT_MANIFEST="/path/to/SCREEN/Registry-V4/prepared/screen.registry-v4.immune-contexts.json" \

@@ -50,7 +50,9 @@ and does not convert it into a clinical classification.
 
 The source contains 582 disease rows. The clean table preserves the source row,
 raw genetic-defect label, disease, inheritance, GOF/DN field, OMIM number,
-category, and subcategory. Composite gene entries are split. Known legacy
+T-cell and B-cell counts, immunoglobulin levels, neutrophil count, other
+affected cells, associated features, major category, and subcategory.
+Composite gene entries are split. Known legacy
 symbols are mapped to current VEP-compatible symbols, while the original label
 remains beside every normalized record. Cytogenetic and unknown entries are
 retained with an empty `gene_symbol`.

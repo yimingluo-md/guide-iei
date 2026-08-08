@@ -1,0 +1,42 @@
+{
+  "bundle_id": "vep113-grch38-native-1",
+  "description": "Redistributable native SCREEN Registry V4 and hg19 input resources",
+  "estimated_bytes": 989355899,
+  "files": [
+    {
+      "path": "regions/screen.registry-v4.GRCh38.ccre.bed.gz",
+      "bytes": 25052548,
+      "sha256": "0275aaf5151651e82b8c104b1eb268a24d701233aaae83cb519ef7193b837f3e"
+    },
+    {
+      "path": "regions/screen.registry-v4.GRCh38.ccre.bed.gz.tbi",
+      "bytes": 746416,
+      "sha256": "c0885e7420d044a9545d84047a808758cd4ab01deb7ea78b7b8f463a3d3abfc9"
+    },
+    {
+      "path": "regions/Homo_sapiens.GRCh38.113.gene_tss.tsv",
+      "bytes": 4202975,
+      "sha256": "e019283aa2c884c63c5fa4b93e7fc3bc0704e5b310287088687ee7ed85cb6d91"
+    },
+    {
+      "path": "liftover/hg19.primary.fa.gz",
+      "bytes": 958352400,
+      "sha256": "7b3c418c3629cda9cf2a04306d7d3cbc6fc5364a03cc3507dd78d8aaaf1e17d4"
+    },
+    {
+      "path": "liftover/hg19.primary.fa.gz.fai",
+      "bytes": 714,
+      "sha256": "4ed4d0069d544cb7caefa21d795f49aeb84e7341ce2a00b5a696db9e57940f65"
+    },
+    {
+      "path": "liftover/hg19.primary.fa.gz.gzi",
+      "bytes": 773928,
+      "sha256": "673afbe857c6a163d92fee33c171415e76fb5cc9d6a64755351616ce9bc5ffb3"
+    },
+    {
+      "path": "liftover/hg19ToGRCh38.ensembl.over.chain.gz",
+      "bytes": 226918,
+      "sha256": "47129f667300e442bde5fb07c4efa4ed477f8804e0fd34f6b0940785af4ba0ab"
+    }
+  ]
+}

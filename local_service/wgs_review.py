@@ -507,10 +507,11 @@ def _filter_group_worker(
 class WgsReviewStore:
     """Prepare, shard, conservatively filter, and cache indexed review VCFs."""
 
-    def __init__(self, state_dir: Path, cohort: CohortStore):
-        self.state_dir = state_dir
+    def __init__(self, state_dir: Path, cohort: CohortStore, *, workspace_dir: Path | None = None):
+        self.state_dir = state_dir.resolve()
         self.cohort = cohort
-        self.cache_dir = state_dir / "wgs-review-cache"
+        self.workspace_dir = (workspace_dir or self.state_dir).resolve()
+        self.cache_dir = self.workspace_dir / "wgs-review-cache"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def prefilter(

@@ -3,15 +3,22 @@ import base64
 import gzip
 import io
 import json
+import os
+import sqlite3
 import tempfile
 import threading
 import time
 import unittest
 import urllib.request
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 from local_service.test_cohort_store import FakeHtsBackend, write_parallel_vcf, write_vcf
-from local_service.workbench_service import AnnotationJobService, JobStore, create_server
+from local_service.storage_locations import (
+    StorageLocationRegistry, StorageRegistryError, _filesystem_type,
+    storage_path_warning,
+)
+from local_service.workbench_service import AnnotationJobService, JobStore, SERVICE_VERSION, create_server
 
 
 class AnnotationJobServiceTests(unittest.TestCase):
@@ -131,7 +138,7 @@ class AnnotationJobServiceTests(unittest.TestCase):
         })
         self.assertEqual(len(result["datasets"]), 2)
         stored = self.service.sample_library.get(result["datasets"][0]["id"])
-        self.assertEqual(stored["annotation_bundle"]["workbench_service"], "0.10.0")
+        self.assertEqual(stored["annotation_bundle"]["workbench_service"], SERVICE_VERSION)
         self.assertIn("foundations", stored["annotation_bundle"])
         self.assertEqual(self.service.sample_library.storage_stats()["datasets"], 2)
 
@@ -160,6 +167,308 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 return job
             time.sleep(0.02)
         self.fail("resource download did not finish")
+
+    def _wait_storage(self, job_id, timeout=10):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            jobs = {job["id"]: job for job in self.service.storage_migrations()}
+            job = jobs[job_id]
+            if job["status"] in {"succeeded", "failed"}:
+                return job
+            time.sleep(0.02)
+        self.fail("storage migration did not finish")
+
+    def test_annotation_root_rebases_generated_config(self):
+        annotation_root = Path(self.temp.name) / "external-annotations"
+        registry = StorageLocationRegistry(
+            self.root, self.state,
+            registry_path=Path(self.temp.name) / "storage-bootstrap.json",
+            persist=True,
+        )
+        registry.set_root("annotation", annotation_root)
+        self.service.shutdown()
+        self.service = AnnotationJobService(self.root, self.state, storage_registry=registry)
+        generated = self.service._write_job_config(
+            "annotation-root-test",
+            self.root / "config" / "annotation.config.yaml",
+            {},
+        )
+        content = generated.read_text()
+        self.assertIn(str(annotation_root / "vep_cache"), content)
+        self.assertIn(str(annotation_root / "regions" / "coding.bed.gz"), content)
+
+    def test_storage_location_can_be_saved_for_future_data_without_switching_live_store(self):
+        target = Path(self.temp.name) / "future-library"
+        result = self.service.set_storage_location({"kind": "data", "path": str(target)})
+        self.assertTrue(result["restart_required"])
+        self.assertTrue((target / ".iei-variant-review-storage.json").is_file())
+        self.assertEqual(self.service.storage_registry.root("data"), target.resolve())
+        self.assertEqual(self.service.state_dir, self.state.resolve())
+        self.assertTrue(result["storage"]["locations"][1]["restart_required"])
+
+    def test_storage_configuration_reports_roots_and_used_space(self):
+        configuration = self.service.storage_configuration()
+        locations = {item["id"]: item for item in configuration["locations"]}
+        self.assertEqual(set(locations), {"annotation", "data", "temporary"})
+        self.assertEqual(locations["data"]["active_path"], str(self.state.resolve()))
+        self.assertIsInstance(locations["data"]["used_bytes"], int)
+        self.assertTrue(locations["temporary"]["included_with_data"])
+        self.assertIsNone(locations["temporary"]["used_bytes"])
+
+    def test_corrupt_bootstrap_recovers_from_backup_and_never_defaults(self):
+        registry_path = Path(self.temp.name) / "bootstrap.json"
+        registry = StorageLocationRegistry(
+            self.root, self.state, registry_path=registry_path, persist=True
+        )
+        selected = Path(self.temp.name) / "selected-data"
+        registry.set_root("data", selected, storage_id="expected-drive")
+        registry_path.write_text("{truncated", encoding="utf-8")
+        recovered = StorageLocationRegistry(
+            self.root, self.state, registry_path=registry_path, persist=True
+        )
+        self.assertEqual(recovered.root("data"), selected.resolve())
+        self.assertEqual(recovered.storage_id("data"), "expected-drive")
+        registry_path.write_text("{bad", encoding="utf-8")
+        recovered.backup_path.write_text("{also-bad", encoding="utf-8")
+        with self.assertRaises(StorageRegistryError):
+            StorageLocationRegistry(
+                self.root, self.state, registry_path=registry_path, persist=True
+            )
+
+    def test_storage_marker_rejects_a_different_drive_at_same_path(self):
+        target = Path(self.temp.name) / "marked-library"
+        self.service.set_storage_location({"kind": "data", "path": str(target)})
+        marker_path = target / ".iei-variant-review-storage.json"
+        marker = json.loads(marker_path.read_text())
+        marker["storage_id"] = "different-drive"
+        marker_path.write_text(json.dumps(marker), encoding="utf-8")
+        with self.assertRaises(StorageRegistryError):
+            self.service.storage_registry.validate_marker(
+                "data", target, required=True
+            )
+
+    def test_annotation_location_can_be_read_only(self):
+        annotation = Path(self.temp.name) / "read-only-annotations"
+        annotation.mkdir()
+        with patch(
+            "local_service.workbench_service.os.access",
+            side_effect=lambda _path, mode: mode == os.R_OK,
+        ):
+            tested = self.service.test_storage_location({
+                "kind": "annotation", "path": str(annotation),
+            })
+        self.assertTrue(tested["ready"])
+
+    def test_toolbox_path_is_not_mistaken_for_box_cloud_storage(self):
+        self.assertEqual(
+            storage_path_warning(Path(self.temp.name) / "Toolbox" / "iei", "data"),
+            "",
+        )
+
+    def test_filesystem_probe_treats_permission_errors_as_unavailable(self):
+        with patch(
+            "local_service.storage_locations.Path.exists",
+            side_effect=PermissionError("blocked parent"),
+        ):
+            self.assertEqual(_filesystem_type(Path("/blocked/storage")), "")
+
+    def test_storage_description_treats_permission_errors_as_unavailable(self):
+        with patch(
+            "local_service.storage_locations.Path.is_dir",
+            side_effect=PermissionError("blocked parent"),
+        ):
+            described = self.service.storage_registry.describe("data")
+        self.assertFalse(described["exists"])
+        self.assertFalse(described["available"])
+
+    def test_macos_filesystem_probe_reads_df_type_column(self):
+        completed = Mock(
+            returncode=0,
+            stdout=(
+                "Filesystem Type 512-blocks Used Available Capacity Mounted on\n"
+                "/dev/disk3s5 apfs 100 25 75 25% /System/Volumes/Data\n"
+            ),
+        )
+        with patch("local_service.storage_locations.platform.system", return_value="Darwin"), patch(
+            "local_service.storage_locations.subprocess.run", return_value=completed
+        ) as run:
+            self.assertEqual(_filesystem_type(self.state), "apfs")
+        self.assertEqual(run.call_args.args[0][:3], ["df", "-Y", "-P"])
+
+    def test_parallel_download_credit_uses_allocated_not_apparent_size(self):
+        destination = Path(self.temp.name) / "large-resource.gz"
+        parallel = Path(str(destination) + ".parallel")
+        with parallel.open("wb") as handle:
+            handle.truncate(8 * 1024 * 1024)
+            handle.seek(0)
+            handle.write(b"x" * 4096)
+        status = parallel.stat()
+        expected = min(status.st_size, int(getattr(status, "st_blocks", 0) or 0) * 512)
+        self.assertEqual(
+            self.service._resumable_download_credit(destination, False), expected
+        )
+        self.assertLessEqual(expected, status.st_size)
+
+    def test_bulk_download_credit_counts_existing_directory_payload(self):
+        destination = Path(self.temp.name) / "existing-cache"
+        destination.mkdir()
+        (destination / "installed.dat").write_bytes(b"x" * 4096)
+        self.assertGreaterEqual(
+            self.service._resumable_download_credit(destination, True),
+            4096,
+        )
+
+    def test_pending_location_change_blocks_data_mutations_until_restart(self):
+        target = Path(self.temp.name) / "pending-library"
+        self.service.set_storage_location({"kind": "data", "path": str(target)})
+        with self.assertRaisesRegex(ValueError, "restart"):
+            self.service.begin_storage_mutation()
+
+    def test_failed_migration_removes_verified_staging_copy(self):
+        target = Path(self.temp.name) / "failed-library"
+
+        def fail_copy(_source, destination, _copied):
+            destination.mkdir(parents=True, exist_ok=True)
+            (destination / "partial.bin").write_bytes(b"partial")
+            raise RuntimeError("simulated copy failure")
+
+        with patch.object(self.service, "_copy_data_root_verified", side_effect=fail_copy):
+            job = self.service.start_storage_migration({"kind": "data", "path": str(target)})
+            completed = self._wait_storage(job["id"])
+        self.assertEqual(completed["status"], "failed")
+        self.assertFalse(target.exists())
+        self.assertEqual(list(target.parent.glob(f".{target.name}.iei-migrating-*")), [])
+
+    def test_temporary_paths_are_rewritten_only_after_copy_activation(self):
+        upload = self.state / "uploads" / "batch" / "patient.vcf"
+        upload.parent.mkdir(parents=True)
+        upload.write_text("test", encoding="utf-8")
+        target = Path(self.temp.name) / "migrated-workspace"
+        original = self.service._rewrite_temporary_paths
+
+        def checked_rewrite(old_root, new_root):
+            self.assertTrue(Path(new_root).is_dir())
+            return original(old_root, new_root)
+
+        with patch.object(self.service, "_rewrite_temporary_paths", side_effect=checked_rewrite):
+            job = self.service.start_storage_migration({"kind": "temporary", "path": str(target)})
+            completed = self._wait_storage(job["id"])
+        self.assertEqual(completed["status"], "succeeded", completed.get("error"))
+        self.assertTrue((target / "uploads" / "batch" / "patient.vcf").is_file())
+
+    def test_legacy_absolute_paths_do_not_use_sql_like_wildcards(self):
+        state = Path(self.temp.name) / "IEI_data"
+        sibling = Path(self.temp.name) / "IEIXdata"
+        sibling.mkdir()
+        sibling_source = sibling / "patient.vcf"
+        write_vcf(sibling_source)
+        service = AnnotationJobService(self.root, state, start_worker=False)
+        try:
+            review = state / "uploads" / "review.vcf"
+            review.parent.mkdir(parents=True)
+            write_vcf(review)
+            service.cohort.hts_backend = None
+            imported = service.import_sample_library({
+                "sources": [{"path": str(review)}],
+                "analysis_scope": "exome",
+                "include_in_cohort": False,
+            })
+            dataset_id = imported["datasets"][0]["id"]
+            with sqlite3.connect(state / "cohort.sqlite3") as connection:
+                connection.execute(
+                    "UPDATE library_datasets SET original_path=? WHERE id=?",
+                    (str(sibling_source), dataset_id),
+                )
+                connection.execute(
+                    "DELETE FROM sample_library_meta WHERE key='portable_paths_v2'"
+                )
+        finally:
+            service.shutdown()
+        reopened = AnnotationJobService(self.root, state, start_worker=False)
+        try:
+            record = reopened.sample_library.get(dataset_id)
+            self.assertEqual(Path(record["original_path"]).resolve(), sibling_source.resolve())
+        finally:
+            reopened.shutdown()
+
+    def test_data_migration_copies_library_and_rewrites_managed_paths(self):
+        review = self.root / "review-storage.vcf"
+        write_vcf(review)
+        self.service.cohort.hts_backend = None
+        imported = self.service.import_sample_library({
+            "sources": [{"path": str(review)}],
+            "analysis_scope": "exome",
+            "include_in_cohort": False,
+        })
+        target = Path(self.temp.name) / "migrated-library"
+        job = self.service.start_storage_migration({"kind": "data", "path": str(target)})
+        completed = self._wait_storage(job["id"])
+        self.assertEqual(completed["status"], "succeeded", completed.get("error"))
+        self.assertTrue((target / "cohort.sqlite3").is_file())
+        self.assertTrue((target / "sample-library").is_dir())
+        self.service.shutdown()
+        self.service = AnnotationJobService(self.root, target, storage_registry=self.service.storage_registry)
+        record = self.service.sample_library.get(imported["datasets"][0]["id"])
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertTrue(record["managed_path"].startswith(str(target.resolve())))
+        self.assertTrue(self.service.sample_library.file(record["id"]).is_file())
+        with sqlite3.connect(target / "cohort.sqlite3") as connection:
+            stored = connection.execute("SELECT managed_path FROM library_datasets LIMIT 1").fetchone()[0]
+        self.assertFalse(Path(stored).is_absolute())
+        history = self.service.storage_migrations()
+        history_record = next(item for item in history if item["id"] == job["id"])
+        self.assertTrue(history_record["original_retained"])
+
+    def test_sample_library_paths_inside_data_root_are_portable(self):
+        source = self.state / "uploads" / "patient.vcf"
+        source.parent.mkdir(parents=True)
+        write_vcf(source)
+        self.service.cohort.hts_backend = None
+        imported = self.service.import_sample_library({
+            "sources": [{"path": str(source)}],
+            "analysis_scope": "exome",
+            "include_in_cohort": False,
+        })
+        dataset_id = imported["datasets"][0]["id"]
+        with sqlite3.connect(self.state / "cohort.sqlite3") as connection:
+            stored = connection.execute(
+                "SELECT original_path,managed_path FROM library_datasets WHERE id=?",
+                (dataset_id,),
+            ).fetchone()
+        self.assertFalse(Path(stored[0]).is_absolute())
+        self.assertFalse(Path(stored[1]).is_absolute())
+        record = self.service.sample_library.get(dataset_id)
+        self.assertEqual(record["original_path"], str(source.resolve()))
+
+    def test_active_storage_migration_blocks_new_writes(self):
+        with self.service._storage_lock:
+            self.service._storage_jobs["test-migration"] = {
+                "id": "test-migration",
+                "status": "running",
+                "created_at": "2026-01-01T00:00:00+00:00",
+            }
+        with self.assertRaisesRegex(ValueError, "migration is running"):
+            self.service.submit({
+                "input_path": str(self.input),
+                "output_path": str(self.output),
+            })
+
+    def test_wsl_storage_path_accepts_windows_drive_spelling(self):
+        with patch.dict(os.environ, {"WSL_DISTRO_NAME": "Ubuntu"}, clear=False):
+            path = self.service._safe_storage_path(r"D:\IEI data\library")
+        self.assertEqual(path, Path("/mnt/d/IEI data/library").resolve())
+
+    def test_missing_configured_data_root_does_not_create_a_fallback_library(self):
+        missing = Path(self.temp.name) / "disconnected-drive" / "library"
+        registry = StorageLocationRegistry(
+            self.root, self.state, persist=False,
+            registry_path=Path(self.temp.name) / "bootstrap.json",
+        )
+        registry.set_root("data", missing)
+        with self.assertRaisesRegex(ValueError, "will not create a fallback database"):
+            AnnotationJobService(self.root, missing, storage_registry=registry)
+        self.assertFalse(missing.exists())
 
     def test_ccre_context_distinguishes_overlap_from_no_overlap(self):
         overlap = self.service.ccre_context({
@@ -314,6 +623,127 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 },
             })
 
+    def test_container_status_distinguishes_stopped_runtime_from_missing_image(self):
+        completed = Mock(
+            returncode=1,
+            stdout="",
+            stderr=(
+                "failed to connect to the docker API at "
+                "unix:///Users/test/.docker/run/docker.sock"
+            ),
+        )
+        with patch(
+            "local_service.workbench_service.shutil.which",
+            return_value="/usr/local/bin/docker",
+        ), patch(
+            "local_service.workbench_service.subprocess.run",
+            return_value=completed,
+        ):
+            status = self.service._container_image_status({
+                "container": {"runtime": "docker", "image": "vep-annotate:latest"},
+            })
+        self.assertFalse(status["available"])
+        self.assertEqual(status["state"], "runtime_unavailable")
+        self.assertIn("not running", status["message"])
+        self.assertNotIn("not installed", status["message"])
+
+    def test_container_status_reports_missing_image_when_runtime_is_running(self):
+        completed = Mock(
+            returncode=1,
+            stdout="[]\n",
+            stderr="Error: No such image: vep-annotate:latest\n",
+        )
+        with patch(
+            "local_service.workbench_service.shutil.which",
+            return_value="/usr/local/bin/docker",
+        ), patch(
+            "local_service.workbench_service.subprocess.run",
+            return_value=completed,
+        ):
+            status = self.service._container_image_status({
+                "container": {"runtime": "docker", "image": "vep-annotate:latest"},
+            })
+        self.assertFalse(status["available"])
+        self.assertEqual(status["state"], "image_missing")
+        self.assertIn("bash docker/build.sh", status["message"])
+
+    def test_stopped_runtime_is_not_duplicated_as_dataset_profile_error(self):
+        stopped = {
+            "available": False,
+            "state": "runtime_unavailable",
+            "runtime": "docker",
+            "image": "vep-annotate:latest",
+            "message": (
+                "Docker is installed but is not running. Start Docker Desktop, "
+                "then refresh this page."
+            ),
+        }
+        with patch.object(self.service, "_container_image_status", return_value=stopped):
+            profile = self.service._annotation_profile()
+        self.assertFalse(profile["execution_ready"])
+        self.assertEqual(profile["error"], "")
+        container = next(
+            item for item in profile["foundations"]
+            if item["id"] == "vep_container"
+        )
+        self.assertEqual(container["message"], stopped["message"])
+        self.assertIn("exome", profile["recommended_profiles"])
+        self.assertIn("whole_genome", profile["recommended_profiles"])
+
+    def test_installed_recommended_profile_skips_large_free_space_scan(self):
+        profile = {
+            "recommended_profiles": {
+                "exome": {"installed": True, "missing": []},
+                "whole_genome": {"installed": True, "missing": []},
+            }
+        }
+        with patch.object(self.service, "_annotation_profile", return_value=profile), patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ) as ensure_space, patch.object(
+            self.service, "_write_resource_config", return_value=self.root / "config" / "annotation.config.yaml"
+        ), patch.object(
+            self.service, "_start_resource_job", return_value={"status": "queued"}
+        ) as start_job:
+            result = self.service.start_resource_download("recommended_wgs")
+        ensure_space.assert_not_called()
+        start_job.assert_called_once()
+        self.assertEqual(result["status"], "queued")
+
+    def test_native_resource_picker_returns_selected_folder_without_user_path_typing(self):
+        selected = Path(self.temp.name) / "dbNSFP5.3.1a"
+        selected.mkdir()
+        completed = Mock(returncode=0, stdout=str(selected) + "\n", stderr="")
+        with patch(
+            "local_service.workbench_service.platform.system", return_value="Darwin"
+        ), patch(
+            "local_service.workbench_service.subprocess.run", return_value=completed
+        ) as run:
+            result = self.service.choose_local_resource_source({"resource_id": "dbnsfp"})
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["path"], str(selected.resolve()))
+        self.assertEqual(result["selection_type"], "folder")
+        self.assertEqual(run.call_args.args[0][:2], ["osascript", "-e"])
+
+    def test_native_resource_picker_treats_cancel_as_no_selection(self):
+        completed = Mock(returncode=1, stdout="", stderr="User canceled.")
+        with patch(
+            "local_service.workbench_service.platform.system", return_value="Darwin"
+        ), patch(
+            "local_service.workbench_service.subprocess.run", return_value=completed
+        ):
+            result = self.service.choose_local_resource_source({"resource_id": "promoterai"})
+        self.assertTrue(result["cancelled"])
+
+    def test_user_supplied_dataset_preparation_targets_managed_annotation_storage(self):
+        generated = self.service._write_resource_config("dbnsfp")
+        text = generated.read_text()
+        expected = self.service.annotation_root / "dbnsfp" / "dbNSFP5.3.1a_grch38.gz"
+        self.assertIn(str(expected), text)
+
+        generated = self.service._write_resource_config("logofunc")
+        text = generated.read_text()
+        self.assertIn(str(self.service.annotation_root / "logofunc"), text)
+
     def test_annotation_scope_controls_wgs_only_sources(self):
         sources = {
             source["id"]: source
@@ -327,6 +757,13 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertFalse(sources["cadd_wgs"]["installed"])
         self.assertEqual(sources["ccre"]["available_in"], ["whole_genome"])
         self.assertEqual(sources["ccre"]["download_id"], "ccre")
+        self.assertEqual(sources["ccre"]["setup_mode"], "bundled")
+        self.assertEqual(sources["liftover"]["setup_mode"], "bundled")
+        self.assertEqual(sources["dbnsfp"]["access"], "registration")
+        self.assertEqual(sources["dbnsfp"]["prepare_id"], "dbnsfp")
+        self.assertEqual(sources["promoterai"]["access"], "license")
+        self.assertEqual(sources["logofunc"]["recommendation"], "optional")
+        self.assertFalse(sources["logofunc"]["enabled"])
         self.assertTrue(sources["ccre"]["installed"])
         with self.assertRaisesRegex(ValueError, "only for whole-genome"):
             self.service.submit({
@@ -498,6 +935,14 @@ class AnnotationJobServiceTests(unittest.TestCase):
             ) as response:
                 resource_jobs = json.load(response)
             with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/gene-knowledge/status", timeout=2
+            ) as response:
+                gene_knowledge = json.load(response)
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/gene-knowledge/filters", timeout=2
+            ) as response:
+                gene_filters = json.load(response)
+            with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/api/cohort/stats", timeout=2
             ) as response:
                 cohort = json.load(response)
@@ -513,13 +958,24 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 f"http://127.0.0.1:{port}/api/storage", timeout=2
             ) as response:
                 storage = json.load(response)
+            with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/storage/locations", timeout=2
+            ) as response:
+                locations = json.load(response)
             self.assertTrue(health["ok"])
             self.assertEqual(jobs, {"jobs": []})
             self.assertEqual(resource_jobs, {"jobs": []})
+            self.assertFalse(gene_knowledge["omim"]["installed"])
+            self.assertIn("iuis_category_genes", gene_filters)
+            self.assertNotIn("clingen_classifications", gene_filters)
             self.assertEqual(cohort["individuals"], 0)
             self.assertEqual(phenotypes["individuals"], 0)
             self.assertEqual(library, {"datasets": []})
             self.assertEqual(storage["datasets"], 0)
+            self.assertEqual(
+                {item["id"] for item in locations["locations"]},
+                {"annotation", "data", "temporary"},
+            )
         finally:
             server.shutdown()
             server.server_close()

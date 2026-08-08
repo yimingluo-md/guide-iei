@@ -115,8 +115,10 @@ are cached using input, reference, chain, tool, and policy identities.
 
 ## Setup
 
-In the local workbench, open **Run VEP first → Set up annotation datasets → hg19
-input bundle → Download hg19 bundle**. Or use:
+The native application release includes the normalized hg19 primary FASTA,
+indexes, and hg19-to-GRCh38 chain. The workbench validates them under **Run VEP
+first → Set up annotation datasets → Shipped with the software**. If a bundled
+file is missing, select **Repair bundled files**. The command-line repair is:
 
 ```bash
 bash docker/build.sh
@@ -124,7 +126,7 @@ bash scripts/download_references.sh \
   config/annotation.config.yaml --only liftover
 ```
 
-The bundle is approximately 1 GB. The validated software pins bcftools 1.20
+The bundle is approximately 915 MB. The validated software pins bcftools 1.20
 and the BCFtools/liftover source commit recorded in
 `config/annotation.config.yaml`.
 

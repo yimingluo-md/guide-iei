@@ -7,6 +7,7 @@ import type {
   ScreenImmuneContext,
   ScreenTissueContext,
 } from "./local-service";
+import { installScreenContext } from "./local-service";
 
 export type RegulatoryContextSet = {
   id: string;
@@ -132,7 +133,7 @@ export function RegulatoryFilterControl({
 
 export function RegulatoryEvidencePanel({
   catalog, evidence, loading, error, activeSetId, setActiveSetId,
-  customSets, setCustomSets, children,
+  customSets, setCustomSets, onCatalogInstalled, children,
 }: {
   catalog: ScreenContextCatalog | null;
   evidence: ScreenContextEvidence | null;
@@ -142,6 +143,7 @@ export function RegulatoryEvidencePanel({
   setActiveSetId: (id: string) => void;
   customSets: RegulatoryContextSet[];
   setCustomSets: (sets: RegulatoryContextSet[]) => void;
+  onCatalogInstalled: (catalog: ScreenContextCatalog) => void;
   children?: React.ReactNode;
 }) {
   const [positiveOnly, setPositiveOnly] = useState(true);
@@ -152,6 +154,9 @@ export function RegulatoryEvidencePanel({
   );
   const [draftTissues, setDraftTissues] = useState<Set<string>>(new Set());
   const [draftImmune, setDraftImmune] = useState<Set<string>>(new Set());
+  const [installPath, setInstallPath] = useState("");
+  const [installing, setInstalling] = useState(false);
+  const [installError, setInstallError] = useState("");
   const sets = availableRegulatorySets(catalog, customSets);
 
   useEffect(() => {
@@ -182,6 +187,19 @@ export function RegulatoryEvidencePanel({
     setCustomSets(updated);
     setActiveSetId(id);
   }
+  async function installPreparedBundle() {
+    if (!installPath.trim()) return;
+    setInstalling(true);
+    setInstallError("");
+    try {
+      const installed = await installScreenContext(installPath.trim());
+      onCatalogInstalled(installed);
+    } catch (reason) {
+      setInstallError(reason instanceof Error ? reason.message : "SCREEN context installation failed");
+    } finally {
+      setInstalling(false);
+    }
+  }
 
   return <div className="regulatory-workspace">
     <header className="regulatory-workspace-head"><div><p className="eyebrow">Variant-scoped workspace</p><h1>Regulatory evidence</h1><p>Observed SCREEN evidence is shown separately from target-gene links and model predictions.</p></div><span className="local-only-badge">Local data</span></header>
@@ -193,7 +211,7 @@ export function RegulatoryEvidencePanel({
     </section>
     {loading && <div className="regulatory-loading">Reading the prepared Registry V4 tissue and immune matrices…</div>}
     {error && <div className="ccre-unavailable"><strong>Regulatory context unavailable</strong><span>{error}</span></div>}
-    {!loading && !error && !catalog?.available && <div className="ccre-unavailable"><strong>Prepared tissue/cell context data are not installed</strong><span>The Registry overlap and nearby-gene context remain valid. Prepare the optional SCREEN context bundle to add tissue and immune-cell observations.</span></div>}
+    {!loading && !error && !catalog?.available && <div className="ccre-unavailable screen-context-installer"><strong>Prepared tissue/cell context data are not installed</strong><span>Select the prepared SCREEN Registry V4 folder or its <code>screen.registry-v4.immune-contexts.json</code> manifest. The matrices remain in place; the workbench stores only a local pointer.</span><div><input value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="/path/to/SCREEN/Registry-V4/prepared" spellCheck={false}/><button className="secondary-button" disabled={installing || !installPath.trim()} onClick={() => void installPreparedBundle()}>{installing ? "Validating…" : "Use prepared bundle"}</button></div>{installError && <small className="error-text">{installError}</small>}</div>}
     {!loading && evidence?.status === "no_overlap" && <div className="ccre-no-overlap"><strong>No SCREEN Registry V4 cCRE overlap</strong><span>Tissue/cell context matrices are indexed by the Registry master catalog, so no per-context cCRE evidence is available at this locus.</span></div>}
     {evidence?.overlaps.map((overlap) => {
       const tissues = overlap.tissues.filter((item) => allowedTissues.has(item.id) && (!positiveOnly || item.activity_detected));

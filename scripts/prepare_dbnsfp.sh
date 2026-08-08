@@ -27,8 +27,11 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 
 SRC_DIR="${1:?usage: prepare_dbnsfp.sh <unzipped_dbNSFP_dir> [config.yaml]}"
 CONFIG="${2:-${ROOT}/config/annotation.config.yaml}"
+CONSUME_SOURCE="${3:-}"
 [[ -d "$SRC_DIR" ]] || die "dbNSFP source dir not found: $SRC_DIR"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
+[[ -z "$CONSUME_SOURCE" || "$CONSUME_SOURCE" == "--remove-source-after-success" ]] \
+    || die "unknown preparation option: $CONSUME_SOURCE"
 
 absdir() { local p="$1"; [[ "$p" = /* ]] || p="${ROOT}/${p}"; echo "$p"; }
 OUT="$(absdir "$(yaml_get "$CONFIG" plugins.dbNSFP.path)")"
@@ -64,6 +67,12 @@ log "merging + sorting on GRCh38 coordinates (this takes a while)..."
 log "bgzip + tabix (chr=col$CHR_COL pos=col$POS_COL, skip header line)"
 ( cd "$(dirname "$OUT")" && hts bgzip -f "$(basename "$OUT_PLAIN")" )
 ( cd "$(dirname "$OUT")" && hts tabix -f -s "$CHR_COL" -b "$POS_COL" -e "$POS_COL" -S 1 "$(basename "$OUT")" )
+
+if [[ "$CONSUME_SOURCE" == "--remove-source-after-success" ]]; then
+    [[ -s "$OUT" && -s "${OUT}.tbi" ]] || die "refusing to remove dbNSFP source before installed output and index are present"
+    rm -f -- "${CHR_FILES[@]}"
+    log "removed ${#CHR_FILES[@]} downloaded dbNSFP chromosome files after successful managed installation"
+fi
 
 log "dbNSFP ready: $OUT"
 log "Set plugins.dbNSFP.path to this file (already the default) and enable it in the config."

@@ -42,15 +42,15 @@ URL="${URL_TMPL//\{ASSEMBLY\}/$ASSEMBLY}"
 log "ClinVar source: $URL"
 
 TMP_VCF="${DEST_DIR}/clinvar.download.vcf.gz"
-rm -f "$TMP_VCF"
-# Always fetch fresh (NCBI updates weekly); don't reuse a prior clinvar.vcf.gz.
-if command -v curl >/dev/null 2>&1; then
-    curl -fL --retry 3 --retry-delay 5 -o "$TMP_VCF" "$URL" || die "ClinVar download failed"
-    curl -fL --retry 3 -o "${TMP_VCF}.tbi" "${URL}.tbi" 2>/dev/null || true
-else
-    wget -O "$TMP_VCF" "$URL" || die "ClinVar download failed"
-    wget -O "${TMP_VCF}.tbi" "${URL}.tbi" 2>/dev/null || true
-fi
+# The completed temporary is moved to its dated filename below, so every new
+# invocation still checks the current weekly release. Interrupted range files
+# and their metadata remain resumable in place.
+python3 "${HERE}/parallel_fetch.py" "$URL" "$TMP_VCF" \
+    --connections 4 --chunk-mib 64 \
+    || die "ClinVar download failed"
+python3 "${HERE}/parallel_fetch.py" "${URL}.tbi" "${TMP_VCF}.tbi" \
+    --connections 1 --chunk-mib 4 \
+    || warn "ClinVar tabix index download failed; a local index will be generated if required"
 
 # Extract the ClinVar release date from the VCF header
 #   ##fileDate=2026-02-18  (or a source-stamped line). Fall back to today.

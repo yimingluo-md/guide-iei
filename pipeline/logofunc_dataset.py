@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Download, validate, or link the pinned LoGoFunc Zenodo prediction bundle."""
+"""Download, validate, or import the pinned LoGoFunc prediction bundle."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import gzip
 import hashlib
 import json
 import os
+import shutil
 import struct
 import sys
 import urllib.error
@@ -177,7 +178,13 @@ def download_file(url: str, destination: Path, start: float, end: float) -> None
     os.replace(part, destination)
 
 
-def write_manifest(path: Path, data_path: Path, validation: dict, mode: str) -> None:
+def write_manifest(
+    path: Path,
+    data_path: Path,
+    validation: dict,
+    mode: str,
+    imported_from: Path | None = None,
+) -> None:
     payload = {
         "resource": "LoGoFunc predictions",
         "assembly": "GRCh38",
@@ -195,19 +202,24 @@ def write_manifest(path: Path, data_path: Path, validation: dict, mode: str) -> 
         "data_size": data_path.stat().st_size,
         **validation,
     }
+    if imported_from is not None:
+        payload["imported_from"] = str(imported_from.resolve())
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
-def install_link(source: Path, destination: Path) -> None:
+def install_move(source: Path, destination: Path) -> None:
     if source.resolve() == destination.resolve(strict=False):
         return
+    source_size = source.stat().st_size
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.exists() or destination.is_symlink():
-        if not destination.is_symlink():
-            raise ValueError(f"refusing to replace non-symlink LoGoFunc file: {destination}")
-        destination.unlink()
-    destination.symlink_to(source.resolve())
+    temporary = destination.with_name(f".{destination.name}.importing")
+    if temporary.exists() or temporary.is_symlink():
+        temporary.unlink()
+    shutil.move(str(source), str(temporary))
+    if temporary.stat().st_size != source_size:
+        raise ValueError(f"incomplete LoGoFunc move: {destination}")
+    temporary.replace(destination)
 
 
 def source_file(value: Path) -> Path:
@@ -221,10 +233,22 @@ def command_install(args: argparse.Namespace) -> None:
     source = source_file(args.source)
     index = Path(str(source) + ".tbi")
     validation = validate(source, index)
-    install_link(source, args.output)
-    install_link(index, Path(str(args.output) + ".tbi"))
-    write_manifest(args.manifest, source, validation, "linked_existing_source")
-    print("100.0% LoGoFunc local source installed", flush=True)
+    source_size = source.stat().st_size
+    index_size = index.stat().st_size
+    install_move(source, args.output)
+    install_move(index, Path(str(args.output) + ".tbi"))
+    if args.output.stat().st_size != source_size:
+        raise ValueError("LoGoFunc data size changed during managed move")
+    if Path(str(args.output) + ".tbi").stat().st_size != index_size:
+        raise ValueError("LoGoFunc index size changed during managed move")
+    write_manifest(
+        args.manifest,
+        args.output,
+        validation,
+        "moved_to_managed_annotation_storage",
+        imported_from=source,
+    )
+    print("100.0% LoGoFunc moved to managed annotation storage; source removed", flush=True)
 
 
 def command_download(args: argparse.Namespace) -> None:

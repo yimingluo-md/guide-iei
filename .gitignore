@@ -5,6 +5,12 @@ references
 *.bw
 *.bigwig
 
+# User-licensed OMIM flat files — never redistribute
+mim2gene.txt
+mimTitles.txt
+genemap2.txt
+morbidmap.txt
+
 # ClinVar downloads (fetched per-run)
 clinvar_*.vcf.gz
 clinvar_*.vcf.gz.tbi

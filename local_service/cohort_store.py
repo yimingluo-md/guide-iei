@@ -897,11 +897,15 @@ class CohortStore:
         hts_backend: HtsBackend | None = None,
         index_readers: int | None = None,
         stage_batch_records: int = DEFAULT_STAGE_BATCH_RECORDS,
+        workspace_dir: Path | None = None,
     ):
-        self.database_path = database_path
+        self.database_path = database_path.resolve()
         self.database_path.parent.mkdir(parents=True, exist_ok=True)
-        self.prepared_dir = self.database_path.parent / "cohort-vcf-cache"
-        self.staging_dir = self.database_path.parent / "cohort-staging"
+        self.workspace_dir = (workspace_dir or self.database_path.parent).resolve()
+        self.workspace_dir.mkdir(parents=True, exist_ok=True)
+        self.prepared_dir = self.workspace_dir / "cohort-vcf-cache"
+        self.staging_dir = self.workspace_dir / "cohort-staging"
+        self.prepared_dir.mkdir(parents=True, exist_ok=True)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
         self.enable_auto_index = enable_auto_index
         self.hts_backend = (

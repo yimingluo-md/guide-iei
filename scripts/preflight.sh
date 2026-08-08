@@ -253,6 +253,16 @@ if mode != "--dry-run":
                 "LoGoFunc provenance manifest missing: "
                 f"{manifest} (run scripts/prepare_logofunc.sh)"
             )
+    clingen = cfg.get("clingen_erepo", {}) or {}
+    if clingen.get("enabled", False):
+        required = clingen.get("required", False)
+        for key in ("database", "vcf", "manifest"):
+            path = absolute(clingen.get(key))
+            message = None
+            if not path or not os.path.isfile(path):
+                message = f"ClinGen Evidence Repository {key} missing: {path} (update it from Annotation datasets)"
+            if message:
+                (errors if required else warnings).append(message)
     for name, track in (cfg.get("custom_tracks", {}) or {}).items():
         if track.get("enabled") and str(track.get("file", "")).endswith(".gz"):
             indexed.append((name, absolute(track.get("file")), track.get("required", False)))

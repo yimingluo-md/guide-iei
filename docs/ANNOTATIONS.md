@@ -20,9 +20,10 @@ work whether or not you have the large/custom datasets on hand.
 |------|---------|------------------|
 | **auto** | VEP cache, reference FASTA, LOFTEE GRCh38 data, SpliceAI masked MANE SNVs, RepeatMasker, SegDup | `scripts/download_references.sh` (SpliceAI is fetched from Ensembl; RepeatMasker/SegDup are fetched from UCSC and cleaned for VEP automatically) |
 | **auto, per-run** | ClinVar | fetched fresh from NCBI on every run by `scripts/fetch_clinvar.sh` |
+| **local updateable snapshot** | ClinGen Evidence Repository variant curations | installed or updated from the annotation-dataset UI; prepared by `scripts/update_clingen_erepo.sh` |
 | **large local** | dbNSFP; CADD v1.7 whole genome (WGS only) | dbNSFP requires academic registration and one-time rebuilding (`scripts/prepare_dbnsfp.sh`). CADD's required score-only files are downloadable/resumable from the UI or `scripts/download_cadd_wgs.sh`. |
 | **bring-your-own (licensed)** | PromoterAI | obtain the two files from Illumina, then prepare them from the local UI or `scripts/prepare_promoterai.sh`; auto-skipped if absent |
-| **optional public** | LoGoFunc | resumable download from Zenodo in the UI or `scripts/download_logofunc.sh`; an existing download can be validated/linked with `scripts/prepare_logofunc.sh`; auto-skipped if absent |
+| **optional public** | LoGoFunc | resumable direct download from Zenodo in the UI or `scripts/download_logofunc.sh`; an existing download can be validated and moved into managed storage with `scripts/prepare_logofunc.sh`; auto-skipped if absent |
 | **auto (region)** | coding+splice BED | built once from the release-matched Ensembl GTF by `scripts/build_coding_bed.sh`; used to pre-filter the input VCF |
 
 **Design note.** Most precomputed pathogenicity/conservation scores that used
@@ -173,9 +174,13 @@ The supplied folder must contain exactly these two inputs:
 - `tss.tsv`
 - `promoterAI_tss500.tsv.gz`
 
-On the local **Annotation datasets** screen, paste the folder's absolute path
-into the PromoterAI card and select **Prepare local files**. The equivalent
-terminal command is:
+On the local **Annotation datasets** screen, select **Choose folder**, pick the
+download folder in the native file chooser, and select **Prepare and install**.
+No path typing is required. Prepared files are written to the Annotation
+datasets location configured on the Storage page; the licensed original files
+are removed from the selected folder only after every managed output is
+successfully created. The equivalent terminal command (which retains source
+files unless the UI-only removal flag is supplied) is:
 
 ```bash
 bash scripts/prepare_promoterai.sh /absolute/path/to/PromoterAI
@@ -255,8 +260,10 @@ when the corresponding predictor field is declared in that VCF's INFO/CSQ
 schema. A completely absent annotation dataset is therefore not mistaken for
 an unscored indel.
 
-SCREEN cCREs are a native indexed BED resource, not a VEP plugin. Install the
-pinned public Registry V4 GRCh38 BED from the dataset setup screen or with
+SCREEN cCREs are a native indexed BED resource, not a VEP plugin. The pinned
+public Registry V4 GRCh38 BED and index ship with the native software bundle;
+the dataset screen offers a repair download only if the bundled copy is
+missing. The command-line repair remains
 `scripts/download_references.sh config/annotation.config.yaml --only ccre`.
 The preparation retains cCRE accessions and overall classes for future display,
 normalizes primary contigs, and creates a BGZF/tabix BED. It also builds a
@@ -364,6 +371,15 @@ enabled-by-default `loftee_ptc_50bp.py` postprocessor:
 5. Uses `distance <= 50` as `FAIL`; otherwise `PASS`.
 6. Replaces `50_BP_RULE` inside `CSQ/LoF_info` only when calculation succeeds.
 
+For a single-exon transcript, there is no downstream exon-exon junction and
+the conventional 50–55-nt exon-junction NMD rule is not applicable. The
+postprocessor may still reconstruct and record the PTC position, but emits
+`PTC_calc_status=not_applicable_single_exon_transcript`, leaves the recalculated
+rule empty, and does not replace the original LOFTEE value. Premature stops in
+single-exon transcripts may escape exon-junction-complex-dependent NMD, but
+transcript-specific RNA and protein evidence is required rather than assuming
+that every such transcript escapes all forms of RNA surveillance.
+
 Appended CSQ fields retain the audit trail:
 
 | Field | Meaning |
@@ -382,6 +398,26 @@ models, exon-spanning edits, and cases without a downstream stop are refused
 rather than assigned a confident verdict. Their original `LoF_info` remains
 unchanged. The postprocessor does not rewrite `LoF=HC/LC`, because that value
 also summarizes other LOFTEE filters.
+
+Transcripts whose biotype is not exactly `protein_coding` are also refused
+before CDS simulation, matching LOFTEE's applicability rule. In particular,
+`protein_coding_LoF` describes a transcript whose ORF is disrupted on the
+reference-genome haplotype but may be translated on other human haplotypes.
+Such consequences remain reviewable and visibly flagged, but are placed after
+consequences modeled against an intact reference ORF and are not treated as
+conventional LOFTEE-supported pLoF evidence.
+
+The review interface therefore keeps the two assessments separate:
+
+- **LOFTEE** shows `LoF` together with the transcript-specific `LoF_filter`
+  reasons and `LoF_flags`. Bundled LOFTEE codes are expanded into readable
+  explanations while the original codes remain visible for auditability.
+- **Frameshift PTC calculation** shows whether transcript reconstruction
+  completed, the direction-aware PTC distance from the final exon junction,
+  and the recalculated `LoF_50_BP_RULE_PTC` verdict. This verdict is not
+  presented as the reason for the original LOFTEE `HC`/`LC` classification.
+  For an `EXON=1/1` consequence, it instead displays an explicit single-exon
+  caveat and labels any legacy stored PASS/FAIL value as not interpreted.
 
 The GTF release must equal the configured VEP release; preflight treats a
 mismatch as an error when this required postprocessor is enabled. Each run
@@ -448,3 +484,21 @@ pathogenicity, LOFTEE classification, and amino-acid matching. Three OR4F5
 controls verify LoGoFunc class, source transcript, and strict match status when
 the public table is installed. The TERT control similarly becomes a required
 promoterAI check when that field is present.
+
+## ClinGen Evidence Repository variant curations
+
+ClinGen expert-panel classifications are applied after VEP as exact
+CHROM/POS/REF/ALT matches. They are intentionally INFO-level allele evidence,
+not transcript CSQ annotations. `INFO/ClinGen_ERepo` contains URL-encoded
+records with ALT, assertion UUID, ClinGen Allele Registry ID, classification,
+disease, MONDO ID, mode of inheritance, expert panel, and approval date.
+
+The full local SQLite snapshot retains interpretation summaries, applied and
+not-met evidence codes, PubMed IDs, guideline links, publication dates, and
+mapping provenance. The review UI renders one card per disease/MOI assertion;
+it never substitutes the most pathogenic assertion for the complete set. If no
+row matches, the display is **No ClinGen variant classification found.**
+
+The snapshot is required by the diagnostic profile and can be safely refreshed
+from the dataset setup screen. Updating is never performed during patient
+annotation, and no patient variant is sent to an external service.

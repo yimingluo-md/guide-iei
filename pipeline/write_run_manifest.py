@@ -55,6 +55,8 @@ def reference_paths(cfg: dict) -> list[str]:
         block = plugins.get(name, {}) or {}
         paths.extend(block.get(key) for key in keys)
     paths.extend(track.get("file") for track in (cfg.get("custom_tracks", {}) or {}).values())
+    clingen = cfg.get("clingen_erepo", {}) or {}
+    paths.extend(clingen.get(key) for key in ("database", "vcf", "manifest"))
     return sorted({path for path in paths if path and path != "auto"})
 
 

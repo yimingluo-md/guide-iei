@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Validate a downloaded LoGoFunc Zenodo bundle and link it into references/.
+# Validate a downloaded LoGoFunc Zenodo bundle and move it into the configured
+# managed annotation storage.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

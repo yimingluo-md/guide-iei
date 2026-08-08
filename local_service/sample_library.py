@@ -39,27 +39,95 @@ def _directory_size(path: Path) -> int:
     if not path.exists():
         return 0
     total = 0
-    for item in path.rglob("*"):
-        try:
-            if item.is_file() and not item.is_symlink():
-                total += item.stat().st_size
-        except FileNotFoundError:
-            continue
+    try:
+        for root, _directories, files in os.walk(path, onerror=lambda _error: None):
+            for name in files:
+                item = Path(root) / name
+                try:
+                    if not item.is_symlink():
+                        total += item.stat().st_size
+                except OSError:
+                    continue
+    except OSError:
+        pass
     return total
 
 
 class SampleLibrary:
     """SQLite metadata plus content-addressed managed review VCFs."""
 
-    def __init__(self, state_dir: Path, cohort: CohortStore):
+    def __init__(self, state_dir: Path, cohort: CohortStore, *, workspace_dir: Path | None = None):
         self.state_dir = state_dir.resolve()
         self.database_path = cohort.database_path
         self.cohort = cohort
+        self.workspace_dir = (workspace_dir or self.state_dir).resolve()
         self.root = self.state_dir / "sample-library"
         self.files_dir = self.root / "files"
         self.files_dir.mkdir(parents=True, exist_ok=True)
         self._initialize()
         self.cleanup_partials()
+
+    def _stored_state_path(self, path: Path | str | None) -> str | None:
+        """Store a data-root path relatively, retaining external provenance paths."""
+        if path is None:
+            return None
+        resolved = Path(path).expanduser().resolve()
+        try:
+            return resolved.relative_to(self.state_dir).as_posix()
+        except ValueError:
+            # External provenance paths remain readable, while paths under the
+            # selected data root travel with a relocated Sample Library.
+            return str(resolved)
+
+    def _stored_original_path(self, path: Path | str | None) -> str | None:
+        """Store workspace inputs portably and external provenance absolutely.
+
+        Unlike managed review files, uploads can move with the independently
+        configured temporary workspace. Storing them relative to the data root
+        makes that relocation ambiguous.
+        """
+        if path is None:
+            return None
+        resolved = Path(path).expanduser().resolve()
+        try:
+            return "@workspace/" + resolved.relative_to(self.workspace_dir).as_posix()
+        except ValueError:
+            return str(resolved)
+
+    def _original_path(self, value: str | Path | None) -> Path:
+        if value is None or not str(value).strip():
+            raise ValueError("original VCF path is missing")
+        text = str(value)
+        if text.startswith("@workspace/"):
+            relative = Path(text.removeprefix("@workspace/"))
+            resolved = (self.workspace_dir / relative).resolve()
+            if resolved != self.workspace_dir and self.workspace_dir not in resolved.parents:
+                raise ValueError("original VCF path escapes the selected temporary workspace")
+            return resolved
+        candidate = Path(text).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve()
+        # Compatibility with the first portable-path implementation.
+        workspace_candidate = (self.workspace_dir / candidate).resolve()
+        state_candidate = (self.state_dir / candidate).resolve()
+        return workspace_candidate if workspace_candidate.exists() else state_candidate
+
+    def _state_path(self, value: str | Path | None, *, label: str = "path") -> Path:
+        if value is None or not str(value).strip():
+            raise ValueError(f"{label} is missing")
+        candidate = Path(value).expanduser()
+        if candidate.is_absolute():
+            return candidate.resolve()
+        resolved = (self.state_dir / candidate).resolve()
+        if resolved != self.state_dir and self.state_dir not in resolved.parents:
+            raise ValueError(f"{label} escapes the selected data location")
+        return resolved
+
+    def _stored_managed_path(self, path: Path | str | None) -> str | None:
+        return self._stored_state_path(path)
+
+    def _managed_path(self, value: str | Path | None) -> Path:
+        return self._state_path(value, label="managed review VCF path")
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database_path, timeout=60)
@@ -135,8 +203,51 @@ class SampleLibrary:
                   ON library_datasets(managed_checksum);
                 CREATE INDEX IF NOT EXISTS library_datasets_profile_idx
                   ON library_datasets(analysis_scope, index_scope, settings_hash);
+
+                CREATE TABLE IF NOT EXISTS sample_library_meta (
+                  key TEXT PRIMARY KEY,
+                  value TEXT NOT NULL
+                );
                 """
             )
+            converted = connection.execute(
+                "SELECT value FROM sample_library_meta WHERE key='portable_paths_v2'"
+            ).fetchone()
+            if not converted:
+                # Pre-storage-registry installs recorded absolute managed paths.
+                # Perform lexical containment in Python: SQL LIKE treats '_' and
+                # '%' as wildcards and can select an unrelated sibling path.
+                rows = connection.execute(
+                    "SELECT id,managed_path,managed_index_path,original_path FROM library_datasets"
+                ).fetchall()
+                for row in rows:
+                    for column in ("managed_path", "managed_index_path"):
+                        value = row[column]
+                        if not value or not Path(value).is_absolute():
+                            continue
+                        candidate = Path(os.path.abspath(os.path.expanduser(value)))
+                        try:
+                            relative = candidate.relative_to(self.state_dir).as_posix()
+                        except ValueError:
+                            continue
+                        connection.execute(
+                            f"UPDATE library_datasets SET {column}=? WHERE id=?",
+                            (relative, row["id"]),
+                        )
+                    original = row["original_path"]
+                    if original and not Path(original).is_absolute() and not original.startswith("@workspace/"):
+                        # Prefer the configured temporary workspace when a
+                        # previous migration already copied the upload there.
+                        workspace_candidate = (self.workspace_dir / original).resolve()
+                        state_candidate = (self.state_dir / original).resolve()
+                        absolute = workspace_candidate if workspace_candidate.exists() else state_candidate
+                        connection.execute(
+                            "UPDATE library_datasets SET original_path=? WHERE id=?",
+                            (self._stored_original_path(absolute), row["id"]),
+                        )
+                connection.execute(
+                    "INSERT OR REPLACE INTO sample_library_meta(key,value) VALUES('portable_paths_v2','1')"
+                )
 
     @staticmethod
     def build_profile(
@@ -194,6 +305,7 @@ class SampleLibrary:
         original_mtime = None
         if original_candidate.is_file():
             original_candidate = original_candidate.resolve()
+            original_path = self._stored_original_path(original_candidate) or str(original_candidate)
             original_checksum = _sha256(original_candidate)
             original_stat = original_candidate.stat()
             original_size = original_stat.st_size
@@ -210,6 +322,8 @@ class SampleLibrary:
         managed_path, managed_index, preparation_warning = self.cohort.prepare_managed_vcf(
             path, self.files_dir, review_checksum
         )
+        managed_storage_path = self._stored_managed_path(managed_path)
+        managed_storage_index = self._stored_managed_path(managed_index)
         managed_stat = managed_path.stat()
         include_in_cohort = bool(payload.get("include_in_cohort", True))
         qc_settings = payload.get("qc_settings") or {}
@@ -269,7 +383,7 @@ class SampleLibrary:
                     (
                         dataset_id, sample_id, vcf_sample, original_name, original_path,
                         original_checksum or None, original_size, original_mtime,
-                        str(managed_path), str(managed_index) if managed_index else None,
+                        managed_storage_path, managed_storage_index,
                         review_checksum, managed_stat.st_size, analysis_scope, index_scope,
                         str(payload.get("capture_kit") or "").strip(),
                         str(payload.get("target_bed") or "").strip(),
@@ -306,7 +420,7 @@ class SampleLibrary:
             with self._session() as connection:
                 connection.execute(
                     "UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,updated_at=? WHERE managed_path=?",
-                    (cohort_result.get("id"), utc_now(), str(managed_path)),
+                    (cohort_result.get("id"), utc_now(), managed_storage_path),
                 )
                 connection.execute(
                     """UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=?
@@ -373,7 +487,7 @@ class SampleLibrary:
         record = self.get(dataset_id)
         if not record:
             raise KeyError(dataset_id)
-        path = Path(record["managed_path"])
+        path = self._managed_path(record["managed_path"])
         if not path.is_file():
             raise FileNotFoundError(f"managed review VCF is missing: {path}")
         return path
@@ -492,7 +606,7 @@ class SampleLibrary:
                 connection.execute(
                     """UPDATE library_datasets SET complete_settings=?,settings_hash=?,
                            profile_label=?,updated_at=? WHERE managed_path=?""",
-                    (_json(settings), settings_hash, profile_label, utc_now(), record["managed_path"]),
+                    (_json(settings), settings_hash, profile_label, utc_now(), self._stored_managed_path(record["managed_path"])),
                 )
                 if record.get("cohort_file_id"):
                     connection.execute(
@@ -509,7 +623,7 @@ class SampleLibrary:
         if full_wgs:
             if record["analysis_scope"] != "whole_genome":
                 raise ValueError("Full WGS indexing is available only for WGS datasets")
-            source = Path(record.get("original_path") or "")
+            source = self._original_path(record.get("original_path"))
             if not source.is_file():
                 raise ValueError("the original full WGS VCF path is not available")
             path = source
@@ -517,7 +631,7 @@ class SampleLibrary:
             index_scope = "full"
             options = {}
         else:
-            path = Path(record["managed_path"])
+            path = self._managed_path(record["managed_path"])
             import_profile = (
                 "prefiltered"
                 if record["analysis_scope"] == "whole_genome" and record["index_scope"] == "compact"
@@ -553,7 +667,10 @@ class SampleLibrary:
             )
         with self._session() as connection:
             identity_column = "original_path" if full_wgs else "managed_path"
-            identity_value = record[identity_column]
+            identity_value = (
+                self._stored_original_path(record[identity_column])
+                if full_wgs else self._stored_state_path(record[identity_column])
+            )
             connection.execute(
                 f"""UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
                        index_scope=?,complete_settings=?,settings_hash=?,profile_label=?,updated_at=?
@@ -621,13 +738,13 @@ class SampleLibrary:
             )
             remaining = connection.execute(
                 "SELECT COUNT(*) FROM library_datasets WHERE managed_path=?",
-                (record["managed_path"],),
+                (self._stored_managed_path(record["managed_path"]),),
             ).fetchone()[0]
         removed_files = []
         if remove_managed_file and remaining == 0:
             for path_value in (record["managed_path"], record.get("managed_index_path")):
                 if path_value:
-                    path = Path(path_value)
+                    path = self._managed_path(path_value)
                     if path.is_file():
                         path.unlink()
                         removed_files.append(str(path))
@@ -690,23 +807,28 @@ class SampleLibrary:
         locations = {
             "database": self.database_path.stat().st_size if self.database_path.exists() else 0,
             "managed_library": _directory_size(self.root),
-            "uploads": _directory_size(self.state_dir / "uploads"),
-            "cohort_cache": _directory_size(self.state_dir / "cohort-vcf-cache"),
-            "wgs_review_cache": _directory_size(self.state_dir / "wgs-review-cache"),
+            "uploads": _directory_size(self.workspace_dir / "uploads"),
+            "cohort_cache": _directory_size(self.cohort.prepared_dir),
+            "wgs_review_cache": _directory_size(self.workspace_dir / "wgs-review-cache"),
             "logs": _directory_size(self.state_dir / "logs") + _directory_size(self.state_dir / "resource-logs"),
         }
         state_total = _directory_size(self.state_dir)
-        locations["other"] = max(0, state_total - sum(locations.values()))
+        workspace_within_state = self.workspace_dir == self.state_dir or self.state_dir in self.workspace_dir.parents
+        state_categories = locations["database"] + locations["managed_library"] + locations["logs"]
+        if workspace_within_state:
+            state_categories += locations["uploads"] + locations["cohort_cache"] + locations["wgs_review_cache"]
+        locations["other"] = max(0, state_total - state_categories)
+        workspace_extra = 0 if workspace_within_state else _directory_size(self.workspace_dir)
         return {
-            "state_dir": str(self.state_dir), "locations": locations,
-            "total_bytes": state_total, "datasets": datasets,
+            "state_dir": str(self.state_dir), "workspace_dir": str(self.workspace_dir), "locations": locations,
+            "total_bytes": state_total + workspace_extra, "datasets": datasets,
             "managed_unique_files": managed_unique,
             "database_page_bytes": page_size * page_count,
             "database_reclaimable_bytes": page_size * freelist,
         }
 
     def cleanup(self, categories: list[str]) -> dict:
-        allowed = {"uploads", "cohort_cache", "wgs_review_cache", "partials"}
+        allowed = {"uploads", "cohort_cache", "wgs_review_cache", "partials", "configs"}
         requested = set(categories)
         if not requested or not requested <= allowed:
             raise ValueError("unsupported cleanup category")
@@ -717,25 +839,27 @@ class SampleLibrary:
         referenced = set()
         with self._session() as connection:
             for row in connection.execute("SELECT managed_path,managed_index_path FROM library_datasets"):
-                referenced.update(value for value in row if value)
+                referenced.update(str(self._managed_path(value)) for value in row if value)
         roots = {
-            "uploads": self.state_dir / "uploads",
-            "cohort_cache": self.state_dir / "cohort-vcf-cache",
-            "wgs_review_cache": self.state_dir / "wgs-review-cache",
+            "uploads": self.workspace_dir / "uploads",
+            "cohort_cache": self.cohort.prepared_dir,
+            "wgs_review_cache": self.workspace_dir / "wgs-review-cache",
+            "configs": self.state_dir / "job-configs",
         }
-        for category in requested - {"partials"}:
-            root = roots[category]
-            if not root.exists():
-                continue
-            for path in sorted(root.rglob("*"), reverse=True):
-                if path.is_file() and str(path) not in referenced:
-                    path.unlink()
-                    removed.append(str(path))
-                elif path.is_dir():
-                    try:
-                        path.rmdir()
-                    except OSError:
-                        pass
+        selected_roots = [(category, roots[category]) for category in requested - {"partials"}]
+        if "configs" in requested:
+            selected_roots.append(("configs", self.state_dir / "resource-configs"))
+        for _category, root in selected_roots:
+            if root.exists():
+                for path in sorted(root.rglob("*"), reverse=True):
+                    if path.is_file() and str(path) not in referenced:
+                        path.unlink()
+                        removed.append(str(path))
+                    elif path.is_dir():
+                        try:
+                            path.rmdir()
+                        except OSError:
+                            pass
         if "partials" in requested:
             removed.extend(self.cleanup_partials())
         after = self.storage_stats()
@@ -743,7 +867,7 @@ class SampleLibrary:
 
     def cleanup_partials(self) -> list[str]:
         removed = []
-        for root in (self.root, self.state_dir / "cohort-staging"):
+        for root in (self.root, self.cohort.staging_dir):
             if not root.exists():
                 continue
             for path in root.rglob("*.partial"):
@@ -760,9 +884,15 @@ class SampleLibrary:
             connection.execute("VACUUM")
         return self.storage_stats()
 
-    @staticmethod
-    def _serialize(row: sqlite3.Row) -> dict:
+    def _serialize(self, row: sqlite3.Row) -> dict:
         result = dict(row)
+        for key in ("managed_path", "managed_index_path"):
+            if result.get(key):
+                result[key] = str(self._managed_path(result[key]))
+        if result.get("original_path") and not Path(result["original_path"]).is_absolute():
+            result["original_path"] = str(
+                self._original_path(result["original_path"])
+            )
         for key, fallback in (
             ("annotation_bundle", {}), ("resource_versions", {}),
             ("qc_settings", {}), ("prefilter_settings", {}),
