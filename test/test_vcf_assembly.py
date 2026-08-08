@@ -43,6 +43,54 @@ def test_detects_both_assemblies_and_pipeline_marker(tmp_path):
     assert result["lifted_from_grch37"]
 
 
+def test_lifted_output_with_stale_contig_length_is_reannotatable(tmp_path):
+    # Audit repro (SH-10 / AUX-M2): the pipeline's own lifted GRCh38 output
+    # carries ##reference=GRCh38 + the liftover marker + the GRCh37 chr1
+    # length= that bcftools +liftover does not rewrite. This used to resolve
+    # as "conflict" and raise for auto AND for an explicit GRCh38 request,
+    # making the pipeline's own deliverable un-reannotatable.
+    lifted = tmp_path / "lifted-stale-length.vcf"
+    write_vcf(
+        lifted,
+        "##reference=GRCh38\n"
+        "##iei_target_assembly=GRCh38\n"
+        "##iei_liftover=<SourceAssembly=GRCh37/hg19,TargetAssembly=GRCh38>\n"
+        "##contig=<ID=1,length=249250621>\n",
+    )
+    detected = detect_vcf_assembly(lifted)
+    assert detected["assembly"] == "GRCh38"
+    assert detected["confidence"] == "high"
+    assert any("stale length" in warning for warning in detected["warnings"])
+    assert resolve_input_assembly(lifted, "auto")["resolved"] == "GRCh38"
+    assert resolve_input_assembly(lifted, "GRCh38")["resolved"] == "GRCh38"
+
+
+def test_genuine_declared_conflict_still_raises(tmp_path):
+    # A reference header contradicting the marker is a real inconsistency and
+    # must stay fatal — the stale-length exemption applies only when every
+    # declared source agrees with the marker.
+    conflicted = tmp_path / "declared-conflict.vcf"
+    write_vcf(
+        conflicted,
+        "##reference=GRCh37\n"
+        "##iei_target_assembly=GRCh38\n",
+    )
+    assert detect_vcf_assembly(conflicted)["assembly"] == "conflict"
+    try:
+        resolve_input_assembly(conflicted, "auto")
+        raise AssertionError("declared conflict should fail")
+    except ValueError as exc:
+        assert "conflicting" in str(exc)
+
+    lengths_only = tmp_path / "length-conflict.vcf"
+    write_vcf(
+        lengths_only,
+        "##reference=GRCh38\n"
+        "##contig=<ID=1,length=249250621>\n",
+    )
+    assert detect_vcf_assembly(lengths_only)["assembly"] == "conflict"
+
+
 def test_auto_requires_evidence_and_explicit_choice_checks_conflicts(tmp_path):
     unknown = tmp_path / "unknown.vcf"
     write_vcf(unknown)
@@ -66,5 +114,7 @@ if __name__ == "__main__":
     with tempfile.TemporaryDirectory() as directory:
         root = pathlib.Path(directory)
         test_detects_both_assemblies_and_pipeline_marker(root)
+        test_lifted_output_with_stale_contig_length_is_reannotatable(root)
+        test_genuine_declared_conflict_still_raises(root)
         test_auto_requires_evidence_and_explicit_choice_checks_conflicts(root)
-    print("2 tests passed")
+    print("4 tests passed")

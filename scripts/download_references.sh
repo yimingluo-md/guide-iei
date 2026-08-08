@@ -59,16 +59,22 @@ SPLICEAI_BASE="https://ftp.ensembl.org/pub/data_files/homo_sapiens/GRCh38/variat
 
 # --- destinations (from config, resolved to repo root) ------------------------
 absdir() { local p="$1"; [[ "$p" = /* ]] || p="${ROOT}/${p}"; echo "$p"; }
-VEP_CACHE_DIR="$(absdir "$(yaml_get "$CONFIG" reference.vep_cache_dir)")"
-FASTA_PATH="$(absdir "$(yaml_get "$CONFIG" reference.fasta.path)")"
-HA_PATH="$(absdir "$(yaml_get "$CONFIG" plugins.LoF.human_ancestor_fa)")"
-SQL_PATH="$(absdir "$(yaml_get "$CONFIG" plugins.LoF.conservation_file)")"
-GERP_PATH="$(absdir "$(yaml_get "$CONFIG" plugins.LoF.gerp_bigwig)")"
+# A missing key must stay empty: absdir("") would return "${ROOT}/", turning
+# "not configured" into a directory path that downstream writes clobber.
+absdir_opt() {
+    local raw="$1"
+    [[ -n "$raw" ]] && absdir "$raw" || echo ""
+}
+VEP_CACHE_DIR="$(absdir_opt "$(yaml_get "$CONFIG" reference.vep_cache_dir)")"
+FASTA_PATH="$(absdir_opt "$(yaml_get "$CONFIG" reference.fasta.path)")"
+HA_PATH="$(absdir_opt "$(yaml_get "$CONFIG" plugins.LoF.human_ancestor_fa)")"
+SQL_PATH="$(absdir_opt "$(yaml_get "$CONFIG" plugins.LoF.conservation_file)")"
+GERP_PATH="$(absdir_opt "$(yaml_get "$CONFIG" plugins.LoF.gerp_bigwig)")"
 SPLICEAI_PATH_RAW="$(yaml_get "$CONFIG" plugins.SpliceAI.snv)"
 SPLICEAI_PATH=""
 [[ -z "$SPLICEAI_PATH_RAW" ]] || SPLICEAI_PATH="$(absdir "$SPLICEAI_PATH_RAW")"
-RM_PATH="$(absdir "$(yaml_get "$CONFIG" custom_tracks.RepeatMasker.file)")"
-SEGDUP_PATH="$(absdir "$(yaml_get "$CONFIG" custom_tracks.SegDup.file)")"
+RM_PATH="$(absdir_opt "$(yaml_get "$CONFIG" custom_tracks.RepeatMasker.file)")"
+SEGDUP_PATH="$(absdir_opt "$(yaml_get "$CONFIG" custom_tracks.SegDup.file)")"
 LIFTOVER_CHAIN_RAW="$(yaml_get "$CONFIG" liftover.grch37_to_grch38.chain)"
 LIFTOVER_CHAIN=""
 [[ -z "$LIFTOVER_CHAIN_RAW" ]] || LIFTOVER_CHAIN="$(absdir "$LIFTOVER_CHAIN_RAW")"

@@ -135,6 +135,44 @@ def test_empty_reference_all_zero(tmp_path):
     assert "ClinVar_path_aa_match=0" in open(vout).read()
 
 
+def test_short_record_is_padded_not_crashed(tmp_path):
+    """Audit repro (CORE-5): a 7-column sites-only record used to raise
+    IndexError on the unconditional cols[7] assignment."""
+    vcf_in = str(tmp_path / "in.vcf")
+    with open(vcf_in, "w") as fh:
+        fh.write(
+            "##fileformat=VCFv4.2\n"
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="... Format: '
+            + CSQ_FORMAT + '">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+            "1\t100\t.\tC\tA\t.\tPASS\n"          # 7 columns, INFO missing
+        )
+    ref_path = str(tmp_path / "ref.tsv")
+    with open(ref_path, "w") as fh:
+        fh.write("BRCA1\t100\n")
+    out = str(tmp_path / "out.vcf")
+    rc = aam.main(["--input", vcf_in, "--output", out,
+                   "--reference", ref_path, "--clinvar-release", "TEST"])
+    assert rc == 0
+    record = [l for l in open(out) if not l.startswith("#")][0].rstrip("\n")
+    assert record.split("\t")[7] == "ClinVar_path_aa_match=0"
+
+
+def test_reduce_gz_output_is_real_gzip(tmp_path):
+    """Audit repro (CORE-4 twin): a .gz output name used to receive plain text."""
+    tab = str(tmp_path / "clinvar.vep.tsv")
+    with open(tab, "w") as fh:
+        fh.write("#Uploaded_variation\tSYMBOL\tProtein_position\tConsequence\n")
+        fh.write("v1\tBRCA1\t100\tmissense_variant\n")
+    out = str(tmp_path / "ref.tsv.gz")
+    n = red.reduce_tab(tab, out)
+    assert n == 1
+    with open(out, "rb") as fh:
+        assert fh.read(2) == b"\x1f\x8b"
+    with gzip.open(out, "rt") as fh:
+        assert fh.read() == "BRCA1\t100\n"
+
+
 def test_reducer(tmp_path):
     """The VEP-tab -> reference reducer keeps missense w/ protein pos, dedups."""
     tab = str(tmp_path / "clinvar.vep.tsv")

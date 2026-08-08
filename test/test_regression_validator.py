@@ -138,11 +138,22 @@ def test_installed_optional_field_contract_is_enforced(tmp_path):
     )
 
 
+def test_multi_allelic_record_matches_per_alt_key(tmp_path):
+    # Audit repro (AUX-H4): a record with ALT "T,G" was keyed "17-1-C-T,G",
+    # which can never equal expected.yaml's single-allele key, producing a
+    # false "variant missing" FAIL.
+    config, expected, vcf = write_inputs(tmp_path)
+    vcf.write_text(vcf.read_text().replace("17\t1\t.\tC\tT\t.", "17\t1\t.\tC\tT,G\t."))
+    report = run_validation(config, expected, vcf)
+    assert report["status"] == "PASS", report["checks"]
+
+
 if __name__ == "__main__":
     tests = [
         test_regression_passes_and_optional_track_is_explicit_skip,
         test_regression_fails_when_required_predictor_is_empty,
         test_installed_optional_field_contract_is_enforced,
+        test_multi_allelic_record_matches_per_alt_key,
     ]
     for test in tests:
         with tempfile.TemporaryDirectory() as directory:

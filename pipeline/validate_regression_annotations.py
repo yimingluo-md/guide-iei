@@ -54,8 +54,17 @@ def load_vcf(path: Path) -> tuple[list[str], dict[str, dict]]:
                 values = raw.split("|")
                 values += [""] * (len(fields) - len(values))
                 entries.append(dict(zip(fields, values)))
-            key = f"{columns[0]}-{columns[1]}-{columns[3]}-{columns[4]}"
-            records[key] = {"info": info, "entries": entries}
+            # Index per ALT: a multi-allelic record keyed on the raw comma-
+            # joined ALT column ("...-A,AGG") can never match a single-allele
+            # expected.yaml key, producing a false "variant missing" FAIL.
+            # On a duplicate key (e.g. a lifted record landing twice), merge
+            # the CSQ entries instead of silently discarding the first.
+            for alt in columns[4].split(","):
+                key = f"{columns[0]}-{columns[1]}-{columns[3]}-{alt}"
+                if key in records:
+                    records[key]["entries"].extend(entries)
+                else:
+                    records[key] = {"info": info, "entries": list(entries)}
     if fields is None:
         raise ValueError("VEP CSQ header was not found")
     return fields, records

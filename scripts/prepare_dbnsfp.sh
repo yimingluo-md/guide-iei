@@ -49,19 +49,34 @@ H_FILE=""
 for f in "${CHR_FILES[@]}"; do [[ "$f" == *chr1* ]] && H_FILE="$f" && break; done
 [[ -n "$H_FILE" ]] || H_FILE="${CHR_FILES[0]}"
 
-# Detect the 1-based column indices of the GRCh38 chrom/pos columns from the header.
-HEADER="$(zcat "$H_FILE" | head -1)"
-CHR_COL="$(awk -v FS='\t' '{for(i=1;i<=NF;i++) if($i=="hg38_chr"||$i=="chr"){print i; exit}}' <<<"$HEADER")"
-POS_COL="$(awk -v FS='\t' '{for(i=1;i<=NF;i++) if($i=="hg38_pos(1-based)"||$i=="pos(1-based)"){print i; exit}}' <<<"$HEADER")"
-[[ -n "$CHR_COL" && -n "$POS_COL" ]] || die "could not find hg38 chr/pos columns in dbNSFP header"
+# Detect the 1-based column indices of the GRCh38 chrom/pos columns from the
+# header. GRCh38-native releases (4.x/5.x, e.g. 5.3.1a) name them "#chr" and
+# "pos(1-based)"; legacy GRCh37-sorted releases carried explicit "hg38_chr" /
+# "hg38_pos(1-based)" columns, which take priority when present.
+# NOTE: macOS /usr/bin/zcat is the legacy .Z reader and fails on plain .gz, so
+# use `gzip -cd` (matching every other script here). The header read disables
+# pipefail locally: `head -1` closes the pipe early and gzip's SIGPIPE (141)
+# would otherwise abort the script.
+HEADER="$( set +o pipefail; gzip -cd "$H_FILE" | head -1 )"
+find_col() {
+    awk -v FS='\t' -v name="$1" '{for(i=1;i<=NF;i++) if($i==name){print i; exit}}' <<<"$HEADER"
+}
+# Explicit hg38_* columns win: on a legacy hg19-sorted release "#chr" is the
+# hg19 chromosome and only hg38_chr/hg38_pos are GRCh38.
+CHR_COL="$(find_col "hg38_chr")"
+[[ -n "$CHR_COL" ]] || CHR_COL="$(find_col "#chr")"
+POS_COL="$(find_col "hg38_pos(1-based)")"
+[[ -n "$POS_COL" ]] || POS_COL="$(find_col "pos(1-based)")"
+[[ "$CHR_COL" =~ ^[0-9]+$ && "$POS_COL" =~ ^[0-9]+$ ]] \
+    || die "could not find hg38 chr/pos columns in dbNSFP header (saw: $(cut -f1-4 <<<"$HEADER") ...)"
 log "GRCh38 sort keys: chr=col$CHR_COL pos=col$POS_COL"
 
 log "merging + sorting on GRCh38 coordinates (this takes a while)..."
 {
-    zcat "$H_FILE" | head -1                       # header first
+    ( set +o pipefail; gzip -cd "$H_FILE" | head -1 )   # header first
     for f in "${CHR_FILES[@]}"; do
-        zcat "$f" | tail -n +2                      # data, header dropped
-    done | sort -t"$(printf '\t')" -k${CHR_COL},${CHR_COL} -k${POS_COL},${POS_COL}n
+        gzip -cd "$f" | tail -n +2                      # data, header dropped
+    done | sort -t"$(printf '\t')" -k"${CHR_COL},${CHR_COL}" -k"${POS_COL},${POS_COL}n"
 } > "$OUT_PLAIN"
 
 log "bgzip + tabix (chr=col$CHR_COL pos=col$POS_COL, skip header line)"

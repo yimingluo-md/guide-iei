@@ -333,6 +333,17 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
         ok = True
         for key in ("snv", "indels"):
             host_path = cadd.get(key, "")
+            if not host_path:
+                # An unset path must be treated as missing: abspath("") is the
+                # current working directory, which --no-check would otherwise
+                # emit as a real plugin argument (indels=<cwd>).
+                msg = f"plugin.CADD_WGS.{key}: no path configured"
+                if required:
+                    plan.errors.append(msg)
+                else:
+                    plan.warnings.append(msg + "  [skipped]")
+                ok = False
+                continue
             cp = _resolve_indexed(
                 plan, mapper, host_path,
                 f"plugin.CADD_WGS.{key}", required, check_exists,
@@ -428,6 +439,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.do_json:
         import json
+        # Errors must also reach stderr: callers capture stdout into a
+        # variable (run_annotation.sh), so a JSON-only error would leave the
+        # operator with "see WARN/ERROR above" and nothing printed.
+        for e in plan.errors:
+            print(f"ERROR {e}", file=sys.stderr)
         json.dump({
             "argv": plan.argv,
             "mounts": [{"host": m.host, "container": m.container, "mode": m.mode}

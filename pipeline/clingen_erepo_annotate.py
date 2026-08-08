@@ -63,7 +63,16 @@ def main() -> int:
                     for row in connection.execute(query, (chrom, pos, ref, alt)):
                         tokens.append("|".join(safe(value) for value in (alt, *row)))
                 if tokens:
-                    info = "" if columns[7] in {"", "."} else columns[7] + ";"
+                    # Strip any prior run's keys first so re-annotating an
+                    # already-annotated VCF (the header path already dedupes)
+                    # replaces rather than duplicates the INFO keys.
+                    retained = [
+                        item for item in columns[7].split(";")
+                        if item not in {"", "."}
+                        and not item.startswith("ClinGen_ERepo=")
+                        and not item.startswith("ClinGen_ERepo_count=")
+                    ]
+                    info = ";".join(retained) + ";" if retained else ""
                     columns[7] = f"{info}ClinGen_ERepo={','.join(tokens)};ClinGen_ERepo_count={len(tokens)}"
                     annotated_records += 1
                     assertions_added += len(tokens)

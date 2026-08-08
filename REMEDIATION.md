@@ -106,32 +106,38 @@ execution is the equivalent verification.
 
 ## Phase 2 — Pipeline breaks / silent empty output
 
+> **Status (2026-08-08): complete** on `fix/phase-2-pipeline-breaks`. All 17
+> items fixed; every suite green (28 Python files, 2 shell tests, tsc, 58
+> webui tests). dbNSFP detection verified against the real installed 47 GB
+> 5.3.1a file; the quoting fix verified end-to-end through `sh -c` on the
+> stock macOS bash 3.2.
+
 ### 2A. dbNSFP build (broken against the pinned release — audit triage #1)
-- [ ] **P2-1** (CRIT) `scripts/prepare_dbnsfp.sh:54-55` — GRCh38 column detection matches neither `#chr` (real header) nor anything valid; hard-fails on dbNSFP 5.3.1a [SH-2]
-- [ ] **P2-2** (CRIT) `scripts/prepare_dbnsfp.sh:53,61,63` — `zcat` fails on macOS; SIGPIPE/pipefail aborts mid-merge where GNU-compatible. Use `gzip -cd` + `sed -n '1p'` like `fetch_clinvar.sh` [SH-1]
-- [ ] **P2-3** (MED) `scripts/prepare_dbnsfp.sh:64` — unquoted `$CHR_COL`/`$POS_COL` in `sort -k`; validate as integers [ST-M5]
+- [x] **P2-1** (CRIT) `scripts/prepare_dbnsfp.sh:54-55` — GRCh38 column detection matches neither `#chr` (real header) nor anything valid; hard-fails on dbNSFP 5.3.1a [SH-2] *(fixed: two-pass detection — explicit `hg38_*` wins, `#chr`/`pos(1-based)` fallback; verified against the installed file)*
+- [x] **P2-2** (CRIT) `scripts/prepare_dbnsfp.sh:53,61,63` — `zcat` fails on macOS; SIGPIPE/pipefail aborts mid-merge where GNU-compatible [SH-1] *(fixed: `gzip -cd` + locally-disabled pipefail for the header read)*
+- [x] **P2-3** (MED) `scripts/prepare_dbnsfp.sh:64` — unquoted `$CHR_COL`/`$POS_COL` in `sort -k`; validate as integers [ST-M5]
 
 ### 2B. Contig handling / empty-callset guards
-- [ ] **P2-4** (CRIT) `pipeline/contig_map.py:51-68` — VCF with data-record `chr` naming but no `##contig` headers → empty map → region filter matches nothing → clean exit, zero variants [AUX-C1]
-- [ ] **P2-5** (HIGH) `pipeline/contig_map.py:61-64` — Ensembl→UCSC branch double-prefixes (`chr2`→`chrchr2`), silently dropping contigs [AUX-H1]
-- [ ] **P2-6** (MED) `scripts/run_annotation.sh:198-204` — add `[[ "$NAFTER" -gt 0 ]] || die` (successful-but-empty pre-filter reported as DONE); drop `2>/dev/null` on the counters [SH-5]
+- [x] **P2-4** (CRIT) `pipeline/contig_map.py:51-68` — VCF with data-record `chr` naming but no `##contig` headers → empty map → region filter matches nothing → clean exit, zero variants [AUX-C1] *(fixed: fall back to distinct data-record contigs)*
+- [x] **P2-5** (HIGH) `pipeline/contig_map.py:61-64` — Ensembl→UCSC branch double-prefixes (`chr2`→`chrchr2`), silently dropping contigs [AUX-H1]
+- [x] **P2-6** (MED) `scripts/run_annotation.sh:198-204` — `die` on a 0-variant pre-filter result with a diagnosis-oriented message; `2>/dev/null` dropped from the counters [SH-5]
 
 ### 2C. Liftover re-entry
-- [ ] **P2-7** (HIGH) `pipeline/prepare_liftover_vcf.py:187-193` + `liftover_grch37_to_grch38.sh:187` + `vcf_assembly.py:65-131` — lifted GRCh38 output keeps GRCh37 contig `length=` → "conflicting assembly evidence" on re-entry; explicit `--input-assembly GRCh38` can't override. Rewrite lengths or let `##iei_target_assembly` take precedence [SH-10, AUX-M2]
+- [x] **P2-7** (HIGH) lifted GRCh38 output keeps GRCh37 contig `length=` → "conflicting assembly evidence" on re-entry [SH-10, AUX-M2] *(fixed in `vcf_assembly.py`: the pipeline marker wins when every declared reference agrees with it and only the stale length dissents; genuine declared conflicts still raise — also repairs already-lifted files)*
 
 ### 2D. run_annotation.sh / VEP invocation
-- [ ] **P2-8** (CRIT) `scripts/run_annotation.sh:323` — single-quote escaping malformed; any apostrophe in a path → unparseable `sh -c`, VEP never runs. Use `shlex.quote` from `build_vep_command.py` [SH-3]
-- [ ] **P2-9** (HIGH) `scripts/run_annotation.sh:190-197` — region pre-filter fallback bgzips without sorting (mirror the WGS path at 141-147: `bcftools sort` + CSI fallback); also double-compresses already-bgzipped input [SH-9]
-- [ ] **P2-10** (HIGH) `pipeline/build_vep_command.py:426-441` — `--json` returns 2 with errors only in swallowed stdout; `die` says "see WARN/ERROR above" with nothing printed. Print errors to stderr [CORE-8]
-- [ ] **P2-11** (HIGH) `pipeline/build_vep_command.py:329-345` — `cadd.get(key,"")` → `abspath("")` = cwd emitted as real argument under `--no-check` (`if not host_path: continue`); all-or-nothing policy half per D2 [CORE-6]
+- [x] **P2-8** (CRIT) `scripts/run_annotation.sh:323` — single-quote escaping malformed; any apostrophe in a path → unparseable `sh -c`, VEP never runs [SH-3] *(fixed: `shquote_arg()` builds POSIX `'\''` via variable substitution; verified round-trip on bash 3.2 incl. the $LOFTEE_DIR splice)*
+- [x] **P2-9** (HIGH) `scripts/run_annotation.sh:190-197` — region pre-filter fallback now mirrors the WGS path: `bcftools sort -O z` then tabix with CSI fallback [SH-9]
+- [x] **P2-10** (HIGH) `pipeline/build_vep_command.py:426-441` — `--json` now prints errors to stderr before returning 2 [CORE-8]
+- [x] **P2-11** (HIGH) `pipeline/build_vep_command.py:329-345` — unset CADD path counts as missing (never `abspath("")` = cwd); all-or-nothing policy retained pending D2 [CORE-6]
 
 ### 2E. Output-format & record-robustness
-- [ ] **P2-12** (CRIT) `pipeline/loftee_ptc_50bp.py:624` — `.vcf.gz` output written as plain text (`open_text` used for input only) [CORE-4]
-- [ ] **P2-13** (CRIT-twin) `pipeline/reduce_vep_to_aa_reference.py:45` — identical `.gz`-as-plain-text asymmetry [CORE-4]
-- [ ] **P2-14** (HIGH) `pipeline/clinvar_aa_match.py:178-193` — guards the read of `cols[7]` but assigns unconditionally; IndexError aborts run on any <8-column record [CORE-5]
-- [ ] **P2-15** (HIGH) `pipeline/clingen_erepo_annotate.py:47-48,66-67` — re-run duplicates `ClinGen_ERepo` INFO keys (headers deduped, records not); pipeline feeds its own output back in [AUX-H2]
-- [ ] **P2-16** (HIGH) `pipeline/validate_regression_annotations.py:57-58` — multi-allelic records keyed on raw ALT column can never match expected.yaml; also silent key collisions [AUX-H4]
-- [ ] **P2-17** (HIGH) `scripts/build_coding_bed.sh:28,34-35` — `absdir("")` returns `"$ROOT/"` so the `${BED:-default}` fallback never fires; BED built at a directory path. Same latent shape in `download_references.sh:63-71` [SH-4]
+- [x] **P2-12** (CRIT) `pipeline/loftee_ptc_50bp.py:624` — `.vcf.gz` output written as plain text [CORE-4] *(fixed: suffix-aware `open_text` for the write)*
+- [x] **P2-13** (CRIT-twin) `pipeline/reduce_vep_to_aa_reference.py:45` — identical asymmetry [CORE-4] *(fixed: `_open_w` gzip dispatch)*
+- [x] **P2-14** (HIGH) `pipeline/clinvar_aa_match.py:178-193` — short records padded to the INFO column instead of IndexError [CORE-5]
+- [x] **P2-15** (HIGH) `pipeline/clingen_erepo_annotate.py:47-48,66-67` — record-level keys stripped before re-append; re-annotation is idempotent [AUX-H2]
+- [x] **P2-16** (HIGH) `pipeline/validate_regression_annotations.py:57-58` — records indexed per ALT; duplicate keys merge entries instead of discarding [AUX-H4]
+- [x] **P2-17** (HIGH) `scripts/build_coding_bed.sh` + `download_references.sh` — empty yaml_get values stay empty (`absdir_opt`), so defaults fire and "not configured" never becomes a directory path [SH-4]
 
 ---
 

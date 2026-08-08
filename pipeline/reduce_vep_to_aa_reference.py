@@ -21,6 +21,10 @@ def _open_r(path):
     return gzip.open(path, "rt") if path.endswith(".gz") else open(path, "rt")
 
 
+def _open_w(path):
+    return gzip.open(path, "wt") if path.endswith(".gz") else open(path, "wt")
+
+
 def reduce_tab(in_path: str, out_path: str) -> int:
     header = None
     pairs: set[tuple[str, str]] = set()
@@ -41,7 +45,7 @@ def reduce_tab(in_path: str, out_path: str) -> int:
             sym = row.get("SYMBOL", "")
             if "missense_variant" in cons and pos and pos != "-" and sym and sym != "-":
                 pairs.add((sym, pos))
-    with open(out_path, "wt") as out:
+    with _open_w(out_path) as out:
         for sym, pos in sorted(pairs):
             out.write(f"{sym}\t{pos}\n")
     return len(pairs)

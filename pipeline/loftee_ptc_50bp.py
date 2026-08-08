@@ -627,7 +627,9 @@ def process_vcf(
     hgvsp_checked = 0
     hgvsp_matched = 0
 
-    with open_text(input_path) as source, output_path.open("w") as output:
+    # The output must honour a .gz suffix like the input read does — a plain
+    # text file under a .vcf.gz name breaks every downstream gzip/tabix reader.
+    with open_text(input_path) as source, open_text(output_path, "wt") as output:
         header_done = False
         for line in source:
             if line.startswith("##LOFTEE_PTC50="):

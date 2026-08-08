@@ -60,6 +60,47 @@ class ClinGenErepoTests(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT count(*) FROM assertions WHERE active=1").fetchone()[0], 2)
             diseases = [row[0] for row in connection.execute("SELECT disease FROM assertions WHERE active=1 ORDER BY disease")]
             self.assertEqual(diseases, ["Disease A", "Disease B"])
+            connection.close()
+
+            # Audit repro (AUX-H2): re-running the annotator over its own
+            # output used to append a second ClinGen_ERepo / _count pair,
+            # violating the VCF spec and desynchronizing list and count.
+            annotate_input = root / "annotate-in.vcf"
+            annotate_input.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                "1\t100\t123\tA\tG\t.\tPASS\tDP=30\n"
+            )
+            first_pass = root / "annotate-out1.vcf"
+            second_pass = root / "annotate-out2.vcf"
+            for source, target in (
+                (annotate_input, first_pass),
+                (first_pass, second_pass),
+            ):
+                argv = sys.argv
+                sys.argv = [
+                    "clingen_erepo_annotate",
+                    "--input", str(source),
+                    "--output", str(target),
+                    "--database", str(database),
+                ]
+                try:
+                    self.assertEqual(annotate_main(), 0)
+                finally:
+                    sys.argv = argv
+            record = [
+                line for line in second_pass.read_text().splitlines()
+                if not line.startswith("#")
+            ][0]
+            info = record.split("\t")[7]
+            self.assertEqual(info.count("ClinGen_ERepo="), 1)
+            self.assertEqual(info.count("ClinGen_ERepo_count="), 1)
+            self.assertIn("DP=30", info)
+            first_info = [
+                line for line in first_pass.read_text().splitlines()
+                if not line.startswith("#")
+            ][0].split("\t")[7]
+            self.assertEqual(first_info, info)
 
 
 if __name__ == "__main__":

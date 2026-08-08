@@ -31,8 +31,15 @@ ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh3
 VEP_TAG="$(yaml_get "$CONFIG" container.vep_image_tag)"
 VEP_REL="$(echo "$VEP_TAG" | sed -E 's/[^0-9]*([0-9]+).*/\1/')"; VEP_REL="${VEP_REL:-113}"
 PAD="$(yaml_get "$CONFIG" region.padding_bp)"; PAD="${PAD:-8}"
-BED="$(absdir "$(yaml_get "$CONFIG" region.bed)")"
-BED="${BED:-${ROOT}/references/regions/coding_splice.padded.bed.gz}"
+# absdir("") returns "${ROOT}/" (non-empty), which would defeat the default
+# below and later mv the built BED onto a directory path — resolve only when
+# the key is actually set.
+BED_RAW="$(yaml_get "$CONFIG" region.bed)"
+if [[ -n "$BED_RAW" ]]; then
+    BED="$(absdir "$BED_RAW")"
+else
+    BED="${ROOT}/references/regions/coding_splice.padded.bed.gz"
+fi
 CUSTOM="$(yaml_get "$CONFIG" region.custom_bed)"
 
 # If the user supplied a custom BED, we never build from the GTF.

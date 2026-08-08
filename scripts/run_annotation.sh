@@ -189,18 +189,28 @@ if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
         # a plain or unindexed VCF directly.
         if [[ -n "$REGION_BED" ]] && [[ ! -f "${INPUT}.tbi" && ! -f "${INPUT}.csi" ]]; then
             hts tabix -p vcf -f "$INPUT" 2>/dev/null || {
-                COMPRESSED_INPUT="${WORKDIR}/${INPUT_BASE}.input.vcf.gz"
-                hts bgzip -c "$INPUT" > "$COMPRESSED_INPUT"
+                # tabix fails on plain-text input AND on unsorted input, and
+                # bgzip fixes neither ordering nor double-compression. Mirror
+                # the whole-genome path: sort to BGZF, then index with a CSI
+                # fallback for long contigs.
+                COMPRESSED_INPUT="${WORKDIR}/${INPUT_BASE}.input.sorted.vcf.gz"
+                hts bcftools sort -O z -o "$COMPRESSED_INPUT" "$INPUT" \
+                    || die "region pre-filter input sort/BGZF preparation failed"
                 INPUT="$COMPRESSED_INPUT"
-                hts tabix -p vcf -f "$INPUT"
+                hts tabix -p vcf -f "$INPUT" 2>/dev/null \
+                    || hts bcftools index -f -c "$INPUT" \
+                    || die "region pre-filter input indexing failed"
             }
         fi
-        NBEFORE="$(hts bcftools view -H "$INPUT" 2>/dev/null | wc -l | tr -d ' ')"
+        NBEFORE="$(hts bcftools view -H "$INPUT" | wc -l | tr -d ' ')"
         hts bcftools view "${VIEW_ARGS[@]}" -O z -o "$FILT" "$INPUT" \
             || die "input pre-filter failed"
         hts tabix -p vcf -f "$FILT" 2>/dev/null || true
-        NAFTER="$(hts bcftools view -H "$FILT" 2>/dev/null | wc -l | tr -d ' ')"
+        NAFTER="$(hts bcftools view -H "$FILT" | wc -l | tr -d ' ')"
         log "input pre-filter (${FILTER_LABELS[*]}): ${NBEFORE} -> ${NAFTER} variants"
+        if [[ "$NAFTER" -eq 0 ]]; then
+            die "input pre-filter retained 0 of ${NBEFORE} variants. For a diagnostic run this almost always means a contig-naming, assembly, or region-BED mismatch rather than a genuinely empty callset — verify the input assembly and region.bed, or rerun with --all-variants / --include-filtered to inspect."
+        fi
         INPUT="$FILT"
     else
         log "--dry-run: would pre-filter $INPUT with bcftools view ${VIEW_ARGS[*]}"
@@ -312,15 +322,22 @@ done < <(build_mount_flags)
 
 # The LoF plugin string contains a literal $LOFTEE_DIR that must expand INSIDE
 # the container, so we run the argv through `sh -c` in the container.
+# POSIX-safe single quoting: each embedded ' becomes '\'' — built via a
+# variable to sidestep bash's replacement-escaping rules, which previously
+# produced an unparseable string for any argument containing an apostrophe.
+shquote_arg() {
+    local q="'"
+    printf "'%s'" "${1//$q/$q\\$q$q}"
+}
 VEP_CMD_STR=""
 for a in "${VEP_ARGV[@]}"; do
     # single-quote-safe, but keep $LOFTEE_DIR unquoted so the container shell expands it
     if [[ "$a" == *'$LOFTEE_DIR'* ]]; then
         # split around $LOFTEE_DIR and quote the rest
         pre="${a%%\$LOFTEE_DIR*}"; post="${a#*\$LOFTEE_DIR}"
-        VEP_CMD_STR+=" '${pre}'\"\$LOFTEE_DIR\"'${post}'"
+        VEP_CMD_STR+=" $(shquote_arg "$pre")\"\$LOFTEE_DIR\"$(shquote_arg "$post")"
     else
-        VEP_CMD_STR+=" '${a//\'/\'\\\'\'}'"
+        VEP_CMD_STR+=" $(shquote_arg "$a")"
     fi
 done
 

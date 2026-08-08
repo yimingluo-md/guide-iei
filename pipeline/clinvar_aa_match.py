@@ -175,7 +175,12 @@ def annotate(in_path: str, out_path: str, ref: set[tuple[str, str]],
                 continue
             stats["records"] += 1
             cols = line.rstrip("\n").split("\t")
-            info = cols[7] if len(cols) > 7 else ""
+            # Pad short records (sites-only VCFs, truncated final lines) up to
+            # the INFO column: the flag assignment below writes cols[7]
+            # unconditionally and list assignment does not extend.
+            if len(cols) < 8:
+                cols += ["."] * (8 - len(cols))
+            info = cols[7]
             flag = 0
             if fields and idx_sym >= 0 and idx_pos >= 0 and idx_csq >= 0 and ref:
                 csq = _extract_info_csq(info)

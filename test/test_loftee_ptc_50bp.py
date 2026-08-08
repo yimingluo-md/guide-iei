@@ -145,6 +145,36 @@ def test_successful_recomputation_replaces_lof_info_and_preserves_original(tmp_p
     assert annotation_again["LoF_50_BP_RULE_PTC"] == "PASS"
 
 
+def test_gz_output_name_produces_real_gzip(tmp_path):
+    # Audit repro (CORE-4): --output foo.vcf.gz used to receive plain text
+    # under a .gz name, breaking every downstream gzip/tabix reader.
+    import gzip
+    fields = ["Allele", "ALLELE_NUM", "Consequence", "Feature", "HGVSc", "HGVSp", "LoF", "LoF_info"]
+    source = tmp_path / "input.vcf"
+    output = tmp_path / "output.vcf.gz"
+    source.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(fields)
+        + '">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "1\t102\t.\tGA\tG\t.\tPASS\tCSQ=G|1|missense_variant|ENST00000000001|||\n"
+    )
+    process_vcf(
+        source,
+        output,
+        {"ENST00000000001": model()},
+        fields,
+        50,
+        True,
+        {"assembly": "GRCh38", "ensembl_release": "test"},
+    )
+    with output.open("rb") as handle:
+        assert handle.read(2) == b"\x1f\x8b"
+    with gzip.open(output, "rt") as handle:
+        assert handle.readline().startswith("##fileformat")
+
+
 def test_version_mismatch_is_refused():
     result = calculate(
         model(),
@@ -304,6 +334,7 @@ if __name__ == "__main__":
         test_unscored_transcript_does_not_get_fabricated_lof_info,
         test_single_coding_block_has_no_coding_anchor,
         test_missing_coding_anchor_suppresses_rule_coding,
+        test_gz_output_name_produces_real_gzip,
         test_version_mismatch_is_refused,
         test_reference_disrupted_transcript_biotype_is_refused_before_cds_scoring,
         test_single_exon_transcript_keeps_ptc_but_does_not_apply_junction_rule,

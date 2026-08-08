@@ -224,6 +224,46 @@ def test_shared_io_dir_single_rw_mount(tmp_path):
     assert plan.argv[o_idx + 1].startswith("/work_in/")
 
 
+def test_unconfigured_cadd_path_is_not_emitted_as_cwd(tmp_path):
+    # Audit repro (CORE-6): cadd.get(key, "") -> abspath("") == the current
+    # working directory, emitted as a real `indels=<cwd>` argument under
+    # --no-check. An unset path must count as missing.
+    cfg = _full_cfg(str(tmp_path))
+    del cfg["plugins"]["CADD_WGS"]["indels"]
+    plan = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz", container=False,
+                             check_exists=False)
+    assert not plan.errors
+    assert not [a for a in plan.argv if a.startswith("CADD,")]  # all-or-nothing kept
+    assert not any("indels=" in a and os.getcwd() in a for a in plan.argv)
+    assert any(
+        "CADD_WGS.indels" in warning and "no path configured" in warning
+        for warning in plan.warnings
+    )
+
+
+def test_json_mode_prints_errors_to_stderr(tmp_path):
+    # Audit repro (CORE-8): --json returned 2 with errors only in stdout,
+    # which run_annotation.sh swallows into a command substitution; the
+    # operator saw "see WARN/ERROR above" with nothing printed.
+    import json
+    import subprocess
+    import yaml
+    cfg = _full_cfg(str(tmp_path))
+    os.remove(cfg["reference"]["fasta"]["path"])
+    config_path = os.path.join(str(tmp_path), "config.yaml")
+    with open(config_path, "w") as handle:
+        yaml.safe_dump(cfg, handle)
+    script = os.path.join(os.path.dirname(__file__), "..", "pipeline", "build_vep_command.py")
+    result = subprocess.run(
+        [sys.executable, script, "--config", config_path,
+         "--input", "in.vcf.gz", "--output", "out.vcf.gz", "--json"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "ERROR" in result.stderr, result.stderr
+    assert json.loads(result.stdout)["errors"]
+
+
 if __name__ == "__main__":
     import tempfile
     passed = 0

@@ -35,7 +35,8 @@ def assembly_from_reference(value: str) -> str | None:
 def detect_vcf_assembly(path: str | Path) -> dict:
     evidence: list[str] = []
     warnings: list[str] = []
-    candidates: set[str] = set()
+    declared_candidates: set[str] = set()
+    length_candidates: set[str] = set()
     references: list[str] = []
     original_references: list[str] = []
     chr1_length: str | None = None
@@ -47,7 +48,7 @@ def detect_vcf_assembly(path: str | Path) -> dict:
             if line.startswith("##iei_target_assembly="):
                 target_marker = line.partition("=")[2].strip()
                 if target_marker in ASSEMBLIES:
-                    candidates.add(target_marker)
+                    declared_candidates.add(target_marker)
                     evidence.append(f"pipeline target marker: {target_marker}")
             elif line.startswith("##iei_liftover=<"):
                 match = re.search(r"SourceAssembly=([^,>]+)", line)
@@ -58,7 +59,7 @@ def detect_vcf_assembly(path: str | Path) -> dict:
                 references.append(reference)
                 detected = assembly_from_reference(reference)
                 if detected:
-                    candidates.add(detected)
+                    declared_candidates.add(detected)
                     evidence.append(f"reference header: {reference}")
             elif line.startswith("##iei_original_reference="):
                 original_references.append(line.partition("=")[2].strip())
@@ -72,7 +73,7 @@ def detect_vcf_assembly(path: str | Path) -> dict:
                     chr1_length = values["length"]
                     detected = CHR1_LENGTHS.get(chr1_length)
                     if detected:
-                        candidates.add(detected)
+                        length_candidates.add(detected)
                         evidence.append(f"chromosome 1 length: {chr1_length}")
                     else:
                         warnings.append(
@@ -83,13 +84,31 @@ def detect_vcf_assembly(path: str | Path) -> dict:
             elif not line.startswith("#"):
                 break
 
+    candidates = declared_candidates | length_candidates
     if len(candidates) == 1:
         assembly = next(iter(candidates))
         confidence = "high"
     elif len(candidates) > 1:
-        assembly = "conflict"
-        confidence = "none"
-        warnings.append("VCF header contains conflicting assembly evidence")
+        if (
+            target_marker in ASSEMBLIES
+            and declared_candidates == {target_marker}
+        ):
+            # The pipeline's own liftover marker and every declared reference
+            # header agree; the only dissent is the contig length=, which
+            # bcftools +liftover carries over from the source assembly. Trust
+            # the marker so the pipeline's own lifted output stays
+            # re-annotatable instead of dead-ending as a "conflict".
+            assembly = target_marker
+            confidence = "high"
+            warnings.append(
+                "contig length= reflects the liftover source assembly; "
+                "trusting the pipeline target marker "
+                f"({target_marker}) over the stale length"
+            )
+        else:
+            assembly = "conflict"
+            confidence = "none"
+            warnings.append("VCF header contains conflicting assembly evidence")
     else:
         assembly = "unknown"
         confidence = "none"
