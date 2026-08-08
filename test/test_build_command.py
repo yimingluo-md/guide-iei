@@ -122,7 +122,8 @@ def test_full_stack_native(tmp_path):
     clinvar = [c for c in customs if "short_name=ClinVar" in c][0]
     assert "fields=CLNSIG%CLNSIGCONF%CLNREVSTAT%CLNDN" in clinvar
     assert "type=exact" in clinvar and "coords=0" in clinvar
-    return s
+    # the shell-quoted rendering starts with the vep executable
+    assert s.split()[0] == "vep", s
 
 
 def test_optional_cadd_requires_both_data_files_and_indexes(tmp_path):

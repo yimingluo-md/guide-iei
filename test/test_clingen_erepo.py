@@ -4,6 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from pipeline.clingen_erepo_annotate import main as annotate_main
 from pipeline.prepare_clingen_erepo import read_rows, scan_clinvar, write_sqlite
 

@@ -52,5 +52,6 @@ python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
   --input test/out/sample.vep.vcf \
   --output test/out/sample.aamatch.vcf \
   --reference test/out/clinvar_aa_reference.tsv --clinvar-release TEST 2>&1 | sed 's/^/  /'
-grep -q 'ClinVar_path_aa_match=1' test/out/sample.aamatch.vcf && echo "  match flag present"
+grep -q 'ClinVar_path_aa_match=1' test/out/sample.aamatch.vcf
+echo "  match flag present"
 echo "ALL DRY-RUN CHECKS PASSED"

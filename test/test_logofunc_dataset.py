@@ -1,8 +1,11 @@
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-from pipeline.logofunc_dataset import install_move
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+from pipeline.logofunc_dataset import install_move  # noqa: E402
 
 
 class LoGoFuncManagedImportTests(unittest.TestCase):
@@ -20,3 +23,7 @@ class LoGoFuncManagedImportTests(unittest.TestCase):
             self.assertFalse(destination.is_symlink())
             self.assertFalse(source.exists())
             self.assertEqual(destination.read_bytes(), b"validated LoGoFunc source")
+
+
+if __name__ == "__main__":
+    unittest.main()

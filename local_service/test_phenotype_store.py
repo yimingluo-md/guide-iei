@@ -6,6 +6,10 @@ import unittest
 import zipfile
 from pathlib import Path
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from local_service.cohort_store import CohortStore
 from local_service.phenotype_store import PhenotypeStore, parse_table
 from local_service.test_cohort_store import write_vcf

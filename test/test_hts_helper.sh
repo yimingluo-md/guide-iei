@@ -24,7 +24,10 @@ hts bcftools view -R "$WORK/bed dir/regions.bed.gz" -o "$WORK/output dir/out.vcf
 grep -Fx -- '--entrypoint' "$CAPTURE" >/dev/null
 grep -Fx -- 'bcftools' "$CAPTURE" >/dev/null
 grep -E '^/hts_[0-9]+/(regions.bed.gz|out.vcf.gz|in.vcf.gz)$' "$CAPTURE" >/dev/null
-! grep -F "$WORK/input dir/in.vcf.gz" "$CAPTURE" >/dev/null
+if grep -F "$WORK/input dir/in.vcf.gz" "$CAPTURE" >/dev/null; then
+    echo "FAIL: host path leaked into container args" >&2
+    exit 1
+fi
 
 RUNTIME=singularity
 hts tabix -p vcf "$WORK/output dir/out.vcf.gz"

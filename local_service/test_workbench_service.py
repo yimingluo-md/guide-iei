@@ -13,6 +13,10 @@ import urllib.request
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from local_service.test_cohort_store import FakeHtsBackend, write_parallel_vcf, write_vcf
 from local_service.storage_locations import (
     StorageLocationRegistry, StorageRegistryError, _filesystem_type,

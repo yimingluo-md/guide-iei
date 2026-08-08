@@ -3,6 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from local_service.cohort_store import CohortStore
 from local_service.phenotype_store import PhenotypeStore
 from local_service.sample_library import SampleLibrary

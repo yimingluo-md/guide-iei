@@ -671,10 +671,11 @@ def gzip_stream_download(url: str, target: Path, expected_rows: int) -> dict[str
     if return_code:
         partial.unlink(missing_ok=True)
         raise RuntimeError(f"curl failed for {url}: {stderr.strip()}")
-    if row_count != expected_rows or first.count(b"\t") != 10:
+    first_fields = first.count(b"\t") + 1
+    if row_count != expected_rows or first_fields != 11:
         partial.unlink(missing_ok=True)
         raise RuntimeError(
-            f"invalid aggregate BED {url}: rows={row_count}, first_fields={first.count(b'\t') + 1}"
+            f"invalid aggregate BED {url}: rows={row_count}, first_fields={first_fields}"
         )
     partial.replace(target)
     state = {

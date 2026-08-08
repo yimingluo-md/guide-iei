@@ -17,7 +17,7 @@ ready-made test cases). After each phase: rerun the baseline suite and compare a
 
 ## Open decisions (gate specific items below)
 
-- [ ] **D1 — Python floor:** fix the f-string for 3.8+ (hoist `first.count(b'\t')` to a local), or raise the documented floor to 3.12? → gates CORE-1
+- [x] **D1 — Python floor:** fix the f-string for 3.8+ (hoist `first.count(b'\t')` to a local), or raise the documented floor to 3.12? → gates CORE-1 — **decided: keep 3.8+ floor, f-string fixed**
 - [ ] **D2 — CADD policy:** all-or-nothing across SNV/indel tables (current, asserted by `test_optional_cadd_requires_both_data_files_and_indexes`), or SNV-only allowed (the SpliceAI precedent)? → gates half of CORE-6
 - [ ] **D3 — Allele-balance denominator** on multi-allelic sites: all-allele AD sum (current, GATK convention) or two-allele REF+ALT ratio? → gates UI-18
 - [ ] **D4 — Hemizygous X in haplotype phasing:** treat as cis by construction, or keep conservative `POSSIBLE`? → gates part of CORE-2
@@ -31,14 +31,28 @@ ready-made test cases). After each phase: rerun the baseline suite and compare a
 
 Make the tests trustworthy before touching logic.
 
-- [ ] **P0-1** (MED) `test/test_dry_run.sh:55` — inert assertion (`grep -q … && echo` in tested context); aa-match check passes regardless [SH-17]
-- [ ] **P0-2** (MED) `test/test_hts_helper.sh:27` — inert negated assertion (`! grep …` never trips errexit); host-path-leak check passes regardless [ST-M3, B-6]
-- [ ] **P0-3** (CRIT) `pipeline/screen_ccre_dataset.py:678` — f-string SyntaxError on Python <3.12; whole module + its test dead on documented floor [CORE-1, ST-H1, B-1] *(per D1)*
-- [ ] **P0-4** `test/test_logofunc_dataset.py` — no `unittest.main()`; runs 0 tests standalone, silent pass [B-4]
-- [ ] **P0-5** `test/test_prepare_promoterai.py` — pytest-only fixture style; runs 0 tests standalone [B-4]
-- [ ] **P0-6** 12 test files lack `sys.path` bootstrap — documented `python test/<file>.py` invocation fails without `PYTHONPATH=.` [B-2]
-- [ ] **P0-7** `test_build_command.py::test_full_stack_native` returns instead of asserting (`PytestReturnNotNoneWarning`) [B-7]
-- [ ] **P0-8** Re-record baseline numbers after P0 lands (target: pytest 175/178+ with the screen-cCRE module collectable)
+- [x] **P0-1** (MED) `test/test_dry_run.sh:55` — inert assertion (`grep -q … && echo` in tested context); aa-match check passes regardless [SH-17]
+- [x] **P0-2** (MED) `test/test_hts_helper.sh:27` — inert negated assertion (`! grep …` never trips errexit); host-path-leak check passes regardless [ST-M3, B-6]
+- [x] **P0-3** (CRIT) `pipeline/screen_ccre_dataset.py:678` — f-string SyntaxError on Python <3.12; whole module + its test dead on documented floor [CORE-1, ST-H1, B-1] *(per D1)*
+- [x] **P0-4** `test/test_logofunc_dataset.py` — no `unittest.main()`; runs 0 tests standalone, silent pass [B-4]
+- [x] **P0-5** `test/test_prepare_promoterai.py` — pytest-only fixture style; runs 0 tests standalone [B-4] *(converted to unittest; runs standalone and under pytest)*
+- [x] **P0-6** 12 test files lack `sys.path` bootstrap — documented `python test/<file>.py` invocation fails without `PYTHONPATH=.` [B-2] *(11 files bootstrapped + logofunc in P0-4; the other 5 unbootstrapped files use subprocess only and never needed it)*
+- [x] **P0-7** `test_build_command.py::test_full_stack_native` returns instead of asserting (`PytestReturnNotNoneWarning`) [B-7]
+- [x] **P0-8** Re-record baseline numbers after P0 lands — see below
+
+### Phase 0 baseline (2026-08-08, host: macOS, Python 3.14.4)
+
+Every one of the 28 Python test files now passes standalone via the documented
+`python3 test/<file>.py` / `python3 local_service/test_<file>.py` invocation, rc=0,
+no `PYTHONPATH` needed — including `test_screen_ccre_dataset.py` (4 tests, previously
+uncollectable) and `test_workbench_service.py` (44 tests **including the 2 loopback
+HTTP tests** — confirming baseline B-3 was an audit-sandbox limitation, not a repo defect).
+Counted tests: 162+ (a few files print custom summaries without a count line).
+Both shell tests pass with their assertions now live (verified the fixed shapes fail
+when the guarded regression is simulated). WebUI suite not runnable on this host
+(no `node` binary); unchanged from audit baseline (42 pass / 1 skip) as Phase 0
+touched no webui code. pytest is not installed on this host; per-file standalone
+execution is the equivalent verification.
 
 ---
 
