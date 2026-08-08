@@ -770,6 +770,19 @@ class AnnotationJobServiceTests(unittest.TestCase):
         text = generated.read_text()
         self.assertIn(str(self.service.annotation_root / "logofunc"), text)
 
+    def test_derived_aa_match_feature_reports_installed(self):
+        # Regression for the P4-9 follow-up: clinvar_aa_match ships with the
+        # software and its residue table is derived automatically from the
+        # ClinVar release, so it has no installable paths. The "unconfigured
+        # dataset => not installed" rule must not label it "Bundled file
+        # missing" — while genuinely path-less datasets (e.g. ccre without a
+        # configured BED) must still report not installed.
+        sources = {
+            source["id"]: source
+            for source in self.service.capabilities()["annotation_profile"]["sources"]
+        }
+        self.assertTrue(sources["clinvar_aa_match"]["installed"])
+
     def test_annotation_scope_controls_wgs_only_sources(self):
         sources = {
             source["id"]: source

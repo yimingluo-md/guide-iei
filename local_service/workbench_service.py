@@ -3082,6 +3082,14 @@ class AnnotationJobService:
             # including required diagnostic sources — as ready, letting the
             # operator start a run that fails (or silently skips) later.
             installed = bool(paths) and all(path.exists() for path in paths)
+            if source_id == "clinvar_aa_match":
+                # Not a dataset: the residue-matching feature ships with the
+                # software and its table is rebuilt automatically from the
+                # downloaded ClinVar release (run_annotation.sh builds and
+                # release-stamps it), so there is nothing for the operator to
+                # install. The empty-paths rule above must not label this
+                # derived feature "Bundled file missing".
+                installed = True
             if installed and source_id == "promoterai" and paths:
                 score_path = paths[0]
                 installed = (
