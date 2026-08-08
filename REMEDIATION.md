@@ -143,34 +143,38 @@ execution is the equivalent verification.
 
 ## Phase 3 — Local-service data loss & races
 
+> **Status (2026-08-08): complete** on `fix/phase-3-service-data-loss`. All 19
+> items fixed; full sweep green. The tabix stderr-drain pattern was proven
+> against a 400 KB stderr flood (0.02 s vs the audit's demonstrated hang).
+
 ### 3A. managed_path used as unique key (it isn't — multi-sample VCFs share it)
-- [ ] **P3-1** (CRIT) `local_service/sample_library.py:580-581` — `update_metadata` writes capture_kit/target_bed `WHERE managed_path=?`, mutating sibling samples [SVC-1]
-- [ ] **P3-2** (CRIT) `local_service/sample_library.py:648-655` — `reindex()` deletes every cohort sample sharing the managed VCF, then reclaims their variants [SVC-2]
-- [ ] **P3-3** (HIGH) `local_service/sample_library.py:421-424` — cohort linkage update by managed_path repoints siblings and reverts deliberate exclusions [SVC-5]
+- [x] **P3-1** (CRIT) `local_service/sample_library.py:580-581` — `update_metadata` writes capture_kit/target_bed `WHERE managed_path=?`, mutating sibling samples [SVC-1] *(fixed: scoped to the addressed dataset id)*
+- [x] **P3-2** (CRIT) `local_service/sample_library.py:648-655` — `reindex()` deletes every cohort sample sharing the managed VCF, then reclaims their variants [SVC-2] *(fixed: deletion filtered to this dataset's vcf_sample_name)*
+- [x] **P3-3** (HIGH) `local_service/sample_library.py:421-424` — cohort linkage update by managed_path repoints siblings and reverts deliberate exclusions [SVC-5] *(fixed: linkage scoped to this import's dataset rows)*
 
 ### 3B. Migration safety
-- [ ] **P3-4** (CRIT) `local_service/workbench_service.py:1421-1442` — non-OSError from `record_migration` deletes the already-activated destination root (total cohort loss) [SVC-3]
-- [ ] **P3-5** (HIGH) `local_service/workbench_service.py:3737` — `/api/screen-context/install` missing from the storage-mutation guard set [SVC-10]
-- [ ] **P3-6** (MED) `local_service/workbench_service.py:1543` — `open("xb")` blocks any retry of an interrupted migration [SVC-21]
-- [ ] **P3-7** (MED) `local_service/workbench_service.py:1590-1598` — one column's failure aborts remaining path rewrites mid-migration [SVC-22]
+- [x] **P3-4** (CRIT) `local_service/workbench_service.py:1421-1442` — non-OSError from `record_migration` deletes the already-activated destination root (total cohort loss) [SVC-3] *(fixed twice over: the history catch broadened to Exception, and a `root_switched` latch makes the cleanup path structurally unable to delete an activated root)*
+- [x] **P3-5** (HIGH) `/api/screen-context/install` added to the storage-mutation guard set [SVC-10]
+- [x] **P3-6** (MED) `open("xb")` → `"wb"` (writes land only in the job's own staging; destination existence guarded at start) [SVC-21]
+- [x] **P3-7** (MED) per-column try/except so one missing column no longer aborts the remaining path rewrites [SVC-22]
 
 ### 3C. Pipe deadlocks
-- [ ] **P3-8** (HIGH) `local_service/cohort_store.py:166-172` — tabix stderr drained only after stdout exhausted; import hangs on chatty stderr [SVC-4]
-- [ ] **P3-9** (MED) `pipeline/screen_ccre_dataset.py:648-670` — same pattern with curl (missing `-sS`, progress meter enabled); demonstrated hang [CORE-13]
+- [x] **P3-8** (HIGH) `cohort_store.iter_records` — stderr drained on a thread while stdout streams [SVC-4]
+- [x] **P3-9** (MED) `screen_ccre_dataset` streaming curl gets `-sS` (progress meter was an unbounded stderr writer) [CORE-13]
 
 ### 3D. Deterministic temp paths / concurrency (one fix pattern: uuid/PID suffix + trap)
-- [ ] **P3-10** (MED) `local_service/cohort_store.py:2247` — `.{source}.building.vcf.gz` collides across same-named VCFs from different dirs [SVC-14]
-- [ ] **P3-11** (MED) `local_service/cohort_store.py:2308-2310` — fixed `.partial` races concurrent imports of same content [SVC-15]
-- [ ] **P3-12** (MED) `local_service/workbench_service.py:2695-2705` — upload staging `.partial` non-unique; retried upload publishes corrupt VCF that passes byte-count check [SVC-25]
-- [ ] **P3-13** (MED) `local_service/gene_knowledge.py:177-179` — fixed `.new` temp DB; concurrent builds clobber [SVC-18]
-- [ ] **P3-14** (MED) `scripts/run_annotation.sh:370,403,503-504,528` — four fixed `.tmp` names in shared output dir, no mktemp/trap [SH-16]
-- [ ] **P3-15** (MED) `scripts/build_coding_bed.sh:66,91,105-106` — two mktemp files, no `trap … EXIT` (sole outlier vs 4 sibling scripts) [SH-12]
-- [ ] **P3-16** (MED) `local_service/cohort_store.py:1301-1320` — import-active check released before maintenance lock taken; removal can race a starting import [SVC-12]
+- [x] **P3-10** (MED) cohort_store `.building` staging carries a uuid [SVC-14]
+- [x] **P3-11** (MED) cohort_store content-addressed `.partial` (file + index) carries a uuid [SVC-15]
+- [x] **P3-12** (MED) workbench upload staging `.partial` carries a uuid [SVC-25]
+- [x] **P3-13** (MED) gene_knowledge `.new` temp DBs carry a uuid (both builders) [SVC-18]
+- [x] **P3-14** (MED) run_annotation.sh post-processing temps carry `$$` and an EXIT trap removes leftovers [SH-16]
+- [x] **P3-15** (MED) build_coding_bed.sh installs a `trap … EXIT` for both interval temps [SH-12]
+- [x] **P3-16** (MED) removal↔import exclusion is now real: the import worker's write phase holds the maintenance lock; removal uses a non-blocking acquire plus a re-check, keeping fast-fail [SVC-12]
 
 ### 3E. State-integrity mediums
-- [ ] **P3-17** (MED) `local_service/cohort_store.py:1166-1170` — migration rewrites `analysis_scope` on every startup, reverting operator choice [SVC-11]
-- [ ] **P3-18** (MED) `local_service/cohort_store.py:2084-2085,2555` — `mane`/`picked` merged with MAX; reannotation can never clear the flag → two "preferred" transcripts [SVC-13]
-- [ ] **P3-19** (MED) `local_service/workbench_service.py:3507-3518` — shutdown-interrupted jobs relabelled `failed` (only `cancelled` checked, not `interrupted`) [SVC-26]
+- [x] **P3-17** (MED) analysis_scope backfill runs only when the column is first added — operator re-scoping survives restarts [SVC-11]
+- [x] **P3-18** (MED) `mane`/`picked` take the incoming import's value at both UPSERT sites; a reannotation can clear a superseded flag [SVC-13]
+- [x] **P3-19** (MED) all three job-worker status checks accept `interrupted` alongside `cancelled`; shutdown-interrupted jobs keep their status [SVC-26]
 
 ---
 

@@ -163,11 +163,25 @@ class HtsBackend:
             stderr=subprocess.PIPE,
         )
         assert process.stdout is not None
+        # Drain stderr on a thread: tabix warns once per unknown contig, and a
+        # region list with many of them overflows the ~64 KiB pipe buffer.
+        # Reading stderr only after stdout is exhausted then deadlocks — tabix
+        # blocks writing stderr while this process blocks reading stdout.
+        stderr_chunks: list[str] = []
+        stderr_thread = None
+        if process.stderr is not None:
+            stderr_thread = threading.Thread(
+                target=lambda: stderr_chunks.append(process.stderr.read()),
+                daemon=True,
+            )
+            stderr_thread.start()
         try:
             yield from process.stdout
-            stderr = process.stderr.read() if process.stderr else ""
             returncode = process.wait()
+            if stderr_thread is not None:
+                stderr_thread.join(timeout=10)
             if returncode:
+                stderr = "".join(stderr_chunks)
                 raise RuntimeError(
                     stderr.strip() or f"tabix exited with {returncode}"
                 )
@@ -176,6 +190,8 @@ class HtsBackend:
                 process.terminate()
                 process.wait()
             process.stdout.close()
+            if stderr_thread is not None and stderr_thread.is_alive():
+                stderr_thread.join(timeout=5)
             if process.stderr:
                 process.stderr.close()
 
@@ -1169,11 +1185,15 @@ class CohortStore:
                     connection.execute(
                         f"ALTER TABLE cohort_files ADD COLUMN {column} {declaration}"
                     )
-            connection.execute(
-                "UPDATE cohort_files SET analysis_scope = 'whole_genome' "
-                "WHERE import_profile = 'prefiltered' "
-                "AND analysis_scope != 'whole_genome'"
-            )
+            if "analysis_scope" not in file_columns:
+                # One-shot backfill for databases created before the column
+                # existed. Running this on every startup silently reverted any
+                # deliberate operator re-scoping of a prefiltered file.
+                connection.execute(
+                    "UPDATE cohort_files SET analysis_scope = 'whole_genome' "
+                    "WHERE import_profile = 'prefiltered' "
+                    "AND analysis_scope != 'whole_genome'"
+                )
             variant_columns = {
                 row["name"]
                 for row in connection.execute(
@@ -1322,8 +1342,28 @@ class CohortStore:
             raise ValueError("select at least one sample to remove")
         if len(selected) > 5_000:
             raise ValueError("a single removal is limited to 5,000 sample entries")
-        with self._maintenance_lock:
+        # Non-blocking acquire keeps the fast-fail contract while making the
+        # exclusion real: the import worker's write phase holds this same
+        # lock, so an import submitted between the early check above and this
+        # point either blocks before writing or makes this raise — it can no
+        # longer write genotypes for variants the removal is deleting.
+        if not self._maintenance_lock.acquire(blocking=False):
+            raise ValueError(
+                "wait for the active cohort import or maintenance operation "
+                "to finish before removing samples"
+            )
+        try:
+            with self._import_jobs_lock:
+                if any(
+                    job["status"] in {"queued", "running"}
+                    for job in self._import_jobs.values()
+                ):
+                    raise ValueError(
+                        "wait for the active cohort import to finish before removing samples"
+                    )
             return self._remove_samples(selected)
+        finally:
+            self._maintenance_lock.release()
 
     def _reset_cohort_tables(self) -> None:
         """Quickly clear the cohort index while preserving phenotype tables.
@@ -1599,6 +1639,10 @@ class CohortStore:
         total_carriers = 0
         total_prefilter_scanned = 0
         total_prefilter_retained = 0
+        # Mutual exclusion with remove_samples: holding the maintenance lock
+        # for the write phase means a removal can never delete variants while
+        # this job is inserting their genotypes (and vice versa).
+        self._maintenance_lock.acquire()
         try:
             for index, path in enumerate(paths):
                 file_size = path.stat().st_size
@@ -1769,6 +1813,8 @@ class CohortStore:
                 finished_at=utc_now(),
                 error=str(error),
             )
+        finally:
+            self._maintenance_lock.release()
 
     def _import_vcf_rowwise(
         self, path: Path, force: bool = False, allow_unknown_assembly: bool = False,
@@ -2087,8 +2133,11 @@ class CohortStore:
                                       loftee_50bp_changed=MAX(excluded.loftee_50bp_changed, cohort_annotations.loftee_50bp_changed),
                                       ptc_distance=COALESCE(excluded.ptc_distance, cohort_annotations.ptc_distance),
                                       ptc_calc_status=COALESCE(NULLIF(excluded.ptc_calc_status, ''), cohort_annotations.ptc_calc_status),
-                                      mane=MAX(excluded.mane, cohort_annotations.mane),
-                                      picked=MAX(excluded.picked, cohort_annotations.picked),
+                                      -- latest import wins: MAX() was monotonic, so a
+                                      -- reannotation could never clear a superseded
+                                      -- MANE/PICK flag (two "preferred" transcripts per gene)
+                                      mane=excluded.mane,
+                                      picked=excluded.picked,
                                       repeat_masker=MAX(excluded.repeat_masker, cohort_annotations.repeat_masker),
                                       segdup=MAX(excluded.segdup, cohort_annotations.segdup)
                                     """,
@@ -2250,7 +2299,10 @@ class CohortStore:
         if cached_index:
             return PreparedVcf(path, prepared, cached_index, True, True)
 
-        temporary = cache_dir / f".{source_name}.building.vcf.gz"
+        # Unique staging name: same-named VCFs from different directories map
+        # to one cache entry, and a shared deterministic temp let a second
+        # preparation delete the first's in-progress output mid-write.
+        temporary = cache_dir / f".{source_name}.{uuid.uuid4().hex}.building.vcf.gz"
         for candidate in (
             temporary, Path(f"{temporary}.tbi"), Path(f"{temporary}.csi"),
             prepared, Path(f"{prepared}.tbi"), Path(f"{prepared}.csi"),
@@ -2311,7 +2363,14 @@ class CohortStore:
             f"{content_key}.vcf.gz" if compressed else f"{content_key}.vcf"
         )
         if not destination.is_file():
-            temporary = destination.with_name(destination.name + ".partial")
+            # Unique partial name: two concurrent imports of identical content
+            # share content_key, and with one deterministic partial the second
+            # os.replace raced the first (FileNotFoundError after the first
+            # consumed the file). Each writer stages privately; os.replace is
+            # atomic and both publish identical bytes.
+            temporary = destination.with_name(
+                f"{destination.name}.{uuid.uuid4().hex}.partial"
+            )
             shutil.copy2(prepared.path, temporary)
             os.replace(temporary, destination)
 
@@ -2320,7 +2379,7 @@ class CohortStore:
             suffix = ".csi" if prepared.index_path.name.endswith(".csi") else ".tbi"
             index = Path(f"{destination}{suffix}")
             if not index.is_file():
-                temporary_index = Path(f"{index}.partial")
+                temporary_index = Path(f"{index}.{uuid.uuid4().hex}.partial")
                 shutil.copy2(prepared.index_path, temporary_index)
                 os.replace(temporary_index, index)
         elif compressed and self.hts_backend is not None:
@@ -2583,8 +2642,9 @@ class CohortStore:
                       loftee_50bp_changed=MAX(excluded.loftee_50bp_changed, cohort_annotations.loftee_50bp_changed),
                       ptc_distance=COALESCE(excluded.ptc_distance, cohort_annotations.ptc_distance),
                       ptc_calc_status=COALESCE(NULLIF(excluded.ptc_calc_status, ''), cohort_annotations.ptc_calc_status),
-                      mane=MAX(excluded.mane, cohort_annotations.mane),
-                      picked=MAX(excluded.picked, cohort_annotations.picked),
+                      -- latest import wins (see the reannotation note above)
+                      mane=excluded.mane,
+                      picked=excluded.picked,
                       repeat_masker=MAX(excluded.repeat_masker, cohort_annotations.repeat_masker),
                       segdup=MAX(excluded.segdup, cohort_annotations.segdup)
                 """)

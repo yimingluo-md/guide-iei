@@ -418,9 +418,17 @@ class SampleLibrary:
                 },
             )
             with self._session() as connection:
-                connection.execute(
-                    "UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,updated_at=? WHERE managed_path=?",
-                    (cohort_result.get("id"), utc_now(), managed_storage_path),
+                # Scope the linkage to THIS import's dataset rows. managed_path
+                # is not unique — every sample of a multi-sample VCF (and any
+                # prior import of the same file under different settings)
+                # shares it, and a path-scoped UPDATE silently repointed
+                # sibling datasets and reverted deliberate cohort exclusions.
+                connection.executemany(
+                    "UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,updated_at=? WHERE id=?",
+                    [
+                        (cohort_result.get("id"), utc_now(), item["id"])
+                        for item in datasets
+                    ],
                 )
                 connection.execute(
                     """UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=?
@@ -575,10 +583,14 @@ class SampleLibrary:
             if not row:
                 raise ValueError("library dataset was not found")
             if updates:
+                # Update only the addressed dataset row: managed_path is
+                # shared by every sample extracted from a multi-sample VCF,
+                # and a path-scoped UPDATE rewrote sibling samples' capture
+                # kit / target BED behind the operator's back.
                 clause = ",".join(f"{key}=?" for key in updates)
                 connection.execute(
-                    f"UPDATE library_datasets SET {clause},updated_at=? WHERE managed_path=?",
-                    (*updates.values(), utc_now(), row["managed_path"]),
+                    f"UPDATE library_datasets SET {clause},updated_at=? WHERE id=?",
+                    (*updates.values(), utc_now(), dataset_id),
                 )
             if sample_label is not None:
                 label = str(sample_label).strip()
@@ -645,10 +657,14 @@ class SampleLibrary:
         )
         if full_wgs and record.get("cohort_file_id") != result.get("id"):
             with self._session() as connection:
+                # Remove only THIS dataset's sample from the previous cohort
+                # file. The file holds one row per VCF sample, and an
+                # unfiltered deletion removed every co-resident sample's
+                # cohort records (then reclaimed their variants).
                 previous_samples = [
                     item["id"] for item in connection.execute(
-                        "SELECT id FROM cohort_samples WHERE file_id=?",
-                        (record.get("cohort_file_id"),),
+                        "SELECT id FROM cohort_samples WHERE file_id=? AND name=?",
+                        (record.get("cohort_file_id"), record["vcf_sample_name"]),
                     ).fetchall()
                 ]
             for start in range(0, len(previous_samples), 5000):

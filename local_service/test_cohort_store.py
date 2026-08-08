@@ -842,6 +842,60 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(row["original_pos"], 101)
 
 
+class ReannotationFlagTests(unittest.TestCase):
+    def test_reannotation_can_clear_a_superseded_mane_flag(self):
+        # Audit repro (SVC-13): mane/picked were merged with MAX(), so after
+        # a VEP/MANE release moved the canonical transcript, BOTH the old and
+        # the new transcript stayed flagged and queries returned two
+        # "preferred" rows per gene. The latest import must win.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "mane-move.vcf"
+
+            def build(mane_on_first: bool) -> None:
+                entries = ",".join([
+                    csq(
+                        "G", 1, "missense_variant", "MODERATE", "NFKB1",
+                        "c.1A>G", "p.Lys1Arg", 0.0001, 25, 0.8, 0.01,
+                        mane="MANE" if mane_on_first else "",
+                        picked="1" if mane_on_first else "",
+                        transcript="ENST_T1",
+                    ),
+                    csq(
+                        "G", 1, "missense_variant", "MODERATE", "NFKB1",
+                        "c.1A>G", "p.Lys1Arg", 0.0001, 25, 0.8, 0.01,
+                        mane="" if mane_on_first else "MANE",
+                        picked="" if mane_on_first else "1",
+                        transcript="ENST_T2",
+                    ),
+                ])
+                source.write_text(
+                    "##fileformat=VCFv4.2\n"
+                    "##contig=<ID=1,length=248956422>\n"
+                    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+                    + "|".join(CSQ_FIELDS)
+                    + '">\n'
+                    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
+                    "1\t100\t.\tA\tG\t99\tPASS\tCSQ=" + entries
+                    + "\tGT:AD:DP:GQ\t0/1:12,10:22:80\n"
+                )
+
+            store = CohortStore(root / "cohort.sqlite3")
+            build(mane_on_first=True)
+            store.import_vcf(source)
+            build(mane_on_first=False)
+            store.import_vcf(source, force=True)
+
+            import sqlite3 as sqlite_module
+            connection = sqlite_module.connect(root / "cohort.sqlite3")
+            flagged = dict(connection.execute(
+                "SELECT transcript, mane FROM cohort_annotations"
+            ).fetchall())
+            connection.close()
+            self.assertEqual(flagged.get("ENST_T1"), 0, flagged)
+            self.assertEqual(flagged.get("ENST_T2"), 1, flagged)
+
+
 class ParseGenotypeTests(unittest.TestCase):
     def test_half_call_is_not_hemizygous(self):
         # Audit repro (SVC-16): ./1 previously classified "hemizygous",

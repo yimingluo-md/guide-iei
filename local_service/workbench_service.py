@@ -1362,6 +1362,7 @@ class AnnotationJobService:
         with self._storage_lock:
             self.storage_registry.record_migration(self._storage_job_copy(self._storage_jobs[job_id]))
         activated = False
+        root_switched = False
         temporary_paths_rewritten = False
         try:
             if staging.exists() or destination.exists():
@@ -1403,6 +1404,7 @@ class AnnotationJobService:
                 self._rewrite_temporary_paths(source, destination)
                 temporary_paths_rewritten = True
             self.storage_registry.set_root(kind, destination, storage_id=storage_id)
+            root_switched = True
             with self._storage_lock:
                 live = self._storage_jobs[job_id]
                 live.update(
@@ -1418,10 +1420,11 @@ class AnnotationJobService:
                 completed = self._storage_job_copy(self._storage_jobs[job_id])
             try:
                 self.storage_registry.record_migration(completed)
-            except OSError as history_exc:
+            except Exception as history_exc:
                 # The root switch itself was already persisted by set_root;
-                # failure to append audit history must not roll it back or
-                # delete the verified destination.
+                # failure to append audit history — of ANY exception type, not
+                # just OSError — must not roll it back or delete the verified
+                # destination the registry now points at.
                 self._update_storage_job(
                     job_id,
                     message=(
@@ -1437,6 +1440,30 @@ class AnnotationJobService:
                     self._rewrite_temporary_paths(destination, source)
                 except Exception as rollback_exc:  # pragma: no cover - catastrophic I/O failure
                     rollback_error = f"; temporary path rollback failed: {rollback_exc}"
+            if root_switched:
+                # The registry already points at the destination: deleting it
+                # here would destroy the live storage root (total loss of the
+                # migrated cohort database and annotation files). Preserve it
+                # and surface the follow-up failure instead.
+                self._update_storage_job(
+                    job_id,
+                    status="failed",
+                    message=(
+                        "Migration activated the new location but a follow-up "
+                        f"step failed: {exc}. The verified copy at "
+                        f"{destination} was preserved and remains active."
+                    ),
+                    finished_at=utc_now(),
+                    error=str(exc) + rollback_error,
+                    restart_required=True,
+                )
+                with self._storage_lock:
+                    failed = self._storage_job_copy(self._storage_jobs[job_id])
+                try:
+                    self.storage_registry.record_migration(failed)
+                except Exception:
+                    pass
+                return
             cleanup_target = destination if activated else staging
             try:
                 if cleanup_target.exists():
@@ -1540,7 +1567,11 @@ class AnnotationJobService:
             return
         source_before = source.stat()
         source_hash = hashlib.sha256()
-        with source.open("rb") as input_handle, destination.open("xb") as output_handle:
+        # "wb", not "xb": writes land only inside this job's own staging
+        # directory (destination existence is guarded at migration start), and
+        # exclusive-create made any retry over a leftover partial copy abort
+        # on the first already-copied file.
+        with source.open("rb") as input_handle, destination.open("wb") as output_handle:
             while block := input_handle.read(8 * 1024 * 1024):
                 if self._stop.is_set():
                     raise RuntimeError("the local service stopped during storage migration")
@@ -1588,8 +1619,12 @@ class AnnotationJobService:
         if cohort_database.is_file():
             connection = sqlite3.connect(cohort_database)
             try:
-                try:
-                    for column in ("managed_path", "managed_index_path", "original_path"):
+                # Isolate each column: on an older schema a missing column
+                # raises OperationalError, and one column's failure must not
+                # abort the remaining rewrites (leaving the table half-pointed
+                # at the old root).
+                for column in ("managed_path", "managed_index_path", "original_path"):
+                    try:
                         rows = connection.execute(
                             f"SELECT id,{column} FROM library_datasets WHERE {column} IS NOT NULL"
                         ).fetchall()
@@ -1604,8 +1639,8 @@ class AnnotationJobService:
                                     f"UPDATE library_datasets SET {column}=? WHERE id=?",
                                     (replacement, row_id),
                                 )
-                except sqlite3.OperationalError:
-                    pass
+                    except sqlite3.OperationalError:
+                        continue
                 try:
                     for column in ("path", "prepared_path", "index_path"):
                         rows = connection.execute(
@@ -2692,7 +2727,12 @@ class AnnotationJobService:
         if batch_root not in destination.parents:
             raise ValueError("invalid relative file path")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(destination.name + ".partial")
+        # Unique partial name: a retried upload of the same relative path
+        # previously interleaved writes into one shared .partial and the last
+        # replace published a corrupted file that passed the byte-count check.
+        temporary = destination.with_name(
+            f"{destination.name}.{uuid.uuid4().hex}.partial"
+        )
         remaining = length
         with temporary.open("wb") as handle:
             while remaining:
@@ -3471,7 +3511,7 @@ class AnnotationJobService:
                 log.write(f"[{utc_now()}] Job {job_id} started\n")
                 for command in commands:
                     current = self.store.get(job_id)
-                    if not current or current["status"] == "cancelled":
+                    if not current or current["status"] in {"cancelled", "interrupted"}:
                         return
                     log.write("$ " + " ".join(json.dumps(item) for item in command) + "\n")
                     process = subprocess.Popen(
@@ -3488,7 +3528,7 @@ class AnnotationJobService:
                     with self._process_lock:
                         self._processes.pop(job_id, None)
                     current = self.store.get(job_id)
-                    if current and current["status"] == "cancelled":
+                    if current and current["status"] in {"cancelled", "interrupted"}:
                         return
                     if exit_code:
                         raise RuntimeError(
@@ -3506,7 +3546,7 @@ class AnnotationJobService:
             )
         except Exception as exc:
             current = self.store.get(job_id)
-            if current and current["status"] == "cancelled":
+            if current and current["status"] in {"cancelled", "interrupted"}:
                 return
             self.store.update(
                 job_id,
@@ -3749,6 +3789,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     "/api/phenotypes/import",
                     "/api/phenotypes/individual",
                     "/api/gene-knowledge/omim/install",
+                    "/api/screen-context/install",
                 }
                 or path.startswith("/api/resource-downloads/")
                 or path.startswith("/api/resource-preparations/")

@@ -71,6 +71,10 @@ fi
 FAI="$(absdir "$(yaml_get "$CONFIG" reference.fasta.path)").fai"
 
 TMP="$(mktemp)"
+MERGED=""
+# Clean both interval temps on any failure — these are multi-hundred-MB
+# GTF-derived files, and every sibling build script installs a trap.
+trap 'rm -f "$TMP" ${MERGED:+"$MERGED"}' EXIT
 # Extract CDS + stop_codon (stop_codon is a separate GTF feature but is coding)
 # and true exon-junction windows for protein-coding transcripts. Using only
 # padded CDS edges misses splice sites when a UTR separates the CDS from the

@@ -645,7 +645,11 @@ def gzip_stream_download(url: str, target: Path, expected_rows: int) -> dict[str
     partial = target.with_name(target.name + ".part")
     partial.unlink(missing_ok=True)
     command = [
-        "curl", "-fL", "--retry", "6", "--retry-all-errors",
+        # -sS matches every other curl call here and matters more for this
+        # one: the progress meter is an unbounded stderr writer, and with
+        # stderr drained only after stdout, a filled pipe buffer deadlocks
+        # this multi-hundred-MB streaming download.
+        "curl", "-fsSL", "--retry", "6", "--retry-all-errors",
         "--retry-delay", "2", "--connect-timeout", "30",
         "--speed-limit", "10240", "--speed-time", "30", url,
     ]

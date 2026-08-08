@@ -343,6 +343,28 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertFalse(target.exists())
         self.assertEqual(list(target.parent.glob(f".{target.name}.iei-migrating-*")), [])
 
+    def test_post_activation_history_failure_preserves_the_destination(self):
+        # Audit repro (SVC-3): a non-OSError raised by record_migration AFTER
+        # set_root had activated the new root escaped to the cleanup path,
+        # which rmtree'd the destination the registry now pointed at — total
+        # loss of the migrated data. The destination must survive.
+        target = Path(self.temp.name) / "activated-library"
+        original = self.service.storage_registry.record_migration
+
+        def flaky_history(job):
+            if job.get("status") == "succeeded":
+                raise TypeError("simulated history serialization failure")
+            return original(job)
+
+        with patch.object(
+            self.service.storage_registry, "record_migration",
+            side_effect=flaky_history,
+        ):
+            job = self.service.start_storage_migration({"kind": "data", "path": str(target)})
+            completed = self._wait_storage(job["id"])
+        self.assertTrue(target.exists(), "activated destination must never be deleted")
+        self.assertEqual(completed["status"], "succeeded", completed.get("error"))
+
     def test_temporary_paths_are_rewritten_only_after_copy_activation(self):
         upload = self.state / "uploads" / "batch" / "patient.vcf"
         upload.parent.mkdir(parents=True)

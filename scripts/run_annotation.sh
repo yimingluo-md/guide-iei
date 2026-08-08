@@ -62,6 +62,18 @@ RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
 IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
 export RUNTIME IMAGE
 
+# Post-processing temp files carry the PID (so two runs targeting the same
+# output cannot interleave through a shared name) and are removed on exit (so
+# a failed run cannot leave look-alike .tmp files beside the deliverable).
+POSTPROC_TMPS=()
+cleanup_postproc_tmps() {
+    local tmp
+    for tmp in ${POSTPROC_TMPS[@]+"${POSTPROC_TMPS[@]}"}; do
+        rm -f "$tmp" "${tmp}.gz"
+    done
+}
+trap cleanup_postproc_tmps EXIT
+
 # ============================================================================ #
 # 0a. Input assembly. Annotation references and the cohort model stay GRCh38.
 #     GRCh37/hg19 conversion occurs BEFORE the GRCh38 coding-region filter.
@@ -384,7 +396,8 @@ python3 "${ROOT}/pipeline/validate_vep_output.py" \
 # ============================================================================ #
 if [[ "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.enabled)" == "true" ]]; then
     log "=== LOFTEE frameshift PTC 50-bp recomputation ==="
-    PTC_TMP="${OUTPUT%.gz}.ptc50.tmp"
+    PTC_TMP="${OUTPUT%.gz}.ptc50.$$.tmp"
+    POSTPROC_TMPS+=("$PTC_TMP")
     PTC_AUDIT="${OUTPUT}.loftee_ptc50.audit.json"
     if python3 "${ROOT}/pipeline/loftee_ptc_50bp.py" \
         --config "$CONFIG" --input "$OUTPUT" --output "$PTC_TMP" \
@@ -417,7 +430,8 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
     HAPLO_SELECTED="${HAPLO_STEM}.haplo.selected.vcf.gz"
     HAPLO_CANDIDATES="${HAPLO_STEM}.haplo.candidates.vcf.gz"
     HAPLO_JSON="${HAPLO_STEM}.haplo.raw.json"
-    HAPLO_TMP="${HAPLO_STEM}.haplo.tmp"
+    HAPLO_TMP="${HAPLO_STEM}.haplo.$$.tmp"
+    POSTPROC_TMPS+=("$HAPLO_TMP")
     HAPLO_AUDIT="${OUTPUT}.haplotype.audit.json"
     HAPLO_OK=1
 
@@ -518,7 +532,10 @@ if [[ "$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)" != "false
     FINAL="${OUTPUT%.vcf.gz}.aamatch.vcf.gz"
     [[ "$OUTPUT" == *.vcf.gz ]] || FINAL="${OUTPUT%.vcf}.aamatch.vcf"
     MATCH_OUTPUT="$FINAL"
-    [[ "$FINAL" == *.gz ]] && MATCH_OUTPUT="${FINAL%.gz}.tmp"
+    if [[ "$FINAL" == *.gz ]]; then
+        MATCH_OUTPUT="${FINAL%.gz}.$$.tmp"
+        POSTPROC_TMPS+=("$MATCH_OUTPUT")
+    fi
     if [[ -n "$AA_REF" && -s "$AA_REF" ]]; then
         python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
             --config "$CONFIG" --input "$OUTPUT" --output "$MATCH_OUTPUT" \
@@ -551,7 +568,8 @@ if [[ "$(yaml_get "$CONFIG" clingen_erepo.enabled)" == "true" ]]; then
     CLINGEN_DB="$(yaml_get "$CONFIG" clingen_erepo.database)"
     [[ "$CLINGEN_DB" = /* ]] || CLINGEN_DB="${ROOT}/${CLINGEN_DB}"
     CLINGEN_REQUIRED="$(yaml_get "$CONFIG" clingen_erepo.required)"
-    CLINGEN_TMP="${FINAL_OUTPUT%.gz}.clingen.tmp"
+    CLINGEN_TMP="${FINAL_OUTPUT%.gz}.clingen.$$.tmp"
+    POSTPROC_TMPS+=("$CLINGEN_TMP")
     if [[ -s "$CLINGEN_DB" ]] && python3 "${ROOT}/pipeline/clingen_erepo_annotate.py" \
         --input "$FINAL_OUTPUT" --output "$CLINGEN_TMP" --database "$CLINGEN_DB"; then
         if [[ "$FINAL_OUTPUT" == *.gz ]]; then

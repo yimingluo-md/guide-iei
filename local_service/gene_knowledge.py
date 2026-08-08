@@ -12,6 +12,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -174,9 +175,11 @@ def build_public_database(
     for path in (hgnc, iuis, clingen_validity, clingen_dosage):
         if not path.is_file():
             raise ValueError(f"gene resource not found: {path}")
-    temporary = destination.with_suffix(destination.suffix + ".new")
+    # Unique temp name: with a shared deterministic ".new" path, a concurrent
+    # build's unlink removed the file this build still had open, and the last
+    # rename could publish a partially populated database.
+    temporary = destination.with_suffix(f"{destination.suffix}.{uuid.uuid4().hex}.new")
     temporary.parent.mkdir(parents=True, exist_ok=True)
-    temporary.unlink(missing_ok=True)
     connection = sqlite3.connect(temporary)
     counts: dict[str, int] = {}
     try:
@@ -328,9 +331,8 @@ def build_omim_database(source_dir: Path, destination: Path) -> dict[str, object
     missing = [name for name, path in files.items() if not path.is_file()]
     if missing:
         raise ValueError("OMIM folder is missing required files: " + ", ".join(missing))
-    temporary = destination.with_suffix(destination.suffix + ".new")
+    temporary = destination.with_suffix(f"{destination.suffix}.{uuid.uuid4().hex}.new")
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary.unlink(missing_ok=True)
     connection = sqlite3.connect(temporary)
     try:
         connection.executescript(OMIM_SCHEMA)

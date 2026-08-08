@@ -102,6 +102,61 @@ class SampleLibraryTests(unittest.TestCase):
         self.cohort.remove_samples([cohort_sample["id"]])
         self.assertEqual(self.library.get(remaining["id"])["cohort_index_status"], "needs_repair")
 
+    def test_metadata_edit_touches_only_the_addressed_dataset(self):
+        # Audit repro (SVC-1): managed_path is shared by both samples of a
+        # multi-sample VCF; the capture-kit edit used to rewrite siblings.
+        imported = self.library.import_vcf(self.vcf, self.payload(include=True))
+        first, second = imported["datasets"]
+        self.library.update_metadata(first["id"], {"capture_kit": "New kit"})
+        self.assertEqual(self.library.get(first["id"])["capture_kit"], "New kit")
+        self.assertEqual(self.library.get(second["id"])["capture_kit"], "Test exome")
+
+    def test_import_linkage_does_not_revert_sibling_exclusion(self):
+        # Audit repro (SVC-5): a later import of the same managed VCF used to
+        # force include_in_cohort=1 on every dataset sharing managed_path,
+        # silently reverting a deliberate cohort exclusion.
+        first_import = self.library.import_vcf(self.vcf, self.payload(include=True))
+        excluded_id = first_import["datasets"][0]["id"]
+        self.library.exclude_from_cohort(excluded_id)
+        self.assertEqual(
+            self.library.get(excluded_id)["cohort_index_status"], "not_included",
+        )
+        other_payload = self.payload(include=True)
+        other_payload["qc_settings"] = {"minDp": 25, "minGq": 30}
+        self.library.import_vcf(self.vcf, other_payload)
+        self.assertEqual(
+            self.library.get(excluded_id)["cohort_index_status"], "not_included",
+        )
+
+    def test_full_wgs_reindex_spares_sibling_cohort_samples(self):
+        # Audit repro (SVC-2): reindex(full_wgs=True) used to delete EVERY
+        # cohort sample of the previous cohort file, not just this dataset's.
+        wgs_payload = self.payload(include=True)
+        wgs_payload["analysis_scope"] = "whole_genome"
+        imported = self.library.import_vcf(self.vcf, wgs_payload)
+        first, second = imported["datasets"]
+        sibling_before = self.library.get(second["id"])
+        original_import = self.cohort.import_vcf
+
+        def forced_new_file_import(path, **kwargs):
+            result = dict(original_import(path, **kwargs))
+            result["id"] = "forced-new-cohort-file"
+            return result
+
+        self.cohort.import_vcf = forced_new_file_import
+        try:
+            self.library.reindex(first["id"], full_wgs=True)
+        finally:
+            self.cohort.import_vcf = original_import
+        surviving = {
+            (item["file_id"], item["name"]) for item in self.cohort.list_samples()
+        }
+        self.assertIn(
+            (sibling_before["cohort_file_id"], sibling_before["vcf_sample_name"]),
+            surviving,
+            "sibling sample's cohort entry must survive a co-resident reindex",
+        )
+
     def test_review_once_equivalent_not_persisted_and_dedup_cleanup(self):
         self.assertEqual(self.library.list(), [])
         first = self.library.import_vcf(self.vcf, self.payload(include=False))
