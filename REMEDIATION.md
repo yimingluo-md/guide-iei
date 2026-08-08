@@ -298,13 +298,24 @@ execution is the equivalent verification.
 
 ---
 
-## Cannot verify locally (needs unrestricted host + Docker before release)
+## Docker-gated verification — COMPLETE (2026-08-08)
 
-- [ ] `scripts/run_annotation_regression.sh` — needs Docker + VEP container + reference stack
-- [ ] `local_service/test_workbench_service.py` — 2 loopback HTTP tests (sandbox forbade `bind()`; expected to pass elsewhere) [B-3]
-- [ ] `perl -c` on `docker/*.pm` — only compile-checkable inside the VEP container
-- [ ] SH-19 plugin-list format check (`docker run --rm --entrypoint bcftools vep-annotate:latest plugin -l | head`)
+All previously unverifiable items were executed on this host via Docker
+Desktop 29.4.1 using `scripts/verify_container_stack.sh` (added for repeatable
+release checks; `--quick` runs the container-only stages in seconds):
 
+- [x] `scripts/run_annotation_regression.sh` — **PASS** (8 pass / 0 fail /
+  4 skip; skips are the optional LoGoFunc + PromoterAI datasets, not
+  installed on this host). Annotation completeness certificate: PASS.
+- [x] in-container `perl -c` on both plugins against the real Bio::EnsEMBL
+  modules — **both syntax OK** (image rebuilt 2026-08-08 so the P4-21/22
+  plugin fixes are baked in; the script's image-drift stage now guards this).
+- [x] `local_service/test_workbench_service.py` loopback tests — pass on this
+  host (44+1 tests; confirmed during Phase 0).
+- [x] SH-19 `bcftools plugin -l` format — **settled: false alarm.** The real
+  output lists the bare plugin name `liftover` on its own line, so even the
+  original `grep -qx` would have matched; the shipped `grep -qw` is simply
+  more format-tolerant.
 ## Definition of done (from baseline_report.md)
 
 - pytest ≥175/178 green with the screen-cCRE module collectable (the 2 loopback tests pass on an unsandboxed host)
