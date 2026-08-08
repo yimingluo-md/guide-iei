@@ -20,8 +20,12 @@ VERSION_RE = re.compile(r"(?<![0-9])(\d+(?:\.\d+)+(?:[a-z])?)(?![0-9a-z])", re.I
 PATH_VERSION_RE = re.compile(
     r"dbNSFP[_-]?v?(\d+(?:\.\d+)+(?:[a-z])?)", re.I
 )
+# Accept any branch letter (or none) — the academic filter happens after the
+# match. Hardcoding the current "a" suffix made a relabelled release page
+# ("README v5.4", "README_v5.4a.txt") parse to nothing, which then reported
+# the same update_available=false as a genuinely current install.
 README_VERSION_RE = re.compile(
-    r"\bREADME\s+v?(\d+(?:\.\d+)+a)\b", re.I
+    r"\bREADME[_\s]+v?(\d+(?:\.\d+)+([a-z])?)\b", re.I
 )
 
 
@@ -53,10 +57,16 @@ def version_key(value: str) -> tuple[tuple[int, ...], int]:
 
 def latest_academic_version(page: str) -> str | None:
     text = html.unescape(re.sub(r"<[^>]+>", " ", page))
-    matches = README_VERSION_RE.findall(text)
-    if not matches:
+    academic = [
+        version.lower()
+        for version, branch in README_VERSION_RE.findall(text)
+        # "a" is the academic branch, "c" the commercial one; a letterless
+        # version is accepted as a possible future unified release.
+        if branch.lower() in {"", "a"}
+    ]
+    if not academic:
         return None
-    return max((match.lower() for match in matches), key=version_key)
+    return max(academic, key=version_key)
 
 
 def expected_ensembl_release(dbnsfp_version: str) -> int | None:
@@ -99,9 +109,15 @@ def build_report(
 
     if not configured:
         configured = path_version
-        warnings.append(
-            "plugins.dbNSFP.version is not set; inferred the version from the filename"
-        )
+        if path_version:
+            warnings.append(
+                "plugins.dbNSFP.version is not set; inferred the version from the filename"
+            )
+        else:
+            warnings.append(
+                "plugins.dbNSFP.version is not set and no version could be "
+                "derived from the filename"
+            )
     if configured and path_version and configured != path_version:
         warnings.append(
             f"configured dbNSFP version {configured} does not match filename version "
@@ -110,13 +126,22 @@ def build_report(
 
     latest = None
     online_error = None
+    latest_unknown = False
     if release_page is not None:
         latest = latest_academic_version(release_page)
+        latest_unknown = latest is None
     elif check_online:
         try:
             latest = latest_academic_version(fetch_release_page(releases_url))
+            latest_unknown = latest is None
         except (OSError, urllib.error.URLError, TimeoutError) as error:
             online_error = str(error)
+    if latest_unknown:
+        warnings.append(
+            "the dbNSFP release page was retrieved but no academic version "
+            "could be parsed from it; the update check is INCONCLUSIVE — this "
+            "is not the same as being up to date"
+        )
 
     update_available = bool(
         configured and latest and version_key(latest) > version_key(configured)
@@ -135,6 +160,7 @@ def build_report(
         "configured_version": configured,
         "path_version": path_version,
         "latest_academic_version": latest,
+        "latest_unknown": latest_unknown,
         "update_available": update_available,
         "releases_url": releases_url,
         "configured_vep_release": vep_release,
@@ -162,6 +188,11 @@ def print_report(report: dict) -> None:
         )
     elif report["latest_academic_version"] and configured:
         print("dbNSFP update status:      up to date")
+    elif report.get("latest_unknown"):
+        print(
+            "dbNSFP update status:      INCONCLUSIVE (release page retrieved "
+            "but no version parsed)"
+        )
     if report["online_error"]:
         print(
             "WARN: online dbNSFP update check was unavailable; annotation can "

@@ -75,7 +75,11 @@ gzip -cd "$CLINVAR_VCF" 2>/dev/null | awk -v terms="$PATH_TERMS" '
 ' > "$SUBSET"
 NVAR=$(grep -vc '^#' "$SUBSET" || true)
 log "pathogenic-missense ClinVar records: $NVAR"
-[[ "$NVAR" -gt 0 ]] || { warn "no pathogenic-missense records found; writing empty reference"; : ; }
+# A zero-record subset is a hard failure: an empty reference would be
+# release-stamped by run_annotation.sh, never rebuilt for the life of that
+# ClinVar release, and every variant would be silently flagged 0. The
+# realistic trigger is the CLNSIG substring filter above no longer matching
+# ClinVar's evolving formatting.
 
 # --- 2. VEP-annotate the subset (VCF in, tab out, just SYMBOL+Protein_position)
 REF_TSV="${DEST_DIR}/clinvar_aa_reference.tsv"
@@ -107,7 +111,7 @@ if [[ "$NVAR" -gt 0 ]]; then
     python3 "${ROOT}/pipeline/reduce_vep_to_aa_reference.py" \
         --input "$VEPOUT" --output "$REF_TSV"
 else
-    : > "$REF_TSV"
+    die "no pathogenic-missense records found in the ClinVar subset; refusing to write an empty aa-match reference (it would be stamped as current and never rebuilt for this release)"
 fi
 
 NREF=$(wc -l < "$REF_TSV" | tr -d ' ')

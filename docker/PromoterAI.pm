@@ -103,14 +103,23 @@ sub run {
   my ($self, $tva) = @_;
   my $vf = $tva->variation_feature;
   my $transcript = $tva->transcript;
-  my ($mapping, $match) = $self->_transcript_mapping($transcript, $vf->{chr});
+
+  # The compact score table and transcript map are Ensembl-style
+  # (prepare_promoterai.py normalises their contigs), so a chr-prefixed
+  # input VCF previously matched nothing — silently, for every variant.
+  # Normalise the query contig the same way LoGoFunc.pm does.
+  my $chr = $vf->{chr};
+  return {} unless defined $chr && length $chr;
+  $chr =~ s/^chr//i;
+  $chr = 'MT' if uc($chr) eq 'M';
+
+  my ($mapping, $match) = $self->_transcript_mapping($transcript, $chr);
   return {} unless $mapping;
 
-  my $chr = $vf->{chr};
   my $start = $vf->{start};
   my $end = $vf->{end};
   ($start, $end) = ($end, $start) if $start > $end;
-  return {} unless defined $chr && $start == $end;
+  return {} unless $start == $end;
   return {} unless $mapping->{chrom} eq $chr;
 
   my $ref = $vf->ref_allele_string;

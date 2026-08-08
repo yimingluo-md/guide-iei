@@ -135,6 +135,38 @@ def test_empty_reference_all_zero(tmp_path):
     assert "ClinVar_path_aa_match=0" in open(vout).read()
 
 
+def test_missing_reference_fails_without_explicit_opt_in(tmp_path):
+    """Audit repro (CORE-16): a missing/empty reference used to degrade to an
+    all-zero flag with exit 0, indistinguishable from a real negative."""
+    vin = str(tmp_path / "in.vcf")
+    _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
+    out = str(tmp_path / "out.vcf")
+    rc = aam.main(["--input", vin, "--output", out,
+                   "--reference", str(tmp_path / "nonexistent.tsv"),
+                   "--clinvar-release", "TEST"])
+    assert rc == 3
+
+    rc = aam.main(["--input", vin, "--output", out,
+                   "--reference", str(tmp_path / "nonexistent.tsv"),
+                   "--allow-missing-reference", "--clinvar-release", "TEST"])
+    assert rc == 0
+    assert "ClinVar_path_aa_match=0" in open(out).read()
+
+
+def test_headerless_reduce_input_with_data_rows_fails(tmp_path):
+    """Audit repro (CORE-18): headerless VEP tab used to yield a silent empty
+    reference with exit 0, which the shell then release-stamped."""
+    tab = str(tmp_path / "headerless.tsv")
+    with open(tab, "w") as fh:
+        fh.write("v1\tBRCA1\t100\tmissense_variant\n")
+    out = str(tmp_path / "ref.tsv")
+    try:
+        red.reduce_tab(tab, out)
+        raise AssertionError("headerless input with data rows must fail")
+    except ValueError as exc:
+        assert "no VEP tab header" in str(exc)
+
+
 def test_short_record_is_padded_not_crashed(tmp_path):
     """Audit repro (CORE-5): a 7-column sites-only record used to raise
     IndexError on the unconditional cols[7] assignment."""

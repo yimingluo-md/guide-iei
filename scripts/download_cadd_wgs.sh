@@ -50,20 +50,30 @@ checksum() {
     printf '%s\n' "$value"
 }
 
+# Resolve every checksum via plain assignments FIRST: `die` inside a command
+# substitution exits only that subshell, and an inline "$(checksum ...)" that
+# failed previously expanded to "" — which parallel_fetch.py treats as "no
+# verification", silently downloading 80+ GB unchecked. A failing assignment
+# aborts the script under set -e with checksum()'s message on stderr.
+SNV_MD5="$(checksum "${SNV}.md5")"
+INDELS_MD5="$(checksum "${INDELS}.md5")"
+SNV_TBI_MD5="$(checksum "${SNV}.tbi.md5")"
+INDELS_TBI_MD5="$(checksum "${INDELS}.tbi.md5")"
+
 python3 "${HERE}/parallel_fetch.py" "${BASE}/${SNV_NAME}" "$SNV" \
-    --connections 8 --chunk-mib 128 --md5 "$(checksum "${SNV}.md5")" \
+    --connections 8 --chunk-mib 128 --md5 "$SNV_MD5" \
     --progress-start 0 --progress-scale 98.59
 
 python3 "${HERE}/parallel_fetch.py" "${BASE}/${INDEL_NAME}" "$INDELS" \
-    --connections 4 --chunk-mib 64 --md5 "$(checksum "${INDELS}.md5")" \
+    --connections 4 --chunk-mib 64 --md5 "$INDELS_MD5" \
     --progress-start 98.59 --progress-scale 1.40
 
 python3 "${HERE}/parallel_fetch.py" "${BASE}/${SNV_NAME}.tbi" "${SNV}.tbi" \
-    --connections 1 --chunk-mib 4 --md5 "$(checksum "${SNV}.tbi.md5")" \
+    --connections 1 --chunk-mib 4 --md5 "$SNV_TBI_MD5" \
     --progress-start 99.99 --progress-scale 0.006
 
 python3 "${HERE}/parallel_fetch.py" "${BASE}/${INDEL_NAME}.tbi" "${INDELS}.tbi" \
-    --connections 1 --chunk-mib 4 --md5 "$(checksum "${INDELS}.tbi.md5")" \
+    --connections 1 --chunk-mib 4 --md5 "$INDELS_TBI_MD5" \
     --progress-start 99.996 --progress-scale 0.004
 
 # Keep the verified official index newer than its data file to avoid htslib's

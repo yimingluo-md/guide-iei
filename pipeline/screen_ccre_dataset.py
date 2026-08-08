@@ -276,8 +276,14 @@ def query_encode_chunk(experiments: list[str]) -> list[dict[str, Any]]:
                 except Exception:
                     # Preserve the accession and explicitly empty metadata. It
                     # cannot pass the ontology-based immune selection and is
-                    # therefore excluded without guessing from its name.
-                    rows.append({"accession": accession, "replicates": []})
+                    # therefore excluded without guessing from its name — but
+                    # the failure is tagged so it is retried on the next run
+                    # instead of being cached as permanently complete.
+                    rows.append({
+                        "accession": accession,
+                        "replicates": [],
+                        "iei_metadata_fetch_failed": True,
+                    })
             return rows
         except Exception:
             if attempt == 6:
@@ -329,6 +335,9 @@ def compact_encode_metadata(row: dict[str, Any]) -> dict[str, Any]:
             diseases.add(disease)
     return {
         "experiment_accession": row.get("accession"),
+        "metadata_status": (
+            "fetch_failed" if row.get("iei_metadata_fetch_failed") else "ok"
+        ),
         "display_name": row.get("biosample_summary") or "",
         "ontology_id": ontology.get("term_id") or "",
         "ontology_name": ontology.get("term_name") or "",
@@ -446,7 +455,15 @@ def build_manifest(args: argparse.Namespace) -> None:
         by_experiment = cached["experiments"]
     else:
         by_experiment: dict[str, dict[str, Any]] = {}
-    pending = sorted(set(experiment_to_name) - set(by_experiment))
+    # Rows whose metadata fetch failed on a previous run must be retried, not
+    # treated as covered: a transient network failure was previously cached
+    # forever and the biosample silently vanished from the immune matrix.
+    covered = {
+        accession
+        for accession, row in by_experiment.items()
+        if row.get("metadata_status", "ok") == "ok"
+    }
+    pending = sorted(set(experiment_to_name) - covered)
     if pending:
         chunks = (
             [[accession] for accession in pending]
@@ -479,10 +496,26 @@ def build_manifest(args: argparse.Namespace) -> None:
             accession: by_experiment[accession]
             for accession in experiment_to_name
         }
+        fetch_failed = sorted(
+            accession
+            for accession, row in by_experiment.items()
+            if row.get("metadata_status", "ok") != "ok"
+        )
+        if fetch_failed:
+            print(
+                f"WARN  ENCODE metadata could not be fetched for "
+                f"{len(fetch_failed)} biosample(s); they are excluded from "
+                "the immune selection this run and will be retried next run: "
+                + ", ".join(fetch_failed[:5]),
+                flush=True,
+            )
         atomic_json(metadata_cache, {
             "source": "ENCODE REST search API",
             "retrieved_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-            "complete": True,
+            # A cache holding fetch-failed rows is NOT complete; stamping it
+            # complete made a transient failure a permanent silent exclusion.
+            "complete": not fetch_failed,
+            "metadata_fetch_failed": fetch_failed,
             "experiments": by_experiment,
         })
 

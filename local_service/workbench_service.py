@@ -3066,9 +3066,11 @@ class AnnotationJobService:
             auto_fetch = source_id == "clinvar" and bool(
                 (config.get("clinvar") or {}).get("auto_fetch", True)
             )
-            installed = not paths or all(path.exists() for path in paths)
-            if source_id == "ccre" and not paths:
-                installed = False
+            # An UNCONFIGURED source (no paths) is not an installed one:
+            # `not []` is True, which advertised every unconfigured source —
+            # including required diagnostic sources — as ready, letting the
+            # operator start a run that fails (or silently skips) later.
+            installed = bool(paths) and all(path.exists() for path in paths)
             if installed and source_id == "promoterai" and paths:
                 score_path = paths[0]
                 installed = (

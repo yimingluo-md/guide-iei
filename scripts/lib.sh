@@ -23,10 +23,25 @@ fetch() {
     if command -v curl >/dev/null 2>&1; then
         curl -fL --retry 3 --retry-delay 5 -C - -o "$dest.part" "$url" || return 1
     elif command -v wget >/dev/null 2>&1; then
-        wget -c -O "$dest.part" "$url" || return 1
+        wget --tries=3 -c -O "$dest.part" "$url" || return 1
     else
         die "need curl or wget on PATH to download references"
     fi
+    # Never promote an empty file or an HTML error page to the canonical
+    # reference path: fetch() skips existing non-empty destinations, so one
+    # bad promote is sticky until someone deletes the file by hand.
+    if [[ ! -s "$dest.part" ]]; then
+        log "WARN  empty download discarded: $url"
+        rm -f "$dest.part"
+        return 1
+    fi
+    case "$(head -c 15 "$dest.part" | tr '[:upper:]' '[:lower:]')" in
+        "<!doctype html"*|"<html"*)
+            log "WARN  HTML error page discarded instead of saved as $(basename "$dest")"
+            rm -f "$dest.part"
+            return 1
+            ;;
+    esac
     mv "$dest.part" "$dest"
 }
 

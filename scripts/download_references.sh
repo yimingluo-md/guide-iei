@@ -159,14 +159,19 @@ if want loftee; then
         warn "LOFTEE auto-download here targets GRCh38; assembly is $ASSEMBLY — skipping."
     else
         mkdir -p "$(dirname "$HA_PATH")"
-        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz"      "$HA_PATH" || warn "human_ancestor download failed"
-        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.fai"  "${HA_PATH}.fai" || true
-        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.gzi"  "${HA_PATH}.gzi" || true
+        # LoF is required:true in the shipped config — a missing LOFTEE
+        # resource fails the run at build_vep_command anyway, but only after
+        # the remaining multi-GB downloads. Fail here, loudly and early, and
+        # keep the fetch/gunzip failures distinguishable.
+        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz"      "$HA_PATH" || die "human_ancestor.fa.gz download failed"
+        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.fai"  "${HA_PATH}.fai" || die "human_ancestor .fai download failed"
+        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.gzi"  "${HA_PATH}.gzi" || die "human_ancestor .gzi download failed"
         # conservation DB ships gzipped as loftee.sql.gz
         if [[ ! -s "$SQL_PATH" ]]; then
-            fetch "${LOFTEE_BASE}/loftee.sql.gz" "${SQL_PATH}.gz" && gunzip -f "${SQL_PATH}.gz" || warn "loftee.sql download failed"
+            fetch "${LOFTEE_BASE}/loftee.sql.gz" "${SQL_PATH}.gz" || die "loftee.sql.gz download failed"
+            gunzip -f "${SQL_PATH}.gz" || die "loftee.sql.gz could not be decompressed (truncated or corrupt download)"
         fi
-        fetch "${LOFTEE_BASE}/gerp_conservation_scores.homo_sapiens.GRCh38.bw" "$GERP_PATH" || warn "GERP bigwig download failed"
+        fetch "${LOFTEE_BASE}/gerp_conservation_scores.homo_sapiens.GRCh38.bw" "$GERP_PATH" || die "GERP bigwig download failed"
     fi
 fi
 

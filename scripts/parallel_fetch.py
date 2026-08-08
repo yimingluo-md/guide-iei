@@ -191,8 +191,21 @@ def main() -> int:
                 offset = start
                 with range_file.open("rb") as source:
                     while block := source.read(1024 * 1024):
-                        os.pwrite(descriptor, block, offset)
-                        offset += len(block)
+                        # os.pwrite may write fewer bytes than requested —
+                        # routine on network/FUSE filesystems like OneDrive.
+                        # Advancing by the requested size would leave a hole
+                        # and shift every later block of this range, and the
+                        # size checks above validate the temp file, not the
+                        # assembled output.
+                        view = memoryview(block)
+                        while view:
+                            written = os.pwrite(descriptor, view, offset)
+                            if written <= 0:
+                                raise RuntimeError(
+                                    f"range {index}: pwrite returned {written} at offset {offset}"
+                                )
+                            offset += written
+                            view = view[written:]
                 range_file.unlink()
                 header_file.unlink(missing_ok=True)
                 return index

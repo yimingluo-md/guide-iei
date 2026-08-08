@@ -27,6 +27,7 @@ def _open_w(path):
 
 def reduce_tab(in_path: str, out_path: str) -> int:
     header = None
+    skipped_before_header = 0
     pairs: set[tuple[str, str]] = set()
     with _open_r(in_path) as fh:
         for line in fh:
@@ -37,6 +38,7 @@ def reduce_tab(in_path: str, out_path: str) -> int:
                 header = line.lstrip("#").rstrip("\n").split("\t")
                 continue
             if header is None:
+                skipped_before_header += 1
                 continue
             cols = line.rstrip("\n").split("\t")
             row = dict(zip(header, cols))
@@ -45,6 +47,15 @@ def reduce_tab(in_path: str, out_path: str) -> int:
             sym = row.get("SYMBOL", "")
             if "missense_variant" in cons and pos and pos != "-" and sym and sym != "-":
                 pairs.add((sym, pos))
+    if header is None and skipped_before_header:
+        # Data rows with no VEP tab header (--no_headers output, or a header
+        # consumed upstream) previously produced a silent empty reference
+        # that was then stamped as current — fail loudly instead.
+        raise ValueError(
+            f"no VEP tab header line found in {in_path} but "
+            f"{skipped_before_header} data row(s) were present; refusing to "
+            "write an empty aa-match reference"
+        )
     with _open_w(out_path) as out:
         for sym, pos in sorted(pairs):
             out.write(f"{sym}\t{pos}\n")

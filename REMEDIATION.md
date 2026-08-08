@@ -180,39 +180,50 @@ execution is the equivalent verification.
 
 ## Phase 4 — Silent success / reporting integrity
 
+> **Status (2026-08-08): complete** on `fix/phase-4-silent-success`. All 22
+> items fixed; full sweep green. Both Perl plugins now pass `perl -c`
+> against stubbed Bio::EnsEMBL modules. Notable contract changes:
+> `clinvar_aa_match.py` exits 3 on a missing/empty reference unless
+> `--allow-missing-reference` is passed (run_annotation.sh opts in only on
+> its deliberate no-reference branch); `build_clinvar_aa_reference.sh`
+> dies on a zero-record subset; the QC report gains
+> `not_applicable_records` and folds promoterAI into `overall_status`;
+> liftover QC reports `renormalized_representation_records` separately
+> and `lifted_records: null` (with a warning) when provenance is absent.
+
 ### 4A. Downloads & references that poison silently
-- [ ] **P4-1** (HIGH) `scripts/download_cadd_wgs.sh:46-49` — `die` inside `$(checksum …)` exits only the subshell; malformed MD5 sidecar disables verification entirely (incl. 80+ GB SNV table). Fix: assign then `|| die` [SH-6]
-- [ ] **P4-2** (HIGH) `scripts/lib.sh:22-30` — wget branch lacks curl's `-f` parity; HTTP error body promoted to canonical reference path and sticky (`-s` short-circuit) [SH-7]
-- [ ] **P4-3** (MED) `scripts/download_references.sh:160-161` — `fetch && gunzip || warn` conflates failures; LoF is `required: true`, should `die` [SH-13, ST-M4]
-- [ ] **P4-4** (MED) `scripts/parallel_fetch.py:194-196` — `os.pwrite` return ignored; short writes (routine on OneDrive/FUSE) corrupt multi-GB downloads silently [SVC-29]
+- [x] **P4-1** (HIGH) `scripts/download_cadd_wgs.sh:46-49` — `die` inside `$(checksum …)` exits only the subshell; malformed MD5 sidecar disables verification entirely (incl. 80+ GB SNV table). Fix: assign then `|| die` [SH-6]
+- [x] **P4-2** (HIGH) `scripts/lib.sh:22-30` — wget branch lacks curl's `-f` parity; HTTP error body promoted to canonical reference path and sticky (`-s` short-circuit) [SH-7]
+- [x] **P4-3** (MED) `scripts/download_references.sh:160-161` — `fetch && gunzip || warn` conflates failures; LoF is `required: true`, should `die` [SH-13, ST-M4]
+- [x] **P4-4** (MED) `scripts/parallel_fetch.py:194-196` — `os.pwrite` return ignored; short writes (routine on OneDrive/FUSE) corrupt multi-GB downloads silently [SVC-29]
 
 ### 4B. Empty-but-stamped reference chain (ClinVar aa-match)
-- [ ] **P4-5** (MED) `scripts/build_clinvar_aa_reference.sh:76-78,110-116` + `run_annotation.sh:246-247` — zero pathogenic-missense records → empty reference written, exit 0, release stamped; never rebuilt for the life of that release [SH-11]
-- [ ] **P4-6** (MED) `pipeline/reduce_vep_to_aa_reference.py:35-36` — headerless input → silent empty reference, exit 0 (same end state) [CORE-18]
-- [ ] **P4-7** (MED) `pipeline/clinvar_aa_match.py:218-226` — bare `except Exception` around config resolution degrades to all-zero flag with exit 0 [CORE-16]
+- [x] **P4-5** (MED) `scripts/build_clinvar_aa_reference.sh:76-78,110-116` + `run_annotation.sh:246-247` — zero pathogenic-missense records → empty reference written, exit 0, release stamped; never rebuilt for the life of that release [SH-11]
+- [x] **P4-6** (MED) `pipeline/reduce_vep_to_aa_reference.py:35-36` — headerless input → silent empty reference, exit 0 (same end state) [CORE-18]
+- [x] **P4-7** (MED) `pipeline/clinvar_aa_match.py:218-226` — bare `except Exception` around config resolution degrades to all-zero flag with exit 0 [CORE-16]
 
 ### 4C. Version/status checks that can't fail
-- [ ] **P4-8** (HIGH) `pipeline/check_dbnsfp_version.py:23-24,111-123` — unparseable release page indistinguishable from "up to date"; report a distinct `latest_unknown`/`online_error` state [AUX-H3]
-- [ ] **P4-9** (HIGH) `local_service/workbench_service.py:3029-3031` — `not paths or all(...)`: unconfigured annotation source reports as installed [SVC-9]
-- [ ] **P4-10** (HIGH) `pipeline/screen_ccre_dataset.py:271-281` — failed ENCODE lookup cached as empty metadata with `"complete": true`; transient network failure becomes permanent silent exclusion [CORE-11]
-- [ ] **P4-11** (MED) `pipeline/screen_immune_curation.py:293-302` — metadata cache not invalidated on policy change, then re-stamped with the *new* policy sha, defeating the integrity check [CORE-14]
+- [x] **P4-8** (HIGH) `pipeline/check_dbnsfp_version.py:23-24,111-123` — unparseable release page indistinguishable from "up to date"; report a distinct `latest_unknown`/`online_error` state [AUX-H3]
+- [x] **P4-9** (HIGH) `local_service/workbench_service.py:3029-3031` — `not paths or all(...)`: unconfigured annotation source reports as installed [SVC-9]
+- [x] **P4-10** (HIGH) `pipeline/screen_ccre_dataset.py:271-281` — failed ENCODE lookup cached as empty metadata with `"complete": true`; transient network failure becomes permanent silent exclusion [CORE-11]
+- [x] **P4-11** (MED) `pipeline/screen_immune_curation.py:293-302` — metadata cache not invalidated on policy change, then re-stamped with the *new* policy sha, defeating the integrity check [CORE-14]
 
 ### 4D. QC report accuracy
-- [ ] **P4-12** (MED) `pipeline/annotation_qc.py:263-270` — deliberate PTC skips counted as missing coverage → false WARN + bogus remediation list [CORE-12]
-- [ ] **P4-13** (MED) `pipeline/annotation_qc.py:205-212` — critical dbNSFP field outside `columns` → permanent 0% WARN; validate critical ⊆ configured [CORE-17]
-- [ ] **P4-14** (LOW) `pipeline/annotation_qc.py:513-521` — promoterAI status excluded from `overall_status` [CORE-20]
-- [ ] **P4-15** (MED) `pipeline/write_liftover_qc.py:66-67,82` — missing provenance tag silently substitutes allele-record count for `lifted_records`; should be an error [AUX-M3]
-- [ ] **P4-16** (MED) `pipeline/write_liftover_qc.py:68-76` — post-norm left-alignment conflated with assembly allele change in QC metrics [AUX-M4]
-- [ ] **P4-17** (LOW) `pipeline/classify_liftover_records.py:190,207-208` — accounting invariant unreachable; exit 2 gives false assurance [AUX-L1]
-- [ ] **P4-18** (LOW) `pipeline/classify_liftover_records.py:78,138-146` — half-missing source allele passes sentinel check, perturbing the reconciliation gate [AUX-L2]
+- [x] **P4-12** (MED) `pipeline/annotation_qc.py:263-270` — deliberate PTC skips counted as missing coverage → false WARN + bogus remediation list [CORE-12]
+- [x] **P4-13** (MED) `pipeline/annotation_qc.py:205-212` — critical dbNSFP field outside `columns` → permanent 0% WARN; validate critical ⊆ configured [CORE-17]
+- [x] **P4-14** (LOW) `pipeline/annotation_qc.py:513-521` — promoterAI status excluded from `overall_status` [CORE-20]
+- [x] **P4-15** (MED) `pipeline/write_liftover_qc.py:66-67,82` — missing provenance tag silently substitutes allele-record count for `lifted_records`; should be an error [AUX-M3]
+- [x] **P4-16** (MED) `pipeline/write_liftover_qc.py:68-76` — post-norm left-alignment conflated with assembly allele change in QC metrics [AUX-M4]
+- [x] **P4-17** (LOW) `pipeline/classify_liftover_records.py:190,207-208` — accounting invariant unreachable; exit 2 gives false assurance [AUX-L1]
+- [x] **P4-18** (LOW) `pipeline/classify_liftover_records.py:78,138-146` — half-missing source allele passes sentinel check, perturbing the reconciliation gate [AUX-L2]
 
 ### 4E. UI failure-state honesty
-- [ ] **P4-19** (MED) `webui/app/VariantWorkbench.tsx:780-785,727-778` — SCREEN filter silently passes everything while loading and after a failure, with checkbox still checked [UI-14]
-- [ ] **P4-20** (MED) `webui/app/local-service.ts:919-926` — `request()` parses JSON before checking `response.ok`; every non-JSON failure surfaces as parse noise [UI-16]
+- [x] **P4-19** (MED) `webui/app/VariantWorkbench.tsx:780-785,727-778` — SCREEN filter silently passes everything while loading and after a failure, with checkbox still checked [UI-14]
+- [x] **P4-20** (MED) `webui/app/local-service.ts:919-926` — `request()` parses JSON before checking `response.ok`; every non-JSON failure surfaces as parse noise [UI-16]
 
 ### 4F. VEP plugins
-- [ ] **P4-21** (HIGH) `docker/PromoterAI.pm:109-114` — no chr-stripping (unlike LoGoFunc.pm:83): chr-prefixed VCF → every lookup empty, no warning; insertion swap per D5 [SH-8]
-- [ ] **P4-22** (MED) `docker/LoGoFunc.pm:82-84,139` — query contig normalised but table contig stored verbatim and never compared; future chr-prefixed table fails silently [SH-15]
+- [x] **P4-21** (HIGH) `docker/PromoterAI.pm:109-114` — no chr-stripping (unlike LoGoFunc.pm:83): chr-prefixed VCF → every lookup empty, no warning; insertion swap per D5 [SH-8]
+- [x] **P4-22** (MED) `docker/LoGoFunc.pm:82-84,139` — query contig normalised but table contig stored verbatim and never compared; future chr-prefixed table fails silently [SH-15]
 
 ---
 

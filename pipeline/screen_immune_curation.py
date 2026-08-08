@@ -292,9 +292,14 @@ def enrich_metadata(args: argparse.Namespace) -> None:
     required = unique_experiment_accessions(selection)
     if args.output.exists():
         existing = json.loads(args.output.read_text())
+        # Cache rows bake the audit-policy verdict in at write time
+        # (audit_pass etc. come from compact_experiment(policy)), so a policy
+        # edit must invalidate them: reusing them and then re-stamping the
+        # NEW policy's sha actively defeated the integrity check downstream.
         experiments = (
             existing.get("experiments", {})
             if existing.get("compact_metadata_schema_version") == COMPACT_METADATA_SCHEMA_VERSION
+            and existing.get("policy_sha256") == sha256_file(args.policy)
             else {}
         )
     else:

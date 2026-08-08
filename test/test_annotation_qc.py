@@ -245,6 +245,62 @@ def test_logofunc_class_comes_from_mane_entry_not_file_order(tmp_path):
     assert report["details"]["logofunc"]["prediction_class_counts"] == {"GOF": 1}
 
 
+def test_deliberate_ptc_skips_are_not_missing_coverage(tmp_path):
+    # Audit repro (CORE-12): records whose only PTC statuses are documented
+    # refusals were counted as missing, driving a false WARN and a
+    # remediation list of variants needing no remediation.
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "result.vcf"
+    write_config(config)
+    ok_row = csq(
+        "T", "frameshift_variant", "IL2RG", "NM_000206.3",
+        "", "", "HC", "", "", "",
+        "0", "0", "0", "0", "Pathogenic", "", "",
+        "100", "PASS", "PASS", "ok",
+    )
+    skip_row = csq(
+        "T", "frameshift_variant", "SINGLEEXON", "NM_999999.1",
+        "", "", "", "", "", "",
+        "0", "0", "0", "0", "", "", "",
+        "", "", "", "not_applicable_single_exon_transcript",
+    )
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(FIELDS)
+        + '">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        f"X\t100\t.\tCA\tC\t100\tPASS\tCSQ={ok_row}\tGT\t0/1\n"
+        f"1\t200\t.\tGA\tG\t100\tPASS\tCSQ={skip_row}\tGT\t0/1\n",
+        encoding="utf-8",
+    )
+    report = build_report(config, vcf)
+    ptc = report["details"]["loftee_ptc_50bp"]
+    assert ptc["eligible_frameshift_records"] == 1
+    assert ptc["recomputed_records"] == 1
+    assert ptc["not_applicable_records"] == 1
+    assert "LOFTEE_PTC_50BP" not in report["details"]["missing_examples"]
+
+
+def test_critical_field_outside_configured_columns_is_still_counted(tmp_path):
+    # Audit repro (CORE-17): a critical dbNSFP field absent from
+    # plugins.dbNSFP.columns reported 0% coverage forever.
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "result.vcf"
+    write_config(config)
+    loaded = yaml.safe_load(config.read_text())
+    loaded["plugins"]["dbNSFP"]["columns"] = ["AlphaMissense_score"]
+    loaded["annotation_qc"]["critical_dbnsfp_fields"] = [
+        "AlphaMissense_score", "CADD_phred",
+    ]
+    config.write_text(yaml.safe_dump(loaded))
+    write_vcf(vcf)
+    report = build_report(config, vcf)
+    metrics = {item["field"]: item for item in report["metrics"] if "field" in item}
+    assert metrics["CADD_phred"]["coverage"] == 1.0
+    assert metrics["CADD_phred"]["status"] == "PASS"
+
+
 def test_disabled_plugin_is_skipped_not_failed(tmp_path):
     config = tmp_path / "config.yaml"
     vcf = tmp_path / "result.vcf"
@@ -264,6 +320,8 @@ if __name__ == "__main__":
         test_certificate_uses_annotation_specific_denominators,
         test_missing_critical_missense_annotation_warns_and_records_example,
         test_logofunc_class_comes_from_mane_entry_not_file_order,
+        test_deliberate_ptc_skips_are_not_missing_coverage,
+        test_critical_field_outside_configured_columns_is_still_counted,
         test_disabled_plugin_is_skipped_not_failed,
     ]
     for test in tests:

@@ -135,14 +135,18 @@ def main() -> int:
                 original_records.add(original_record)
             source_allele = info.get("SRC_REF_ALT", "")
             if not source_allele:
-                source_allele = ",".join(
-                    (
-                        info.get("IEI_ORIGINAL_REF", ""),
-                        info.get("IEI_ORIGINAL_ALT", ""),
-                    )
+                original_ref = info.get("IEI_ORIGINAL_REF", "")
+                original_alt = info.get("IEI_ORIGINAL_ALT", "")
+                # Both halves must be present: "A," or ",G" is not a usable
+                # source allele (source_alleles() rejects them) and counting
+                # such records as resolved perturbed the reconciliation gate.
+                source_allele = (
+                    f"{original_ref},{original_alt}"
+                    if original_ref and original_alt
+                    else ""
                 )
             source_identity = (original_record, source_allele)
-            if original_record and source_allele != ",":
+            if original_record and source_allele:
                 source_allele_records.add(source_identity)
 
             replacements: dict[str, str | None] = {}
@@ -183,7 +187,7 @@ def main() -> int:
                     unavailable_swap_genotypes += 1
             elif swap < 0:
                 new_references += 1
-                if original_record and source_allele != ",":
+                if original_record and source_allele:
                     new_reference_source_alleles.add(source_identity)
                 replacements["IEI_LIFTOVER_NEW_REFERENCE"] = None
 
@@ -204,8 +208,11 @@ def main() -> int:
         "swap_records_without_called_genotypes": unavailable_swap_genotypes,
     }
     Path(args.stats).write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n")
-    if retained + corrections != total:
-        return 2
+    # No self-check here: retained + corrections == total held by construction
+    # (every record takes exactly one branch), so the old `return 2` was
+    # unreachable and its exit code gave false assurance. The real
+    # reconciliation happens in write_liftover_qc.py, which compares these
+    # stats against independently counted files.
     return 0
 
 

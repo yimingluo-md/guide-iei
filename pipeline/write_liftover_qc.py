@@ -50,8 +50,18 @@ def count_records(path: str) -> tuple[int, Counter[str]]:
     return count, filters
 
 
+def _trimmed(ref: str, alt: str) -> tuple[str, str]:
+    """Strip the shared allele suffix then prefix (minimal representation)."""
+    while len(ref) > 1 and len(alt) > 1 and ref[-1] == alt[-1]:
+        ref, alt = ref[:-1], alt[:-1]
+    while len(ref) > 1 and len(alt) > 1 and ref[0] == alt[0]:
+        ref, alt = ref[1:], alt[1:]
+    return ref, alt
+
+
 def lifted_metrics(path: str) -> dict:
-    total = allele_changed = reverse_complemented = swaps = new_references = 0
+    total = allele_changed = renormalized = reverse_complemented = 0
+    swaps = new_references = 0
     original_records: set[str] = set()
     with text_open(path) as handle:
         for line in handle:
@@ -68,20 +78,35 @@ def lifted_metrics(path: str) -> dict:
             original_ref = unquote(info.get("IEI_ORIGINAL_REF", "")).upper()
             original_alt = unquote(info.get("IEI_ORIGINAL_ALT", "")).upper()
             if original_ref and original_alt and (ref, alt) != (original_ref, original_alt):
-                allele_changed += 1
                 if (
                     ref == original_ref.translate(COMPLEMENT)[::-1]
                     and alt == original_alt.translate(COMPLEMENT)[::-1]
                 ):
+                    allele_changed += 1
                     reverse_complemented += 1
+                elif _trimmed(ref, alt) == _trimmed(original_ref, original_alt):
+                    # Same alleles after stripping shared padding: the
+                    # post-liftover `bcftools norm -f` pass re-represented the
+                    # record; this is not an assembly allele substitution.
+                    # (Left-shifts through repeat runs still count as changed
+                    # below — separating those needs the reference sequence.)
+                    renormalized += 1
+                else:
+                    allele_changed += 1
             if "IEI_ASSEMBLY_ALLELE_SWAP" in info:
                 swaps += 1
             if "IEI_LIFTOVER_NEW_REFERENCE" in info:
                 new_references += 1
+    # A record set with no IEI_ORIGINAL_RECORD provenance means the chain was
+    # stripped somewhere: report that explicitly instead of silently
+    # substituting the post-split allele-record count (a different quantity).
+    provenance_missing = total > 0 and not original_records
     return {
-        "lifted_records": len(original_records) if original_records else total,
+        "lifted_records": len(original_records) if original_records else None,
+        "provenance_missing": provenance_missing,
         "lifted_allele_records": total,
         "allele_changed_records": allele_changed,
+        "renormalized_representation_records": renormalized,
         "reverse_complemented_records": reverse_complemented,
         "retained_assembly_allele_swap_records": swaps,
         "new_reference_records": new_references,
@@ -156,6 +181,12 @@ def main() -> int:
         warnings.append(
             "Lifted, reference-correction, rejected, or unsupported records do "
             "not reconcile with the prepared input."
+        )
+    if accepted.get("provenance_missing"):
+        warnings.append(
+            "Lifted records carry no IEI_ORIGINAL_RECORD provenance; the "
+            "per-source-record count is unavailable (reported as null), not "
+            "silently substituted with the post-split allele-record count."
         )
     if correction_count:
         warnings.append(

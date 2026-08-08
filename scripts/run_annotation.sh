@@ -542,8 +542,12 @@ if [[ "$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)" != "false
             --reference "$AA_REF" \
             --clinvar-release "$CLINVAR_RELEASE" || die "post-processing failed"
     else
+        # No freshly built reference: the config-resolved one may still load;
+        # if it too is empty, proceeding all-zero is this branch's explicit
+        # choice (e.g. --no-clinvar runs), so opt in rather than fail.
         python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
             --config "$CONFIG" --input "$OUTPUT" --output "$MATCH_OUTPUT" \
+            --allow-missing-reference \
             --clinvar-release "$CLINVAR_RELEASE" || die "post-processing failed"
     fi
     if [[ "$FINAL" == *.gz ]]; then

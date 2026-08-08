@@ -106,6 +106,16 @@ def is_mane(entry: dict[str, str]) -> bool:
     )
 
 
+# PTC_calc_status values that are documented, deliberate refusals to apply
+# the 50 bp rule — correct behaviour, not missing annotation coverage.
+DELIBERATE_PTC_SKIP_PREFIXES = (
+    "not_applicable_single_exon_transcript",
+    "unsupported_transcript_biotype:",
+    "transcript_version_mismatch",
+    "outside_cds",
+)
+
+
 def preferred_entry(entries: list[dict[str, str]]) -> dict[str, str]:
     """Pick the clinically preferred CSQ entry: MANE, then PICK, then order.
 
@@ -220,7 +230,10 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             missense = [e for e in entries if has_consequence(e, {"missense_variant"})]
             if missense:
                 counters["missense_eligible"] += 1
-                for field in names["configured_dbnsfp"]:
+                # Count over configured AND critical fields: a critical field
+                # outside plugins.dbNSFP.columns previously reported 0%
+                # coverage forever, a permanent WARN no data could clear.
+                for field in {*names["configured_dbnsfp"], *names["critical_dbnsfp"]}:
                     if any(present(entry.get(field)) for entry in missense):
                         dbnsfp_annotated[field] += 1
                 for field in names["critical_dbnsfp"]:
@@ -269,7 +282,6 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 entry for entry in entries if has_consequence(entry, {"frameshift_variant"})
             ]
             if frameshift:
-                counters["ptc50_frameshift_eligible"] += 1
                 statuses = {
                     entry.get("PTC_calc_status", "")
                     for entry in frameshift
@@ -277,13 +289,27 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 }
                 for status in statuses:
                     counters[f"ptc50_status:{status}"] += 1
-                if any(
+                recomputed = any(
                     entry.get("PTC_calc_status", "").startswith("ok")
                     and present(entry.get("LoF_50_BP_RULE_PTC"))
                     for entry in frameshift
-                ):
+                )
+                deliberate_only = bool(statuses) and all(
+                    status.startswith(DELIBERATE_PTC_SKIP_PREFIXES)
+                    for status in statuses
+                )
+                if recomputed:
+                    counters["ptc50_frameshift_eligible"] += 1
                     counters["ptc50_recomputed"] += 1
+                elif deliberate_only:
+                    # A documented refusal (single-exon transcript, unsupported
+                    # biotype, version mismatch, outside CDS) is correct
+                    # behaviour, not missing coverage. Counting these in the
+                    # denominator produced false WARNs and remediation lists
+                    # of variants needing no remediation.
+                    counters["ptc50_not_applicable"] += 1
                 else:
+                    counters["ptc50_frameshift_eligible"] += 1
                     note_missing("LOFTEE_PTC_50BP", key)
                 if any(entry.get("LoF_50_BP_RULE_changed") == "1" for entry in frameshift):
                     counters["ptc50_changed"] += 1
@@ -528,7 +554,6 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     })
 
     statuses = {item["status"] for item in metrics}
-    overall = "FAIL" if "FAIL" in statuses else "WARN" if "WARN" in statuses else "PASS"
     promoter_schema = any(field in csq_fields for field in PROMOTERAI_FIELDS)
     promoter_status = (
         "PASS"
@@ -537,6 +562,11 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         if promoter_schema
         else "SKIPPED_NOT_INSTALLED"
     )
+    # promoterAI participates in the overall verdict: an installed plugin
+    # producing zero annotations previously warned only inside its detail
+    # block while the banner stayed PASS.
+    statuses.add(promoter_status if promoter_status in {"PASS", "WARN", "FAIL"} else "PASS")
+    overall = "FAIL" if "FAIL" in statuses else "WARN" if "WARN" in statuses else "PASS"
 
     return {
         "schema_version": 1,
@@ -620,6 +650,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             "loftee_ptc_50bp": {
                 "eligible_frameshift_records": counters["ptc50_frameshift_eligible"],
                 "recomputed_records": counters["ptc50_recomputed"],
+                "not_applicable_records": counters["ptc50_not_applicable"],
                 "changed_records": counters["ptc50_changed"],
                 "status_record_counts": {
                     key.removeprefix("ptc50_status:"): value

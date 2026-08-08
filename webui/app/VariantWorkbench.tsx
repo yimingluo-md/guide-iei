@@ -778,9 +778,18 @@ export default function VariantWorkbench() {
   }, [reviewAnalysisScope, regulatoryFilterEnabled, selectedRegulatorySet, screenCatalog?.available, eligibleRows]);
 
   const screenFilteredRows = useMemo(
-    () => reviewAnalysisScope === "whole_genome" && regulatoryFilterEnabled && regulatoryMatches
-      ? eligibleRows.filter((row) => regulatoryMatches.has(regulatoryVariantKey(row)))
-      : eligibleRows,
+    () => {
+      if (reviewAnalysisScope !== "whole_genome" || !regulatoryFilterEnabled) {
+        return eligibleRows;
+      }
+      // While the chunked screen is loading — and permanently after a service
+      // failure — matches are null. Passing every row through with the
+      // "require positive SCREEN evidence" box checked reads as "all of
+      // these have evidence"; the honest state is an empty set until real
+      // matches arrive, with the loading/error banners explaining why.
+      if (!regulatoryMatches) return [];
+      return eligibleRows.filter((row) => regulatoryMatches.has(regulatoryVariantKey(row)));
+    },
     [eligibleRows, reviewAnalysisScope, regulatoryFilterEnabled, regulatoryMatches],
   );
 

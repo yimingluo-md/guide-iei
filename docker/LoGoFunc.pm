@@ -93,6 +93,12 @@ sub run {
   )};
   my @allele_matches;
   for my $candidate (@data) {
+    # Compare the (normalised) stored contig against the query: without this
+    # the field was stored and never read, and a future chr-prefixed table
+    # would yield empty tabix results with no diagnostic anywhere.
+    next if defined $candidate->{chr}
+      && length $candidate->{chr}
+      && $candidate->{chr} ne $chr;
     my $matches = get_matched_variant_alleles(
       {ref => $ref, alts => [$alt], pos => $vf->{start}, strand => $vf->strand},
       {ref => $candidate->{ref}, alts => [$candidate->{alt}], pos => $candidate->{start}},
@@ -140,6 +146,9 @@ sub parse_data {
     $transcript, $hgvsp, $aa_pos, $ref_aa, $alt_aa, $prediction,
     $neutral, $gof, $lof,
   ) = split /\t/, $line, -1;
+  # Store the contig in the same normalised form the query uses so the
+  # comparison in run() holds for both bare and chr-prefixed tables.
+  $chrom =~ s/^chr//i if defined $chrom;
   $ref_aa =~ s/X/*/g;
   $alt_aa =~ s/X/*/g;
   return {

@@ -921,8 +921,20 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     ...init,
     headers: { "Content-Type": "application/json", ...init?.headers },
   });
-  const payload = await response.json();
-  if (!response.ok) throw new Error(payload.error ?? `Local service returned ${response.status}`);
+  // Never let a JSON parse error mask the HTTP status: when the service is
+  // down or a proxy answers with an HTML error page, the user should see
+  // "Local service returned 502", not "Unexpected token '<'".
+  const payload: unknown = await response.json().catch(() => null);
+  if (!response.ok) {
+    const message =
+      payload && typeof payload === "object" && "error" in payload
+        ? String((payload as { error?: unknown }).error ?? "")
+        : "";
+    throw new Error(message || `Local service returned ${response.status}`);
+  }
+  if (payload === null) {
+    throw new Error(`Local service returned a non-JSON response for ${path}`);
+  }
   return payload as T;
 }
 

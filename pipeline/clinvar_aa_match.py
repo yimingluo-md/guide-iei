@@ -214,26 +214,46 @@ def main(argv=None) -> int:
                     help="config YAML (to locate the reference + info key if not given)")
     ap.add_argument("--info-key", default=None)
     ap.add_argument("--clinvar-release", default="NA")
+    ap.add_argument("--allow-missing-reference", action="store_true",
+                    help="proceed with an all-zero flag when no reference is "
+                         "available (an explicit choice, not a silent default)")
     args = ap.parse_args(argv)
 
     info_key = args.info_key or "ClinVar_path_aa_match"
     ref_path = args.reference
 
     if args.config and (ref_path is None):
+        # Narrow handling: a config-resolution failure must be visible, not
+        # silently degrade into an all-zero flag column that is
+        # indistinguishable from "no ClinVar residue matches in this sample".
         try:
             import yaml
-            cfg = yaml.safe_load(open(args.config))
-            dest = (cfg.get("clinvar", {}) or {}).get("dest_dir", "references/clinvar")
-            ref_path = os.path.join(os.path.dirname(os.path.abspath(args.config)),
-                                    "..", dest, "clinvar_aa_reference.tsv")
-            ref_path = os.path.normpath(ref_path)
-        except Exception:
-            ref_path = None
+        except ImportError as exc:
+            print(f"WARN  aa-match config resolution unavailable: {exc}",
+                  file=sys.stderr)
+        else:
+            try:
+                cfg = yaml.safe_load(open(args.config))
+                dest = (cfg.get("clinvar", {}) or {}).get("dest_dir", "references/clinvar")
+                ref_path = os.path.join(os.path.dirname(os.path.abspath(args.config)),
+                                        "..", dest, "clinvar_aa_reference.tsv")
+                ref_path = os.path.normpath(ref_path)
+            except (OSError, yaml.YAMLError, AttributeError, KeyError,
+                    TypeError, ValueError) as exc:
+                print(f"WARN  aa-match config resolution failed: {exc}",
+                      file=sys.stderr)
+                ref_path = None
 
     ref = load_reference(ref_path) if ref_path else set()
     if not ref:
-        print(f"WARN  aa-match reference empty or missing "
-              f"({ref_path}); flag will be 0 for all records.", file=sys.stderr)
+        message = (f"aa-match reference empty or missing ({ref_path}); "
+                   "every record would be flagged 0")
+        if not args.allow_missing_reference:
+            print(f"ERROR {message}. Rebuild the reference, or pass "
+                  "--allow-missing-reference to proceed deliberately.",
+                  file=sys.stderr)
+            return 3
+        print(f"WARN  {message}; proceeding as requested.", file=sys.stderr)
 
     stats = annotate(args.input, args.output, ref,
                      info_key=info_key, clinvar_release=args.clinvar_release)
