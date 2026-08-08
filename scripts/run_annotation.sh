@@ -51,6 +51,9 @@ done
 [[ -f "$INPUT"  ]] || die "input not found: $INPUT"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
+# INPUT is reassigned through liftover/normalisation/pre-filter stages; the
+# reproducibility manifest at the end records the file the operator supplied.
+SOURCE_INPUT="$INPUT"
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
 WORKDIR="$(dirname "$OUTPUT")"
@@ -599,6 +602,29 @@ if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
     python3 "${ROOT}/pipeline/annotation_qc.py" \
         --config "$CONFIG" --vcf "$FINAL_OUTPUT" \
         || die "annotation completeness certificate generation failed"
+fi
+
+# ============================================================================ #
+# 9. Reproducibility manifest (decision D6): a machine-readable record of the
+#    config (with hash), container identity, exact VEP argv, and reference
+#    file identities that produced this deliverable. Reference identity is
+#    size+mtime plus any recorded checksum sidecars — multi-GB references are
+#    never re-hashed, so this adds ~a second per run.
+# ============================================================================ #
+IMAGE_ID="unknown"
+case "$RUNTIME" in
+    docker|podman)
+        IMAGE_ID="$("$RUNTIME" image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || echo unknown)" ;;
+esac
+if python3 "${ROOT}/pipeline/write_run_manifest.py" \
+    --config "$CONFIG" --base-dir "$ROOT" \
+    --input "$SOURCE_INPUT" --output "$FINAL_OUTPUT" \
+    --plan-json "$PLAN_JSON" \
+    --runtime "$RUNTIME" --image "$IMAGE" --image-id "$IMAGE_ID" \
+    --clinvar-release "$CLINVAR_RELEASE"; then
+    log "run manifest -> ${FINAL_OUTPUT}.run_manifest.json"
+else
+    warn "run manifest could not be written (the annotated VCF itself is complete)"
 fi
 
 log "DONE. Annotated VCF: $FINAL_OUTPUT"
