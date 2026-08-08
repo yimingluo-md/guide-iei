@@ -106,6 +106,22 @@ def is_mane(entry: dict[str, str]) -> bool:
     )
 
 
+def preferred_entry(entries: list[dict[str, str]]) -> dict[str, str]:
+    """Pick the clinically preferred CSQ entry: MANE, then PICK, then order.
+
+    With --flag_pick_allele_gene every transcript is retained and VEP's file
+    order is arbitrary, so "first entry" would attribute per-variant metrics
+    to a random transcript.
+    """
+    for entry in entries:
+        if is_mane(entry):
+            return entry
+    for entry in entries:
+        if entry.get("PICK") == "1":
+            return entry
+    return entries[0]
+
+
 def record_key(columns: list[str]) -> str:
     return f"{columns[0]}-{columns[1]}-{columns[3]}-{columns[4]}"
 
@@ -231,7 +247,8 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 if exact_matches:
                     counters["logofunc_exact_match"] += 1
                     counters[
-                        "logofunc_class:" + exact_matches[0]["LoGoFunc_prediction"]
+                        "logofunc_class:"
+                        + preferred_entry(exact_matches)["LoGoFunc_prediction"]
                     ] += 1
                 elif allele_available:
                     note_missing("LoGoFunc_transcript_protein_match", key)

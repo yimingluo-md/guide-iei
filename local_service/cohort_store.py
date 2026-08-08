@@ -424,8 +424,13 @@ def parse_genotype(format_value: str, sample_value: str, alt_index: int) -> dict
     if not copies:
         return {"carrier": False}
 
-    if len(called) == 1:
+    if len(allele_strings) == 1:
         zygosity = "hemizygous"
+    elif len(called) < len(allele_strings):
+        # A partial no-call such as ./1: the sample demonstrably carries the
+        # allele, but the unresolved second allele makes this neither a
+        # confident single-copy (hemizygous) nor a heterozygous call.
+        zygosity = "half_called"
     elif copies == len(called):
         zygosity = "homozygous"
     elif copies == 1:
@@ -433,13 +438,14 @@ def parse_genotype(format_value: str, sample_value: str, alt_index: int) -> dict
     else:
         zygosity = "non_reference"
 
-    ad = []
+    ad: list[int | None] = []
     for item in (fields.get("AD") or "").split(","):
         try:
             ad.append(int(item))
         except ValueError:
-            ad.append(0)
-    total_depth = sum(ad)
+            # "." means per-allele depth was not reported — not zero reads.
+            ad.append(None)
+    total_depth = sum(value for value in ad if value is not None)
     allele_depth = ad[allele_number] if allele_number < len(ad) else None
     dp = parse_number(fields.get("DP"))
     gq = parse_number(fields.get("GQ"))

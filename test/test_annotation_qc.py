@@ -211,6 +211,40 @@ def test_missing_critical_missense_annotation_warns_and_records_example(tmp_path
     ]
 
 
+def test_logofunc_class_comes_from_mane_entry_not_file_order(tmp_path):
+    # Audit repro (CORE-19): with --flag_pick_allele_gene all transcripts are
+    # retained, so the first CSQ entry is an arbitrary transcript. The class
+    # histogram must follow the MANE/picked entry, not file order.
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "result.vcf"
+    write_config(config)
+    non_mane = csq(
+        "T", "missense_variant", "STAT3", "",
+        "0.98", "28.1", "", "", "", "",
+        "0", "0", "0", "0",
+        "Pathogenic", "", "", "", "", "", "ok",
+        "LOF", "0.05", "0.05", "0.90", "1", "allele_transcript_protein",
+    )
+    mane = csq(
+        "T", "missense_variant", "STAT3", "NM_139276.3",
+        "0.98", "28.1", "", "", "", "",
+        "0", "0", "0", "0",
+        "Pathogenic", "", "", "", "", "", "ok",
+        "GOF", "0.05", "0.90", "0.05", "1", "allele_transcript_protein",
+    )
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(FIELDS)
+        + '">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        f"17\t42322474\t.\tC\tT\t100\tPASS\tCSQ={non_mane},{mane}\tGT\t0/1\n",
+        encoding="utf-8",
+    )
+    report = build_report(config, vcf)
+    assert report["details"]["logofunc"]["prediction_class_counts"] == {"GOF": 1}
+
+
 def test_disabled_plugin_is_skipped_not_failed(tmp_path):
     config = tmp_path / "config.yaml"
     vcf = tmp_path / "result.vcf"
@@ -229,6 +263,7 @@ if __name__ == "__main__":
     tests = [
         test_certificate_uses_annotation_specific_denominators,
         test_missing_critical_missense_annotation_warns_and_records_example,
+        test_logofunc_class_comes_from_mane_entry_not_file_order,
         test_disabled_plugin_is_skipped_not_failed,
     ]
     for test in tests:

@@ -112,6 +112,60 @@ class WgsPrefilterTests(unittest.TestCase):
         self.assertTrue(record_passes(quiet, HEADER, all_noncoding, {}, exome))
         self.assertFalse(record_passes(quiet, HEADER, no_noncoding, {}, exome))
 
+    def test_per_allele_info_frequency_is_not_pooled_across_alts(self):
+        # Audit repro (SVC-7): a Number=A INFO AF of "0.30,0.00001" previously
+        # excluded BOTH alleles via max(); the rare candidate allele must
+        # survive the frequency gate on its own token.
+        header = VcfHeader(("CASE",), FIELDS, ("1",), ("MAX_AF",))
+        record = "1\t100\t.\tA\tG,T\t99\tPASS\tMAX_AF=0.30,0.00001\tGT\t1/2\n"
+        options = WgsPrefilterOptions(noncoding_mode="ccre")
+        self.assertTrue(record_passes(
+            record, header, options, {"1": ((90, 110),)}
+        ))
+        common_both = "1\t100\t.\tA\tG,T\t99\tPASS\tMAX_AF=0.30,0.20\tGT\t1/2\n"
+        self.assertFalse(record_passes(
+            common_both, header, options, {"1": ((90, 110),)}
+        ))
+
+    def test_multi_allelic_match_failure_does_not_exclude_by_pooled_af(self):
+        # Audit repro (SVC-8): with no ALLELE_NUM and a minimised Allele that
+        # matches neither ALT, one allele's CSQ values must not decide the
+        # other allele's fate. Unattributable AF must not exclude; the rare
+        # allele retains the record through its region route.
+        csq_common = "|".join(("-", "", "NFKB1", "0.30", ".", ".", "10"))
+        csq_rare = "|".join(("-", "", "NFKB1", "0.00001", ".", ".", "10"))
+        record = (
+            "1\t100\t.\tCTT\tC,CT\t99\tPASS\t"
+            f"CSQ={csq_common},{csq_rare}\tGT\t1/2\n"
+        )
+        options = WgsPrefilterOptions(noncoding_mode="ccre")
+        self.assertTrue(record_passes(
+            record, HEADER, options, {"1": ((90, 110),)}
+        ))
+
+    def test_multi_allelic_match_failure_still_qualifies_for_retention(self):
+        # Retention is record-granular: an unattributable high SpliceAI score
+        # must still keep the record (the safe direction), even though it can
+        # no longer exclude anything.
+        csq_quiet = "|".join(("-", "", "NFKB1", "0.001", "0.1", ".", "10"))
+        csq_splice = "|".join(("-", "", "NFKB1", "0.001", "0.9", ".", "10"))
+        record = (
+            "1\t100\t.\tCTT\tC,CT\t99\tPASS\t"
+            f"CSQ={csq_quiet},{csq_splice}\tGT\t1/2\n"
+        )
+        options = WgsPrefilterOptions(noncoding_mode="none")
+        self.assertTrue(record_passes(record, HEADER, options, {}))
+
+    def test_single_alt_match_failure_still_uses_all_consequences(self):
+        # A single-ALT record's consequences describe that ALT even when the
+        # minimised Allele string does not equal the raw ALT.
+        csq = "|".join(("-", "", "NFKB1", "0.011", ".", ".", "10"))
+        record = f"1\t100\t.\tCT\tC\t99\tPASS\tCSQ={csq}\tGT\t0/1\n"
+        options = WgsPrefilterOptions(noncoding_mode="ccre")
+        self.assertFalse(record_passes(
+            record, HEADER, options, {"1": ((90, 110),)}
+        ))
+
     def test_region_overlap_uses_the_full_small_variant_span(self):
         deletion = variant(pos=95, splice="0.1", promoter="0.1").replace(
             "\tA\tG\t", "\tAAAAAA\tA\t"

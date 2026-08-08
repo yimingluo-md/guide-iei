@@ -352,8 +352,14 @@ def prepare_transcript(model: Transcript, fasta: IndexedFasta) -> None:
     for start, end in coding:
         model.blocks.append((start, end, cumulative))
         cumulative += end - start + 1
+    # The coding-anchored 50 bp rule needs a junction between two coding
+    # blocks. With a single merged CDS block no such junction exists, and the
+    # anchor must not degenerate to CDS position 1 (which would make every
+    # coding distance negative and the rule an unconditional FAIL).
     model.last_coding_exon_cds = (
         sum(end - start + 1 for start, end in coding[:-1]) + 1
+        if len(coding) > 1
+        else None
     )
 
     first_start, first_end = coding[0]
@@ -690,7 +696,13 @@ def process_vcf(
                         transitions[transition] += 1
                         if original_rule and original_rule != result["rule"]:
                             counters["changed"] += 1
-                        if replace_original and "LoF_info" in entry:
+                        # Only rewrite LoF_info when LOFTEE actually produced
+                        # one for this transcript. Writing 50_BP_RULE into an
+                        # empty LoF_info would fabricate a LOFTEE-namespaced
+                        # verdict for a transcript LOFTEE never scored; the
+                        # recomputed rule is still published in this module's
+                        # own LoF_50_BP_RULE_PTC field below.
+                        if replace_original and entry.get("LoF_info"):
                             entry["LoF_info"] = replace_lof_key(
                                 entry["LoF_info"], "50_BP_RULE", result["rule"]
                             )

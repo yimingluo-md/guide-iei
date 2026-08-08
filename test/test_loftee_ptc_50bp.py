@@ -13,8 +13,19 @@ from pipeline.loftee_ptc_50bp import (
     Transcript,
     calculate,
     collect_transcripts,
+    prepare_transcript,
     process_vcf,
 )
+
+
+class StubFasta:
+    """1-based inclusive fetch over an in-memory contig, like IndexedFasta."""
+
+    def __init__(self, sequence: str):
+        self.sequence = sequence
+
+    def fetch(self, chrom: str, start: int, end: int) -> str:
+        return self.sequence[start - 1 : end]
 
 
 def model() -> Transcript:
@@ -165,6 +176,108 @@ def test_reference_disrupted_transcript_biotype_is_refused_before_cds_scoring():
     assert result["rule"] == ""
 
 
+def test_unscored_transcript_does_not_get_fabricated_lof_info(tmp_path):
+    # Audit repro (CORE-7): a frameshift CSQ whose LoF/LoF_info are empty
+    # (LOFTEE declined to score the transcript) must not have 50_BP_RULE
+    # written into LoF_info; the recomputed rule belongs only in this
+    # module's own LoF_50_BP_RULE_PTC field.
+    fields = [
+        "Allele",
+        "ALLELE_NUM",
+        "Consequence",
+        "Feature",
+        "HGVSc",
+        "HGVSp",
+        "LoF",
+        "LoF_info",
+    ]
+    csq = "|".join(
+        [
+            "G",
+            "1",
+            "frameshift_variant",
+            "ENST00000000001",
+            "ENST00000000001.1:c.4del",
+            "ENSP1:p.Ala2GlyfsTer6",
+            "",
+            "",
+        ]
+    )
+    source = tmp_path / "input.vcf"
+    output = tmp_path / "output.vcf"
+    source.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(fields)
+        + '">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        f"1\t102\t.\tGA\tG\t.\tPASS\tCSQ={csq}\n"
+    )
+    process_vcf(
+        source,
+        output,
+        {"ENST00000000001": model()},
+        fields,
+        50,
+        True,
+        {"assembly": "GRCh38", "ensembl_release": "test"},
+    )
+    text = output.read_text()
+    header = next(line for line in text.splitlines() if line.startswith("##INFO=<ID=CSQ"))
+    output_fields = re.search(r"Format: ([^\">]+)", header).group(1).split("|")
+    record = next(line for line in text.splitlines() if not line.startswith("#"))
+    raw_csq = dict(item.split("=", 1) for item in record.split("\t")[7].split(";"))["CSQ"]
+    annotation = dict(zip(output_fields, raw_csq.split("|")))
+
+    assert annotation["LoF_info"] == ""
+    assert annotation["LoF"] == ""
+    assert annotation["LoF_50_BP_RULE_PTC"] == "PASS"
+    assert annotation["LoF_50_BP_RULE_original"] == ""
+    assert annotation["LoF_50_BP_RULE_changed"] == ""
+
+
+def test_single_coding_block_has_no_coding_anchor(tmp_path):
+    # Audit repro (CORE-10): a transcript whose ORF sits in one merged CDS
+    # block previously got last_coding_exon_cds=1, making every coding
+    # distance negative and rule_coding an unconditional FAIL.
+    genome = "N" * 99 + "ATGAAACCCGGGTTTTAA" + "N" * 182 + "ATGATAATAA" + "N" * 91
+    single = Transcript("ENST00000000001")
+    single.chrom = "1"
+    single.strand = 1
+    single.biotype = "protein_coding"
+    single.exons = [(100, 117), (300, 309)]
+    single.coding_features = [(100, 117)]
+    prepare_transcript(single, StubFasta(genome))
+    assert single.last_coding_exon_cds is None
+
+    two_blocks = Transcript("ENST00000000002")
+    two_blocks.chrom = "1"
+    two_blocks.strand = 1
+    two_blocks.biotype = "protein_coding"
+    two_blocks.exons = [(100, 108), (300, 308)]
+    two_blocks.coding_features = [(100, 108), (300, 308)]
+    prepare_transcript(two_blocks, StubFasta(genome))
+    assert two_blocks.last_coding_exon_cds == 10
+
+
+def test_missing_coding_anchor_suppresses_rule_coding():
+    transcript = model()
+    transcript.last_coding_exon_cds = None
+    result = calculate(
+        transcript,
+        102,
+        "GA",
+        "G",
+        "frameshift_variant",
+        "ENST00000000001.1:c.4del",
+        50,
+    )
+    assert result["status"] == "ok"
+    assert result["dist_coding"] is None
+    assert result["rule_coding"] == ""
+    assert result["rule"] == "PASS"
+
+
 def test_single_exon_transcript_keeps_ptc_but_does_not_apply_junction_rule():
     transcript = model()
     transcript.exons = [(100, 127)]
@@ -188,6 +301,9 @@ if __name__ == "__main__":
     tests = [
         test_frameshift_is_scored_at_downstream_ptc,
         test_successful_recomputation_replaces_lof_info_and_preserves_original,
+        test_unscored_transcript_does_not_get_fabricated_lof_info,
+        test_single_coding_block_has_no_coding_anchor,
+        test_missing_coding_anchor_suppresses_rule_coding,
         test_version_mismatch_is_refused,
         test_reference_disrupted_transcript_biotype_is_refused_before_cds_scoring,
         test_single_exon_transcript_keeps_ptc_but_does_not_apply_junction_rule,

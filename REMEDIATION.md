@@ -58,29 +58,35 @@ execution is the equivalent verification.
 
 ## Phase 1 — Clinically wrong results (silent)
 
+> **Status note (2026-08-08):** Python-side items fixed on
+> `fix/phase-1-clinical-correctness-python`. WebUI items (1B, most of 1D, 1E)
+> are **deferred until a node runtime is available** — no `node`/`tsc` exists
+> on this host, and unverifiable edits to clinical review code were ruled out.
+> Install node (e.g. `brew install node`) to unblock the webui half.
+
 ### 1A. Haplotype / phase (produces confident wrong calls that *hide* real biallelic LoF)
-- [ ] **P1-1** (CRIT) `pipeline/haplotype_consequences.py:80-87` — GT `1/2` (definitionally trans) classified `homozygous_alt` → `FRAME_RESTORED_CONFIRMED`; also loses per-haplotype info for `1|2` [CORE-2] *(hemizygous-X half per D4)*
-- [ ] **P1-2** (CRIT) `pipeline/haplotype_consequences.py:128-136` — phased pair with **no** PS at either site returns CONFIRMED; require one populated PS on every non-hom state [CORE-3]
-- [ ] **P1-3** (HIGH) `pipeline/haplotype_consequences.py:66,230` — key contract mismatch: candidate keys are post-`norm` minimal reps, annotate keys pre-`norm`; indel lookups silently miss. Also `2/2` genotype credited to ALT#1 [CORE-9]
+- [x] **P1-1** (CRIT) `pipeline/haplotype_consequences.py:80-87` — GT `1/2` (definitionally trans) classified `homozygous_alt` → `FRAME_RESTORED_CONFIRMED`; also loses per-haplotype info for `1|2` [CORE-2] *(fixed: multi-alt genotypes get unknown placement → POSSIBLE/PARTIAL, never CONFIRMED; hemizygous-X half still open per D4)*
+- [x] **P1-2** (CRIT) `pipeline/haplotype_consequences.py:128-136` — phased pair with **no** PS at either site returns CONFIRMED; require one populated PS on every non-hom state [CORE-3]
+- [x] **P1-3** (HIGH) `pipeline/haplotype_consequences.py:66,230` — key contract mismatch: candidate keys are post-`norm` minimal reps, annotate keys pre-`norm`; indel lookups silently miss. Also `2/2` genotype credited to ALT#1 [CORE-9] *(fixed: minimal-representation key fallback on both sides, per-ALT keys for no-ID records, unmatched keys counted + warned; full left-shift normalisation still needs the reference — misses are now visible instead of silent)*
 
 ### 1B. WebUI CSQ decoding (corrupts clinical export)
 - [ ] **P1-4** (CRIT) `webui/app/vcf.ts:411-413` — `decode()` form-decodes `+`→space, corrupting every intronic HGVS (lands in `iei-prioritized-variants.tsv`) [UI-1]
 - [ ] **P1-5** (CRIT) `webui/app/vcf.ts:411-413` — unguarded `decodeURIComponent`; one stray `%` aborts the entire import (guarded pattern exists at vcf.ts:456) [UI-2]
 
 ### 1C. Allele-index family (per-allele values pooled across ALTs — one shared fix pattern)
-- [ ] **P1-6** (HIGH) `local_service/wgs_review.py:216-222` — `_numbers()` flattens per-allele fields, callers `max()` across all ALTs [SVC-7]
-- [ ] **P1-7** (HIGH) `local_service/wgs_review.py:300-301` — allele-match failure falls back to pooling every ALT's consequences [SVC-8]
+- [x] **P1-6** (HIGH) `local_service/wgs_review.py:216-222` — `_numbers()` flattens per-allele fields, callers `max()` across all ALTs [SVC-7] *(fixed: `_info_numbers()` selects this ALT's comma token when arity matches ALT count)*
+- [x] **P1-7** (HIGH) `local_service/wgs_review.py:300-301` — allele-match failure falls back to pooling every ALT's consequences [SVC-8] *(fixed: unattributable values can no longer EXCLUDE an allele; they may still QUALIFY the record for retention, which is record-granular and errs safe)*
 - [ ] **P1-8** (HIGH) `webui/app/vcf.ts:1020-1024` — same fallback: `matching.length ? matching : consequences` cross-assigns annotations [UI-4]
 - [ ] **P1-9** (HIGH) `webui/app/vcf.ts:514-519` — `Number=A` INFO collapsed with `Math.max` across alternates; rare allele inherits common allele's AF and is filtered out [UI-8]
-- [ ] **P1-10** (MED) `pipeline/annotation_qc.py:228-238` — LoGoFunc class from first CSQ entry in file order, not picked/MANE transcript [CORE-19]
+- [x] **P1-10** (MED) `pipeline/annotation_qc.py:228-238` — LoGoFunc class from first CSQ entry in file order, not picked/MANE transcript [CORE-19] *(fixed: `preferred_entry()` — MANE, then PICK, then order)*
 
 ### 1D. Genotype semantics (webui + service)
 - [ ] **P1-11** (HIGH) `webui/app/vcf.ts:977-980` — `FILTER=.` records silently discarded as non-PASS [UI-3]
 - [ ] **P1-12** (HIGH) `webui/app/vcf.ts:567-568,1014-1016` — half-calls (`./1`) treated as non-carriers; variant row dropped entirely [UI-6]
 - [ ] **P1-13** (HIGH) `webui/app/vcf.ts:1005-1012` — no-call with higher GQ overwrites a real called genotype in the merge [UI-5]
 - [ ] **P1-14** (HIGH) `webui/app/vcf.ts:579-588` — absent AD/PL parse to fabricated zeros instead of null; feeds QC thresholds [UI-7]
-- [ ] **P1-15** (MED) `local_service/cohort_store.py:419-427` — half-call `./1` classified hemizygous [SVC-16]
-- [ ] **P1-16** (MED) `local_service/cohort_store.py:436-441` — unparseable AD component becomes 0, skewing allele balance [SVC-17]
+- [x] **P1-15** (MED) `local_service/cohort_store.py:419-427` — half-call `./1` classified hemizygous [SVC-16] *(fixed: new `half_called` zygosity; true haploid calls keep `hemizygous`)*
+- [x] **P1-16** (MED) `local_service/cohort_store.py:436-441` — unparseable AD component becomes 0, skewing allele balance [SVC-17] *(fixed: missing components → None; balance suppressed instead of fabricated 0.0)*
 - [ ] **P1-17** (MED) `webui/app/vcf.ts:370-373` — `isHeterozygousGenotype` requires a ref allele; `1/2` comp-hets excluded from non-trio path [UI-11]
 - [ ] **P1-18** (MED) `webui/app/vcf.ts:307-315` — QC genotype-class fallback classifies `./.` and `0` as homozygous-alt [UI-12]
 - [ ] **P1-19** (MED) `webui/app/vcf.ts:602` — allele-balance denominator on multi-allelic records [UI-18] *(per D3)*
@@ -93,8 +99,8 @@ execution is the equivalent verification.
 - [ ] **P1-24** (MED) `webui/app/VariantWorkbench.tsx:3740-3759` — cohort fallback fabricates AD from DP×AB; hardcodes called/carrier/phase [UI-13]
 
 ### 1F. LOFTEE PTC 50 bp rule
-- [ ] **P1-25** (HIGH) `pipeline/loftee_ptc_50bp.py:693-700` — fabricates `50_BP_RULE:PASS` in `LoF_info` for transcripts LOFTEE never scored (guard tests key presence, not value) [CORE-7]
-- [ ] **P1-26** (HIGH) `pipeline/loftee_ptc_50bp.py:355-357` — `last_coding_exon_cds`=1 for single-CDS-block transcript → negative distance, spurious FAIL [CORE-10]
+- [x] **P1-25** (HIGH) `pipeline/loftee_ptc_50bp.py:693-700` — fabricates `50_BP_RULE:PASS` in `LoF_info` for transcripts LOFTEE never scored (guard tests key presence, not value) [CORE-7] *(fixed: guard on the value; recomputed rule stays in the module's own field)*
+- [x] **P1-26** (HIGH) `pipeline/loftee_ptc_50bp.py:355-357` — `last_coding_exon_cds`=1 for single-CDS-block transcript → negative distance, spurious FAIL [CORE-10] *(fixed: anchor is None with one merged CDS block → rule_coding suppressed)*
 
 ---
 

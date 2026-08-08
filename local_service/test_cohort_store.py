@@ -11,7 +11,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from local_service.cohort_store import CohortStore, annotation_from
+from local_service.cohort_store import CohortStore, annotation_from, parse_genotype
 
 
 CSQ_FIELDS = [
@@ -840,6 +840,39 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(row["original_assembly"], "GRCh37")
         self.assertEqual(row["original_chrom"], "chr1")
         self.assertEqual(row["original_pos"], 101)
+
+
+class ParseGenotypeTests(unittest.TestCase):
+    def test_half_call_is_not_hemizygous(self):
+        # Audit repro (SVC-16): ./1 previously classified "hemizygous",
+        # indistinguishable from a confident haploid X/Y call.
+        parsed = parse_genotype("GT", "./1", 0)
+        self.assertTrue(parsed["carrier"])
+        self.assertEqual(parsed["zygosity"], "half_called")
+        self.assertEqual(parse_genotype("GT", "1|.", 0)["zygosity"], "half_called")
+
+    def test_true_haploid_call_is_hemizygous(self):
+        self.assertEqual(parse_genotype("GT", "1", 0)["zygosity"], "hemizygous")
+
+    def test_diploid_classes_unchanged(self):
+        self.assertEqual(parse_genotype("GT", "0/1", 0)["zygosity"], "heterozygous")
+        self.assertEqual(parse_genotype("GT", "1/1", 0)["zygosity"], "homozygous")
+        self.assertEqual(parse_genotype("GT", "1/2", 1)["zygosity"], "heterozygous")
+
+    def test_missing_ad_component_yields_null_balance_not_zero(self):
+        # Audit repro (SVC-17): AD "12,." previously became [12, 0] and an
+        # allele balance of 0.0 — indistinguishable from a genuine
+        # zero-read ALT.
+        parsed = parse_genotype("GT:AD", "0/1:12,.", 0)
+        self.assertIsNone(parsed["allele_balance"])
+
+    def test_numeric_ad_still_produces_balance(self):
+        parsed = parse_genotype("GT:AD", "0/1:12,6", 0)
+        self.assertAlmostEqual(parsed["allele_balance"], 6 / 18)
+
+    def test_absent_ad_yields_null_balance(self):
+        parsed = parse_genotype("GT:DP:GQ", "0/1:30:99", 0)
+        self.assertIsNone(parsed["allele_balance"])
 
 
 if __name__ == "__main__":

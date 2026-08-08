@@ -19,6 +19,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import json
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,6 +38,36 @@ def open_text(path: Path, mode: str = "rt"):
 
 def variant_id(chrom: str, pos: str, ref: str, alt: str) -> str:
     return f"{chrom}:{pos}:{ref}:{alt}"
+
+
+def minimal_variant_id(chrom: str, pos: str, ref: str, alt: str) -> str:
+    """Reproduce the minimal representation used for the candidate VCF's IDs.
+
+    Candidate IDs are set after ``bcftools norm -m -any`` from the split,
+    minimal alleles; the VCF handed to annotate_vcf is not normalised. Trimming
+    the shared allele suffix, then the shared prefix (advancing POS), maps a
+    non-minimal record onto the same key. Left-shifting through repeat runs
+    still requires the reference and is reported as a miss instead.
+    """
+    try:
+        position = int(pos)
+    except ValueError:
+        return variant_id(chrom, pos, ref, alt)
+    reference, alternate = ref, alt
+    while (
+        len(reference) > 1 and len(alternate) > 1
+        and reference[-1] == alternate[-1]
+    ):
+        reference = reference[:-1]
+        alternate = alternate[:-1]
+    while (
+        len(reference) > 1 and len(alternate) > 1
+        and reference[0] == alternate[0]
+    ):
+        reference = reference[1:]
+        alternate = alternate[1:]
+        position += 1
+    return variant_id(chrom, str(position), reference, alternate)
 
 
 def parse_candidate_genotypes(
@@ -63,9 +94,19 @@ def parse_candidate_genotypes(
                 columns[3],
                 columns[4],
             )
-            key = record_id if record_id not in {"", "."} else variant_id(
-                chrom, pos, ref, alt
-            )
+            if record_id not in {"", "."}:
+                keys = [record_id]
+            else:
+                # No ID: register per-ALT keys (raw and minimal) so a
+                # multi-allelic record is reachable from per-allele lookups
+                # instead of an unmatchable comma-joined key.
+                keys = []
+                for alt_allele in alt.split(","):
+                    raw_key = variant_id(chrom, pos, ref, alt_allele)
+                    keys.append(raw_key)
+                    trimmed = minimal_variant_id(chrom, pos, ref, alt_allele)
+                    if trimmed != raw_key:
+                        keys.append(trimmed)
             format_fields = columns[8].split(":")
             for sample, sample_value in zip(samples, columns[9:]):
                 values = sample_value.split(":")
@@ -80,23 +121,35 @@ def parse_candidate_genotypes(
                 alt_copies = sum(value != "0" for value in alleles)
                 if alt_copies == 0:
                     continue
-                homozygous_alt = len(alleles) == 2 and alt_copies == 2
+                non_ref_indexes = {value for value in alleles if value != "0"}
+                homozygous_alt = (
+                    len(alleles) == 2
+                    and alt_copies == 2
+                    and len(non_ref_indexes) == 1
+                )
                 phased = "|" in gt
                 haplotypes: set[int] | None = None
-                if homozygous_alt:
+                if len(non_ref_indexes) > 1:
+                    # Two different ALT indexes (e.g. 1/2 or 1|2): the record's
+                    # key covers only one of them and the GT alone cannot say
+                    # which haplotype carries it, so its placement is unknown.
+                    haplotypes = None
+                elif homozygous_alt:
                     haplotypes = {0, 1}
                 elif phased and len(alleles) == 2:
                     haplotypes = {
                         index for index, allele in enumerate(gt.split("|"))
                         if allele != "0"
                     }
-                result[key][sample] = {
+                sample_state = {
                     "gt": gt,
                     "homozygous_alt": homozygous_alt,
                     "phased": phased,
                     "haplotypes": haplotypes,
                     "phase_set": fields.get("PS") or fields.get("PID") or "",
                 }
+                for key in keys:
+                    result[key][sample] = sample_state
     return result, samples
 
 
@@ -125,10 +178,14 @@ def classify_phase(states: list[dict[str, object]]) -> str | None:
     if not common:
         return None  # confirmed trans
 
-    phase_sets = [str(state["phase_set"]) for state in known_non_homozygous]
-    populated = {value for value in phase_sets if value}
-    if len(populated) > 1 or (populated and any(not value for value in phase_sets)):
-        return POSSIBLE
+    if known_non_homozygous:
+        phase_sets = [str(state["phase_set"]) for state in known_non_homozygous]
+        populated = {value for value in phase_sets if value}
+        # Cross-record phase is only trustworthy when every phased heterozygous
+        # call carries the same, non-empty phase set. A bare "|" separator with
+        # no PS/PID says nothing about phase between records.
+        if len(populated) != 1 or any(not value for value in phase_sets):
+            return POSSIBLE
     if any(bool(state["homozygous_alt"]) for state in states) and any(
         not bool(state["homozygous_alt"]) for state in states
     ):
@@ -200,7 +257,10 @@ def encode(value: str) -> str:
     return quote(value, safe="._:-&")
 
 
-def annotate_vcf(input_path: Path, output_path: Path, events: dict[str, list[dict[str, str]]]):
+def annotate_vcf(
+    input_path: Path, output_path: Path, events: dict[str, list[dict[str, str]]]
+) -> set[str]:
+    """Write the annotated VCF; return the event keys that matched a record."""
     info_header = (
         f'##INFO=<ID={INFO_KEY},Number=.,Type=String,Description="Sample-specific '
         "Haplosaurus frame-restoration evidence. Pipe-delimited fields: "
@@ -211,6 +271,7 @@ def annotate_vcf(input_path: Path, output_path: Path, events: dict[str, list[dic
         "##iei_haplotype_postprocessing=<Tool=Haplosaurus,"
         "PhaseValidation=sample_GT_PS,FrameRestoration=multi_variant_protein_haplotype>\n"
     )
+    matched: set[str] = set()
     with open_text(input_path) as source, open_text(output_path, "wt") as target:
         for raw in source:
             if raw.startswith("#CHROM"):
@@ -227,16 +288,25 @@ def annotate_vcf(input_path: Path, output_path: Path, events: dict[str, list[dic
                 continue
             per_record = []
             for alt in columns[4].split(","):
-                key = variant_id(columns[0], columns[1], columns[3], alt)
-                for event in events.get(key, []):
-                    per_record.append("|".join([
-                        encode(key),
-                        encode(event["sample"]),
-                        encode(event["transcript"]),
-                        event["status"],
-                        encode(event["partners"]),
-                        encode(event["protein"]),
-                    ]))
+                raw_key = variant_id(columns[0], columns[1], columns[3], alt)
+                candidate_keys = [raw_key]
+                trimmed = minimal_variant_id(columns[0], columns[1], columns[3], alt)
+                if trimmed != raw_key:
+                    candidate_keys.append(trimmed)
+                for key in candidate_keys:
+                    record_events = events.get(key)
+                    if not record_events:
+                        continue
+                    matched.add(key)
+                    for event in record_events:
+                        per_record.append("|".join([
+                            encode(key),
+                            encode(event["sample"]),
+                            encode(event["transcript"]),
+                            event["status"],
+                            encode(event["partners"]),
+                            encode(event["protein"]),
+                        ]))
             if per_record:
                 value = ",".join(sorted(set(per_record)))
                 columns[7] = (
@@ -245,6 +315,7 @@ def annotate_vcf(input_path: Path, output_path: Path, events: dict[str, list[dic
                     else f"{INFO_KEY}={value}"
                 )
             target.write("\t".join(columns) + "\n")
+    return matched
 
 
 def main() -> int:
@@ -258,7 +329,17 @@ def main() -> int:
 
     genotypes, samples = parse_candidate_genotypes(args.candidate_vcf)
     events, counters = restoring_events(args.haplosaurus_json, genotypes)
-    annotate_vcf(args.input, args.output, events)
+    matched = annotate_vcf(args.input, args.output, events)
+    unmatched = sorted(set(events) - matched)
+    if unmatched:
+        preview = ", ".join(unmatched[:5])
+        print(
+            f"WARN  haplotype annotation: {len(unmatched)} event variant key(s) "
+            "matched no record in --input (pre/post-normalisation key "
+            f"mismatch?): {preview}",
+            file=sys.stderr,
+        )
+    counters["unmatched_event_variants"] = len(unmatched)
 
     if args.audit_json:
         payload = {

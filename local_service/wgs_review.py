@@ -214,6 +214,7 @@ def promoterai_intervals(
 
 
 def _numbers(records: Iterable[dict[str, str]], names: set[str]) -> list[float]:
+    """Collect numeric values from CSQ entries already matched to one ALT."""
     values: list[float] = []
     for record in records:
         for key, raw in record.items():
@@ -222,6 +223,34 @@ def _numbers(records: Iterable[dict[str, str]], names: set[str]) -> list[float]:
             for token in re.split(r"[,&|]", raw):
                 try:
                     values.append(float(token))
+                except ValueError:
+                    continue
+    return values
+
+
+def _info_numbers(
+    info: dict[str, str], names: set[str], alt_index: int, alt_count: int
+) -> list[float]:
+    """Collect numeric values from record-level INFO for one ALT.
+
+    Per-allele INFO fields (Number=A) carry one comma-separated token per
+    ALT in ALT order; pooling them across alleles assigns one allele's value
+    to another (a rare ALT sharing a record with a common one inherits the
+    common AF and is wrongly excluded). When the comma arity matches the ALT
+    count, select this ALT's token; any other shape cannot be attributed and
+    is pooled as before.
+    """
+    values: list[float] = []
+    for key, raw in info.items():
+        if key.lower() not in names or raw in {"", ".", "-"}:
+            continue
+        tokens = raw.split(",")
+        if alt_count > 1 and len(tokens) == alt_count:
+            tokens = [tokens[alt_index]]
+        for token in tokens:
+            for piece in re.split(r"[&|]", token):
+                try:
+                    values.append(float(piece))
                 except ValueError:
                     continue
     return values
@@ -297,11 +326,22 @@ def evaluate_record(
                     matched.append(consequence)
             elif not consequence.get("Allele") or consequence.get("Allele") == alt:
                 matched.append(consequence)
-        if not matched:
+        if not matched and len(alts) == 1:
+            # A single-ALT record's consequences necessarily describe this
+            # ALT even when VEP's minimised Allele string does not compare
+            # equal to the raw ALT. A multi-allelic record with no allele
+            # match must NOT inherit the other alleles' annotations.
             matched = consequences
-        records = [info, *matched]
+        # When a multi-allelic record's entries cannot be attributed to one
+        # ALT, never let the unattributable values EXCLUDE an allele (the
+        # frequency gate below uses `matched` only), but do let them QUALIFY
+        # the record for retention: retention is record-granular, and keeping
+        # the record is the safe direction for a diagnostic prefilter.
+        qualification_entries = matched or consequences
 
-        frequencies = _numbers(records, AF_FIELDS)
+        frequencies = _numbers(matched, AF_FIELDS) + _info_numbers(
+            info, AF_FIELDS, alt_index, len(alts)
+        )
         if (
             options.max_gnomad_popmax is not None
             and frequencies
@@ -310,8 +350,12 @@ def evaluate_record(
             reasons_by_alt.append(())
             continue
 
-        splice_values = _numbers(records, SPLICEAI_FIELDS)
-        promoter_values = _numbers(records, PROMOTERAI_FIELDS)
+        splice_values = _numbers(qualification_entries, SPLICEAI_FIELDS) + _info_numbers(
+            info, SPLICEAI_FIELDS, alt_index, len(alts)
+        )
+        promoter_values = _numbers(qualification_entries, PROMOTERAI_FIELDS) + _info_numbers(
+            info, PROMOTERAI_FIELDS, alt_index, len(alts)
+        )
         splice_qualifies = bool(
             options.min_spliceai is not None
             and splice_values
@@ -330,7 +374,7 @@ def evaluate_record(
         )
         consequence_terms = {
             term
-            for consequence in matched
+            for consequence in qualification_entries
             for term in consequence.get("Consequence", "").split("&")
             if term
         }
