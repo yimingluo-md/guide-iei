@@ -40,6 +40,30 @@ def variant_id(chrom: str, pos: str, ref: str, alt: str) -> str:
     return f"{chrom}:{pos}:{ref}:{alt}"
 
 
+# GRCh38 pseudoautosomal region bounds (inside the PARs X and Y are diploid).
+GRCH38_X_PAR1_END = 2_781_479
+GRCH38_X_PAR2_START = 155_701_383
+GRCH38_Y_PAR1_END = 2_781_479
+GRCH38_Y_PAR2_START = 56_887_903
+
+
+def haploid_single_copy_locus(chrom: str, pos: str) -> bool:
+    """True for a non-PAR X or Y locus, where a haploid call sits on the
+    sample's only copy of the contig (GRCh38 coordinates — the candidate VCF
+    this module reads is always GRCh38)."""
+    normalized = chrom[3:] if chrom.lower().startswith("chr") else chrom
+    normalized = normalized.upper()
+    try:
+        position = int(pos)
+    except ValueError:
+        return False
+    if normalized == "X":
+        return GRCH38_X_PAR1_END < position < GRCH38_X_PAR2_START
+    if normalized == "Y":
+        return GRCH38_Y_PAR1_END < position < GRCH38_Y_PAR2_START
+    return False
+
+
 def minimal_variant_id(chrom: str, pos: str, ref: str, alt: str) -> str:
     """Reproduce the minimal representation used for the candidate VCF's IDs.
 
@@ -141,6 +165,20 @@ def parse_candidate_genotypes(
                         index for index, allele in enumerate(gt.split("|"))
                         if allele != "0"
                     }
+                if (
+                    len(alleles) == 1
+                    and alt_copies == 1
+                    and haploid_single_copy_locus(chrom, pos)
+                ):
+                    # Decision D4 (cis-by-construction): a haploid call on
+                    # non-PAR X/Y occupies the sample's ONLY copy of the
+                    # contig, so it is necessarily in cis with anything else
+                    # the sample carries there — matching how the same call
+                    # written diploid-style (1/1) already classifies. PAR
+                    # loci and haploid calls on other contigs keep the
+                    # conservative unknown placement.
+                    homozygous_alt = True  # occupies every copy (there is one)
+                    haplotypes = {0, 1}
                 sample_state = {
                     "gt": gt,
                     "homozygous_alt": homozygous_alt,

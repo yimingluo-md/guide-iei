@@ -116,9 +116,14 @@ sub run {
   my ($mapping, $match) = $self->_transcript_mapping($transcript, $chr);
   return {} unless $mapping;
 
+  # SNV-only by table design (decision D5): prepare_promoterai.py stores
+  # exactly the four single-base substitutions per position, so only a
+  # single-base span can ever match. An Ensembl-convention insertion
+  # (start = end + 1) and any multi-base span are deliberately refused here,
+  # and the ACGT allele guard below rejects non-SNVs a second time. The old
+  # start/end swap that made this look like range handling was dead code.
   my $start = $vf->{start};
   my $end = $vf->{end};
-  ($start, $end) = ($end, $start) if $start > $end;
   return {} unless $start == $end;
   return {} unless $mapping->{chrom} eq $chr;
 

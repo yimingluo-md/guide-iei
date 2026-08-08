@@ -18,10 +18,10 @@ ready-made test cases). After each phase: rerun the baseline suite and compare a
 ## Open decisions (gate specific items below)
 
 - [x] **D1 — Python floor:** fix the f-string for 3.8+ (hoist `first.count(b'\t')` to a local), or raise the documented floor to 3.12? → gates CORE-1 — **decided: keep 3.8+ floor, f-string fixed**
-- [ ] **D2 — CADD policy:** all-or-nothing across SNV/indel tables (current, asserted by `test_optional_cadd_requires_both_data_files_and_indexes`), or SNV-only allowed (the SpliceAI precedent)? → gates half of CORE-6
-- [ ] **D3 — Allele-balance denominator** on multi-allelic sites: all-allele AD sum (current, GATK convention) or two-allele REF+ALT ratio? → gates UI-18
-- [ ] **D4 — Hemizygous X in haplotype phasing:** treat as cis by construction, or keep conservative `POSSIBLE`? → gates part of CORE-2
-- [ ] **D5 — PromoterAI insertions:** confirm SNV-only scope is intended; delete the misleading start/end swap and document → gates SH-8
+- [x] **D2 — CADD policy:** DECIDED 2026-08-08: keep all-or-nothing (tests already lock it; a half-populated pathogenicity column is worse than a loud missing-table failure, and both tables download together). Original text: all-or-nothing across SNV/indel tables (current, asserted by `test_optional_cadd_requires_both_data_files_and_indexes`), or SNV-only allowed (the SpliceAI precedent)? → gates half of CORE-6
+- [x] **D3 — Allele-balance denominator** DECIDED 2026-08-08: keep the all-allele AD sum (GATK convention, consistent with the service side); on multi-allelic sites reviewers should read the AD column directly. Original text: on multi-allelic sites: all-allele AD sum (current, GATK convention) or two-allele REF+ALT ratio? → gates UI-18
+- [x] **D4 — Hemizygous X in haplotype phasing:** DECIDED 2026-08-08: cis-by-construction adopted for haploid calls on non-PAR X/Y (GRCh38 PAR bounds), matching the existing 1/1-coded path; PAR loci and autosomal haploid calls keep the conservative POSSIBLE. Original text: treat as cis by construction, or keep conservative `POSSIBLE`? → gates part of CORE-2
+- [x] **D5 — PromoterAI insertions:** DECIDED 2026-08-08: SNV-only scope confirmed and documented in the plugin; the dead start/end swap removed; image rebuilt and quick-verified. Original text: confirm SNV-only scope is intended; delete the misleading start/end swap and document → gates SH-8
 - [ ] **D6 — `write_run_manifest.py`:** wire into `run_annotation.sh` (provenance sidecar) or delete as dead code → gates AUX-L5
 - [ ] **D7 — eslint debt:** fix the 212 `VariantWorkbench.tsx` errors, or adopt an agreed suppression baseline? → gates B-5
 

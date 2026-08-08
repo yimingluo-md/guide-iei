@@ -166,6 +166,65 @@ class MultiAllelicGenotypeTests(unittest.TestCase):
             self.assertEqual(counts[PARTIAL], 1)
 
 
+class HemizygousCisTests(unittest.TestCase):
+    """Decision D4: haploid non-PAR X/Y calls are in cis by construction."""
+
+    def _events(self, chrom, pos_a, pos_b, gt="1"):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            candidate = root / "candidate.vcf"
+            haplo = root / "haplo.json"
+            candidate.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+                f"{chrom}\t{pos_a}\tv1\tA\tAT\t99\tPASS\t.\tGT\t{gt}\n"
+                f"{chrom}\t{pos_b}\tv2\tAG\tA\t99\tPASS\t.\tGT\t{gt}\n",
+                encoding="utf-8",
+            )
+            haplo.write_text(json.dumps({
+                "transcript_id": "ENST1",
+                "protein_haplotypes": [{
+                    "name": "ENSP1:34AB>CD",
+                    "contributing_variants": ["v1", "v2"],
+                    "samples": {"S1": 1},
+                    "has_indel": 1,
+                    "flags": ["indel"],
+                }],
+            }) + "\n", encoding="utf-8")
+            genotypes, _ = parse_candidate_genotypes(candidate)
+            return restoring_events(haplo, genotypes)[1]
+
+    def test_haploid_pair_on_non_par_x_is_confirmed_cis(self):
+        # A male has one X: two true haploid calls there are necessarily on
+        # the same copy — matching how 1/1-coded hemizygous calls already
+        # classified before this decision.
+        counts = self._events("X", 71108276, 71110228)
+        self.assertEqual(counts[CONFIRMED], 1)
+        counts = self._events("chrX", 71108276, 71110228)
+        self.assertEqual(counts[CONFIRMED], 1)
+
+    def test_haploid_pair_on_non_par_y_is_confirmed_cis(self):
+        counts = self._events("Y", 2800000, 2800100)
+        self.assertEqual(counts[CONFIRMED], 1)
+
+    def test_par_and_autosomal_haploid_calls_stay_conservative(self):
+        # Inside the PARs the X is diploid; a haploid call there (or on an
+        # autosome) keeps the unknown placement and degrades to POSSIBLE.
+        par1 = self._events("X", 1000000, 1000100)
+        self.assertEqual(par1[CONFIRMED], 0)
+        self.assertEqual(par1[POSSIBLE], 1)
+        autosome = self._events("1", 100, 200)
+        self.assertEqual(autosome[CONFIRMED], 0)
+        self.assertEqual(autosome[POSSIBLE], 1)
+
+    def test_diploid_het_on_x_is_still_not_confirmed(self):
+        # Only the haploid encoding proves single-copy; an unphased diploid
+        # 0/1 on X (female, PAR-adjacent caller behaviour) stays POSSIBLE.
+        counts = self._events("X", 71108276, 71110228, gt="0/1")
+        self.assertEqual(counts[CONFIRMED], 0)
+        self.assertEqual(counts[POSSIBLE], 1)
+
+
 class KeyContractTests(unittest.TestCase):
     def test_minimal_variant_id_trims_suffix_then_prefix(self):
         self.assertEqual(minimal_variant_id("1", "100", "AT", "ATT"), "1:100:A:AT")
