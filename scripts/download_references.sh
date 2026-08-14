@@ -147,13 +147,27 @@ if want fasta; then
         log "FASTA present, skip."
     else
         RAW="${FASTA_PATH%.gz}.ensembl.gz"
-        fetch "${ENSEMBL_FTP}/fasta/homo_sapiens/dna/Homo_sapiens.${ASSEMBLY}.dna.primary_assembly.fa.gz" "$RAW"
+        FASTA_URL="${ENSEMBL_FTP}/fasta/homo_sapiens/dna/Homo_sapiens.${ASSEMBLY}.dna.primary_assembly.fa.gz"
+        fetch "$FASTA_URL" "$RAW"
+        # An interrupted/resumed transfer can leave a truncated gzip stream.
+        # Without this check the corrupt file persists (fetch skips existing
+        # non-empty destinations) and every later run fails at gunzip.
+        if ! gzip -t "$RAW" 2>/dev/null; then
+            warn "downloaded FASTA failed gzip integrity check; refetching from scratch"
+            rm -f "$RAW" "$RAW.part"
+            fetch "$FASTA_URL" "$RAW"
+            gzip -t "$RAW" 2>/dev/null || { rm -f "$RAW" "$RAW.part"; die "FASTA is corrupt after a clean refetch: $FASTA_URL"; }
+        fi
         log "re-compressing FASTA as bgzip (VEP/LOFTEE require bgzip, not gzip)"
         # decompress then bgzip; route bgzip through container if needed
         gunzip -c "$RAW" > "${FASTA_PATH%.gz}"
         ( cd "$(dirname "$FASTA_PATH")" && hts bgzip -f "$(basename "${FASTA_PATH%.gz}")" )
         rm -f "$RAW"
-        ( cd "$(dirname "$FASTA_PATH")" && hts samtools faidx "$(basename "$FASTA_PATH")" 2>/dev/null || true )
+        if ! ( cd "$(dirname "$FASTA_PATH")" && hts samtools faidx "$(basename "$FASTA_PATH")" 2>/dev/null ); then
+            sleep 5  # same settle-and-retry as tabix above
+            ( cd "$(dirname "$FASTA_PATH")" && hts samtools faidx "$(basename "$FASTA_PATH")" 2>/dev/null ) \
+                || warn "FASTA .fai index could not be built; rerun this download or build it with samtools faidx"
+        fi
     fi
 fi
 
@@ -223,18 +237,49 @@ clean_ucsc_bed() {
            if(chr ~ /^([0-9]+|X|Y|MT)\$/) print chr, \$cs, \$ce, ($name_expr) }" \
         | sort -k1,1 -k2,2n > "$tmp"
     ( cd "$(dirname "$out")" && hts bgzip -f "$(basename "$tmp")" )
-    ( cd "$(dirname "$out")" && hts tabix -f -p bed "$(basename "$out")" )
+    # On external drives (VirtioFS bind + FSKit exFAT) a file written by one
+    # container can be incompletely visible to a container started moments
+    # later, failing tbx_index_build on a perfectly valid file. Settle and
+    # retry once before treating the failure as real.
+    if ! ( cd "$(dirname "$out")" && hts tabix -f -p bed "$(basename "$out")" ); then
+        log "WARN  tabix failed on fresh $(basename "$out"); retrying after write settling"
+        sleep 5
+        ( cd "$(dirname "$out")" && hts tabix -f -p bed "$(basename "$out")" )
+    fi
     log "wrote $(basename "$out")"
+}
+
+# A cleaned track is usable only when the BGZF stream is intact AND its tabix
+# index exists — an interrupted write leaves a non-empty corrupt file that a
+# bare -s test would skip forever.
+bed_track_ready() {
+    [[ -s "$1" ]] && gzip -t "$1" 2>/dev/null && { [[ -s "$1.tbi" ]] || [[ -s "$1.csi" ]]; }
+}
+
+# fetch + require an intact gzip stream, refetching once from scratch. fetch()
+# skips existing non-empty destinations, so a raw download truncated by an
+# interruption would otherwise poison every rebuild that consumes it (and a
+# truncated gzip feeding a pipeline can yield a silently truncated track).
+fetch_gzip_verified() {
+    local url="$1" dest="$2"
+    fetch "$url" "$dest" || return 1
+    if ! gzip -t "$dest" 2>/dev/null; then
+        log "WARN  $(basename "$dest") failed gzip integrity check; refetching from scratch"
+        rm -f "$dest" "$dest.part"
+        fetch "$url" "$dest" || return 1
+        gzip -t "$dest" 2>/dev/null || { rm -f "$dest" "$dest.part"; return 1; }
+    fi
 }
 
 if want repeatmasker; then
     log "=== RepeatMasker (UCSC hg38 rmsk -> cleaned BED) ==="
     mkdir -p "$(dirname "$RM_PATH")"
-    if [[ -s "$RM_PATH" ]]; then
+    if bed_track_ready "$RM_PATH"; then
         log "RepeatMasker present, skip."
     else
+        rm -f "$RM_PATH" "$RM_PATH.tbi" "$RM_PATH.csi"
         RAW="${RM_PATH%.bed.gz}.rmsk.txt.gz"
-        fetch "${UCSC_DB}/rmsk.txt.gz" "$RAW" || die "UCSC rmsk download failed"
+        fetch_gzip_verified "${UCSC_DB}/rmsk.txt.gz" "$RAW" || die "UCSC rmsk download failed"
         # rmsk.txt cols: 6 genoName, 7 genoStart, 8 genoEnd, 11 repName, 12 repClass, 13 repFamily
         log "cleaning rmsk (chr-strip, primary contigs, name=repClass|repFamily|repName)"
         gzip -cd "$RAW" | clean_ucsc_bed 6 7 8 '$12"|"$13"|"$11' "$RM_PATH"
@@ -245,11 +290,12 @@ fi
 if want segdup; then
     log "=== SegDup (UCSC hg38 genomicSuperDups -> cleaned BED) ==="
     mkdir -p "$(dirname "$SEGDUP_PATH")"
-    if [[ -s "$SEGDUP_PATH" ]]; then
+    if bed_track_ready "$SEGDUP_PATH"; then
         log "SegDup present, skip."
     else
+        rm -f "$SEGDUP_PATH" "$SEGDUP_PATH.tbi" "$SEGDUP_PATH.csi"
         RAW="${SEGDUP_PATH%.bed.gz}.genomicSuperDups.txt.gz"
-        fetch "${UCSC_DB}/genomicSuperDups.txt.gz" "$RAW" || die "UCSC genomicSuperDups download failed"
+        fetch_gzip_verified "${UCSC_DB}/genomicSuperDups.txt.gz" "$RAW" || die "UCSC genomicSuperDups download failed"
         # genomicSuperDups cols: 2 chrom, 3 chromStart, 4 chromEnd, 27 fracMatch
         log "cleaning genomicSuperDups (chr-strip, primary contigs, name=fracMatch)"
         gzip -cd "$RAW" | clean_ucsc_bed 2 3 4 '$27' "$SEGDUP_PATH"

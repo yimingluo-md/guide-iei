@@ -33,7 +33,7 @@ def main() -> int:
         raise ValueError(f"ClinGen Evidence Repository database is missing: {args.database}")
 
     connection = sqlite3.connect(
-        f"{args.database.resolve().as_uri()}?mode=ro", uri=True
+        f"{args.database.resolve().as_uri()}?mode=ro&immutable=1", uri=True
     )
     query = """
       SELECT uuid,caid,assertion,disease,mondo_id,mode_of_inheritance,

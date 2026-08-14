@@ -216,7 +216,10 @@ plugins:
     required: true
     version: "5.3.1a"
     releases_url: "https://www.dbnsfp.org/releases/"
-    path: "/Users/yl3232/Library/CloudStorage/OneDrive-ColumbiaUniversityIrvingMedicalCenter/large_dataset/dbNSFP5.3.1a_grch38.gz"
+    # Default is the managed annotation-dataset location; the UI's dbNSFP
+    # preparation installs here. A lab-specific absolute path may replace it
+    # in a local config copy and is then used verbatim.
+    path: "references/dbnsfp/dbNSFP5.3.1a_grch38.gz"
     # Core columns always pulled into CSQ. Additional curated predictors can be
     # selected for each job in the local UI; the generated job config appends
     # only those fields. Avoid `ALL` (hundreds of columns and very large VCFs).
@@ -265,8 +268,8 @@ plugins:
     enabled: false           # whole-genome profile only
     required: false
     version: "1.7"
-    snv: "/Users/yl3232/Library/CloudStorage/OneDrive-ColumbiaUniversityIrvingMedicalCenter/large_dataset/CADD/v1.7/GRCh38/whole_genome_SNVs.tsv.gz"
-    indels: "/Users/yl3232/Library/CloudStorage/OneDrive-ColumbiaUniversityIrvingMedicalCenter/large_dataset/CADD/v1.7/GRCh38/gnomad.genomes.r4.0.indel.tsv.gz"
+    snv: "references/cadd/whole_genome_SNVs.tsv.gz"
+    indels: "references/cadd/gnomad.genomes.r4.0.indel.tsv.gz"
     source_url: "https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/"
     license: "non-commercial use"
 

@@ -159,9 +159,16 @@ def main() -> int:
         header_file = Path(f"{range_file}.headers")
         for attempt in range(1, 6):
             try:
+                # No --max-time: a healthy-but-slow transfer of a large range
+                # must be allowed to finish. Ensembl/EBI often serve well under
+                # 0.5 MiB/s per connection, so a wall-clock cap kills chunks
+                # that are making real progress, discards their bytes, and
+                # retries forever. Stalls and unacceptably slow connections are
+                # already policed by --speed-limit/--speed-time, dead servers
+                # by --connect-timeout.
                 result = subprocess.run(
                     [
-                        "curl", "-fsSL", "--connect-timeout", "30", "--max-time", "300",
+                        "curl", "-fsSL", "--connect-timeout", "30",
                         "--speed-limit", "10240", "--speed-time", "20", "--retry", "2",
                         "--range", f"{start}-{end}", "--output", str(range_file),
                         "--dump-header", str(header_file),

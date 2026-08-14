@@ -21,7 +21,9 @@ fetch() {
     mkdir -p "$(dirname "$dest")"
     log "download: $url"
     if command -v curl >/dev/null 2>&1; then
-        curl -fL --retry 3 --retry-delay 5 -C - -o "$dest.part" "$url" || return 1
+        # -#: compact progress bar whose lines carry an explicit percentage —
+        # the workbench service turns these into readable job progress.
+        curl -fL -# --retry 3 --retry-delay 5 -C - -o "$dest.part" "$url" || return 1
     elif command -v wget >/dev/null 2>&1; then
         wget --tries=3 -c -O "$dest.part" "$url" || return 1
     else
@@ -35,7 +37,7 @@ fetch() {
         rm -f "$dest.part"
         return 1
     fi
-    case "$(head -c 15 "$dest.part" | tr '[:upper:]' '[:lower:]')" in
+    case "$(head -c 15 "$dest.part" | LC_ALL=C tr '[:upper:]' '[:lower:]')" in
         "<!doctype html"*|"<html"*)
             log "WARN  HTML error page discarded instead of saved as $(basename "$dest")"
             rm -f "$dest.part"

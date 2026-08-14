@@ -16,7 +16,13 @@ FASTA="$(yaml_get "$CONFIG" reference.fasta.path)"; [[ "$FASTA" = /* ]] || FASTA
 [[ -s "$FASTA" && -s "${FASTA}.fai" ]] || die "indexed GRCh38 FASTA is required to prepare ClinGen indels"
 
 mkdir -p "$DEST"
-STAGE="$(mktemp -d "${DEST}/.update.XXXXXX")"
+# Stage on the local system temp filesystem, NOT inside $DEST: the SQLite
+# build needs POSIX byte-range locks, which exFAT/FAT external drives (macOS
+# FSKit) do not provide — building there fails with "attempt to write a
+# readonly database". Publishing below still lands via same-directory
+# .new -> final renames in $DEST, so a failed update never damages a
+# working snapshot regardless of where staging lives.
+STAGE="$(mktemp -d "${TMPDIR:-/tmp}/clingen_update.XXXXXX")"
 trap 'rm -rf "$STAGE"' EXIT
 SOURCE="${STAGE}/classifications.tsv"
 REGIONS="${STAGE}/regions.txt"

@@ -25,7 +25,7 @@ def _open_ro(path):
     open for paths containing those characters. Path.as_uri() encodes them.
     """
     from pathlib import Path as _Path
-    return sqlite3.connect(f"{_Path(path).resolve().as_uri()}?mode=ro", uri=True)
+    return sqlite3.connect(f"{_Path(path).resolve().as_uri()}?mode=ro&immutable=1", uri=True)
 
 
 CLASS_LABELS = {
