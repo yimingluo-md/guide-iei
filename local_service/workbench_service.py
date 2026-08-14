@@ -52,6 +52,10 @@ from local_service.wgs_review import WgsPrefilterOptions, WgsReviewStore
 
 
 SERVICE_VERSION = "0.13.0"
+# Exit code that asks the launcher (scripts/start_workbench.sh or a packaged
+# supervisor) to start the service again — used to activate pending
+# storage-location changes from inside the app without rerunning the script.
+RESTART_EXIT_CODE = 75
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 ALLOWED_PROFILES = {"local", "wsl-local"}
 ANNOTATION_SOURCE_PATHS = {
@@ -664,8 +668,10 @@ class AnnotationJobService:
         self._migration_reserved = False
         self._storage_usage_cache: dict[str, tuple[float, int]] = {}
         self._storage_usage_lock = threading.Lock()
+        self._restart_requested = False
         self._stop = threading.Event()
         self._recover_stale_storage_migrations()
+        self._terminate_orphaned_resource_jobs()
         self._worker: threading.Thread | None = None
         for job_id in self.store.queued_ids():
             self._queue.put(job_id)
@@ -1255,6 +1261,40 @@ class AnnotationJobService:
             job = self._storage_jobs.get(job_id)
             if job:
                 job.update(values)
+
+    @property
+    def restart_requested(self) -> bool:
+        return self._restart_requested
+
+    def request_service_restart(self) -> dict:
+        """Mark this process for supervised restart once nothing is running.
+
+        Storage roots are deliberately frozen for the process lifetime, so a
+        pending location change activates on the next start. The launcher
+        restarts the service when it exits with RESTART_EXIT_CODE; the review
+        UI stays open and reconnects when the service is back.
+        """
+        with self._storage_transition:
+            if self._migration_reserved or self.storage_migration_active():
+                raise ValueError(
+                    "wait for the running storage migration to finish before restarting"
+                )
+            if self._active_storage_mutations:
+                raise ValueError(
+                    "wait for the active import or data change to finish before restarting"
+                )
+        try:
+            self._ensure_storage_idle(ignore_migration_reservation=True)
+        except ValueError as exc:
+            raise ValueError(
+                str(exc).replace("before changing storage", "before restarting")
+            ) from exc
+        self._restart_requested = True
+        return {
+            "restarting": True,
+            "exit_code": RESTART_EXIT_CODE,
+            "message": "The workbench service is restarting; pending storage locations become active.",
+        }
 
     def start_storage_migration(self, payload: dict) -> dict:
         with self._storage_transition:
@@ -1946,9 +1986,14 @@ class AnnotationJobService:
             "promoterai": ("folder", "Choose the folder containing the two PromoterAI files"),
             "logofunc": ("file", "Choose the downloaded LoGoFunc .csv.gz file"),
             "omim": ("folder", "Choose the folder containing the four OMIM data files"),
+            "storage_annotation": ("folder", "Choose the folder for annotation datasets"),
+            "storage_data": ("folder", "Choose the folder for the Sample Library & Cohort"),
+            "storage_temporary": ("folder", "Choose the folder for the temporary workspace"),
         }
         if resource_id not in choices:
-            raise ValueError("resource picker supports dbNSFP, PromoterAI, LoGoFunc, or OMIM")
+            raise ValueError(
+                "resource picker supports dbNSFP, PromoterAI, LoGoFunc, OMIM, or a storage location"
+            )
         selection_type, prompt = choices[resource_id]
         system = platform.system()
         command: list[str]
@@ -2067,6 +2112,66 @@ class AnnotationJobService:
         ]
         return self._start_resource_job("logofunc", command, "preparation")
 
+    # ------------------------------------------------------------------
+    # Persistent registry of live resource-job process groups. A service that
+    # dies without running shutdown() (SIGKILL, crash, closed terminal) must
+    # not leave invisible orphan downloaders competing with the next
+    # instance's jobs for the same output files.
+    # ------------------------------------------------------------------
+    def _active_resource_pids_path(self) -> Path:
+        return self.state_dir / "resource-job-pids.json"
+
+    def _rewrite_active_resource_pids(self, mutate) -> None:
+        path = self._active_resource_pids_path()
+        try:
+            data = json.loads(path.read_text()) if path.exists() else {}
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        mutate(data)
+        temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+        temporary.write_text(json.dumps(data))
+        temporary.replace(path)
+
+    def _record_active_resource_pid(self, job_id: str, pid: int) -> None:
+        self._rewrite_active_resource_pids(lambda data: data.__setitem__(job_id, pid))
+
+    def _clear_active_resource_pid(self, job_id: str) -> None:
+        self._rewrite_active_resource_pids(lambda data: data.pop(job_id, None))
+
+    def _terminate_orphaned_resource_jobs(self) -> None:
+        path = self._active_resource_pids_path()
+        if os.name != "posix" or not path.is_file():
+            return
+        try:
+            data = json.loads(path.read_text())
+        except (OSError, ValueError):
+            data = {}
+        for job_id, pid in (data.items() if isinstance(data, dict) else []):
+            if not isinstance(pid, int) or pid <= 0:
+                continue
+            # Guard against PID reuse: only signal a group whose leader is
+            # still one of this pipeline's own scripts.
+            try:
+                probe = subprocess.run(
+                    ["ps", "-o", "command=", "-p", str(pid)],
+                    capture_output=True, text=True, check=False,
+                )
+            except OSError:
+                continue
+            if str(self.pipeline_root) not in probe.stdout:
+                continue
+            try:
+                os.killpg(pid, signal.SIGTERM)
+                print(
+                    f"stopped orphaned dataset job {job_id} (pgid {pid}) left by a "
+                    "previous workbench session; restart the download to resume it"
+                )
+            except (ProcessLookupError, PermissionError):
+                pass
+        path.unlink(missing_ok=True)
+
     def _start_resource_job(
         self, resource_id: str, command: list[str], operation: str
     ) -> dict:
@@ -2125,6 +2230,40 @@ class AnnotationJobService:
             if job:
                 job.update(values)
 
+    _RESOURCE_STAGE_LINE = re.compile(r"===\s*(.+?)\s*===\s*$")
+    _RESOURCE_PERCENT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
+    _RESOURCE_TIMESTAMP = re.compile(r"^\[\d{2}:\d{2}:\d{2}\]\s*")
+    _RESOURCE_METER_NOISE = re.compile(r"^[\s\d.#kKMGTiB%/:s-]+$")
+    _RESOURCE_VOLUME_SPEED = re.compile(r"([\d.]+)\s*GiB\s+([\d.]+)\s*MiB/s")
+
+    @classmethod
+    def _resource_progress_update(cls, stage: str, line: str) -> tuple[str, dict | None]:
+        """Turn one raw downloader log line into (stage, UI update or None).
+
+        Raw curl/parallel_fetch transfer meters are unreadable as a job
+        message; show "<dataset> — NN%" (plus volume and speed when present),
+        pass ordinary log lines through without their timestamp, and drop
+        meter noise that carries no percentage.
+        """
+        stripped = line.strip()
+        if not stripped:
+            return stage, None
+        stage_match = cls._RESOURCE_STAGE_LINE.search(stripped)
+        if stage_match:
+            stage = stage_match.group(1)
+            return stage, {"message": f"{stage}…", "progress": None}
+        percent_match = cls._RESOURCE_PERCENT.search(stripped)
+        if percent_match:
+            percent = min(100.0, float(percent_match.group(1)))
+            message = f"{stage} — {percent:.0f}%" if stage else f"{percent:.0f}%"
+            detail = cls._RESOURCE_VOLUME_SPEED.search(stripped)
+            if detail:
+                message += f" · {detail.group(1)} GiB · {detail.group(2)} MiB/s"
+            return stage, {"message": message, "progress": percent}
+        if cls._RESOURCE_METER_NOISE.match(stripped):
+            return stage, None
+        return stage, {"message": cls._RESOURCE_TIMESTAMP.sub("", stripped)}
+
     def _run_resource_download(self, job_id: str) -> None:
         with self._resource_lock:
             job = self._resource_jobs.get(job_id)
@@ -2156,18 +2295,20 @@ class AnnotationJobService:
                 )
                 with self._resource_lock:
                     self._resource_processes[job_id] = process
+                if os.name == "posix":
+                    self._record_active_resource_pid(job_id, process.pid)
                 assert process.stdout is not None
+                stage_label = ""
                 with process.stdout:
                     for line in process.stdout:
                         log.write(line)
-                        last_line = line.strip() or last_line
-                        progress_match = re.match(r"^\s*(\d+(?:\.\d+)?)%", line)
-                        updates = {"message": last_line}
-                        if progress_match:
-                            updates["progress"] = min(
-                                100.0, float(progress_match.group(1))
-                            )
-                        self._update_resource_job(job_id, **updates)
+                        stage_label, updates = self._resource_progress_update(
+                            stage_label, line
+                        )
+                        if updates:
+                            if updates.get("message"):
+                                last_line = updates["message"]
+                            self._update_resource_job(job_id, **updates)
                 exit_code = process.wait()
             if exit_code:
                 raise RuntimeError(last_line or f"download exited with code {exit_code}")
@@ -2201,6 +2342,7 @@ class AnnotationJobService:
         finally:
             with self._resource_lock:
                 self._resource_processes.pop(job_id, None)
+            self._clear_active_resource_pid(job_id)
 
     def review_file(self, job_id: str) -> Path:
         """Return only an output path already recorded for a local annotation job."""
@@ -3868,6 +4010,18 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/local-resource-source/choose":
                 self._json(self.service.choose_local_resource_source(self._body()))
                 return
+            if path == "/api/service/restart":
+                result = self.service.request_service_restart()
+                self._json(result, HTTPStatus.ACCEPTED)
+
+                def _shutdown_after_response(server=self.server):
+                    # Give the response a moment to flush before stopping
+                    # serve_forever; in-flight handler threads still finish.
+                    time.sleep(0.3)
+                    server.shutdown()
+
+                threading.Thread(target=_shutdown_after_response, daemon=True).start()
+                return
             if path == "/api/resource-preparations/promoterai":
                 self._json(
                     self.service.start_promoterai_preparation(self._body()),
@@ -4218,6 +4372,9 @@ def main() -> None:
     finally:
         server.server_close()
         service.shutdown()
+    if service.restart_requested:
+        print("Restart requested from the app; exiting for the supervisor to relaunch.")
+        raise SystemExit(RESTART_EXIT_CODE)
 
 
 if __name__ == "__main__":

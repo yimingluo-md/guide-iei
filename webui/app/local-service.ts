@@ -978,7 +978,14 @@ export async function startResourceDownload(resourceId: ResourceDownloadJob["res
 
 export type LocalResourceSelection = {
   cancelled: boolean;
-  resource_id: "dbnsfp" | "promoterai" | "logofunc" | "omim";
+  resource_id:
+    | "dbnsfp"
+    | "promoterai"
+    | "logofunc"
+    | "omim"
+    | "storage_annotation"
+    | "storage_data"
+    | "storage_temporary";
   selection_type?: "file" | "folder";
   path?: string;
   name?: string;
@@ -1342,6 +1349,17 @@ export async function setStorageLocation(payload: {
   return request<{ storage: StorageConfiguration; restart_required: boolean; message: string }>(
     "/api/storage/location", { method: "POST", body: JSON.stringify(payload) },
   );
+}
+
+export async function getServiceHealth() {
+  return request<{ ok: boolean; version: string }>("/api/health");
+}
+
+export async function restartWorkbenchService() {
+  return request<{ restarting: boolean; message: string }>("/api/service/restart", {
+    method: "POST",
+    body: "{}",
+  });
 }
 
 export async function startStorageMigration(kind: StorageLocationKind, path: string) {

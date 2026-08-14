@@ -21,6 +21,7 @@ if [[ -z "$NODE_BIN" ]] && command -v node >/dev/null 2>&1; then
 fi
 if [[ -z "$NODE_BIN" ]]; then
     for candidate in \
+        "${IEI_TOOLS_DIR:-$HOME/.iei-variant-review/tools}/bin/node" \
         /opt/homebrew/bin/node \
         /usr/local/bin/node \
         "${HOME}/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
@@ -35,13 +36,12 @@ if [[ -z "$NODE_BIN" ]]; then
     cat >&2 <<'MESSAGE'
 ERROR: Node.js was not found.
 
-Install Node.js 22 or newer, then open a new Terminal and rerun:
+The setup script installs it without admin rights:
+  bash scripts/setup_environment.sh --install
+
+Or install Node.js 22+ yourself (https://nodejs.org/, or brew install node),
+then rerun:
   bash scripts/start_workbench.sh
-
-macOS with Homebrew:
-  brew install node
-
-Or install the current LTS release from https://nodejs.org/
 MESSAGE
     exit 127
 fi
@@ -53,7 +53,23 @@ if [[ "$NODE_MAJOR" -lt 22 ]]; then
 fi
 
 cd "$ROOT"
-python3 -m local_service.workbench_service --port "$SERVICE_PORT" &
+# Supervised launch: exit code 75 is a user-requested in-app restart (Storage
+# page "Restart workbench now"), used to activate pending storage-location
+# changes without rerunning this script. Any other exit ends the supervisor.
+(
+    child=""
+    trap '[[ -n "$child" ]] && kill "$child" 2>/dev/null' TERM INT
+    while :; do
+        python3 -m local_service.workbench_service --port "$SERVICE_PORT" &
+        child=$!
+        wait "$child"
+        rc=$?
+        if [[ "$rc" -ne 75 ]]; then
+            exit "$rc"
+        fi
+        echo "[workbench] service restart requested from the app; starting again"
+    done
+) &
 SERVICE_PID=$!
 
 stop_service() {
@@ -88,19 +104,24 @@ export NEXT_PUBLIC_IEI_SERVICE_URL="http://127.0.0.1:${SERVICE_PORT}"
 NODE_DIR="$(dirname "$NODE_BIN")"
 export PATH="${NODE_DIR}:${PATH}"
 
-if command -v npm >/dev/null 2>&1; then
-    npm run dev
-elif [[ -f "${ROOT}/webui/node_modules/next/dist/bin/next" ]]; then
-    echo "npm is not on PATH; starting Next.js with ${NODE_BIN}."
-    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" dev --hostname 127.0.0.1
-else
+if [[ ! -d "${ROOT}/webui/node_modules" ]] && ! command -v npm >/dev/null 2>&1; then
     cat >&2 <<'MESSAGE'
 ERROR: The web UI dependencies are not installed and npm was not found.
-Install Node.js 22 or newer (which includes npm), then run:
-  cd webui
-  npm install
-  cd ..
-  bash scripts/start_workbench.sh
+The setup script fixes both without admin rights:
+  bash scripts/setup_environment.sh --install
 MESSAGE
     exit 127
+fi
+if [[ ! -d "${ROOT}/webui/node_modules" ]]; then
+    echo "webui dependencies are not installed yet; running npm install (one-time)..."
+    npm install --no-fund --no-audit || {
+        echo "ERROR: npm install failed. Run 'bash scripts/setup_environment.sh' for diagnostics." >&2
+        exit 1
+    }
+fi
+if command -v npm >/dev/null 2>&1; then
+    npm run dev
+else
+    echo "npm is not on PATH; starting Next.js with ${NODE_BIN}."
+    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" dev --hostname 127.0.0.1
 fi

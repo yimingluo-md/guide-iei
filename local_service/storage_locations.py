@@ -102,7 +102,15 @@ def storage_path_warning(path: Path, kind: StorageKind = "data") -> str:
         if kind == "annotation":
             return "Network storage is supported for read-only annotation datasets but tabix-heavy VEP annotation may be slower."
         return "Network storage is not recommended for the active SQLite cohort database because locking and latency may be unreliable."
-    if kind != "annotation" and filesystem in {"exfat", "msdos", "msdosfs", "vfat"}:
+    if filesystem in {"exfat", "msdos", "msdosfs", "vfat"}:
+        if kind == "annotation":
+            return (
+                "This drive is exFAT/FAT formatted. Sustained multi-gigabyte dataset "
+                "downloads are unreliable on exFAT under macOS (stalls and device "
+                "disconnects have been observed) and sparse files are unsupported. "
+                "Reformatting the drive as APFS (macOS) or ext4 (Linux) is strongly "
+                "recommended before storing annotation datasets on it."
+            )
         return "exFAT/FAT storage is not recommended for the active SQLite cohort database; use APFS, NTFS, or ext4."
     if cloud_component:
         return "Cloud-synchronised annotation storage may be substantially slower than a local SSD."

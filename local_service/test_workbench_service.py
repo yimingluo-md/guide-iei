@@ -760,6 +760,63 @@ class AnnotationJobServiceTests(unittest.TestCase):
             result = self.service.choose_local_resource_source({"resource_id": "promoterai"})
         self.assertTrue(result["cancelled"])
 
+    def test_resource_progress_lines_become_readable_stage_messages(self):
+        update = AnnotationJobService._resource_progress_update
+        # A section marker sets the stage and resets the bar.
+        stage, ui = update("", "[20:33:41] === reference FASTA ===\n")
+        self.assertEqual(stage, "reference FASTA")
+        self.assertEqual(ui, {"message": "reference FASTA…", "progress": None})
+        # parallel_fetch progress carries percent, volume, and speed.
+        stage, ui = update("VEP cache (release 113, GRCh38)", " 37.2%    8.6 GiB    3.2 MiB/s\n")
+        self.assertEqual(ui["progress"], 37.2)
+        self.assertEqual(ui["message"], "VEP cache (release 113, GRCh38) — 37% · 8.6 GiB · 3.2 MiB/s")
+        # curl -# progress-bar lines carry an explicit percentage.
+        stage, ui = update("reference FASTA", "########                       27.4%\n")
+        self.assertEqual(ui["progress"], 27.4)
+        self.assertEqual(ui["message"], "reference FASTA — 27%")
+        # Raw curl transfer-table noise (no % sign) is dropped entirely.
+        stage, ui = update(
+            "reference FASTA",
+            " 27  841M   27  230M    0     0  777k      0  0:18:27  0:05:03  0:13:24  983k\n",
+        )
+        self.assertIsNone(ui)
+        # Ordinary log lines pass through without the timestamp.
+        stage, ui = update("reference FASTA", "[20:33:45] WARN: refetching from scratch\n")
+        self.assertEqual(ui, {"message": "WARN: refetching from scratch"})
+
+    def test_service_restart_marks_process_for_supervised_relaunch(self):
+        result = self.service.request_service_restart()
+        self.assertTrue(result["restarting"])
+        self.assertEqual(result["exit_code"], 75)
+        self.assertTrue(self.service.restart_requested)
+
+    def test_service_restart_refuses_while_work_is_running(self):
+        with patch.object(
+            self.service.store, "list",
+            return_value=[{"id": "job-1", "status": "running"}],
+        ):
+            with self.assertRaises(ValueError) as context:
+                self.service.request_service_restart()
+        self.assertIn("before restarting", str(context.exception))
+        self.assertFalse(self.service.restart_requested)
+
+    def test_native_resource_picker_supports_storage_locations(self):
+        # The Storage page's Change location editor offers Browse via the same
+        # native chooser used for dbNSFP/PromoterAI source selection.
+        selected = Path(self.temp.name) / "external-annotation"
+        selected.mkdir()
+        completed = Mock(returncode=0, stdout=str(selected) + "\n", stderr="")
+        with patch(
+            "local_service.workbench_service.platform.system", return_value="Darwin"
+        ), patch(
+            "local_service.workbench_service.subprocess.run", return_value=completed
+        ):
+            for resource_id in ("storage_annotation", "storage_data", "storage_temporary"):
+                result = self.service.choose_local_resource_source({"resource_id": resource_id})
+                self.assertFalse(result["cancelled"])
+                self.assertEqual(result["selection_type"], "folder")
+                self.assertEqual(result["path"], str(selected.resolve()))
+
     def test_user_supplied_dataset_preparation_targets_managed_annotation_storage(self):
         generated = self.service._write_resource_config("dbnsfp")
         text = generated.read_text()

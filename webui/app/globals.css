@@ -1229,6 +1229,12 @@ tbody tr:last-child td { border-bottom: 0; }
 .storage-location-meta .storage-restart { background: #fff1dd; color: #936028; }
 .storage-location-warning { margin: 8px 0 0; color: #93602a; font-size: 7px; line-height: 1.45; }
 .storage-location-actions, .storage-editor-actions { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px; }
+.storage-restart-alert { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.storage-restart-alert > div { display: flex; flex-direction: column; gap: 2px; }
+.storage-restart-alert button { flex-shrink: 0; }
+.storage-path-row { display: flex; gap: 6px; align-items: stretch; }
+.storage-path-row input { flex: 1; min-width: 0; }
+.storage-path-row .secondary-button { flex-shrink: 0; white-space: nowrap; }
 .storage-location-editor { display: grid; gap: 11px; background: #fcfdfd; }
 .storage-location-editor > div > p:not(.eyebrow) { margin: 5px 0 0; color: #75837e; font-size: 8px; line-height: 1.45; }
 .storage-location-editor .form-field { max-width: 760px; }
