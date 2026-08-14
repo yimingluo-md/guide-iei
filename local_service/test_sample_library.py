@@ -111,6 +111,68 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(self.library.get(first["id"])["capture_kit"], "New kit")
         self.assertEqual(self.library.get(second["id"])["capture_kit"], "Test exome")
 
+    def test_metadata_profile_rewrite_touches_only_the_addressed_dataset(self):
+        # The recomputed settings hash / profile label embed the edited
+        # capture kit; a managed_path-scoped rewrite stamped THIS record's
+        # profile onto every sibling dataset of a multi-sample VCF.
+        imported = self.library.import_vcf(self.vcf, self.payload(include=True))
+        first, second = imported["datasets"]
+        sibling_before = self.library.get(second["id"])
+        self.library.update_metadata(first["id"], {"capture_kit": "New kit"})
+        edited = self.library.get(first["id"])
+        sibling_after = self.library.get(second["id"])
+        self.assertEqual(edited["complete_settings"]["capture_kit"], "New kit")
+        self.assertNotEqual(edited["settings_hash"], sibling_after["settings_hash"])
+        self.assertEqual(sibling_after["settings_hash"], sibling_before["settings_hash"])
+        self.assertEqual(sibling_after["profile_label"], sibling_before["profile_label"])
+
+    def test_reindex_profile_rewrite_spares_diverged_sibling_profile(self):
+        # Non-full reindex repairs cohort linkage for every dataset sharing
+        # the managed file, but must not overwrite a diverged sibling's
+        # profile identity with this record's settings.
+        imported = self.library.import_vcf(self.vcf, self.payload(include=True))
+        first, second = imported["datasets"]
+        self.library.update_metadata(second["id"], {"capture_kit": "Sibling kit"})
+        sibling_before = self.library.get(second["id"])
+        self.library.reindex(first["id"])
+        sibling_after = self.library.get(second["id"])
+        self.assertEqual(sibling_after["settings_hash"], sibling_before["settings_hash"])
+        self.assertEqual(sibling_after["profile_label"], sibling_before["profile_label"])
+        # Linkage repair still reaches the sibling.
+        self.assertEqual(sibling_after["cohort_index_status"], "ready")
+
+    def test_full_wgs_reindex_does_not_repoint_sibling_linkage(self):
+        # The full index holds only this dataset's re-imported source; a
+        # path-scoped update repointed siblings' cohort_file_id at the new
+        # file while their rows stayed in the previous cohort file.
+        wgs_payload = self.payload(include=True)
+        wgs_payload["analysis_scope"] = "whole_genome"
+        imported = self.library.import_vcf(self.vcf, wgs_payload)
+        first, second = imported["datasets"]
+        sibling_before = self.library.get(second["id"])
+        original_import = self.cohort.import_vcf
+
+        def forced_new_file_import(path, **kwargs):
+            result = dict(original_import(path, **kwargs))
+            result["id"] = "forced-new-cohort-file"
+            return result
+
+        self.cohort.import_vcf = forced_new_file_import
+        try:
+            self.library.reindex(first["id"], full_wgs=True)
+        finally:
+            self.cohort.import_vcf = original_import
+        self.assertEqual(
+            self.library.get(first["id"])["cohort_file_id"], "forced-new-cohort-file",
+        )
+        sibling_after = self.library.get(second["id"])
+        self.assertEqual(
+            sibling_after["cohort_file_id"], sibling_before["cohort_file_id"],
+            "sibling linkage must keep pointing at the file that holds its rows",
+        )
+        self.assertEqual(sibling_after["index_scope"], sibling_before["index_scope"])
+        self.assertEqual(sibling_after["settings_hash"], sibling_before["settings_hash"])
+
     def test_import_linkage_does_not_revert_sibling_exclusion(self):
         # Audit repro (SVC-5): a later import of the same managed VCF used to
         # force include_in_cohort=1 on every dataset sharing managed_path,

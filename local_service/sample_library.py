@@ -614,10 +614,13 @@ class SampleLibrary:
                 retained_record_count=record["retained_record_count"],
             )
             with self._session() as connection:
+                # The recomputed profile embeds THIS row's capture kit and
+                # target BED, so it must land only on the addressed dataset;
+                # siblings sharing managed_path keep their own profile.
                 connection.execute(
                     """UPDATE library_datasets SET complete_settings=?,settings_hash=?,
-                           profile_label=?,updated_at=? WHERE managed_path=?""",
-                    (_json(settings), settings_hash, profile_label, utc_now(), self._stored_managed_path(record["managed_path"])),
+                           profile_label=?,updated_at=? WHERE id=?""",
+                    (_json(settings), settings_hash, profile_label, utc_now(), dataset_id),
                 )
                 if record.get("cohort_file_id"):
                     connection.execute(
@@ -681,18 +684,36 @@ class SampleLibrary:
                 capture_kit=record["capture_kit"], target_bed=record["target_bed"],
             )
         with self._session() as connection:
-            identity_column = "original_path" if full_wgs else "managed_path"
-            identity_value = (
-                self._stored_original_path(record[identity_column])
-                if full_wgs else self._stored_state_path(record[identity_column])
-            )
-            connection.execute(
-                f"""UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
-                       index_scope=?,complete_settings=?,settings_hash=?,profile_label=?,updated_at=?
-                       WHERE {identity_column}=?""",
-                (result.get("id"), index_scope, _json(profile_settings), profile_hash,
-                 profile_label, utc_now(), identity_value),
-            )
+            if full_wgs:
+                # Only this dataset's sample was re-imported into the full
+                # index; siblings sharing the original VCF keep their rows in
+                # (and their linkage to) the previous cohort file, so only the
+                # addressed dataset may be repointed.
+                connection.execute(
+                    """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
+                           index_scope=?,complete_settings=?,settings_hash=?,profile_label=?,updated_at=?
+                           WHERE id=?""",
+                    (result.get("id"), index_scope, _json(profile_settings), profile_hash,
+                     profile_label, utc_now(), dataset_id),
+                )
+            else:
+                # Re-importing the managed VCF indexes every co-resident
+                # sample, so cohort linkage is repaired for all datasets
+                # sharing the file...
+                connection.execute(
+                    """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
+                           index_scope=?,updated_at=? WHERE managed_path=?""",
+                    (result.get("id"), index_scope, utc_now(),
+                     self._stored_state_path(record["managed_path"])),
+                )
+                # ...but profile identity stays per-dataset: a sibling may
+                # have diverged (capture kit / target BED), and this record's
+                # profile must not overwrite it.
+                connection.execute(
+                    """UPDATE library_datasets SET complete_settings=?,settings_hash=?,
+                           profile_label=?,updated_at=? WHERE id=?""",
+                    (_json(profile_settings), profile_hash, profile_label, utc_now(), dataset_id),
+                )
             connection.execute(
                 "UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=? WHERE id=?",
                 (profile_label, profile_hash, _json(profile_settings), result.get("id")),
