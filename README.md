@@ -63,6 +63,7 @@ portable, config-toggled local setup.
 config/annotation.config.yaml   administrator defaults used by CLI and the UI
 docker/Dockerfile               VEP 113 + LOFTEE grch38 + samtools + DBD::SQLite
 docker/build.sh                 build the image (docker or podman)
+scripts/setup_environment.sh    host-environment doctor + no-admin bootstrap (Node, container stack)
 scripts/download_references.sh  fetch VEP cache / FASTA / LOFTEE / RepeatMasker / SegDup
 scripts/install_recommended_datasets.sh  one-click exome/WGS public dataset setup
 scripts/update_refreshable_datasets.sh  refresh ClinVar + ClinGen variant curations
@@ -96,16 +97,42 @@ test/                           tiny VCF + config + tests (no container needed)
 
 ## Requirements
 
-- **Docker** (or Podman / Singularity / Apptainer)
-- **Python 3.8+** with **PyYAML** (`pip install pyyaml`) — for the config parser
-- **Node.js 22.13+** (including npm) — for the local review UI
+Run the environment doctor after cloning — it checks everything below, prints
+an exact fix for anything missing, and `--install` fixes the user-space items
+itself (no admin rights, no Homebrew, nothing outside one managed folder):
+
+```bash
+# report what is present / missing (changes nothing)
+bash scripts/setup_environment.sh
+
+# fix what can be fixed without admin rights
+bash scripts/setup_environment.sh --install
+```
+
+What it needs to find (or install):
+
+- **A container runtime** — Docker, Podman, Singularity, or Apptainer.
+  - *macOS:* `--install` sets up a no-admin, Homebrew-free stack (Lima +
+    Colima + the Docker CLI, all version-pinned and SHA-256-verified) in
+    `~/.iei-variant-review/tools/`. An existing Docker Desktop / Podman
+    install is detected and used instead.
+  - *Linux / WSL2:* a container runtime is a system component, so the script
+    prints the exact install commands and runs them only after an explicit
+    yes (existing docker/podman/singularity installs are always preferred —
+    Docker Desktop is **not** required on WSL2).
+- **Python 3.8+** with **PyYAML** (`requirements.txt`; `--install` handles it)
+  — for the config parser.
+- **Node.js 22.13+** with npm — for the local review UI. `--install` places
+  the official nodejs.org build in the managed tools folder when no suitable
+  Node is found; `scripts/start_workbench.sh` finds it there automatically.
 - Disk for references: the VEP cache alone is ~25 GB; dbNSFP is a ~50 GB
   download (academic registration required — see below) and needs ~200 GB
   scratch for its one-time GRCh38 rebuild; SpliceAI (if enabled) adds tens of
   GB more.
 
 No VEP, LOFTEE, bgtools, or Perl installation on the host — everything runs in
-the container.
+the container. The setup script never edits your shell profile; remove
+`~/.iei-variant-review/tools/` to uninstall everything it added.
 
 ## Supported platforms
 
@@ -157,8 +184,19 @@ scripts/sync_to_onedrive.sh [DEST]
 
 ## Quickstart
 
+New machine? Three commands get you to a running workbench:
+
 ```bash
-# 1. build the container image (once)
+git clone <this repository> && cd WES-WGS_diagnostic_analysis_pipeline
+bash scripts/setup_environment.sh --install   # doctor + user-space setup (see Requirements)
+bash scripts/start_workbench.sh               # launch the review workbench
+```
+
+Annotation datasets can then be installed from **Run VEP first → Set up
+annotation datasets** in the UI, or from the command line as below.
+
+```bash
+# 1. build the container image (once; setup_environment.sh --install offers this too)
 bash docker/build.sh
 
 # 2. download the freely-scriptable references (VEP cache, FASTA, LOFTEE,

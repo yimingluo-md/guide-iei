@@ -1,0 +1,53 @@
+# Clean-clone smoke: proves that a bare checkout plus
+# `setup_environment.sh --install` yields a working environment on Linux and
+# macOS. Container-image work is excluded (macOS runners have no hypervisor
+# access and the image build is exercised by scripts/verify_container_stack.sh
+# on real hosts); everything host-side runs: the doctor, the managed Node
+# install path, webui deps, the dry-run smoke test, and the full unit suites.
+name: clean-clone
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Environment setup (doctor + user-space install)
+        run: bash scripts/setup_environment.sh --install --yes --skip-container
+
+      - name: Doctor is idempotent and clean on second run
+        run: bash scripts/setup_environment.sh --check --skip-container
+
+      - name: Pipeline dry-run smoke test
+        run: bash test/test_dry_run.sh
+
+      - name: Shell test helpers
+        run: bash test/test_hts_helper.sh
+
+      - name: Python unit suites (pipeline + local service)
+        run: |
+          set -e
+          for test_file in test/test_*.py local_service/test_*.py; do
+            echo "== $test_file"
+            python3 "$test_file"
+          done
+
+      - name: WebUI unit tests, type check, lint
+        run: |
+          set -e
+          export PATH="$HOME/.iei-variant-review/tools/bin:$PATH"
+          cd webui
+          npm test
+          npx tsc --noEmit
+          npm run lint

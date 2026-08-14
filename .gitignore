@@ -1,6 +1,8 @@
-# Reference data — never commit (huge, licensed, or per-run)
-references/
-references
+# Reference data — never commit (huge, licensed, or per-run).
+# The folder itself ships (default annotation-dataset location); its contents
+# never do.
+references/*
+!references/README.md
 *.vep_cache/
 *.bw
 *.bigwig
@@ -31,7 +33,6 @@ results/
 *.tsv.gz
 *.tsv.gz.tbi
 *.sql
-!webui/drizzle/*.sql
 
 # Local overrides
 config/*.local.yaml

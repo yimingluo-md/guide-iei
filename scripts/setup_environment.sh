@@ -1,0 +1,523 @@
+#!/usr/bin/env bash
+# setup_environment.sh — host-environment doctor and bootstrapper.
+#
+#   bash scripts/setup_environment.sh              # doctor: report PASS/FIX, change nothing
+#   bash scripts/setup_environment.sh --install    # fix what can be fixed without admin rights
+#
+# Modes and tiers:
+#   1. Detect existing tools first (PATH plus known locations). Anything already
+#      present and version-adequate is used as-is; nothing is downloaded.
+#   2. --install places missing user-space tools in a managed directory
+#      (~/.iei-variant-review/tools by default): Node.js from the official
+#      nodejs.org tarball, and on macOS a container stack (Lima + Colima +
+#      Docker CLI) that needs no admin rights, no Homebrew, and no Docker
+#      Desktop. Every download is version-pinned and SHA-256-verified.
+#   3. On Linux/WSL2 a container runtime is a system component (kernel
+#      namespaces need root to wire up); the script prints the exact commands
+#      and runs them only after an explicit yes. Existing docker/podman/
+#      singularity/apptainer installs are always detected and preferred.
+#
+# The script never edits shell profiles. Repo scripts (start_workbench.sh)
+# probe the managed tools directory themselves.
+#
+# Flags:
+#   --check            doctor only (default)
+#   --install          perform tier-2 installs (and consented tier-3 on Linux)
+#   --yes              assume yes for prompts (container VM start, image build)
+#   --skip-container   skip every container-runtime check/install (used by CI)
+#   --tools-dir DIR    override the managed tools directory
+set -u -o pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(dirname "$SCRIPT_DIR")"
+
+# ---------------------------------------------------------------- pinned tools
+NODE_VERSION="22.23.2"
+NODE_SHA_DARWIN_ARM64="61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6"
+NODE_SHA_DARWIN_X64="58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026"
+NODE_SHA_LINUX_ARM64="013b59cfd2819703a6f4a14ab891fc46fc2a4e3f5bcd92de3fb4929b43e35b30"
+NODE_SHA_LINUX_X64="b294a556e639d64338823920e5866c21c02741742d2e1529ee1a225c1ec9252a"
+NODE_MIN_MAJOR=22
+NODE_MIN_MINOR=13
+
+LIMA_VERSION="2.2.0"
+LIMA_SHA_ARM64="bbdef91774885a0d05f7b048c4eb89ae2bcf3a0c252ae7ca7934e63df76d93c3"
+LIMA_SHA_X64="0d6f99c19f6e4bc3c92730c4c29d929e6927f0cb0a0ba1a84383367135a8ff31"
+
+COLIMA_VERSION="v0.10.3"
+COLIMA_SHA_ARM64="980ad8bf61a4ca370243f4cb41401a61276dcd2c2502bee7b9b86f9250169f34"
+COLIMA_SHA_X64="3082737fe8a98afda11cba7d9a20b6e56fe80c6153464beda04bec630758770b"
+
+DOCKER_CLI_VERSION="29.7.2"
+DOCKER_CLI_SHA_MAC_ARM64="b8683ed19d1f06048a496f9b8429e2c71d0b088d475b7487c054ea3666c02a3c"
+DOCKER_CLI_SHA_MAC_X64="fb1f1aa7ac7af4364165b9eadfda92e96c8ced508fca74f53079719891367438"
+
+# Reference-download footprint used for the disk advisory (GiB).
+DISK_MIN_EXOME_GB=40
+
+# ---------------------------------------------------------------- cli parsing
+MODE="check"
+ASSUME_YES=0
+SKIP_CONTAINER=0
+TOOLS_DIR="${IEI_TOOLS_DIR:-$HOME/.iei-variant-review/tools}"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --check) MODE="check" ;;
+        --install) MODE="install" ;;
+        --yes) ASSUME_YES=1 ;;
+        --skip-container) SKIP_CONTAINER=1 ;;
+        --tools-dir) shift; TOOLS_DIR="${1:?--tools-dir needs a value}" ;;
+        -h|--help)
+            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            exit 0 ;;
+        *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
+    esac
+    shift
+done
+
+# ---------------------------------------------------------------- helpers
+PASS_COUNT=0
+FIX_COUNT=0
+WARN_COUNT=0
+FIX_LINES=""
+
+ok()   { printf '[ OK ] %s\n' "$1"; PASS_COUNT=$((PASS_COUNT + 1)); }
+note() { printf '[NOTE] %s\n' "$1"; }
+wrn()  { printf '[WARN] %s\n' "$1"; WARN_COUNT=$((WARN_COUNT + 1)); }
+fix()  { # fix <what is wrong> <how to fix it>
+    printf '[FIX ] %s\n' "$1"
+    [ -n "${2:-}" ] && printf '       -> %s\n' "$2"
+    FIX_COUNT=$((FIX_COUNT + 1))
+    FIX_LINES="${FIX_LINES}  - $1\n"
+}
+die() { printf 'ERROR: %s\n' "$1" >&2; exit 2; }
+
+confirm() { # confirm <question>  (respects --yes; non-interactive -> no)
+    [ "$ASSUME_YES" = 1 ] && return 0
+    [ -t 0 ] || return 1
+    printf '%s [y/N] ' "$1"
+    read -r answer
+    case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+sha256_file() {
+    if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    else die "neither shasum nor sha256sum is available"; fi
+}
+
+download_verified() { # download_verified <url> <dest> <sha256>
+    local url="$1" dest="$2" want="$3" got
+    if [ -f "$dest" ]; then
+        got="$(sha256_file "$dest")"
+        [ "$got" = "$want" ] && return 0
+        rm -f "$dest"
+    fi
+    mkdir -p "$(dirname "$dest")"
+    echo "  downloading $(basename "$dest") ..."
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --retry 3 -o "$dest.part" "$url" || { rm -f "$dest.part"; return 1; }
+    else
+        wget -q -O "$dest.part" "$url" || { rm -f "$dest.part"; return 1; }
+    fi
+    got="$(sha256_file "$dest.part")"
+    if [ "$got" != "$want" ]; then
+        rm -f "$dest.part"
+        die "checksum mismatch for $url (expected $want, got $got) — refusing to install"
+    fi
+    mv "$dest.part" "$dest"
+}
+
+# ---------------------------------------------------------------- platform
+OS="$(uname -s)"
+ARCH="$(uname -m)"
+IS_WSL=0
+if [ "$OS" = "Linux" ] && grep -qi microsoft /proc/version 2>/dev/null; then IS_WSL=1; fi
+case "$OS" in
+    Darwin) PLATFORM_LABEL="macOS ($ARCH)" ;;
+    Linux)  if [ "$IS_WSL" = 1 ]; then PLATFORM_LABEL="Windows WSL2 ($ARCH)"; else PLATFORM_LABEL="Linux ($ARCH)"; fi ;;
+    *) die "unsupported platform: $OS. Native Windows shells cannot run this pipeline — use WSL2 (see README)." ;;
+esac
+
+echo "== IEI pipeline environment ${MODE} — ${PLATFORM_LABEL}"
+echo "   repo: $ROOT"
+echo "   managed tools dir: $TOOLS_DIR"
+echo
+
+# WSL2: warn when the clone lives on the Windows drive (very slow tabix I/O).
+if [ "$IS_WSL" = 1 ]; then
+    case "$ROOT" in
+        /mnt/*) wrn "clone is on the Windows filesystem ($ROOT); move it (and reference data) into the WSL2 filesystem (~/...) — /mnt/c I/O badly hurts multi-GB reference reads" ;;
+        *) ok "clone is on the WSL2 filesystem" ;;
+    esac
+fi
+
+# ---------------------------------------------------------------- core tools
+missing_core=""
+for tool in git tar gzip awk sed sort; do
+    command -v "$tool" >/dev/null 2>&1 || missing_core="$missing_core $tool"
+done
+if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then :; else
+    missing_core="$missing_core curl-or-wget"
+fi
+if [ -z "$missing_core" ]; then
+    ok "core tools (git, tar, curl/wget, awk, sed, sort, gzip)"
+else
+    if [ "$OS" = "Darwin" ]; then
+        fix "missing core tools:$missing_core" "xcode-select --install"
+    else
+        fix "missing core tools:$missing_core" "sudo apt-get install -y git curl tar gzip  (or your distro's equivalent)"
+    fi
+fi
+
+# ---------------------------------------------------------------- python + pyyaml
+PYTHON_OK=0
+PYYAML_OK=0
+if command -v python3 >/dev/null 2>&1; then
+    if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
+        ok "python3 $(python3 -c 'import platform; print(platform.python_version())') (>= 3.8)"
+        PYTHON_OK=1
+    else
+        fix "python3 is older than 3.8" "install a current Python 3"
+    fi
+else
+    if [ "$OS" = "Darwin" ]; then
+        fix "python3 not found" "xcode-select --install  (Apple's command line tools include python3)"
+    else
+        fix "python3 not found" "sudo apt-get install -y python3 python3-pip  (or your distro's equivalent)"
+    fi
+fi
+if [ "$PYTHON_OK" = 1 ]; then
+    if python3 -c 'import yaml' 2>/dev/null; then
+        ok "PyYAML importable (config parser dependency)"
+        PYYAML_OK=1
+    elif [ "$MODE" = "install" ]; then
+        echo "  installing PyYAML into the user site-packages ..."
+        if python3 -m pip install --user pyyaml >/dev/null 2>&1 \
+           || python3 -m pip install --user --break-system-packages pyyaml >/dev/null 2>&1; then
+            ok "PyYAML installed (pip --user)"
+            PYYAML_OK=1
+        else
+            fix "PyYAML install failed" "python3 -m pip install --user pyyaml"
+        fi
+    else
+        fix "PyYAML not importable" "python3 -m pip install --user pyyaml  (or rerun with --install)"
+    fi
+fi
+
+# ---------------------------------------------------------------- node.js
+node_version_ok() { # node_version_ok <node-binary>
+    "$1" -e "const [maj, min] = process.versions.node.split('.').map(Number); process.exit(maj > $NODE_MIN_MAJOR || (maj === $NODE_MIN_MAJOR && min >= $NODE_MIN_MINOR) ? 0 : 1)" 2>/dev/null
+}
+node_has_npm() { # the workbench install needs npm next to node
+    [ -x "$(dirname "$1")/npm" ] && return 0
+    # a PATH-resolved node may pair with a PATH-resolved npm
+    [ "$1" = "$(command -v node 2>/dev/null)" ] && command -v npm >/dev/null 2>&1
+}
+resolve_node() {
+    local candidate
+    if command -v node >/dev/null 2>&1 \
+       && node_version_ok "$(command -v node)" && node_has_npm "$(command -v node)"; then
+        command -v node; return 0
+    fi
+    for candidate in \
+        "$TOOLS_DIR/bin/node" \
+        /opt/homebrew/bin/node \
+        /usr/local/bin/node \
+        "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+    do
+        if [ -x "$candidate" ] && node_version_ok "$candidate" && node_has_npm "$candidate"; then
+            echo "$candidate"; return 0
+        fi
+    done
+    return 1
+}
+
+install_node() {
+    local suffix sha url tarball extracted
+    case "$OS/$ARCH" in
+        Darwin/arm64)         suffix="darwin-arm64"; sha="$NODE_SHA_DARWIN_ARM64" ;;
+        Darwin/x86_64)        suffix="darwin-x64";   sha="$NODE_SHA_DARWIN_X64" ;;
+        Linux/aarch64|Linux/arm64) suffix="linux-arm64"; sha="$NODE_SHA_LINUX_ARM64" ;;
+        Linux/x86_64)         suffix="linux-x64";    sha="$NODE_SHA_LINUX_X64" ;;
+        *) fix "no pinned Node build for $OS/$ARCH" "install Node >= ${NODE_MIN_MAJOR}.${NODE_MIN_MINOR} from https://nodejs.org"; return 1 ;;
+    esac
+    tarball="$TOOLS_DIR/downloads/node-v${NODE_VERSION}-${suffix}.tar.gz"
+    url="https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-${suffix}.tar.gz"
+    download_verified "$url" "$tarball" "$sha" || { fix "Node download failed" "$url"; return 1; }
+    extracted="$TOOLS_DIR/node-v${NODE_VERSION}-${suffix}"
+    rm -rf "$extracted"
+    tar -xzf "$tarball" -C "$TOOLS_DIR" || { fix "Node tarball extraction failed" ""; return 1; }
+    mkdir -p "$TOOLS_DIR/bin"
+    local name
+    for name in node npm npx; do
+        ln -sfn "$extracted/bin/$name" "$TOOLS_DIR/bin/$name"
+    done
+    return 0
+}
+
+NODE_BIN=""
+if NODE_BIN="$(resolve_node)"; then
+    ok "node $("$NODE_BIN" --version) at $NODE_BIN (>= ${NODE_MIN_MAJOR}.${NODE_MIN_MINOR})"
+elif [ "$MODE" = "install" ]; then
+    echo "  installing Node v${NODE_VERSION} into $TOOLS_DIR (official nodejs.org build) ..."
+    if install_node && NODE_BIN="$(resolve_node)"; then
+        ok "node $("$NODE_BIN" --version) installed at $NODE_BIN"
+    else
+        NODE_BIN=""
+    fi
+else
+    fix "Node >= ${NODE_MIN_MAJOR}.${NODE_MIN_MINOR} not found" "rerun with --install (user-space install, no admin rights) or install from https://nodejs.org"
+fi
+
+NPM_BIN=""
+if [ -n "$NODE_BIN" ]; then
+    if [ -x "$(dirname "$NODE_BIN")/npm" ]; then
+        NPM_BIN="$(dirname "$NODE_BIN")/npm"
+    elif command -v npm >/dev/null 2>&1; then
+        NPM_BIN="$(command -v npm)"
+    fi
+    if [ -z "$NPM_BIN" ]; then
+        fix "npm not found beside node" "rerun with --install to use the managed Node (its npm is bundled)"
+    fi
+fi
+
+# ---------------------------------------------------------------- webui deps
+if [ -d "$ROOT/webui/node_modules" ]; then
+    ok "webui/node_modules present"
+elif [ "$MODE" = "install" ] && [ -n "$NPM_BIN" ]; then
+    echo "  installing webui dependencies (npm install) ..."
+    if (cd "$ROOT/webui" && PATH="$(dirname "$NODE_BIN"):$PATH" "$NPM_BIN" install --no-fund --no-audit >/dev/null 2>&1); then
+        ok "webui dependencies installed"
+    else
+        fix "npm install failed in webui/" "cd webui && npm install  (rerun to see the error output)"
+    fi
+else
+    fix "webui dependencies not installed" "rerun with --install, or: cd webui && npm install"
+fi
+
+# ---------------------------------------------------------------- container runtime
+read_config_scalar() { # best-effort: needs python3 + pyyaml, else prints nothing
+    [ "$PYYAML_OK" = 1 ] || return 0
+    python3 - "$ROOT/config/annotation.config.yaml" "$1" <<'PYEOF' 2>/dev/null
+import sys, yaml
+try:
+    with open(sys.argv[1]) as handle:
+        data = yaml.safe_load(handle) or {}
+    for part in sys.argv[2].split("."):
+        data = data.get(part) if isinstance(data, dict) else None
+    if data is not None:
+        print(data)
+except Exception:
+    pass
+PYEOF
+}
+
+CONTAINER_RUNTIME=""
+CONTAINER_BIN=""
+DAEMON_UP=0
+if [ "$SKIP_CONTAINER" = 1 ]; then
+    note "container checks skipped (--skip-container)"
+else
+    CONFIG_RUNTIME="$(read_config_scalar container.runtime)"
+    [ -z "$CONFIG_RUNTIME" ] && CONFIG_RUNTIME="docker"
+    for candidate in "$CONFIG_RUNTIME" docker podman singularity apptainer; do
+        bin_path="$(command -v "$candidate" 2>/dev/null || true)"
+        [ -z "$bin_path" ] && [ -x "$TOOLS_DIR/bin/$candidate" ] && bin_path="$TOOLS_DIR/bin/$candidate"
+        if [ -n "$bin_path" ]; then
+            CONTAINER_RUNTIME="$candidate"
+            CONTAINER_BIN="$bin_path"
+            break
+        fi
+    done
+
+    install_macos_container_stack() {
+        local lima_sha colima_sha docker_sha lima_arch colima_arch docker_arch
+        case "$ARCH" in
+            arm64)  lima_arch="arm64";  lima_sha="$LIMA_SHA_ARM64";  colima_arch="arm64";  colima_sha="$COLIMA_SHA_ARM64"; docker_arch="aarch64"; docker_sha="$DOCKER_CLI_SHA_MAC_ARM64" ;;
+            x86_64) lima_arch="x86_64"; lima_sha="$LIMA_SHA_X64";    colima_arch="x86_64"; colima_sha="$COLIMA_SHA_X64";   docker_arch="x86_64";  docker_sha="$DOCKER_CLI_SHA_MAC_X64" ;;
+            *) fix "no pinned container stack for macOS/$ARCH" ""; return 1 ;;
+        esac
+        mkdir -p "$TOOLS_DIR/bin" "$TOOLS_DIR/downloads"
+        # Lima (VM layer; uses macOS Virtualization.framework, no admin rights)
+        local lima_tar="$TOOLS_DIR/downloads/lima-${LIMA_VERSION}-Darwin-${lima_arch}.tar.gz"
+        download_verified "https://github.com/lima-vm/lima/releases/download/v${LIMA_VERSION}/lima-${LIMA_VERSION}-Darwin-${lima_arch}.tar.gz" \
+            "$lima_tar" "$lima_sha" || return 1
+        rm -rf "$TOOLS_DIR/lima-${LIMA_VERSION}"
+        mkdir -p "$TOOLS_DIR/lima-${LIMA_VERSION}"
+        tar -xzf "$lima_tar" -C "$TOOLS_DIR/lima-${LIMA_VERSION}" || return 1
+        # symlink preserves the binary's relative ../share/lima lookup
+        ln -sfn "$TOOLS_DIR/lima-${LIMA_VERSION}/bin/limactl" "$TOOLS_DIR/bin/limactl"
+        # Colima (docker daemon convenience wrapper over Lima)
+        local colima_bin="$TOOLS_DIR/downloads/colima-Darwin-${colima_arch}"
+        download_verified "https://github.com/abiosoft/colima/releases/download/${COLIMA_VERSION}/colima-Darwin-${colima_arch}" \
+            "$colima_bin" "$colima_sha" || return 1
+        install -m 0755 "$colima_bin" "$TOOLS_DIR/bin/colima"
+        # Docker CLI (client only; talks to Colima's daemon)
+        local docker_tar="$TOOLS_DIR/downloads/docker-${DOCKER_CLI_VERSION}-${docker_arch}.tgz"
+        download_verified "https://download.docker.com/mac/static/stable/${docker_arch}/docker-${DOCKER_CLI_VERSION}.tgz" \
+            "$docker_tar" "$docker_sha" || return 1
+        tar -xzf "$docker_tar" -C "$TOOLS_DIR/downloads" docker/docker || return 1
+        install -m 0755 "$TOOLS_DIR/downloads/docker/docker" "$TOOLS_DIR/bin/docker"
+        rm -rf "$TOOLS_DIR/downloads/docker"
+        return 0
+    }
+
+    if [ -z "$CONTAINER_BIN" ]; then
+        if [ "$OS" = "Darwin" ] && [ "$MODE" = "install" ]; then
+            echo "  installing user-space container stack (Lima ${LIMA_VERSION} + Colima ${COLIMA_VERSION} + Docker CLI ${DOCKER_CLI_VERSION}) ..."
+            if install_macos_container_stack; then
+                CONTAINER_RUNTIME="docker"
+                CONTAINER_BIN="$TOOLS_DIR/bin/docker"
+                ok "container stack installed in $TOOLS_DIR (no admin rights used)"
+            else
+                fix "container stack install failed" "see messages above; Docker Desktop or 'brew install colima docker' are alternatives"
+            fi
+        elif [ "$OS" = "Darwin" ]; then
+            fix "no container runtime found (docker/podman/singularity)" "rerun with --install for a no-admin Lima+Colima stack, or install Docker Desktop"
+        else
+            # Linux/WSL2: a runtime is a system component (kernel namespaces
+            # need root to wire up) — consented commands only.
+            if [ "$IS_WSL" = 1 ]; then
+                runtime_cmd="curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker \$USER"
+                runtime_hint="inside the WSL2 distro (systemd is enabled by default; Docker Desktop is NOT required)"
+            elif command -v apt-get >/dev/null 2>&1; then
+                runtime_cmd="curl -fsSL https://get.docker.com | sudo sh && sudo usermod -aG docker \$USER"
+                runtime_hint="official Docker convenience script"
+            elif command -v dnf >/dev/null 2>&1; then
+                runtime_cmd="sudo dnf install -y podman"
+                runtime_hint="podman (set container.runtime: podman in the config)"
+            else
+                runtime_cmd="install docker or podman with your distro's package manager"
+                runtime_hint=""
+            fi
+            if [ "$MODE" = "install" ] && confirm "Install a container runtime now? Runs: $runtime_cmd"; then
+                if sh -c "$runtime_cmd"; then
+                    ok "container runtime installed ($runtime_hint)"
+                    note "log out and back in so the docker group membership takes effect"
+                    CONTAINER_RUNTIME="docker"
+                    CONTAINER_BIN="$(command -v docker || true)"
+                else
+                    fix "container runtime install failed" "$runtime_cmd"
+                fi
+            else
+                fix "no container runtime found (docker/podman/singularity)" "$runtime_cmd   # $runtime_hint"
+            fi
+        fi
+    fi
+
+    # ---- daemon / VM health
+    if [ -n "$CONTAINER_BIN" ]; then
+        case "$CONTAINER_RUNTIME" in
+            docker|podman)
+                if "$CONTAINER_BIN" info >/dev/null 2>&1; then
+                    DAEMON_UP=1
+                    ok "$CONTAINER_RUNTIME daemon reachable ($CONTAINER_BIN)"
+                elif [ "$OS" = "Darwin" ] && [ -x "$TOOLS_DIR/bin/colima" ]; then
+                    if [ "$MODE" = "install" ] && confirm "Start the Colima VM now (first start downloads a ~1 GB VM image)?"; then
+                        host_cpus="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
+                        host_mem_gb="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) / 1073741824 ))"
+                        vm_cpus=$(( host_cpus > 8 ? 8 : (host_cpus > 2 ? host_cpus - 1 : 2) ))
+                        vm_mem=$(( host_mem_gb / 2 )); [ "$vm_mem" -gt 12 ] && vm_mem=12; [ "$vm_mem" -lt 4 ] && vm_mem=4
+                        if PATH="$TOOLS_DIR/bin:$PATH" "$TOOLS_DIR/bin/colima" start --cpu "$vm_cpus" --memory "$vm_mem" --disk 120; then
+                            DAEMON_UP=1
+                            ok "Colima VM started (${vm_cpus} CPU, ${vm_mem} GiB RAM, 120 GiB disk)"
+                        else
+                            fix "Colima VM failed to start" "PATH=\"$TOOLS_DIR/bin:\$PATH\" colima start --cpu 4 --memory 8 --disk 120"
+                        fi
+                    else
+                        fix "$CONTAINER_RUNTIME daemon not running" "PATH=\"$TOOLS_DIR/bin:\$PATH\" colima start --cpu 4 --memory 8 --disk 120"
+                    fi
+                elif [ "$OS" = "Darwin" ]; then
+                    fix "$CONTAINER_RUNTIME daemon not running" "start Docker Desktop (or rerun with --install for the no-admin Colima stack)"
+                else
+                    fix "$CONTAINER_RUNTIME daemon not running" "sudo systemctl enable --now docker   # then log out/in if you were just added to the docker group"
+                fi
+                ;;
+            singularity|apptainer)
+                if "$CONTAINER_BIN" --version >/dev/null 2>&1; then
+                    DAEMON_UP=1
+                    ok "$CONTAINER_RUNTIME available ($("$CONTAINER_BIN" --version 2>/dev/null | head -1))"
+                    note "set container.runtime: $CONTAINER_RUNTIME in config/annotation.config.yaml (or a local copy) if not already"
+                fi
+                ;;
+        esac
+    fi
+
+    # ---- VM sizing + architecture advisories (docker/podman only)
+    if [ "$DAEMON_UP" = 1 ] && { [ "$CONTAINER_RUNTIME" = "docker" ] || [ "$CONTAINER_RUNTIME" = "podman" ]; }; then
+        engine_info="$("$CONTAINER_BIN" info --format '{{.NCPU}} {{.MemTotal}} {{.Architecture}}' 2>/dev/null || true)"
+        engine_cpus="$(echo "$engine_info" | awk '{print $1}')"
+        engine_mem="$(echo "$engine_info" | awk '{print $2}')"
+        engine_arch="$(echo "$engine_info" | awk '{print $3}')"
+        if [ -n "$engine_cpus" ] && [ "$engine_cpus" -lt 4 ] 2>/dev/null; then
+            wrn "container engine has only $engine_cpus CPUs; VEP fork parallelism suffers — resize the VM (colima: colima stop && colima start --cpu 4+)"
+        fi
+        if [ -n "$engine_mem" ] && [ "$engine_mem" -lt 8000000000 ] 2>/dev/null; then
+            wrn "container engine has < 8 GiB RAM; large tabix references (dbNSFP, SpliceAI) need memory — resize the VM (colima: --memory 8+; Docker Desktop: Settings -> Resources)"
+        fi
+        if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ] && echo "$engine_arch" | grep -qi "aarch64\|arm64"; then
+            note "Apple Silicon: the amd64 VEP image runs via emulation (works, but slower); Colima enables Rosetta automatically on macOS 13+"
+        fi
+
+        # ---- image + reference mount reachability
+        IMAGE="$(read_config_scalar container.image)"
+        [ -z "$IMAGE" ] && IMAGE="vep-annotate:latest"
+        if "$CONTAINER_BIN" image inspect "$IMAGE" >/dev/null 2>&1; then
+            ok "container image $IMAGE is built"
+            if "$CONTAINER_BIN" run --rm -v "$ROOT":/probe:ro --entrypoint sh "$IMAGE" -c 'test -d /probe/scripts' >/dev/null 2>&1; then
+                ok "repo directory is mountable inside the container"
+            else
+                fix "cannot bind-mount $ROOT into the container" "colima: restart with --mount \"\$HOME:w\" covering your data; Docker Desktop: add the folder under Settings -> Resources -> File sharing"
+            fi
+        elif [ "$MODE" = "install" ] && confirm "Build the VEP container image now (downloads the ~2 GB base image)?"; then
+            if (cd "$ROOT" && RUNTIME="$CONTAINER_RUNTIME" PATH="$(dirname "$CONTAINER_BIN"):$PATH" bash docker/build.sh); then
+                ok "container image built"
+            else
+                fix "image build failed" "bash docker/build.sh"
+            fi
+        else
+            fix "container image $IMAGE not built" "bash docker/build.sh   (one-time, downloads the ~2 GB base image)"
+        fi
+    fi
+fi
+
+# ---------------------------------------------------------------- disk space
+free_gb="$(df -Pk "$ROOT" 2>/dev/null | awk 'NR==2 {printf "%d", $4 / 1048576}')"
+if [ -n "$free_gb" ]; then
+    if [ "$free_gb" -ge "$DISK_MIN_EXOME_GB" ]; then
+        ok "disk: ${free_gb} GiB free (exome reference set needs ~${DISK_MIN_EXOME_GB} GiB; dbNSFP adds ~50 GiB download + ~200 GiB one-time scratch; WGS extras are larger)"
+    else
+        wrn "disk: only ${free_gb} GiB free — the exome reference set alone needs ~${DISK_MIN_EXOME_GB} GiB (the Storage page can place datasets on another drive)"
+    fi
+fi
+
+# ---------------------------------------------------------------- smoke test
+if [ "$PYYAML_OK" = 1 ]; then
+    if (cd "$ROOT" && bash test/test_dry_run.sh >/dev/null 2>&1); then
+        ok "pipeline smoke test passed (test/test_dry_run.sh — no container or references needed)"
+    else
+        fix "pipeline smoke test failed" "bash test/test_dry_run.sh   (rerun to see the failure)"
+    fi
+else
+    note "pipeline smoke test skipped (needs PyYAML)"
+fi
+
+# ---------------------------------------------------------------- summary
+echo
+echo "== Summary: $PASS_COUNT ok, $WARN_COUNT warning(s), $FIX_COUNT to fix"
+if [ "$FIX_COUNT" -gt 0 ]; then
+    printf '%b' "$FIX_LINES"
+    if [ "$MODE" = "check" ]; then
+        echo "Run with --install to fix the user-space items automatically."
+    fi
+    exit 2
+fi
+echo "Environment ready. Next steps:"
+echo "  bash scripts/start_workbench.sh            # launch the review workbench"
+echo "  bash scripts/install_recommended_datasets.sh config/annotation.config.yaml exome"
+echo "                                             # or use 'Set up annotation datasets' in the UI"
+if [ "$DAEMON_UP" = 1 ]; then
+    echo "  bash scripts/verify_container_stack.sh --quick   # optional: prove the container stack"
+fi
+exit 0
