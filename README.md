@@ -203,9 +203,11 @@ bash docker/build.sh
 #    required SpliceAI MANE SNVs, RepeatMasker, SegDup, hg19->hg38 chain)
 bash scripts/download_references.sh config/annotation.config.yaml
 
-# 2b. dbNSFP (~50 GB) is NOT auto-downloaded: register at dbnsfp.org/download
-#     for an academic access code, request + download v5.3.1a, unzip, then:
-bash scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir
+# 2b. dbNSFP (~52 GB) is NOT auto-downloaded: register at dbnsfp.org/download
+#     for an academic access code, then download the single GRCh38 BGZF file
+#     (dbNSFP5.4a_grch38.gz + .tbi + .md5) from your instruction email and:
+bash scripts/prepare_dbnsfp.sh /path/to/download_folder
+#     (verify + install, no rebuild; legacy per-chromosome ZIPs still work)
 
 # Advisory only: report whether a newer academic dbNSFP release exists.
 python3 pipeline/check_dbnsfp_version.py --config config/annotation.config.yaml
@@ -652,13 +654,14 @@ clinical significance.
 
 ## Notes on the container
 
-- The diagnostic profile uses **dbNSFP v5.3.1a**, the current academic release
-  when this profile was updated. dbNSFP 5.3.x was rebuilt on GENCODE 49 /
-  Ensembl 115, while the currently pinned VEP image/cache remains release 113.
-  Coordinate-level dbNSFP lookup works by GRCh38 allele, but transcript-specific
-  fields must be regression-tested across this release difference. Run
-  `pipeline/check_dbnsfp_version.py` to see update and compatibility
-  recommendations before changing either resource.
+- The diagnostic profile uses **dbNSFP v5.4a**, the current academic release
+  when this profile was updated, distributed by the dbNSFP project as a
+  single GRCh38-sorted, tabix-indexed BGZF file ready for VEP. Recent dbNSFP
+  releases are built on newer transcript sets than the pinned VEP 113
+  image/cache. Coordinate-level dbNSFP lookup works by GRCh38 allele, but
+  transcript-specific fields must be regression-tested across this release
+  difference. Run `pipeline/check_dbnsfp_version.py` to see update and
+  compatibility recommendations before changing either resource.
 - **VEP gnomAD frequencies can differ slightly from the gnomAD Browser.**
   Depending on the VEP cache release and matching path, a variant without an
   rsID may not receive a gnomAD frequency even when the normalized allele is

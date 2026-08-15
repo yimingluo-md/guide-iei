@@ -5,7 +5,7 @@ description: >-
 
 resource_contract:
   assembly: GRCh38
-  dbNSFP: "5.3.1a"
+  dbNSFP: "5.4a"
   LoGoFunc: "Zenodo 13835271 (2024-09-24)"
   vep_image_tag: "release_113.4"
 

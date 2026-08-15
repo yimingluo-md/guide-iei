@@ -1,34 +1,36 @@
 #!/usr/bin/env bash
 # =============================================================================
-# prepare_dbnsfp.sh — rebuild a downloaded dbNSFP release into the single
+# prepare_dbnsfp.sh — install a downloaded dbNSFP release as the single
 # position-sorted, bgzipped, tabix-indexed GRCh38 file the VEP dbNSFP plugin
 # expects.
 #
-# WHY this is a separate one-time step:
-#   dbNSFP ships as a ZIP of per-chromosome files, coordinate-sorted on the
-#   hg19 (GRCh37) position columns. For a GRCh38 pipeline the rows must be
-#   re-sorted on the GRCh38 columns (hg38_chr, hg38_pos) and re-indexed, or
-#   tabix lookups silently miss. This mirrors the recipe in the VEP dbNSFP
-#   plugin's own documentation.
+# TWO SUPPORTED SOURCE LAYOUTS:
+#   1. Pre-built single-file release (dbNSFP >= 5.1): the project distributes
+#      the variant table as one tabix-indexed BGZF file per genome build
+#      (dbNSFP<ver>_grch38.gz + .tbi + .md5), ready for VEP. This is validated
+#      (MD5 when the sidecar is present, BGZF magic, tabix query) and
+#      installed directly — fast, no scratch space needed.
+#   2. Legacy per-chromosome ZIP layout (dbNSFP<ver>_variant.chr*.gz),
+#      coordinate-sorted on hg19: rows are merged and re-sorted on the GRCh38
+#      columns, then bgzipped and indexed (~200 GB scratch, hours).
 #
-# INPUT : the unzipped dbNSFP release directory (contains dbNSFP<ver>_variant.chr* )
+# INPUT : the download folder (either layout), or the single .gz file itself
 # OUTPUT: <config plugins.dbNSFP.path>  (+ .tbi)
 #
 # Usage:
-#   scripts/prepare_dbnsfp.sh /path/to/dbNSFP_unzipped_dir [config.yaml]
+#   scripts/prepare_dbnsfp.sh /path/to/dbNSFP_download [config.yaml]
 #
 # Requires bgzip + tabix (native, or via the container: HTS_VIA_CONTAINER=1).
-# Big job: needs ~200 GB scratch and a good while for the genome-wide sort.
 # =============================================================================
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "${HERE}/lib.sh"
 ROOT="$(cd "${HERE}/.." && pwd)"
 
-SRC_DIR="${1:?usage: prepare_dbnsfp.sh <unzipped_dbNSFP_dir> [config.yaml]}"
+SRC_DIR="${1:?usage: prepare_dbnsfp.sh <dbNSFP_download_dir_or_file> [config.yaml]}"
 CONFIG="${2:-${ROOT}/config/annotation.config.yaml}"
 CONSUME_SOURCE="${3:-}"
-[[ -d "$SRC_DIR" ]] || die "dbNSFP source dir not found: $SRC_DIR"
+[[ -e "$SRC_DIR" ]] || die "dbNSFP source not found: $SRC_DIR"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
 
 # hts() falls back to the container when host bgzip/tabix/samtools are absent;
@@ -45,11 +47,87 @@ OUT="$(absdir "$(yaml_get "$CONFIG" plugins.dbNSFP.path)")"
 mkdir -p "$(dirname "$OUT")"
 OUT_PLAIN="${OUT%.gz}"
 
-# Locate per-chromosome variant files (naming differs slightly across versions).
+file_md5() {
+    if command -v md5 >/dev/null 2>&1; then md5 -q "$1"
+    else md5sum "$1" | awk '{print $1}'; fi
+}
+
+# ---------------------------------------------------------------------------
+# Layout 1: pre-built single-file BGZF release (dbNSFP >= 5.1)
+# ---------------------------------------------------------------------------
 shopt -s nullglob
+PREBUILT=""
+if [[ -f "$SRC_DIR" ]]; then
+    PREBUILT="$SRC_DIR"
+else
+    for candidate in "$SRC_DIR"/dbNSFP*grch38.gz; do PREBUILT="$candidate"; break; done
+fi
+
+if [[ -n "$PREBUILT" ]]; then
+    log "pre-built GRCh38 BGZF release detected: $(basename "$PREBUILT")"
+    if [[ "$(basename "$PREBUILT")" != "$(basename "$OUT")" ]]; then
+        warn "source file $(basename "$PREBUILT") differs from configured $(basename "$OUT");"
+        warn "installing under the source's own name — update plugins.dbNSFP.path and .version to match"
+        OUT="$(dirname "$OUT")/$(basename "$PREBUILT")"
+    fi
+    # MD5 sidecar (published alongside the official download)
+    if [[ -s "${PREBUILT}.md5" ]]; then
+        WANT_MD5="$(awk '{print $1}' "${PREBUILT}.md5")"
+        log "verifying MD5 against the published sidecar (reads the whole file once)..."
+        GOT_MD5="$(file_md5 "$PREBUILT")"
+        [[ "$GOT_MD5" == "$WANT_MD5" ]] \
+            || die "MD5 mismatch for $(basename "$PREBUILT"): expected $WANT_MD5, got $GOT_MD5 — re-download the file"
+        log "MD5 verified: $GOT_MD5"
+    else
+        warn "no .md5 sidecar next to $(basename "$PREBUILT"); continuing with structural checks only"
+    fi
+    # BGZF magic (1f 8b 08 04 — gzip with the BC extra field tabix requires)
+    MAGIC="$(head -c 4 "$PREBUILT" | od -An -tx1 | tr -d ' \n')"
+    [[ "$MAGIC" == "1f8b0804" ]] \
+        || die "$(basename "$PREBUILT") is not BGZF (magic $MAGIC); tabix/VEP cannot use it"
+
+    if [[ "$PREBUILT" != "$OUT" ]]; then
+        log "installing to $OUT"
+        if [[ "$CONSUME_SOURCE" == "--remove-source-after-success" ]]; then
+            mv -f "$PREBUILT" "$OUT"
+            [[ -s "${PREBUILT}.tbi" ]] && mv -f "${PREBUILT}.tbi" "${OUT}.tbi"
+            rm -f "${PREBUILT}.md5"
+        else
+            cp "$PREBUILT" "$OUT"
+            [[ -s "${PREBUILT}.tbi" ]] && cp "${PREBUILT}.tbi" "${OUT}.tbi"
+        fi
+    fi
+    # Keep the index newer than the data file so htslib does not warn on
+    # every open (the install move can reorder the two mtimes).
+    [[ -s "${OUT}.tbi" ]] && touch "${OUT}.tbi" 2>/dev/null || true
+    if [[ ! -s "${OUT}.tbi" ]]; then
+        log "no .tbi shipped with the file; building the tabix index"
+        HEADER="$( set +o pipefail; gzip -cd "$OUT" | head -1 )"
+        CHR_COL="$(awk -v FS='\t' '{for(i=1;i<=NF;i++) if($i=="#chr"){print i; exit}}' <<<"$HEADER")"
+        POS_COL="$(awk -v FS='\t' '{for(i=1;i<=NF;i++) if($i=="pos(1-based)"){print i; exit}}' <<<"$HEADER")"
+        [[ "$CHR_COL" =~ ^[0-9]+$ && "$POS_COL" =~ ^[0-9]+$ ]] \
+            || die "could not find #chr/pos(1-based) columns in the file header"
+        ( cd "$(dirname "$OUT")" && hts tabix -f -s "$CHR_COL" -b "$POS_COL" -e "$POS_COL" -S 1 "$(basename "$OUT")" )
+    fi
+    # Prove the index answers a region query before declaring success.
+    FIRST_CONTIG="$( set +o pipefail; hts tabix -l "$OUT" 2>/dev/null | head -1 )"
+    [[ -n "$FIRST_CONTIG" ]] || die "tabix cannot list contigs from $OUT; the file or index is unusable"
+    hts tabix "$OUT" "${FIRST_CONTIG}:1-2000000" >/dev/null \
+        || die "tabix region query failed on $OUT"
+    log "tabix query check passed (first contig: $FIRST_CONTIG)"
+    log "dbNSFP ready: $OUT"
+    log "Set plugins.dbNSFP.path to this file (already the default) and enable it in the config."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Layout 2: legacy per-chromosome release — merge and re-sort on GRCh38
+# ---------------------------------------------------------------------------
+[[ -d "$SRC_DIR" ]] || die "dbNSFP source dir not found: $SRC_DIR"
 CHR_FILES=( "$SRC_DIR"/dbNSFP*variant.chr* )
-[[ ${#CHR_FILES[@]} -gt 0 ]] || die "no dbNSFP*variant.chr* files under $SRC_DIR"
-log "found ${#CHR_FILES[@]} per-chromosome dbNSFP files"
+[[ ${#CHR_FILES[@]} -gt 0 ]] \
+    || die "no pre-built dbNSFP*grch38.gz and no dbNSFP*variant.chr* files under $SRC_DIR"
+log "found ${#CHR_FILES[@]} per-chromosome dbNSFP files (legacy layout; genome-wide re-sort needed)"
 
 # Header comes from chr1; strip the leading '#' handling to match plugin expectation.
 H_FILE=""

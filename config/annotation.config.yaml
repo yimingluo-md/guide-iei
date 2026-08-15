@@ -206,20 +206,22 @@ plugins:
   # need separate plugins/downloads: CADD, REVEL, AlphaMissense, SIFT, PolyPhen,
   # PrimateAI, MetaRNN, GERP, phyloP/phastCons, and more. tier: bring-your-own-large.
   #
-  # Get the file (manual, one-time) from https://www.dbnsfp.org/. This
-  # workstation uses the prebuilt GRCh38 dbNSFP 5.3.1a archive. After download
-  # it MUST be
-  # rebuilt into a single position-sorted, bgzipped, tabix-indexed file — see
-  # scripts/prepare_dbnsfp.sh (and docs/ANNOTATIONS.md).
+  # Get the file (manual, one-time) from https://www.dbnsfp.org/ — academic
+  # registration required. Since v5.1 the project distributes the variant
+  # table as ONE tabix-indexed BGZF file per genome build, ready for VEP;
+  # download dbNSFP<ver>_grch38.gz (+ .tbi + .md5) and install it with
+  # scripts/prepare_dbnsfp.sh or the UI's Choose-folder flow (fast: verify +
+  # move, no rebuild). Legacy per-chromosome ZIPs are still supported and are
+  # re-sorted on GRCh38 coordinates by the same script (~200 GB scratch).
   dbNSFP:                     # tier: bring-your-own-large
     enabled: true
     required: true
-    version: "5.3.1a"
+    version: "5.4a"
     releases_url: "https://www.dbnsfp.org/releases/"
     # Default is the managed annotation-dataset location; the UI's dbNSFP
     # preparation installs here. A lab-specific absolute path may replace it
     # in a local config copy and is then used verbatim.
-    path: "references/dbnsfp/dbNSFP5.3.1a_grch38.gz"
+    path: "references/dbnsfp/dbNSFP5.4a_grch38.gz"
     # Core columns always pulled into CSQ. Additional curated predictors can be
     # selected for each job in the local UI; the generated job config appends
     # only those fields. Avoid `ALL` (hundreds of columns and very large VCFs).

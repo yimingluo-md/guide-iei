@@ -59,7 +59,7 @@ VEP.
 
 | Plugin | Config key | File | Notes |
 |--------|-----------|------|-------|
-| dbNSFP | `plugins.dbNSFP` | `path` + `columns` | One file, dozens of scores (CADD, REVEL, AlphaMissense, SIFT, PolyPhen, PrimateAI, MetaRNN, GERP++, phyloP/phastCons…). Core fields are always included; each annotation job can add curated predictors from the local UI. The diagnostic profile pins **v5.3.1a**. Download from dbnsfp.org, then run `scripts/prepare_dbnsfp.sh`. |
+| dbNSFP | `plugins.dbNSFP` | `path` + `columns` | One file, dozens of scores (CADD, REVEL, AlphaMissense, SIFT, PolyPhen, PrimateAI, MetaRNN, GERP++, phyloP/phastCons…). Core fields are always included; each annotation job can add curated predictors from the local UI. The diagnostic profile pins **v5.4a**, distributed as a single GRCh38-sorted BGZF file ready for VEP. Download from dbnsfp.org, then run `scripts/prepare_dbnsfp.sh` (verify + install). |
 | LoF (LOFTEE) | `plugins.LoF` | `human_ancestor_fa`, `conservation_file`, `gerp_bigwig` | Required by the diagnostic profile. **Must use the LOFTEE `grch38` branch** (baked into the image). `loftee_path: auto` resolves to `$LOFTEE_DIR` (`/opt/vep/src/loftee`) inside the container. |
 | SpliceAI | `plugins.SpliceAI` | `snv` (optional `indel`) | Required by default. `scripts/download_references.sh` fetches Ensembl's GRCh38 masked SNV scores for MANE v1.4. A lab may additionally configure a compatible indexed indel VCF. |
 | CADD v1.7 whole genome | `plugins.CADD_WGS` | `snv`, `indels` | Optional, WGS-only standard CADD plugin. The UI downloads only the official score tables and indexes and emits `CADD_RAW`/`CADD_PHRED`; CADD is licensed for non-commercial use. |
@@ -97,7 +97,7 @@ LOFTEE calls. See [Bayrak et al., Genome Medicine (2023)](https://pubmed.ncbi.nl
 
 ## Preparing the bring-your-own sources
 
-### dbNSFP (one-time, ~50 GB — manual registration)
+### dbNSFP (one-time, ~52 GB — manual registration)
 dbNSFP **cannot be auto-downloaded** — it is behind an academic registration.
 `scripts/download_references.sh` therefore does not fetch it; it prints these
 steps when dbNSFP is enabled but missing:
@@ -107,17 +107,29 @@ steps when dbNSFP is enabled but missing:
    after verification (free for academic / non-commercial use under
    CC BY-NC-ND 4.0).
 2. **Request the download links** using that email + access code.
-3. **Download and unzip** academic release **v5.3.1a**. It is based on GENCODE
-   49 / Ensembl 115. The ZIP contains per-chromosome variant tables
-   (`dbNSFP5.3.1a_variant.chr<#>.gz`), the gene table, and
-   the `search_dbNSFP` program.
-4. **Build the GRCh38 file for VEP.** The per-chromosome files are sorted on
-   the **hg19** columns; for GRCh38 they must be merged and re-sorted on the
-   GRCh38 position columns, then bgzipped and tabix-indexed:
+3. **Download the single GRCh38 BGZF file.** Since v5.1 the project
+   distributes the variant table as one tabix-indexed BGZF file per genome
+   build, ready for VEP: `dbNSFP<ver>_grch38.gz` plus its `.tbi` and `.md5`
+   sidecars (the diagnostic profile pins **v5.4a**). The maintainers'
+   recommended fast download:
 
 ```bash
-scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir
+aria2c -c -x8 -s8 -k8M -m0 --retry-wait=5 <download_link>
 ```
+
+   (`scripts/parallel_fetch.py <url> <dest> --connections 8 --md5 <md5>` is a
+   bundled no-install alternative.)
+4. **Install it:**
+
+```bash
+scripts/prepare_dbnsfp.sh /path/to/download_folder
+```
+
+   The pre-built file is MD5-verified against the published sidecar, checked
+   for BGZF/tabix integrity, and installed as-is — no rebuild, no scratch
+   space. Legacy per-chromosome ZIP downloads (hg19-sorted) are still
+   supported by the same script, which then merges and re-sorts them on the
+   GRCh38 columns (~200 GB scratch, several hours).
 
 This writes the configured `plugins.dbNSFP.path` (+ `.tbi`). The default
 `plugins.dbNSFP.columns` list is the always-on core: CADD, REVEL,
@@ -132,8 +144,10 @@ schema and automatically lists only the additional predictors actually present
 under **Display settings**. They remain hidden by default and can be enabled
 individually. Detected fields are also appended to TSV exports.
 
-The pinned VEP image/cache is currently release 113, whereas dbNSFP 5.3.x was
-rebuilt on Ensembl 115. The dbNSFP plugin performs GRCh38 allele lookups, but
+The pinned VEP image/cache is currently release 113, whereas recent dbNSFP
+releases are built on newer transcript sets (5.3.x on GENCODE 49 / Ensembl
+115; 5.4 on GENCODE 50 / Ensembl 116). The dbNSFP
+plugin performs GRCh38 allele lookups, but
 transcript-specific values can differ when transcript sets change. The
 pipeline reports this compatibility difference rather than silently claiming
 the releases are identical. Before upgrading VEP or dbNSFP, run:

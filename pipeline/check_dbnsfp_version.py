@@ -77,6 +77,10 @@ def expected_ensembl_release(dbnsfp_version: str) -> int | None:
         return 114
     if numbers[:2] == (5, 3):
         return 115
+    if numbers[:2] == (5, 4):
+        # dbnsfp.org/releases: "Fully rebuilt variant set based on GENCODE
+        # release 50 (Ensembl release 116, June 2026)."
+        return 116
     return None
 
 
