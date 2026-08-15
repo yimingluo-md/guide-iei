@@ -72,6 +72,7 @@ ANNOTATION_SOURCE_PATHS = {
     "clinvar_aa_match": ("post_processing", "clinvar_aa_match"),
     "liftover": ("liftover", "grch37_to_grch38"),
     "ccre": ("wgs_review", "ccre"),
+    "screen_context": ("wgs_review", "screen_context"),
     "clingen_erepo": ("clingen_erepo", None),
 }
 REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp", "clingen_erepo"}
@@ -89,6 +90,7 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "clinvar_aa_match": "included",
     "liftover": "included",
     "ccre": "included",
+    "screen_context": "recommended_wgs",
     "clingen_erepo": "required",
 }
 DBNSFP_OPTIONAL_PREDICTORS = [
@@ -126,14 +128,14 @@ ANNOTATION_SOURCE_SETUP = {
         "recommendation": "required",
         "reference_url": "https://www.dbnsfp.org/download",
         "reference_label": "dbNSFP academic download registration",
-        "size_hint": "approximately 50 GB after preparation",
+        "size_hint": "approximately 52 GB download; installed as-is",
         "instructions": [
             "Register with an institutional email at the dbNSFP academic download page.",
             "Use the emailed access code to request the current academic release links.",
-            "Download and extract dbNSFP 5.3.1a for GRCh38.",
-            "Select Choose folder and pick the extracted dbNSFP release; no path typing or terminal command is required.",
-            "Preparation re-sorts the full release on GRCh38 coordinates and may require about 220 GiB of temporary/output space.",
-            "Only after the managed table and tabix index are successfully created, the downloaded per-chromosome source files are removed to reclaim space.",
+            "Download the single GRCh38 BGZF file (dbNSFP5.4a_grch38.gz) plus its .tbi and .md5 sidecars. A fast option from the instruction email: aria2c -c -x8 -s8 -k8M -m0 --retry-wait=5 <download_link>",
+            "Select Choose folder and pick the folder containing the downloaded file; no path typing or terminal command is required.",
+            "Installation verifies the published MD5 checksum and the tabix index, then moves the file into Annotation datasets storage — no rebuild or scratch space is needed.",
+            "Legacy per-chromosome ZIP downloads are still supported; those are re-sorted on GRCh38 coordinates, which needs about 220 GiB of temporary space and several hours.",
             "Return here and confirm that both the configured .gz file and its .tbi index are detected.",
         ],
     },
@@ -287,6 +289,20 @@ ANNOTATION_SOURCE_SETUP = {
             "Re-alignment and re-calling on GRCh38 remains preferable when source reads are available.",
         ],
     },
+    "screen_context": {
+        "setup_mode": "download",
+        "download_id": "screen_context",
+        "reference_url": "https://huggingface.co/datasets/luoyiming1991/screen-registry-v4-immune-contexts",
+        "reference_label": "Prepared SCREEN Registry V4 context bundle (public mirror)",
+        "size_hint": "approximately 1.5 GB verified download; kept in Annotation datasets storage",
+        "instructions": [
+            "Select Download to fetch the prepared categorical tissue and donor-aware immune-cell context bundle from the public mirror; every file is verified against pinned SHA-256 checksums before installation.",
+            "The bundle is built from public ENCODE SCREEN Registry V4 data under the ENCODE open data-use policy, with the pinned Cell Ontology release (CC-BY 4.0) and ENCODE audit policy recorded in its manifest.",
+            "To rebuild reproducibly from the original sources instead (about 32 GB of downloads plus hours of processing), run: bash scripts/prepare_screen_ccre_data.sh <annotation-storage>/screen-context",
+            "A bundle prepared elsewhere can also be selected from the Regulatory evidence workspace; only a local pointer is stored.",
+            "This layer powers the whole-genome Regulatory evidence tab and the Immune context filter; a missing assay is shown as unavailable evidence, never as a negative result.",
+        ],
+    },
     "ccre": {
         "setup_mode": "bundled",
         "download_id": "ccre",
@@ -329,6 +345,11 @@ RESOURCE_DOWNLOAD_COMMANDS = {
     "ccre": ("scripts/download_references.sh", "--only", "ccre"),
     "gene_knowledge": ("scripts/update_gene_knowledge.sh",),
     "clingen_erepo": ("scripts/update_clingen_erepo.sh",),
+    # Default: verified prepared-bundle download from the public mirror
+    # (~1.5 GB); "screen_context_build" is the reproducible from-source build
+    # (~32 GB of downloads plus hours of processing).
+    "screen_context": ("scripts/download_screen_context_bundle.sh",),
+    "screen_context_build": ("scripts/prepare_screen_ccre_data.sh",),
     "recommended_exome": ("scripts/install_recommended_datasets.sh", "exome"),
     "recommended_wgs": ("scripts/install_recommended_datasets.sh", "whole_genome"),
     "refresh_updates": ("scripts/update_refreshable_datasets.sh",),
@@ -1811,6 +1832,14 @@ class AnnotationJobService:
                 "bash", str(self.pipeline_root / specification[0]), str(destination),
                 str(destination.with_name("manifest.json")),
             ]
+        elif resource_id in {"screen_context", "screen_context_build"}:
+            # Both scripts take a data root, not a config file. Downloads and
+            # prepared matrices live under annotation storage; the post-job
+            # hook registers the pointer.
+            command = [
+                "bash", str(self.pipeline_root / specification[0]),
+                str(self.annotation_root / "screen-context"),
+            ]
         else:
             config_path = self._write_resource_config(resource_id)
             command = [
@@ -2079,12 +2108,17 @@ class AnnotationJobService:
         source_dir = Path(source_value).expanduser().resolve()
         if not source_dir.is_dir():
             raise ValueError(f"dbNSFP source folder does not exist: {source_dir}")
+        prebuilt_files = list(source_dir.glob("dbNSFP*grch38.gz"))
         chromosome_files = list(source_dir.glob("dbNSFP*variant.chr*"))
-        if not chromosome_files:
+        if not prebuilt_files and not chromosome_files:
             raise ValueError(
-                "the selected folder does not contain dbNSFP per-chromosome variant files"
+                "the selected folder contains neither a pre-built dbNSFP*_grch38.gz "
+                "file nor dbNSFP per-chromosome variant files"
             )
-        self._ensure_annotation_download_space("dbnsfp_prepare")
+        # The pre-built single-file release installs by verified move — the
+        # legacy scratch-space requirement applies only to the re-sort path.
+        if not prebuilt_files:
+            self._ensure_annotation_download_space("dbnsfp_prepare")
         config_path = self._write_resource_config("dbnsfp")
         command = [
             "bash",
@@ -2321,6 +2355,16 @@ class AnnotationJobService:
                 status = self.clingen_erepo.status()
                 if not status.get("available"):
                     raise RuntimeError(status.get("error") or "ClinGen snapshot validation failed")
+            elif resource_id in {"screen_context", "screen_context_build"}:
+                # Register the freshly downloaded/prepared bundle; install
+                # validates the manifest and matrices before storing the
+                # pointer.
+                self.install_screen_context({
+                    "manifest_path": str(
+                        self.annotation_root / "screen-context" / "prepared"
+                        / "screen.registry-v4.immune-contexts.json"
+                    ),
+                })
             self._update_resource_job(
                 job_id,
                 status="succeeded",
@@ -2385,11 +2429,36 @@ class AnnotationJobService:
         region = config.get("region") or {}
         exome_bed_value = region.get("custom_bed") or region.get("bed")
         exome_bed_path = self._resolved_reference_path(exome_bed_value)
-        if exome_bed_path is None or not exome_bed_path.is_file():
+        if exome_bed_path is None:
             raise ValueError(
-                "the annotation config must provide an existing GRCh38 "
-                "coding+splice BED so exome-region variants can be retained"
+                "the annotation config names no GRCh38 coding+splice BED "
+                "(region.bed / region.custom_bed)"
             )
+        if not exome_bed_path.is_file():
+            # First use on this workstation: run the same one-time build an
+            # exome-mode annotation performs, so every entry path — exome or
+            # whole-genome, annotate or review — self-initializes instead of
+            # telling the user to run something else first. Both callers are
+            # background workers, so the ~2-minute build is fine here.
+            if progress:
+                progress({
+                    "phase": "preparing_index",
+                    "message": "Building the GRCh38 coding+splice region set (one-time)…",
+                })
+            build = subprocess.run(
+                [
+                    "bash",
+                    str(self.pipeline_root / "scripts" / "build_coding_bed.sh"),
+                    str(config_path),
+                ],
+                cwd=self.pipeline_root, capture_output=True, text=True,
+            )
+            if build.returncode != 0 or not exome_bed_path.is_file():
+                detail = (build.stderr or build.stdout or "").strip().splitlines()
+                raise ValueError(
+                    "the GRCh38 coding+splice BED could not be built: "
+                    + (detail[-1] if detail else f"exit code {build.returncode}")
+                )
         ccre = ((config.get("wgs_review") or {}).get("ccre") or {})
         ccre_bed_path = self._resolved_reference_path(ccre.get("bed"))
         promoterai = ((config.get("plugins") or {}).get("PromoterAI") or {})
@@ -2953,7 +3022,7 @@ class AnnotationJobService:
         if resource_id == "dbnsfp":
             current = str(
                 ((config.get("plugins") or {}).get("dbNSFP") or {}).get("path")
-                or "dbNSFP5.3.1a_grch38.gz"
+                or "dbNSFP5.4a_grch38.gz"
             )
             name = Path(current).name
             return {"path": str(self.annotation_root / "dbnsfp" / name)}
@@ -3139,6 +3208,7 @@ class AnnotationJobService:
             "clinvar_aa_match": ("ClinVar residue match", "Known pathogenic missense at the same amino-acid residue"),
             "liftover": ("hg19 input bundle", "Assembly-gap-aware conversion to canonical GRCh38"),
             "ccre": ("ENCODE cCRE regions", "Native SCREEN region filter for whole-genome import"),
+            "screen_context": ("SCREEN tissue and immune contexts", "Categorical tissue aggregates and donor-aware immune-cell evidence for cCRE overlaps"),
             "clingen_erepo": ("ClinGen variant curations", "Disease-specific expert-panel classifications from the Evidence Repository"),
         }
         try:
@@ -3182,6 +3252,10 @@ class AnnotationJobService:
                 values = [block.get("snv"), block.get("indels")]
             elif source_id == "logofunc":
                 values = [block.get("file"), block.get("manifest")]
+            elif source_id == "screen_context":
+                # The active bundle is normally recorded by the installed
+                # pointer file, not the config; resolved separately below.
+                values = [block.get("manifest")]
             elif source_id == "loftee_ptc_50bp":
                 values = [
                     block.get("gtf"),
@@ -3232,6 +3306,13 @@ class AnnotationJobService:
                 # install. The empty-paths rule above must not label this
                 # derived feature "Bundled file missing".
                 installed = True
+            if source_id == "screen_context":
+                # The active bundle is the pointer-registered (or env/config
+                # named) manifest, independent of the config path above.
+                active_manifest = self._screen_context_manifest(config)
+                installed = bool(active_manifest and active_manifest.is_file())
+                if active_manifest is not None:
+                    paths = [active_manifest]
             if installed and source_id == "promoterai" and paths:
                 score_path = paths[0]
                 installed = (

@@ -820,7 +820,7 @@ class AnnotationJobServiceTests(unittest.TestCase):
     def test_user_supplied_dataset_preparation_targets_managed_annotation_storage(self):
         generated = self.service._write_resource_config("dbnsfp")
         text = generated.read_text()
-        expected = self.service.annotation_root / "dbnsfp" / "dbNSFP5.3.1a_grch38.gz"
+        expected = self.service.annotation_root / "dbnsfp" / "dbNSFP5.4a_grch38.gz"
         self.assertIn(str(expected), text)
 
         generated = self.service._write_resource_config("logofunc")

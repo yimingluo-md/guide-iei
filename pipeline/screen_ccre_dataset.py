@@ -19,6 +19,7 @@ import concurrent.futures
 import gzip
 import hashlib
 import json
+import os
 import platform
 import re
 import shutil
@@ -623,39 +624,131 @@ def build_manifest(args: argparse.Namespace) -> None:
     print(json.dumps(manifest["counts"], indent=2, sort_keys=True))
 
 
-def ucsc_binary_url() -> str:
-    system = platform.system().lower()
-    machine = platform.machine().lower()
-    if system == "darwin" and machine in {"arm64", "aarch64"}:
-        directory = "macOSX.arm64"
-    elif system == "darwin" and machine in {"x86_64", "amd64"}:
-        directory = "macOSX.x86_64"
-    elif system == "linux" and machine in {"x86_64", "amd64"}:
-        directory = "linux.x86_64"
-    elif system == "linux" and machine in {"arm64", "aarch64"}:
-        directory = "linux.aarch64"
-    else:
-        raise RuntimeError(f"no pinned UCSC binary directory for {system}/{machine}")
+def ucsc_binary_url(directory: str | None = None) -> str:
+    if directory is None:
+        system = platform.system().lower()
+        machine = platform.machine().lower()
+        if system == "darwin" and machine in {"arm64", "aarch64"}:
+            directory = "macOSX.arm64"
+        elif system == "darwin" and machine in {"x86_64", "amd64"}:
+            directory = "macOSX.x86_64"
+        elif system == "linux" and machine in {"x86_64", "amd64"}:
+            directory = "linux.x86_64"
+        elif system == "linux" and machine in {"arm64", "aarch64"}:
+            directory = "linux.aarch64"
+        else:
+            raise RuntimeError(f"no pinned UCSC binary directory for {system}/{machine}")
     return f"https://hgdownload.soe.ucsc.edu/admin/exe/{directory}/bigBedToBed"
+
+
+def bigbed_tool_usable(tool: Path | str) -> tuple[bool, str]:
+    """Probe the tool. A usable binary prints its usage text with no args.
+
+    The diagnostic must be checked for loader failures explicitly: a dyld
+    "Library not loaded" message quotes the binary's own path, so a bare
+    'name appears in output' test passes for a binary that cannot run at all
+    (the UCSC macOS builds link Homebrew libraries that may be absent).
+    """
+    try:
+        completed = subprocess.run([str(tool)], capture_output=True, text=True)
+    except OSError as exc:
+        return False, str(exc)
+    diagnostic = completed.stdout + completed.stderr
+    broken = "Library not loaded" in diagnostic or "dyld[" in diagnostic
+    usable = "usage" in diagnostic.lower() and not broken
+    return usable, diagnostic.strip()
+
+
+def container_runtime() -> tuple[str, str] | None:
+    runtime = (
+        os.environ.get("IEI_COHORT_HTS_RUNTIME")
+        or os.environ.get("RUNTIME", "docker")
+    )
+    if runtime not in {"docker", "podman"} or not shutil.which(runtime):
+        return None
+    image = os.environ.get("IEI_COHORT_HTS_IMAGE") or os.environ.get(
+        "IMAGE", "vep-annotate:latest"
+    )
+    return runtime, image
 
 
 def ensure_bigbed_tool(source_root: Path) -> Path:
     existing = shutil.which("bigBedToBed")
     if existing:
-        return Path(existing)
-    target = source_root / "tools" / "bigBedToBed"
-    if not target.exists():
+        usable, _ = bigbed_tool_usable(existing)
+        if usable:
+            return Path(existing)
+    tools_dir = source_root / "tools"
+    target = tools_dir / "bigBedToBed"
+    if not target.exists() or target.stat().st_size < 1024:
         run_curl(ucsc_binary_url(), target)
         target.chmod(0o755)
-    completed = subprocess.run([str(target)], capture_output=True, text=True)
-    diagnostic = completed.stdout + completed.stderr
-    if "bigBedToBed" not in diagnostic:
+    usable, diagnostic = bigbed_tool_usable(target)
+    if not usable:
+        # The native binary cannot run (macOS builds need Homebrew xz/openssl
+        # at /usr/local/opt). Fall back to the Linux binary executed inside
+        # the configured container, wrapped so call sites stay unchanged.
+        runtime_image = container_runtime()
+        if runtime_image is not None:
+            runtime, image = runtime_image
+            # UCSC ships only an x86_64 Linux build. Use the configured image
+            # when it is amd64; otherwise run under a minimal amd64 base image
+            # via --platform (Docker Desktop executes it through Rosetta/qemu).
+            inspect = subprocess.run(
+                [runtime, "image", "inspect", "--format", "{{.Architecture}}", image],
+                capture_output=True, text=True,
+            )
+            image_arch = inspect.stdout.strip() if inspect.returncode == 0 else "amd64"
+            platform_flag = ""
+            if image_arch not in {"amd64", "x86_64"}:
+                image = "debian:bookworm-slim"
+                platform_flag = "--platform linux/amd64"
+            linux_binary = tools_dir / "bigBedToBed.linux"
+            if not linux_binary.exists() or linux_binary.stat().st_size < 1024:
+                run_curl(ucsc_binary_url("linux.x86_64"), linux_binary)
+                linux_binary.chmod(0o755)
+            wrapper = tools_dir / "bigBedToBed.container"
+            wrapper.write_text(
+                "#!/bin/sh\n"
+                "# Auto-generated: runs the Linux bigBedToBed inside the\n"
+                "# configured container because the native UCSC binary cannot\n"
+                f"# run on this host ({diagnostic.splitlines()[-1] if diagnostic else 'unusable'}).\n"
+                "set -e\n"
+                f'RUNTIME="{runtime}"\nIMAGE="{image}"\nTOOL_DIR="{tools_dir.resolve()}"\n'
+                f'PLATFORM_FLAG="{platform_flag}"\n'
+                'if [ "$#" -lt 2 ]; then\n'
+                '    exec "$RUNTIME" run --rm $PLATFORM_FLAG -v "$TOOL_DIR:/bbtool:ro" '
+                '--entrypoint /bbtool/bigBedToBed.linux "$IMAGE"\n'
+                "fi\n"
+                'IN_DIR=$(cd "$(dirname "$1")" && pwd)\n'
+                'OUT_DIR=$(cd "$(dirname "$2")" && pwd)\n'
+                'exec "$RUNTIME" run --rm $PLATFORM_FLAG -v "$TOOL_DIR:/bbtool:ro" '
+                '-v "$IN_DIR:/bb_in:ro" -v "$OUT_DIR:/bb_out" '
+                '--entrypoint /bbtool/bigBedToBed.linux "$IMAGE" '
+                '"/bb_in/$(basename "$1")" "/bb_out/$(basename "$2")"\n',
+                encoding="utf-8",
+            )
+            wrapper.chmod(0o755)
+            wrapper_usable, wrapper_diag = bigbed_tool_usable(wrapper)
+            if wrapper_usable:
+                atomic_json(target.with_suffix(".manifest.json"), {
+                    "source_url": ucsc_binary_url("linux.x86_64"),
+                    "sha256": sha256_file(linux_binary),
+                    "size": linux_binary.stat().st_size,
+                    "execution": "container",
+                    "native_diagnostic": diagnostic,
+                })
+                return wrapper
+            diagnostic = f"{diagnostic}; container fallback also failed: {wrapper_diag}"
         extra = ""
         if platform.system().lower() == "darwin" and "liblzma" in diagnostic:
-            extra = " Install the xz runtime (`brew install xz`) and retry."
+            extra = (
+                " The UCSC macOS binary needs Homebrew xz (`brew install xz`);"
+                " alternatively ensure the Docker/Podman container runtime is"
+                " available so the Linux binary can be used instead."
+            )
         raise RuntimeError(
-            f"downloaded bigBedToBed cannot run (exit {completed.returncode}): "
-            f"{diagnostic.strip()}.{extra}"
+            f"downloaded bigBedToBed cannot run: {diagnostic.strip()}.{extra}"
         )
     atomic_json(target.with_suffix(".manifest.json"), {
         "source_url": ucsc_binary_url(),

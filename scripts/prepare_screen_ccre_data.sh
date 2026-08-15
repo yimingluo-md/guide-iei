@@ -46,11 +46,15 @@ python3 "${ROOT}/pipeline/screen_ccre_dataset.py" download \
     --source-dir "${DATA_ROOT}/source" \
     --workers "${WORKERS}"
 
+# --force: a retry after an interrupted build must replace its own partial
+# outputs (inputs are pinned, so a rebuild is deterministic); the immune
+# context step below already does the same.
 python3 "${ROOT}/pipeline/screen_ccre_dataset.py" prepare \
     --manifest "${MANIFEST}" \
     --ccre-bed "${CCRE_BED}" \
     --source-dir "${DATA_ROOT}/source" \
-    --output-dir "${DATA_ROOT}/prepared"
+    --output-dir "${DATA_ROOT}/prepared" \
+    --force
 
 bash "${HERE}/prepare_screen_immune_contexts.sh" "${DATA_ROOT}" "${WORKERS}"
 
