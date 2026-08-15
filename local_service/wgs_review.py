@@ -648,7 +648,10 @@ class WgsReviewStore:
 
         stat = source.stat()
         fingerprint_value = {
-            "review_format_version": 4,
+            # v5: worker interval slicing normalizes contig names — v4 review
+            # caches built from chr-prefixed VCFs under-retained coding and
+            # cCRE variants and must be rebuilt.
+            "review_format_version": 5,
             "source": str(source),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
@@ -716,6 +719,17 @@ class WgsReviewStore:
         ) as temporary_directory:
             temporary_root = Path(temporary_directory)
 
+            def interval_slice(
+                intervals: dict[str, tuple[tuple[int, int], ...]], contig: str
+            ) -> dict[str, tuple[tuple[int, int], ...]]:
+                # Interval dicts and evaluate_record both use NORMALIZED
+                # contig names; tabix reports the VCF's raw names. Slicing by
+                # the raw name silently handed every worker empty interval
+                # sets on chr-prefixed VCFs, killing the exome and cCRE
+                # retention routes for the entire import.
+                key = normalize_chromosome(contig)
+                return {key: intervals[key]} if key in intervals else {}
+
             def collect(executor) -> None:
                 futures = {
                     executor.submit(
@@ -725,18 +739,9 @@ class WgsReviewStore:
                         (contig,),
                         header,
                         options,
-                        (
-                            {contig: ccre_intervals[contig]}
-                            if contig in ccre_intervals else {}
-                        ),
-                        (
-                            {contig: exome_intervals[contig]}
-                            if contig in exome_intervals else {}
-                        ),
-                        (
-                            {contig: promoter_intervals[contig]}
-                            if contig in promoter_intervals else {}
-                        ),
+                        interval_slice(ccre_intervals, contig),
+                        interval_slice(exome_intervals, contig),
+                        interval_slice(promoter_intervals, contig),
                         temporary_root / f"shard-{index:04d}.vcf",
                     ): index
                     for index, contig in enumerate(contigs)

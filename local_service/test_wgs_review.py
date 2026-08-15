@@ -320,6 +320,43 @@ class WgsPrefilterTests(unittest.TestCase):
         self.assertIn("##INFO=<ID=IEI_UNSCORED_INDEL,Number=A", output)
         self.assertIn("IEI_UNSCORED_INDEL=SpliceAI_intronic", output)
 
+    def test_worker_interval_slices_normalize_chr_prefixed_contigs(self):
+        # Regression: interval dicts are keyed by NORMALIZED contig ("1"), but
+        # the per-worker slice looked contigs up by the VCF's raw name
+        # ("chr1"), handing every worker empty interval sets — the exome and
+        # cCRE retention routes silently retained nothing for chr-prefixed
+        # VCFs while the import completed "successfully".
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "coding.vcf"
+            fields = (
+                "Allele", "ALLELE_NUM", "SYMBOL", "Consequence", "MAX_AF",
+                "SpliceAI_pred_DS_AG", "promoterAI_promoterAI", "PICK",
+            )
+            csq = "A|1|GENE1|missense_variant|0.001|.|.|1"
+            source.write_text(
+                "##fileformat=VCFv4.2\n"
+                "##contig=<ID=chr1,length=248956422>\n"
+                f'##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: {"|".join(fields)}">\n'
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tCASE\n"
+                f"chr1\t100\t.\tG\tA\t99\tPASS\tCSQ={csq}\tGT\t0/1\n",
+                encoding="utf-8",
+            )
+            exome_bed = root / "coding.bed"
+            exome_bed.write_text("1\t50\t200\n", encoding="utf-8")  # Ensembl naming
+            cohort = CohortStore(
+                root / "cohort.sqlite3",
+                enable_auto_index=True,
+                hts_backend=FakeHtsBackend(),
+            )
+            result = WgsReviewStore(root, cohort).prefilter(
+                source,
+                WgsPrefilterOptions(noncoding_mode="none"),
+                exome_bed_path=exome_bed,
+            )
+        self.assertEqual(result["records_retained"], 1)
+        self.assertEqual(result["unscored_intronic_indels"], 0)
+
     @unittest.skipUnless(
         os.environ.get("IEI_RUN_HTS_INTEGRATION") == "1",
         "set IEI_RUN_HTS_INTEGRATION=1 to exercise real WGS BGZF/tabix intake",
