@@ -300,7 +300,18 @@ class StorageLocationRegistry:
                 return None
             value = json.loads(marker_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise StorageRegistryError(f"storage marker is unreadable: {marker_path} ({exc})") from exc
+            hint = ""
+            if getattr(exc, "errno", None) == 1:  # EPERM: macOS privacy (TCC) denial
+                hint = (
+                    " — on macOS this usually means the app that launched the "
+                    "workbench lacks permission to read this drive. Grant the "
+                    "terminal app Full Disk Access (System Settings > Privacy & "
+                    "Security), or approve the Removable Volumes prompt, then "
+                    "start the workbench again."
+                )
+            raise StorageRegistryError(
+                f"storage marker is unreadable: {marker_path} ({exc}){hint}"
+            ) from exc
         if not isinstance(value, dict):
             raise StorageRegistryError(f"storage marker is invalid: {marker_path}")
         return value

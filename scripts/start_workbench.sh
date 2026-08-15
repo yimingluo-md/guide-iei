@@ -59,15 +59,34 @@ cd "$ROOT"
 (
     child=""
     trap '[[ -n "$child" ]] && kill "$child" 2>/dev/null' TERM INT
+    rapid_failures=0
     while :; do
+        launched_at=$SECONDS
         python3 -m local_service.workbench_service --port "$SERVICE_PORT" &
         child=$!
         wait "$child"
         rc=$?
-        if [[ "$rc" -ne 75 ]]; then
+        if [[ "$rc" -eq 75 ]]; then
+            echo "[workbench] service restart requested from the app; starting again"
+            rapid_failures=0
+            continue
+        fi
+        # 0 = clean stop; 130/143 = Ctrl-C / TERM (the trap above, or the user).
+        if [[ "$rc" -eq 0 || "$rc" -eq 130 || "$rc" -eq 143 ]]; then
             exit "$rc"
         fi
-        echo "[workbench] service restart requested from the app; starting again"
+        # Unexpected death (crash, out-of-memory kill): relaunch so the
+        # workbench never sits headless, but give up on a rapid crash loop.
+        if [[ $((SECONDS - launched_at)) -ge 60 ]]; then
+            rapid_failures=0
+        fi
+        rapid_failures=$((rapid_failures + 1))
+        if [[ "$rapid_failures" -ge 3 ]]; then
+            echo "[workbench] service died $rapid_failures times in quick succession (last exit $rc); giving up — check the messages above"
+            exit "$rc"
+        fi
+        echo "[workbench] service exited unexpectedly (code $rc); restarting in 3s"
+        sleep 3
     done
 ) &
 SERVICE_PID=$!

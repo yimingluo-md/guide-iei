@@ -16,6 +16,7 @@ import os
 import re
 import shutil
 import sqlite3
+import time
 import subprocess
 import tempfile
 import threading
@@ -121,17 +122,30 @@ class HtsBackend:
         return command
 
     def run(self, tool: str, arguments: list[str]) -> subprocess.CompletedProcess[str]:
-        process = subprocess.run(
-            self._command(tool, arguments),
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if process.returncode:
+        attempts = 0
+        while True:
+            attempts += 1
+            process = subprocess.run(
+                self._command(tool, arguments),
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=False,
+            )
+            if not process.returncode:
+                return process
+            # A file written by the host (or another container) moments ago can
+            # be incompletely visible inside a freshly started container
+            # (Docker Desktop VirtioFS bind caching; worse on FSKit-exFAT
+            # drives). That truncated view fails bcftools/tabix on perfectly
+            # valid files — observed as "Broken VCF record" from bcftools sort
+            # and tbx_index_build failures. Settle and retry once when running
+            # through a container; genuine failures fail identically again.
+            if attempts == 1 and self.runtime and not self.native_tools.get(tool):
+                time.sleep(5)
+                continue
             detail = process.stderr.strip() or process.stdout.strip()
             raise RuntimeError(detail or f"{tool} exited with {process.returncode}")
-        return process
 
     def validate_index(self, path: Path) -> Path | None:
         candidates = [Path(f"{path}.tbi"), Path(f"{path}.csi")]

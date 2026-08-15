@@ -7,6 +7,7 @@ import gzip
 import hashlib
 import json
 import multiprocessing
+import os
 import re
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -809,6 +810,11 @@ class WgsReviewStore:
                     with chunk.open("rt", encoding="utf-8") as source_handle:
                         for line in source_handle:
                             destination.write(line)
+                # The next step reads this file inside a freshly started
+                # container; force it to disk so the bind mount cannot serve
+                # a truncated view (VirtioFS caching).
+                destination.flush()
+                os.fsync(destination.fileno())
             if progress:
                 progress({
                     "phase": "compressing",

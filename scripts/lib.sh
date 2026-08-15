@@ -113,11 +113,25 @@ hts() {
         args[$i]="$mapped"
     done
 
+    local rc=0
     case "$rt" in
         docker|podman)
             mount_flags=(-v "$PWD:/w")
             for i in "${!hosts[@]}"; do mount_flags+=(-v "${hosts[$i]}:${conts[$i]}:rw"); done
-            "$rt" run --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}"
+            "$rt" run --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+            # A file written by the host or another container can be
+            # incompletely visible to a container started moments later
+            # (Docker Desktop VirtioFS bind caching; worse on FSKit-exFAT
+            # drives), which fails tabix/bcftools/bgzip on perfectly valid
+            # files. Settle and retry once; genuine failures (unsorted input,
+            # non-BGZF, malformed records) fail identically on retry.
+            if [[ "$rc" -ne 0 ]]; then
+                log "WARN  containerized $tool failed (rc=$rc); retrying once after write settling"
+                sleep 5
+                rc=0
+                "$rt" run --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+            fi
+            return "$rc"
             ;;
         singularity|apptainer)
             mount_flags=(--bind "$PWD:/w")
