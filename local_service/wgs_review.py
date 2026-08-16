@@ -720,15 +720,31 @@ class WgsReviewStore:
             temporary_root = Path(temporary_directory)
 
             def interval_slice(
-                intervals: dict[str, tuple[tuple[int, int], ...]], contig: str
+                intervals: dict[str, tuple[tuple[int, int], ...]],
+                group: tuple[str, ...],
             ) -> dict[str, tuple[tuple[int, int], ...]]:
                 # Interval dicts and evaluate_record both use NORMALIZED
                 # contig names; tabix reports the VCF's raw names. Slicing by
                 # the raw name silently handed every worker empty interval
                 # sets on chr-prefixed VCFs, killing the exome and cCRE
                 # retention routes for the entire import.
-                key = normalize_chromosome(contig)
-                return {key: intervals[key]} if key in intervals else {}
+                sliced: dict[str, tuple[tuple[int, int], ...]] = {}
+                for contig in group:
+                    key = normalize_chromosome(contig)
+                    if key in intervals:
+                        sliced[key] = intervals[key]
+                return sliced
+
+            # One worker stream per reader rather than per contig: a genome
+            # VCF lists 100+ alt/decoy/unplaced contigs, and in container
+            # mode each shard pays a full `docker run` startup — 126 spawns
+            # where reader_count streams suffice. Round-robin keeps the large
+            # chromosomes spread across readers.
+            contig_groups = [
+                tuple(contigs[start::max(1, reader_count)])
+                for start in range(max(1, reader_count))
+            ]
+            contig_groups = [group for group in contig_groups if group]
 
             def collect(executor) -> None:
                 futures = {
@@ -736,15 +752,15 @@ class WgsReviewStore:
                         _filter_group_worker,
                         backend,
                         prepared.path,
-                        (contig,),
+                        group,
                         header,
                         options,
-                        interval_slice(ccre_intervals, contig),
-                        interval_slice(exome_intervals, contig),
-                        interval_slice(promoter_intervals, contig),
+                        interval_slice(ccre_intervals, group),
+                        interval_slice(exome_intervals, group),
+                        interval_slice(promoter_intervals, group),
                         temporary_root / f"shard-{index:04d}.vcf",
                     ): index
-                    for index, contig in enumerate(contigs)
+                    for index, group in enumerate(contig_groups)
                 }
                 for future in as_completed(futures):
                     results.append(future.result())
@@ -752,10 +768,10 @@ class WgsReviewStore:
                         completed = len(results)
                         progress({
                             "phase": "filtering",
-                            "progress": 10.0 + (70.0 * completed / len(contigs)),
+                            "progress": 10.0 + (70.0 * completed / len(contig_groups)),
                             "message": (
-                                f"Filtered {completed} of {len(contigs)} "
-                                "chromosome shards."
+                                f"Filtered {completed} of {len(contig_groups)} "
+                                "chromosome shard groups."
                             ),
                             "records_scanned": sum(
                                 item["records_scanned"] for item in results
