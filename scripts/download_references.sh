@@ -64,6 +64,49 @@ LOFTEE_BASE="https://personal.broadinstitute.org/konradk/loftee_data/${ASSEMBLY}
 UCSC_DB="https://hgdownload.soe.ucsc.edu/goldenPath/hg38/database"
 SPLICEAI_BASE="https://ftp.ensembl.org/pub/data_files/homo_sapiens/GRCh38/variation_plugins"
 
+# ---------------------------------------------------------------------------
+# Fast public mirror of the prepared VEP 113 / GRCh38 reference bundle
+# (Ensembl data are unrestricted; LOFTEE is from an MIT-licensed project).
+# Every mirror download is verified against the pinned SHA-256 recorded at
+# publication; any failure quietly falls back to the canonical source.
+# Set IEI_REFERENCE_MIRROR="" to disable the mirror entirely.
+REF_MIRROR="${IEI_REFERENCE_MIRROR-https://huggingface.co/datasets/luoyiming1991/vep113-grch38-reference-bundle/resolve/main}"
+MIRROR_SHA_VEP_CACHE="bd49c25265b5940330c5b556d5eb2edeff0ad04468e1b8cfc70a7fe518da5d67"
+MIRROR_SHA_FASTA="6848fea59a70a3e8439849b9f5033281f63fe2641357ba492f0ca76b7045ccbd"
+MIRROR_SHA_FASTA_FAI="0998f61682f4041b11f0d156e1db6dae3e4c743e26643a3f45ea7faea70cb604"
+MIRROR_SHA_FASTA_GZI="47b1b878f0fe2903b3c04e043d22c1166f63527f1c721dada4465025a6b8e8ce"
+MIRROR_SHA_HA="624b0e0f8e1c4e7c8639edf17df03f213621d1f56f6fa1c8025fad56082b157b"
+MIRROR_SHA_HA_FAI="703e9a2011886f90679e99d0333ca91afc81df726db91c76d57b9e2d6f182ec5"
+MIRROR_SHA_HA_GZI="a31e4ee63e519a0da4a8e2750dabbca177129b7f312b2a993c17a99981e6a3bf"
+MIRROR_SHA_LOFTEE_SQL="22e214f1513d67682602b5915dfd220ea9d8360448f0de0b8db72c49bf03649a"
+MIRROR_SHA_GERP="8801e57ce8effbef9248b122caee16da338bfa8319dd41392c9ce4e58ea6cfe8"
+
+_sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
+    else shasum -a 256 "$1" | awk '{print $1}'; fi
+}
+
+mirror_fetch() { # mirror_fetch <mirror-filename> <sha256> <dest>; 0 on verified success
+    local name="$1" want="$2" dest="$3" got
+    [[ -n "$REF_MIRROR" ]] || return 1
+    if [[ -s "$dest" ]] && [[ "$(_sha256_of "$dest")" == "$want" ]]; then
+        log "mirror: $name already present and verified"
+        return 0
+    fi
+    log "mirror: fetching $name"
+    if ! fetch "${REF_MIRROR}/${name}" "$dest"; then
+        rm -f "$dest.part"
+        return 1
+    fi
+    got="$(_sha256_of "$dest")"
+    if [[ "$got" != "$want" ]]; then
+        warn "mirror checksum mismatch for $name (expected $want, got $got); using the canonical source instead"
+        rm -f "$dest"
+        return 1
+    fi
+    log "mirror: verified $name"
+}
+
 # --- destinations (from config, resolved to repo root) ------------------------
 absdir() { local p="$1"; [[ "$p" = /* ]] || p="${ROOT}/${p}"; echo "$p"; }
 # A missing key must stay empty: absdir("") would return "${ROOT}/", turning
@@ -113,14 +156,20 @@ if want vep_cache; then
     if [[ -f "$CACHE_READY" && -d "${VEP_CACHE_DIR}/homo_sapiens/${VEP_REL}_${ASSEMBLY}" ]]; then
         log "VEP cache already extracted, skip."
     else
-        CHECKSUM_URL="${ENSEMBL_FTP}/variation/indexed_vep_cache/CHECKSUMS"
-        # Do not exit awk early: under `set -o pipefail`, closing the pipe while
-        # curl is still writing turns an otherwise valid match into curl(23).
-        CHECKSUM_ENTRY="$(curl -fsSL --max-time 60 "$CHECKSUM_URL" | awk -v name="$(basename "$CACHE_TARBALL")" '$NF == name { print $1 ":" $2 }')"
-        [[ -n "$CHECKSUM_ENTRY" ]] || die "could not find cache in Ensembl CHECKSUMS"
-        python3 "${HERE}/parallel_fetch.py" "$CACHE_URL" "$CACHE_TARBALL" \
-            --connections 8 --chunk-mib 128 --sum-check "$CHECKSUM_ENTRY" \
-            || die "VEP cache download or checksum validation failed"
+        MIRROR_CACHE_NAME="homo_sapiens_vep_113_GRCh38.cache.tar.gz"
+        if [[ "$VEP_REL" == "113" && "$ASSEMBLY" == "GRCh38" ]] \
+           && mirror_fetch "$MIRROR_CACHE_NAME" "$MIRROR_SHA_VEP_CACHE" "${VEP_CACHE_DIR}/${MIRROR_CACHE_NAME}"; then
+            CACHE_TARBALL="${VEP_CACHE_DIR}/${MIRROR_CACHE_NAME}"
+        else
+            CHECKSUM_URL="${ENSEMBL_FTP}/variation/indexed_vep_cache/CHECKSUMS"
+            # Do not exit awk early: under `set -o pipefail`, closing the pipe while
+            # curl is still writing turns an otherwise valid match into curl(23).
+            CHECKSUM_ENTRY="$(curl -fsSL --max-time 60 "$CHECKSUM_URL" | awk -v name="$(basename "$CACHE_TARBALL")" '$NF == name { print $1 ":" $2 }')"
+            [[ -n "$CHECKSUM_ENTRY" ]] || die "could not find cache in Ensembl CHECKSUMS"
+            python3 "${HERE}/parallel_fetch.py" "$CACHE_URL" "$CACHE_TARBALL" \
+                --connections 8 --chunk-mib 128 --sum-check "$CHECKSUM_ENTRY" \
+                || die "VEP cache download or checksum validation failed"
+        fi
         log "checking VEP cache archive integrity..."
         tar -tzf "$CACHE_TARBALL" >/dev/null || die "VEP cache archive integrity check failed"
         EXTRACT_STAGE="$(mktemp -d "${VEP_CACHE_DIR}/.vep-extract.XXXXXX")"
@@ -131,7 +180,7 @@ if want vep_cache; then
         [[ ! -e "${VEP_CACHE_DIR}/homo_sapiens" ]] \
             || die "incomplete cache directory exists; move it aside before retrying"
         mv "${EXTRACT_STAGE}/homo_sapiens" "${VEP_CACHE_DIR}/homo_sapiens"
-        rmdir "$EXTRACT_STAGE"
+        rm -rf "$EXTRACT_STAGE"  # mirror tarball may carry a sentinel file
         touch "$CACHE_READY"
         rm -f "$CACHE_TARBALL"
     fi
@@ -145,6 +194,12 @@ if want fasta; then
     mkdir -p "$(dirname "$FASTA_PATH")"
     if [[ -s "$FASTA_PATH" ]]; then
         log "FASTA present, skip."
+    elif [[ "$ASSEMBLY" == "GRCh38" \
+            && "$(basename "$FASTA_PATH")" == "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz" ]] \
+         && mirror_fetch "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz" "$MIRROR_SHA_FASTA" "$FASTA_PATH" \
+         && mirror_fetch "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz.fai" "$MIRROR_SHA_FASTA_FAI" "${FASTA_PATH}.fai" \
+         && mirror_fetch "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz.gzi" "$MIRROR_SHA_FASTA_GZI" "${FASTA_PATH}.gzi"; then
+        log "FASTA installed from mirror (already BGZF with .fai/.gzi; no re-compression needed)"
     else
         RAW="${FASTA_PATH%.gz}.ensembl.gz"
         FASTA_URL="${ENSEMBL_FTP}/fasta/homo_sapiens/dna/Homo_sapiens.${ASSEMBLY}.dna.primary_assembly.fa.gz"
@@ -184,15 +239,22 @@ if want loftee; then
         # resource fails the run at build_vep_command anyway, but only after
         # the remaining multi-GB downloads. Fail here, loudly and early, and
         # keep the fetch/gunzip failures distinguishable.
-        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz"      "$HA_PATH" || die "human_ancestor.fa.gz download failed"
-        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.fai"  "${HA_PATH}.fai" || die "human_ancestor .fai download failed"
-        fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.gzi"  "${HA_PATH}.gzi" || die "human_ancestor .gzi download failed"
-        # conservation DB ships gzipped as loftee.sql.gz
+        mirror_fetch "human_ancestor.fa.gz" "$MIRROR_SHA_HA" "$HA_PATH" \
+            || fetch "${LOFTEE_BASE}/human_ancestor.fa.gz" "$HA_PATH" || die "human_ancestor.fa.gz download failed"
+        mirror_fetch "human_ancestor.fa.gz.fai" "$MIRROR_SHA_HA_FAI" "${HA_PATH}.fai" \
+            || fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.fai" "${HA_PATH}.fai" || die "human_ancestor .fai download failed"
+        mirror_fetch "human_ancestor.fa.gz.gzi" "$MIRROR_SHA_HA_GZI" "${HA_PATH}.gzi" \
+            || fetch "${LOFTEE_BASE}/human_ancestor.fa.gz.gzi" "${HA_PATH}.gzi" || die "human_ancestor .gzi download failed"
+        # conservation DB ships gzipped as loftee.sql.gz upstream; the mirror
+        # serves it ready to use
         if [[ ! -s "$SQL_PATH" ]]; then
-            fetch "${LOFTEE_BASE}/loftee.sql.gz" "${SQL_PATH}.gz" || die "loftee.sql.gz download failed"
-            gunzip -f "${SQL_PATH}.gz" || die "loftee.sql.gz could not be decompressed (truncated or corrupt download)"
+            if ! mirror_fetch "loftee.sql" "$MIRROR_SHA_LOFTEE_SQL" "$SQL_PATH"; then
+                fetch "${LOFTEE_BASE}/loftee.sql.gz" "${SQL_PATH}.gz" || die "loftee.sql.gz download failed"
+                gunzip -f "${SQL_PATH}.gz" || die "loftee.sql.gz could not be decompressed (truncated or corrupt download)"
+            fi
         fi
-        fetch "${LOFTEE_BASE}/gerp_conservation_scores.homo_sapiens.GRCh38.bw" "$GERP_PATH" || die "GERP bigwig download failed"
+        mirror_fetch "gerp_conservation_scores.homo_sapiens.GRCh38.bw" "$MIRROR_SHA_GERP" "$GERP_PATH" \
+            || fetch "${LOFTEE_BASE}/gerp_conservation_scores.homo_sapiens.GRCh38.bw" "$GERP_PATH" || die "GERP bigwig download failed"
     fi
 fi
 
