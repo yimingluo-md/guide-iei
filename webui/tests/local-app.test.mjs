@@ -130,9 +130,9 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Recommended for exome/);
   assert.match(source, /Recommended for WGS/);
   assert.match(source, /Update installed datasets/);
-  assert.match(source, /Registration or license required/);
-  assert.match(source, /Shipped with the software/);
-  assert.match(source, /Additional research annotations/);
+  assert.match(source, /Needs a one-time registration or license/);
+  assert.match(source, /Built in — nothing to do/);
+  assert.match(source, /Optional add-ons/);
   assert.match(source, /Repair bundled files/);
   assert.match(source, /Registration and setup instructions/);
   assert.match(source, /Prepare and install dbNSFP/);

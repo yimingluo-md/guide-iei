@@ -130,13 +130,10 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "dbNSFP academic download registration",
         "size_hint": "approximately 52 GB download; installed as-is",
         "instructions": [
-            "Register with an institutional email at the dbNSFP academic download page.",
-            "Use the emailed access code to request the current academic release links.",
-            "Download the single GRCh38 BGZF file (dbNSFP5.4a_grch38.gz) plus its .tbi and .md5 sidecars. A fast option from the instruction email: aria2c -c -x8 -s8 -k8M -m0 --retry-wait=5 <download_link>",
-            "Select Choose folder and pick the folder containing the downloaded file; no path typing or terminal command is required.",
-            "Installation verifies the published MD5 checksum and the tabix index, then moves the file into Annotation datasets storage — no rebuild or scratch space is needed.",
-            "Legacy per-chromosome ZIP downloads are still supported; those are re-sorted on GRCh38 coordinates, which needs about 220 GiB of temporary space and several hours.",
-            "Return here and confirm that both the configured .gz file and its .tbi index are detected.",
+            "Register with your institutional email at the dbNSFP academic download page (free for academic use).",
+            "From the instruction email, download the single GRCh38 file (dbNSFP5.4a_grch38.gz) together with its .tbi and .md5 companion files.",
+            "Click Choose folder and pick where they landed — verification and installation are automatic; no rebuild or extra disk space is needed.",
+            "Coding-region CADD, AlphaMissense, REVEL and the other bundled predictors all come from this one dataset.",
         ],
     },
     "loftee": {
@@ -145,9 +142,8 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "LOFTEE project",
         "size_hint": "",
         "instructions": [
-            "LOFTEE code is included in the pinned VEP container.",
-            "The validated GRCh38 ancestor, conservation database, and GERP resources are installed with the software reference bundle.",
-            "No separate user configuration is required.",
+            "Included with the software — no action needed.",
+            "High confidence means the premature stop or frameshift is likely to truly abolish protein function; low confidence lists the specific reasons for doubt.",
         ],
     },
     "spliceai": {
@@ -160,10 +156,9 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "Ensembl SpliceAI MANE v1.4 VCF",
         "size_hint": "approximately 27 GB plus index",
         "instructions": [
-            "Select Download in this screen.",
-            "Keep the workbench and computer running while the resumable download completes.",
-            "The VCF and tabix index are saved to the configured local reference directory.",
-            "The software verifies that both files are present before marking SpliceAI ready.",
+            "Click Download and keep the computer awake; the download is resumable.",
+            "These are Ensembl's SpliceAI scores recalculated directly on GRCh38 — not lifted over from the original hg19 scores, whose coordinate conversion is known to contain errors.",
+            "The score file and its index are verified before SpliceAI is marked ready.",
         ],
     },
     "repeatmasker": {
@@ -172,8 +167,8 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "RepeatMasker project",
         "size_hint": "",
         "instructions": [
-            "The cleaned UCSC hg38 RepeatMasker track is included in the software reference bundle.",
-            "Contig names and coordinates are already normalized for the Ensembl GRCh38 VEP cache.",
+            "Included with the software — no action needed.",
+            "Variants inside repetitive DNA are flagged in the review workspace so call quality can be weighed.",
         ],
     },
     "segdup": {
@@ -185,8 +180,8 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "UCSC hg38 genomicSuperDups",
         "size_hint": "",
         "instructions": [
-            "The cleaned UCSC hg38 segmental-duplication track is included in the software reference bundle.",
-            "Contig names and coordinates are already normalized for the Ensembl GRCh38 VEP cache.",
+            "Included with the software — no action needed.",
+            "Variants inside segmental duplications — near-identical genomic copies — are flagged in the review workspace so call quality can be weighed.",
         ],
     },
     "promoterai": {
@@ -199,11 +194,9 @@ ANNOTATION_SOURCE_SETUP = {
         "size_hint": "licensed files; one-time local preparation",
         "instructions": [
             "Request PromoterAI access from Illumina and obtain tss.tsv plus promoterAI_tss500.tsv.gz.",
-            "Keep both licensed files in one local folder; this software does not upload, redistribute, or copy them into its repository.",
-            "Select Choose folder and pick that download folder. Basic schema, coordinate, allele, and score checks run automatically.",
-            "The local preparation collapses transcripts sharing a TSS, BGZF-compresses and indexes the score table, and records source and derived-file checksums.",
-            "Only after every managed output is published successfully, the two selected Illumina source files are removed to reclaim space.",
-            "PromoterAI can be enabled only for whole-genome annotation; it is intentionally unavailable for Exome region only.",
+            "Keep both licensed files in one local folder; nothing is uploaded or redistributed.",
+            "Click Choose folder and pick that folder — validation and installation are automatic, and the source files are removed only after installation succeeds.",
+            "Available for whole-genome annotation only.",
         ],
     },
     "cadd_wgs": {
@@ -215,11 +208,10 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "CADD v1.7 downloads",
         "size_hint": "about 83 GiB; resumable; non-commercial use",
         "instructions": [
-            "Select Download / resume to fetch only the official v1.7 GRCh38 score-only SNV and gnomAD genomes r4.0 indel tables.",
-            "The downloader also fetches the official tabix indexes and MD5 files, resumes interrupted ranges, and verifies every payload before installation.",
-            "The 625 GB and 11 GB inclAnno tables, 335 GB release bundle, and unrelated dbscSNV data are deliberately not downloaded because the VEP CADD plugin cannot emit their extra columns.",
-            "CADD is available for non-commercial use; review the official terms before enabling it.",
-            "The indel table is limited to precomputed gnomAD r4.0 indels. Missing scores remain missing and are conservatively retained.",
+            "Coding-region CADD scores are already included with dbNSFP — install this only for whole-genome, non-coding analysis.",
+            "Click Download / resume to fetch the official score tables (~83 GiB, resumable); every file is verified before installation.",
+            "CADD is free for non-commercial use; review the official terms before enabling it.",
+            "Scores cover all single-base changes and known gnomAD indels; other indels simply remain unscored and are conservatively retained.",
         ],
     },
     "logofunc": {
@@ -232,11 +224,9 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "LoGoFunc Zenodo record 13835271",
         "size_hint": "3.66 GB plus tabix index; GRCh38 canonical missense SNVs",
         "instructions": [
-            "Select Download from Zenodo to fetch the pinned table and index directly into Annotation datasets storage, or use Choose file for a file downloaded elsewhere.",
-            "The existing-file option validates checksums and moves the table and adjacent index into configured Annotation datasets storage; the originals are removed from the selected location and are never uploaded.",
-            "Annotation requires an exact allele, Ensembl transcript, residue position, and amino-acid substitution match.",
-            "The source description states academic use only; commercial users should contact the corresponding author.",
-            "LoGoFunc predicts missense mechanism and does not replace LOFTEE or clinical variant classification.",
+            "Click Download from Zenodo, or use Choose file for a copy downloaded elsewhere; the table is checksum-verified and moved into managed storage.",
+            "Predictions apply only when the variant matches the source transcript and amino-acid change exactly; mismatches are shown as such rather than silently reassigned.",
+            "Academic use only per the source; a research mechanism hint — not a clinical classification and not a replacement for LOFTEE.",
         ],
     },
     "clinvar": {
@@ -246,10 +236,9 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "NCBI ClinVar GRCh38 VCF directory",
         "size_hint": "updated weekly",
         "instructions": [
-            "Select Download latest in this screen.",
-            "The current NCBI GRCh38 VCF and tabix index are downloaded and release-stamped.",
-            "The stable local latest copy is used by VEP and ClinVar residue matching.",
-            "Automatic refresh before an annotation run can remain enabled.",
+            "Click Download latest to fetch the current weekly release.",
+            "Reports come from many submitters and can conflict; the review workspace shows review status and conflicting submissions alongside each report.",
+            "Automatic refresh before each annotation run keeps reports current, so this button is rarely needed.",
         ],
     },
     "loftee_ptc_50bp": {
@@ -258,8 +247,8 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "",
         "size_hint": "",
         "instructions": [
-            "The frameshift PTC 50-bp recomputation is implemented by this software.",
-            "It uses the bundled release-matched GTF and GRCh38 FASTA; no separate dataset is required.",
+            "Included with the software — no action needed.",
+            "Uses the bundled gene models and reference genome to re-check each frameshift at the position of the new stop codon it creates.",
         ],
     },
     "clinvar_aa_match": {
@@ -268,8 +257,8 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "",
         "size_hint": "",
         "instructions": [
-            "ClinVar pathogenic residue matching is implemented by this software.",
-            "Its local residue table is rebuilt automatically from the downloaded ClinVar release.",
+            "Included with the software — no action needed.",
+            "Its residue table is rebuilt automatically from each downloaded ClinVar release.",
         ],
     },
     "liftover": {
@@ -281,12 +270,9 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "BCFtools/liftover documentation and publication",
         "size_hint": "approximately 915 MB; included with the software",
         "instructions": [
-            "The exact UCSC hg19 primary FASTA and hg19-to-GRCh38 chain are included in the native software bundle.",
-            "If either bundled file is reported missing, select Repair bundled files to restore the pinned public copy.",
-            "The downloader retains primary chromosomes and normalizes contig names to the pipeline convention.",
-            "The pinned BCFtools/liftover plugin remaps GT, AD, PL, and other allele-indexed fields when REF/ALT changes.",
-            "Calls that become GRCh38 reference are kept in a separate audit VCF and do not enter VEP or candidate lists.",
-            "Re-alignment and re-calling on GRCh38 remains preferable when source reads are available.",
+            "The exact hg19 reference and conversion chain are included; click Repair bundled files if either is reported missing.",
+            "Converted variants keep their original hg19 coordinates for review, and calls that only reflect reference differences between the builds are set aside in an audit file instead of entering the analysis.",
+            "When raw sequencing reads are available, re-alignment to GRCh38 is preferable to conversion.",
         ],
     },
     "screen_context": {
@@ -296,11 +282,10 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "Prepared SCREEN Registry V4 context bundle (public mirror)",
         "size_hint": "approximately 1.5 GB verified download; kept in Annotation datasets storage",
         "instructions": [
-            "Select Download to fetch the prepared categorical tissue and donor-aware immune-cell context bundle from the public mirror; every file is verified against pinned SHA-256 checksums before installation.",
-            "The bundle is built from public ENCODE SCREEN Registry V4 data under the ENCODE open data-use policy, with the pinned Cell Ontology release (CC-BY 4.0) and ENCODE audit policy recorded in its manifest.",
-            "To rebuild reproducibly from the original sources instead (about 32 GB of downloads plus hours of processing), run: bash scripts/prepare_screen_ccre_data.sh <annotation-storage>/screen-context",
-            "A bundle prepared elsewhere can also be selected from the Regulatory evidence workspace; only a local pointer is stored.",
-            "This layer powers the whole-genome Regulatory evidence tab and the Immune context filter; a missing assay is shown as unavailable evidence, never as a negative result.",
+            "Click Download to fetch the prepared bundle from the public mirror; every file is verified before installation.",
+            "Built from public ENCODE SCREEN data: where the aggregate cCRE map says a regulatory region exists, this layer shows which tissues and immune cell types it is active in.",
+            "A missing assay is shown as unavailable evidence, never as a negative result.",
+            "To rebuild from the original ENCODE sources instead (about 32 GB of downloads and several hours): bash scripts/prepare_screen_ccre_data.sh <annotation-storage>/screen-context",
         ],
     },
     "ccre": {
@@ -312,13 +297,10 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "ENCODE SCREEN Registry V4 GRCh38 cCRE BED",
         "size_hint": "approximately 25 MB; included with the software",
         "instructions": [
-            "The prepared public SCREEN Registry V4 GRCh38 cCRE regions and index are included in the native software bundle.",
-            "If the bundled files are reported missing, select Repair bundled files to restore the pinned public copy.",
-            "The software retains primary contigs, cCRE accessions, and overall cCRE classes, then creates a BGZF/tabix BED.",
-            "It also derives a compact gene-level TSS table from the release-matched Ensembl GTF for local +/-500 kb context.",
-            "This BED is used by the local WGS import filter; it is not added as a VEP transcript annotation.",
-            "Nearby genes are proximity context only; the nearest or VEP-annotated gene is not necessarily regulated by the cCRE.",
-            "The exact release is pinned so an upstream SCREEN update cannot silently change an existing import.",
+            "Included with the software; click Repair bundled files if it is reported missing.",
+            "cCREs are candidate cis-regulatory elements — promoters, enhancers and similar regions ENCODE identified as likely to control gene activity.",
+            "This map is aggregate-level (combined across samples); the ENCODE tissue and immune contexts dataset adds tissue- and cell-specific activity.",
+            "Overlap keeps a variant for whole-genome review; it does not by itself mean the variant is pathogenic, nor that the nearest gene is the regulated one.",
         ],
     },
     "clingen_erepo": {
@@ -328,11 +310,9 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "ClinGen Evidence Repository",
         "size_hint": "approximately 35 MB source; compact local VCF and SQLite snapshot",
         "instructions": [
-            "Select Install latest or Update snapshot to download the official public classification export.",
-            "The updater validates the schema, resolves exact GRCh38 alleles, preserves every disease- and inheritance-specific expert-panel assertion, and records checksums and mapping coverage.",
-            "A failed update leaves the previous working snapshot unchanged.",
-            "Annotation uses only the installed local snapshot; patient variants are never sent to ClinGen.",
-            "Retracted rows remain in the audit database but are not emitted as active variant evidence.",
+            "Click Install latest (or Check and update) to fetch the official public export; a failed update leaves the previous working copy unchanged.",
+            "Every disease- and inheritance-specific expert-panel assertion is kept separately rather than collapsed into one verdict.",
+            "Annotation uses only this local snapshot — your variants are never sent to ClinGen.",
         ],
     },
 }
@@ -3196,22 +3176,25 @@ class AnnotationJobService:
 
     def _annotation_profile(self) -> dict:
         config_path = self.pipeline_root / "config" / "annotation.config.yaml"
+        # Card copy is written for clinicians and wet-lab scientists: the tool
+        # name stays as the title (it is what reports and literature use); the
+        # subtitle answers "what question does this dataset answer for me".
         labels = {
-            "dbnsfp": ("dbNSFP", "AlphaMissense, CADD and additional missense predictors"),
-            "loftee": ("LOFTEE", "Loss-of-function consequence confidence"),
-            "spliceai": ("SpliceAI MANE", "Precomputed MANE v1.4 splice scores"),
-            "repeatmasker": ("RepeatMasker", "Repeat-region overlap flag"),
-            "segdup": ("Segmental duplications", "SegDup overlap flag"),
-            "promoterai": ("promoterAI", "Optional licensed promoter score track"),
-            "cadd_wgs": ("CADD whole genome", "Precomputed genome-wide SNV and indel scores"),
-            "logofunc": ("LoGoFunc", "Optional functional-mechanism predictions"),
-            "clinvar": ("ClinVar", "Clinical assertions; refreshed per run by default"),
-            "loftee_ptc_50bp": ("Frameshift PTC 50-bp rule", "Pipeline recomputation using local GTF and FASTA"),
-            "clinvar_aa_match": ("ClinVar residue match", "Known pathogenic missense at the same amino-acid residue"),
-            "liftover": ("hg19 input bundle", "Assembly-gap-aware conversion to canonical GRCh38"),
-            "ccre": ("ENCODE cCRE regions", "Native SCREEN region filter for whole-genome import"),
-            "screen_context": ("SCREEN tissue and immune contexts", "Categorical tissue aggregates and donor-aware immune-cell evidence for cCRE overlaps"),
-            "clingen_erepo": ("ClinGen variant curations", "Disease-specific expert-panel classifications from the Evidence Repository"),
+            "dbnsfp": ("dbNSFP", "How damaging is each amino-acid change? One database bundling an extensive set of published predictors — AlphaMissense, REVEL, CADD (coding regions), SIFT, PolyPhen, MetaRNN, PrimateAI, conservation scores, and more"),
+            "loftee": ("LOFTEE", "When a variant creates a premature stop or frameshift, estimates how confident we can be that it truly abolishes the protein — high vs. low confidence, with reasons"),
+            "spliceai": ("SpliceAI", "Predicts whether a variant disrupts RNA splicing, including variants outside the classic splice-site positions"),
+            "repeatmasker": ("Repetitive-region flag", "Marks variants inside repetitive DNA, where sequencing and variant calling are less reliable"),
+            "segdup": ("Duplicated-region flag", "Marks variants in segmental duplications — genomic segments with near-identical copies elsewhere in the genome, a classic source of false variant calls"),
+            "promoterai": ("PromoterAI", "Predicts whether a variant near a gene's transcription start disrupts that gene's expression. Requires two files licensed from Illumina; nothing is uploaded anywhere"),
+            "cadd_wgs": ("CADD scores for non-coding regions", "Genome-wide CADD deleteriousness scores for variants outside protein-coding regions. Coding-region CADD is already included with dbNSFP — install this only for whole-genome, non-coding analysis"),
+            "logofunc": ("LoGoFunc", "Research-grade prediction of whether a missense variant causes gain of function, loss of function, or neither — a mechanism hint, not a clinical classifier"),
+            "clinvar": ("ClinVar", "What clinical laboratories have reported about each variant. Reports come from many submitters and can conflict; review status matters. Refreshed automatically before every run"),
+            "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create, to judge whether the damaged transcript is degraded or escapes and may make a truncated protein"),
+            "clinvar_aa_match": ("Same-residue pathogenic match", "Flags variants that alter an amino acid where a different change at the same position is already reported pathogenic — e.g., Arg342Gln at a residue with reported pathogenic Arg342Trp"),
+            "liftover": ("Hg19 build support", "Lets you analyze VCFs made against the older hg19/GRCh37 reference. Variants are converted to GRCh38 with safeguards and a full audit trail — nothing is silently dropped"),
+            "ccre": ("ENCODE cCRE regions SCREEN Registry V4", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
+            "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: shows in which tissues and immune cell types a regulatory region is active — adding tissue- and cell-level detail on top of the aggregate cCRE map"),
+            "clingen_erepo": ("ClinGen expert-panel classifications", "Variant interpretations from ClinGen's disease-specific expert panels — the highest review level available. Stored locally; your variants are never sent to any server"),
         }
         try:
             config = self._prefer_installed_managed_resources(
@@ -3418,7 +3401,8 @@ class AnnotationJobService:
         foundations = [
             {
                 "id": "vep_container",
-                "label": "Pinned VEP container",
+                "label": "Annotation engine",
+                "description": "The core program that annotates your variants (Ensembl VEP). Version-locked so results are reproducible.",
                 "available": container_available,
                 "required": True,
                 "version": container_release,
@@ -3427,14 +3411,16 @@ class AnnotationJobService:
             },
             {
                 "id": "vep_cache",
-                "label": "Ensembl VEP cache",
+                "label": "Gene & transcript database",
+                "description": "The local copy of human gene, transcript, and population data the engine reads (Ensembl VEP cache). Large (~25 GB) but one-time.",
                 "available": bool(cache_path and cache_path.exists()),
                 "required": True,
                 "version": cache_release,
             },
             {
                 "id": "reference_fasta",
-                "label": "GRCh38 reference FASTA",
+                "label": "Reference genome (GRCh38)",
+                "description": "The standard human genome sequence your variants are compared against.",
                 "available": bool(fasta_path and fasta_path.exists()),
                 "required": True,
                 "version": None,

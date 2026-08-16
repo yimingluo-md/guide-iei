@@ -60,6 +60,7 @@ export type ServiceCapabilities = {
     foundations: {
       id: string;
       label: string;
+      description?: string;
       available: boolean;
       required: boolean;
       version: number | null;
