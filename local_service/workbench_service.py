@@ -83,7 +83,7 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "repeatmasker": "included",
     "segdup": "included",
     "promoterai": "optional",
-    "cadd_wgs": "recommended_wgs",
+    "cadd_wgs": "optional",
     "logofunc": "optional",
     "clinvar": "recommended",
     "loftee_ptc_50bp": "included",
@@ -2355,16 +2355,18 @@ class AnnotationJobService:
                 status = self.clingen_erepo.status()
                 if not status.get("available"):
                     raise RuntimeError(status.get("error") or "ClinGen snapshot validation failed")
-            elif resource_id in {"screen_context", "screen_context_build"}:
+            elif resource_id in {"screen_context", "screen_context_build", "recommended_wgs"}:
                 # Register the freshly downloaded/prepared bundle; install
                 # validates the manifest and matrices before storing the
-                # pointer.
-                self.install_screen_context({
-                    "manifest_path": str(
-                        self.annotation_root / "screen-context" / "prepared"
-                        / "screen.registry-v4.immune-contexts.json"
-                    ),
-                })
+                # pointer. The recommended-WGS bulk install includes the
+                # bundle, so registration must happen there too (skipped
+                # quietly if a registration already points at it).
+                manifest = (
+                    self.annotation_root / "screen-context" / "prepared"
+                    / "screen.registry-v4.immune-contexts.json"
+                )
+                if resource_id != "recommended_wgs" or manifest.is_file():
+                    self.install_screen_context({"manifest_path": str(manifest)})
             self._update_resource_job(
                 job_id,
                 status="succeeded",
@@ -3471,8 +3473,12 @@ class AnnotationJobService:
 
         recommended_profiles = {
             "exome": automatic_profile(automatic_exome_ids),
+            # CADD WGS is deliberately NOT part of the recommended set: it is
+            # an optional research annotation (83 GiB, non-commercial terms)
+            # installed from its own card. The SCREEN context layer powers the
+            # whole-genome Regulatory evidence tab and is small, so it is.
             "whole_genome": automatic_profile(
-                automatic_exome_ids + ("cadd_wgs",)
+                automatic_exome_ids + ("screen_context",)
             ),
         }
         dbnsfp_header = self._dbnsfp_header_columns(config)

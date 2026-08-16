@@ -88,12 +88,16 @@ else
 fi
 
 if [[ "${PROFILE}" == "whole_genome" ]]; then
-  CADD_SNV="$(abs_path "$(yaml_get "$CONFIG" plugins.CADD_WGS.snv)")"
-  CADD_INDELS="$(abs_path "$(yaml_get "$CONFIG" plugins.CADD_WGS.indels)")"
-  if indexed_ready "$CADD_SNV" && indexed_ready "$CADD_INDELS"; then
-    echo "CADD whole-genome tables already installed; skipping the approximately 83 GiB checksum scan."
+  # SCREEN tissue/immune contexts power the whole-genome Regulatory evidence
+  # tab: ~1.5 GB verified prepared bundle from the public mirror. (CADD WGS is
+  # an optional research annotation installed from its own dataset card.)
+  REGION_BED="$(abs_path "$(yaml_get "$CONFIG" region.bed)")"
+  SCREEN_ROOT="$(dirname "$(dirname "$REGION_BED")")/screen-context"
+  SCREEN_MANIFEST="${SCREEN_ROOT}/prepared/screen.registry-v4.immune-contexts.json"
+  if [[ -s "$SCREEN_MANIFEST" ]]; then
+    echo "SCREEN tissue/immune context bundle already prepared; skipping."
   else
-    bash "${HERE}/download_cadd_wgs.sh" "${CONFIG}"
+    bash "${HERE}/download_screen_context_bundle.sh" "${SCREEN_ROOT}"
   fi
 fi
 
