@@ -296,6 +296,51 @@ else
     fix "webui dependencies not installed" "rerun with --install, or: cd webui && npm install"
 fi
 
+# ------------------------------------------------- native htslib tools (optional)
+# The pipeline is fully functional without these (every htslib operation
+# falls back to the container), but native bcftools/tabix/bgzip avoid
+# containerized I/O over bind mounts — typically 5-20x faster on macOS — and
+# remove the container write-visibility race class entirely. The pinned
+# in-container bcftools/liftover used for GRCh37 intake is unaffected.
+find_conda() {
+    local candidate
+    command -v conda 2>/dev/null && return 0
+    for candidate in "$HOME/opt/anaconda3/bin/conda" "$HOME/anaconda3/bin/conda" \
+        "$HOME/miniconda3/bin/conda" "$HOME/opt/miniconda3/bin/conda" \
+        /opt/homebrew/Caskroom/miniconda/base/bin/conda; do
+        [[ -x "$candidate" ]] && { echo "$candidate"; return 0; }
+    done
+    return 1
+}
+if command -v bcftools >/dev/null 2>&1 && command -v tabix >/dev/null 2>&1 \
+   && command -v bgzip >/dev/null 2>&1; then
+    ok "native bcftools/tabix/bgzip found — htslib I/O runs without container overhead"
+elif [ "$MODE" = "install" ]; then
+    CONDA_BIN="$(find_conda || true)"
+    if [ -n "$CONDA_BIN" ]; then
+        echo "  installing native bcftools/htslib via conda (optional performance component; the solver can take several minutes)..."
+        if "$CONDA_BIN" install -y -q -c conda-forge -c bioconda bcftools htslib >/dev/null 2>&1; then
+            ok "native bcftools/htslib installed into conda"
+        else
+            wrn "conda could not install bcftools/htslib (dependency conflicts are common in large base environments); the container fallback remains fully functional. Alternative: conda create -n hts -c conda-forge -c bioconda bcftools htslib, then link the binaries onto PATH"
+        fi
+    elif command -v brew >/dev/null 2>&1; then
+        echo "  installing native bcftools/htslib via Homebrew (optional performance component)..."
+        brew install bcftools htslib >/dev/null 2>&1 \
+            && ok "native bcftools/htslib installed via Homebrew" \
+            || wrn "brew install bcftools htslib failed; the container fallback remains fully functional"
+    elif [ "$OS" = "Linux" ] && command -v apt-get >/dev/null 2>&1 \
+         && confirm "Install native bcftools/tabix (recommended for I/O speed)? Runs: sudo apt-get install -y bcftools tabix"; then
+        sudo apt-get install -y bcftools tabix >/dev/null 2>&1 \
+            && ok "native bcftools/tabix installed" \
+            || wrn "apt install failed; the container fallback remains fully functional"
+    else
+        wrn "native bcftools/tabix not found and no supported installer detected (conda/brew/apt); htslib I/O will run via the container, which is substantially slower"
+    fi
+else
+    wrn "native bcftools/tabix not found (optional): htslib I/O runs via the container, typically 5-20x slower on macOS bind mounts — rerun with --install to add them via conda/brew/apt"
+fi
+
 # ---------------------------------------------------------------- container runtime
 read_config_scalar() { # best-effort: needs python3 + pyyaml, else prints nothing
     [ "$PYYAML_OK" = 1 ] || return 0

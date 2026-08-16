@@ -134,6 +134,12 @@ No VEP, LOFTEE, bgtools, or Perl installation on the host — everything runs in
 the container. The setup script never edits your shell profile; remove
 `~/.iei-variant-review/tools/` to uninstall everything it added.
 
+Optional but recommended: **native `bcftools`/`tabix`/`bgzip`** on the host.
+Without them every htslib operation runs through the container, which works
+but is typically 5–20× slower over macOS bind mounts. `--install` adds them
+automatically via conda, Homebrew, or apt when one is available; the pinned
+in-container BCFtools/liftover used for GRCh37 intake is unaffected.
+
 ## Supported platforms
 
 | Platform | Status | Notes |
