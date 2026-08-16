@@ -209,7 +209,7 @@ ANNOTATION_SOURCE_SETUP = {
     "cadd_wgs": {
         "setup_mode": "download",
         "access": "terms",
-        "recommendation": "recommended_wgs",
+        "recommendation": "optional",
         "download_id": "cadd_wgs",
         "reference_url": "https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38/",
         "reference_label": "CADD v1.7 downloads",
