@@ -99,6 +99,9 @@ class AnnotationJobServiceTests(unittest.TestCase):
             "#!/usr/bin/env bash\nset -eu\n"
             'test -s "$1/tss.tsv"\ntest -s "$1/promoterAI_tss500.tsv.gz"\n'
             'test -s "$2"\nprintf "40.0%% validating PromoterAI\\n"\n'
+            # Long enough that a duplicate start reliably lands while the job
+            # is still active, so the same-id dedup assertion is not a race.
+            "sleep 0.5\n"
             'printf "100.0%% PromoterAI preparation complete\\n"\n',
         )
         self._write_script(
@@ -964,27 +967,31 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(indexed["rows"][0]["source_path"], str(source.resolve()))
 
     def test_resource_download_jobs_are_constrained_and_report_progress(self):
-        first = self.service.start_resource_download("spliceai")
-        same = self.service.start_resource_download("spliceai")
-        self.assertEqual(first["id"], same["id"])
-        completed = self._wait_resource(first["id"])
-        self.assertEqual(completed["status"], "succeeded")
-        self.assertEqual(completed["progress"], 100.0)
-        self.assertIn("complete", completed["log"])
+        # The disk-space preflight is real behavior but assumes real dataset
+        # sizes (30-83 GiB); these fake downloads run in a temp dir that may
+        # have far less free (CI runners), so it is not under test here.
+        with patch.object(self.service, "_ensure_annotation_download_space"):
+            first = self.service.start_resource_download("spliceai")
+            same = self.service.start_resource_download("spliceai")
+            self.assertEqual(first["id"], same["id"])
+            completed = self._wait_resource(first["id"])
+            self.assertEqual(completed["status"], "succeeded")
+            self.assertEqual(completed["progress"], 100.0)
+            self.assertIn("complete", completed["log"])
 
-        clinvar = self.service.start_resource_download("clinvar")
-        self.assertEqual(self._wait_resource(clinvar["id"])["status"], "succeeded")
-        logofunc = self.service.start_resource_download("logofunc")
-        completed_logofunc = self._wait_resource(logofunc["id"])
-        self.assertEqual(completed_logofunc["status"], "succeeded")
-        self.assertEqual(completed_logofunc["resource_id"], "logofunc")
-        cadd = self.service.start_resource_download("cadd_wgs")
-        completed_cadd = self._wait_resource(cadd["id"])
-        self.assertEqual(completed_cadd["status"], "succeeded")
-        self.assertEqual(completed_cadd["resource_id"], "cadd_wgs")
-        self.assertIn("100.0% CADD", completed_cadd["log"])
-        with self.assertRaisesRegex(ValueError, "cannot be downloaded"):
-            self.service.start_resource_download("dbnsfp")
+            clinvar = self.service.start_resource_download("clinvar")
+            self.assertEqual(self._wait_resource(clinvar["id"])["status"], "succeeded")
+            logofunc = self.service.start_resource_download("logofunc")
+            completed_logofunc = self._wait_resource(logofunc["id"])
+            self.assertEqual(completed_logofunc["status"], "succeeded")
+            self.assertEqual(completed_logofunc["resource_id"], "logofunc")
+            cadd = self.service.start_resource_download("cadd_wgs")
+            completed_cadd = self._wait_resource(cadd["id"])
+            self.assertEqual(completed_cadd["status"], "succeeded")
+            self.assertEqual(completed_cadd["resource_id"], "cadd_wgs")
+            self.assertIn("100.0% CADD", completed_cadd["log"])
+            with self.assertRaisesRegex(ValueError, "cannot be downloaded"):
+                self.service.start_resource_download("dbnsfp")
 
     def test_promoterai_preparation_requires_and_uses_the_two_local_files(self):
         source = self.root / "licensed-promoterai"
