@@ -1,3 +1,9 @@
+---
+title: "Bundled workbench references"
+parent: Reference
+nav_order: 15
+---
+
 # Bundled workbench reference data
 
 The local review workbench ships compact gene-level resources under

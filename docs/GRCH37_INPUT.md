@@ -1,3 +1,9 @@
+---
+title: "GRCh37 input"
+parent: Reference
+nav_order: 10
+---
+
 # GRCh37/hg19 input policy
 
 The pipeline has one canonical annotation and cohort assembly: **GRCh38**.

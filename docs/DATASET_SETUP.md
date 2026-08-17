@@ -1,3 +1,9 @@
+---
+title: "Annotation dataset setup"
+parent: Reference
+nav_order: 2
+---
+
 # Annotation dataset setup
 
 [Manual home](index.md)

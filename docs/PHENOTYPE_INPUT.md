@@ -1,3 +1,9 @@
+---
+title: "Phenotype input"
+parent: Reference
+nav_order: 12
+---
+
 # Individual and phenotype input
 
 The workstation stores phenotype information on an **individual**, then links

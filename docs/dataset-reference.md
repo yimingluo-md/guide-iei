@@ -1,3 +1,9 @@
+---
+title: "Dataset reference"
+parent: Reference
+nav_order: 7
+---
+
 # Dataset reference — technical details
 
 Technical background moved out of the dataset-setup cards during the

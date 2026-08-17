@@ -1,3 +1,9 @@
+---
+title: "The review workbench"
+parent: Reference
+nav_order: 4
+---
+
 # The review workbench
 
 [Manual home](index.md)

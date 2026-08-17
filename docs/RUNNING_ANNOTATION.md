@@ -1,3 +1,9 @@
+---
+title: "Running annotation"
+parent: Reference
+nav_order: 3
+---
+
 # Running annotation
 
 [Manual home](index.md)

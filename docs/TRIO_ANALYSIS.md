@@ -1,3 +1,9 @@
+---
+title: "Trio analysis (reference)"
+parent: Reference
+nav_order: 11
+---
+
 # Trio and family analysis
 
 The local workbench can use a mother-father-child pedigree to prioritize de

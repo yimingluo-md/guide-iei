@@ -1,3 +1,9 @@
+---
+title: "Reference setup"
+parent: Reference
+nav_order: 8
+---
+
 # Annotation dataset setup
 
 The local workbench checks annotation files and indexes before VEP runs. From

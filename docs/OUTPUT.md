@@ -1,3 +1,9 @@
+---
+title: "Understanding the output"
+parent: Reference
+nav_order: 5
+---
+
 # Understanding the output
 
 [Manual home](index.md)

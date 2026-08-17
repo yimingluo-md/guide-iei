@@ -1,3 +1,8 @@
+---
+title: FAQ
+nav_order: 4
+---
+
 # FAQ
 
 [Manual home](index.md)

@@ -1,3 +1,9 @@
+---
+title: "Gene knowledge"
+parent: Reference
+nav_order: 14
+---
+
 # Gene-level knowledge resources
 
 Gene-level evidence is maintained separately from VEP variant annotation. A

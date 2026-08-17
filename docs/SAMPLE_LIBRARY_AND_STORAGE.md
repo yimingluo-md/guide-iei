@@ -1,3 +1,9 @@
+---
+title: "Sample Library & storage"
+parent: Reference
+nav_order: 13
+---
+
 # Sample Library, cohort profiles, and workstation storage
 
 ## Ownership model

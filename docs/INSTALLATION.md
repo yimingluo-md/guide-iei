@@ -1,3 +1,9 @@
+---
+title: "Installation & requirements"
+parent: Reference
+nav_order: 1
+---
+
 # Installation & requirements
 
 [Manual home](index.md)

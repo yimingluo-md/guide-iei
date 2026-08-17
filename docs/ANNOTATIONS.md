@@ -1,3 +1,9 @@
+---
+title: "Annotation sources"
+parent: Reference
+nav_order: 6
+---
+
 # Annotation sources
 
 Every annotation source is toggled in `config/annotation.config.yaml` with the

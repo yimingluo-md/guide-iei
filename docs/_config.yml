@@ -3,4 +3,16 @@ description: >-
   Genomic User-friendly In-depth Diagnostic-analysis Environment for Inborn
   Errors of Immunity — a clinician-developed, locally run, open-source WES/WGS
   analysis platform.
-theme: jekyll-theme-cayman
+remote_theme: just-the-docs/just-the-docs
+plugins:
+  - jekyll-remote-theme
+search_enabled: true
+heading_anchors: true
+aux_links:
+  "GUIDE-IEI on GitHub":
+    - "https://github.com/yimingluo-md/guide-iei"
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
