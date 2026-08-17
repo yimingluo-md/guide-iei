@@ -52,17 +52,17 @@ The next screen shows two things:
 
 **Dataset readiness** — every annotation source with a green (available) or
 amber (missing) marker. Required sources must all be green before the run
-can start; optional sources (LoGoFunc, PromoterAI) simply annotate when
+can start; optional sources (LoGoFunc, CADD) simply annotate when
 present. If something required is missing, the screen links you directly to
 **Set up annotation datasets**.
 
 **Run settings** — the defaults are right for a first exome run:
 
-- **PASS variants only**: on. Variants your sequencing pipeline itself
-  flagged as unreliable are excluded.
+- **PASS variants only**: on. Variants flagged as unreliable during the
+  process that generated the VCF (alignment and variant calling) are
+  excluded.
 - **Coding + splice regions**: on. Annotation is restricted to coding exons
-  and splice sites, which is what makes an exome run take minutes on a
-  workstation.
+  and canonical splice sites.
 
 *[Screenshot: parameters screen with dataset readiness list]*
 
@@ -145,12 +145,13 @@ anywhere in the interface are click-to-define glossary entries.
 
 ## Step 8 — Where this leads
 
-- A **plausible candidate** in a known IEI gene → confirm in a
+- **A candidate you believe is pathogenic/likely pathogenic and
+  responsible for the patient's manifestations** → confirm in a
   CLIA-certified laboratory before any clinical action (see the project's
   *Research use only* statement).
-- A **compelling VUS** → consider functional follow-up; the evidence panel
-  gives you the transcript, protein consequence, and predictor context a
-  functional-validation plan starts from.
+- **A compelling VUS** → contact a laboratory with the capacity for the
+  relevant functional experiment; searching recent publications is a good
+  way to identify the lead scientists working on that gene.
 - **Nothing convincing** → the sample stays in your library. When new
   knowledge arrives — a new gene–disease paper, a ClinVar update — reopen
   the review or search your cohort in seconds rather than re-requesting
