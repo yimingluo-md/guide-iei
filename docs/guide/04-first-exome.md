@@ -120,10 +120,8 @@ The filter panel narrows the table without ever deleting anything —
 removing a filter restores the rows. A sensible first pass for a suspected
 monogenic condition:
 
-1. **Population frequency** — keep variants with gnomAD popmax ≤ 0.01 (or
-   unavailable). Common variants leave the table.
-2. **IMPACT** — start with HIGH and MODERATE (protein-altering and
-   loss-of-function candidates).
+1. **Population frequency** — gnomAD popmax ≤ 0.01, or unavailable.
+2. **IMPACT** — start with HIGH and MODERATE.
 3. **Gene lists** — restrict to an IUIS IEI gene list or your own panel if
    you have candidate genes in mind, or skip this to stay genome-wide.
 4. **ClinVar** — optionally surface variants with existing pathogenic or
