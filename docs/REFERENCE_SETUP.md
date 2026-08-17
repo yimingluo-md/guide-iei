@@ -257,7 +257,7 @@ it when unavailable.
 
 ## Licensed integration
 
-PromoterAI is optional and WGS-only. After obtaining `tss.tsv` and
+PromoterAI is recommended for whole-genome analysis (WGS-only). After obtaining `tss.tsv` and
 `promoterAI_tss500.tsv.gz` from Illumina under the user's own license, open the
 PromoterAI dataset card in the local UI, enter their folder, and run the local
 preparation. The software validates, compacts, indexes, and checksums the files

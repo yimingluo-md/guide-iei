@@ -7,8 +7,9 @@ nav_order: 3
 # Set up the annotation datasets
 
 The annotation engine is only as good as its reference data. This chapter
-covers the one-click setup, the one dataset that requires registration
-(dbNSFP), and the optional extras — with disk-space planning up front.
+covers the one-click setup, the two datasets that need a request to their
+providers (dbNSFP registration, PromoterAI license), and the optional
+extras — with disk-space planning up front.
 
 Everything here happens inside the application: **Run VEP first → Set up
 annotation datasets**. Every dataset appears as a card explaining in plain
@@ -22,12 +23,13 @@ language what it adds; this chapter is the tour of those cards.
 |---|---|---|
 | Core references (VEP cache, genome FASTA, LOFTEE data, region tracks) | ~30 GB | everything |
 | dbNSFP (registration required) | ~52 GB | protein-effect predictors |
-| SpliceAI scores | tens of GB | splice predictions |
+| SpliceAI MANE SNV scores | 27 GB | splice predictions |
 | ENCODE SCREEN + tissue/immune contexts | ~2 GB | WGS regulatory review |
+| PromoterAI (licensed; recommended for WGS) | <1 GB | promoter predictions |
 | CADD whole-genome (optional) | ~83 GB | non-coding CADD only |
-| PromoterAI (licensed, optional) | ~1 GB | promoter predictions |
+| LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
 
-Rule of thumb: **~90 GB for comfortable exome work; 150–250 GB for the full
+Rule of thumb: **~110 GB for exome work; 150–250 GB for the full
 whole-genome stack.** Datasets do not need to live on your internal drive —
 the **Storage** page lets you place them on an external SSD, and the
 application checks free space before every large download rather than
@@ -73,19 +75,41 @@ so every user registers once:
 
 *[Screenshot: dbNSFP card with guided source-folder selection]*
 
-## Step 3 — Optional and licensed datasets
+## Step 3 — PromoterAI: recommended for whole-genome work
 
-- **PromoterAI** (Illumina; predicts promoter-variant effects). Free for
-  academic and non-commercial research, licensed from Illumina — GUIDE-IEI
-  neither downloads nor redistributes it. After you obtain the two files
-  from Illumina, the PromoterAI card prepares them locally. Worth having
-  for whole-genome work.
-- **CADD whole-genome** (optional, 83 GB). Coding-region CADD scores are
-  already in dbNSFP; this large download adds CADD for **non-coding**
-  positions only. Skip it unless your non-coding review wants a
-  second opinion alongside SpliceAI/PromoterAI/cCRE evidence.
-- **LoGoFunc** (optional research annotation). Predicts whether a missense
-  variant acts through gain or loss of function — one click from Zenodo.
+PromoterAI ([Illumina, *Science* 2025](https://www.science.org/doi/10.1126/science.ads7373))
+predicts whether a promoter variant alters its gene's expression — scores
+run from −1 (under-expression) to +1 (over-expression). Its precomputed
+scores are **free for academic and non-commercial research** but licensed
+by Illumina, so GUIDE-IEI neither downloads nor redistributes them. The
+one-time setup:
+
+1. Go to the
+   **[Illumina PromoterAI repository](https://github.com/Illumina/PromoterAI)**
+   and follow its access instructions for the precomputed scores: complete
+   the non-commercial license agreement, and the download link arrives by
+   email. (Commercial use is licensed separately by Illumina.)
+2. Download the two files — `tss.tsv` and `promoterAI_tss500.tsv.gz` —
+   into one local folder.
+3. On the dataset screen, open the **PromoterAI** card and choose that
+   folder. Validation and installation are automatic; nothing is uploaded
+   anywhere, and the source files are removed only after installation
+   succeeds.
+
+PromoterAI annotations apply to whole-genome analysis only (promoters are
+outside the exome's coding scope).
+
+## Step 4 — Optional datasets
+
+- **CADD whole-genome** (83 GB). Coding-region CADD scores are already in
+  dbNSFP; this large download adds CADD for **non-coding** positions only,
+  as a complement to SpliceAI/PromoterAI/cCRE evidence in whole-genome
+  review.
+- **LoGoFunc**
+  ([Stein et al., *Genome Medicine* 2023](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-023-01261-9)).
+  Predicts whether a pathogenic missense variant acts through gain or loss
+  of function — mechanism context that frequency and deleteriousness
+  scores don't give. One click from Zenodo (~4 GB).
 
 Already bundled with the software, nothing to download: the ENCODE SCREEN
 cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge

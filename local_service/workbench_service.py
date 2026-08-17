@@ -82,7 +82,7 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "spliceai": "required",
     "repeatmasker": "included",
     "segdup": "included",
-    "promoterai": "optional",
+    "promoterai": "recommended_wgs",
     "cadd_wgs": "optional",
     "logofunc": "optional",
     "clinvar": "recommended",
@@ -187,7 +187,7 @@ ANNOTATION_SOURCE_SETUP = {
     "promoterai": {
         "setup_mode": "prepare",
         "access": "license",
-        "recommendation": "optional",
+        "recommendation": "recommended_wgs",
         "prepare_id": "promoterai",
         "reference_url": "https://github.com/Illumina/PromoterAI",
         "reference_label": "Illumina PromoterAI access information",
