@@ -24,7 +24,8 @@ reporting variants of uncertain significance (VUS), and this is a particular
 challenge in IEI, whose diverse manifestations may not be well captured by a
 standard HPO-based analysis workflow. At the same time, some VUS can be
 re-classified through in vitro functional studies or inform clinical
-management. Clinicians therefore need a practical way to re-analyze genomic
+management. Clinicians and scientists therefore need a practical way to
+re-analyze genomic
 data as knowledge evolves, to ask, for example, "Could this patient have a
 condition described in the literature two weeks ago?", and to identify
 plausible VUS that warrant functional investigation or could influence
@@ -53,11 +54,13 @@ discovering monogenic etiologies in the non-coding genome.
 - **In-depth loss-of-function curation** — LOFTEE plus a PTC-based 50-bp-rule
   recalculation for frameshifts and haplotype-aware detection of
   frame-restoring indel pairs.
-- **Whole-genome ready** — a workstation-safe WGS review path with regulatory
-  context from ENCODE SCREEN, including curated tissue and immune-cell
-  evidence.
+- **Non-coding variant prioritization** — a workstation-safe WGS review path
+  that reaches beyond the exome: SpliceAI for deep intronic splice-altering
+  variants, PromoterAI for promoter variants, and regulatory context from
+  ENCODE cCREs with curated tissue and immune-cell evidence, with plan for
+  further expansion.
 - **A real review environment, not just a pipeline** — persistent sample
-  library, local cohort search, trio analysis, phenotype records, and
+  library, genotype-first discovery, trio analysis, phenotype records, and
   per-run annotation-QC certificates.
 
 ## Research use only
