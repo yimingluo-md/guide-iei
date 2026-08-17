@@ -63,6 +63,35 @@ discovering monogenic etiologies in the non-coding genome.
   library, genotype-first discovery, trio analysis, phenotype records, and
   per-run annotation-QC certificates.
 
+## What GUIDE-IEI is not
+
+Being clear about scope matters as much as listing features.
+
+- **Not a data-deposition or collaboration platform.** Tools like seqr,
+  Franklin, or VarSome Clinical are built around a central server: multi-user
+  projects, role-based access, shared curation, large-scale cohort deposition.
+  GUIDE-IEI is the opposite by design — one workstation, one reviewer, no
+  server. The built-in cohort search is for a single clinic's or lab's local
+  collection (tens to hundreds of samples), not for consortium-scale data
+  sharing.
+- **Not a FASTQ-to-VCF pipeline.** Analysis starts from a called VCF (single-
+  or multi-sample, GRCh38 natively or GRCh37 via controlled liftover).
+  Alignment, variant calling, and joint genotyping must happen upstream.
+- **Locally run, with the trade-offs that implies.** Most comparable platforms
+  are cloud-based, and honesty requires acknowledging what the cloud buys: the
+  capacity for intensive compute, automatic updates and backups, and access
+  from anywhere by a whole team. Running locally means patient variants never
+  leave your machine and there is no subscription, but also that whole-genome
+  jobs run at workstation speed, reference datasets need substantial local
+  disk (~100+ GB for the full WGS stack), backups are your responsibility, and
+  one machine serves one user at a time.
+- **Not an automated classification engine.** GUIDE-IEI does not compute
+  ACMG/AMP classifications, assign pathogenicity verdicts, or generate
+  clinical reports. It is intended for a reviewer who already has candidate
+  genes in mind. It presents annotation evidence neutrally; interpretation
+  remains with the reviewer, and any clinically actionable finding must be
+  confirmed in a CLIA-certified laboratory (see *Research use only*).
+
 ## Research use only
 
 This software is provided for research purposes: variant-of-uncertain-
@@ -112,7 +141,9 @@ The **[GUIDE-IEI manual](docs/index.md)** covers everything in detail:
 
 <!-- PLACEHOLDER — to be written by Yiming:
      e.g. more epigenetic data layers, additional disease modules beyond IEI,
-     packaged one-click application builds. -->
+     packaged one-click application builds, CNV/SV/repeat-expansion support
+     (currently SNVs and small indels only — deliberately left out of
+     "What GUIDE-IEI is not" because it belongs here as a plan). -->
 
 ## Development disclosure
 
