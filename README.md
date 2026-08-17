@@ -12,10 +12,33 @@ on your own computer: patient variants never leave your machine.
 
 ## Motivation
 
-<!-- PLACEHOLDER — to be written by Yiming:
-     I am a clinician and send genetic testing myself. Commercial software is
-     expensive and lacks some critical features. This is user-developed
-     software built for the people who actually review the variants. -->
+The developer is a clinician running a genetics clinic and ordering genetic
+testing for patients with suspected inborn errors of immunity (IEI). The
+universe of IEI has expanded so rapidly that panel testing can no longer keep
+up, while access to whole exome sequencing (WES) and whole genome sequencing
+(WGS) in the US has improved markedly.
+
+It is common to see a patient with a strongly suspected monogenic etiology but
+a negative genetic test. Commercial labs differ in their thresholds for
+reporting variants of uncertain significance (VUS), and this is a particular
+challenge in IEI, whose diverse manifestations may not be well captured by a
+standard HPO-based analysis workflow. At the same time, some VUS can be
+re-classified through in vitro functional studies or inform clinical
+management. Clinicians therefore need a practical way to re-analyze genomic
+data as knowledge evolves, to ask, for example, "Could this patient have a
+condition described in the literature two weeks ago?", and to identify
+plausible VUS that warrant functional investigation or could influence
+management.
+
+Meanwhile, discoveries of monogenic disease have been disproportionately
+concentrated in protein-coding regions, which account for only about 2% of the
+human genome. Major progress is being made in predicting the effects of
+non-coding variation, including deep intronic variants, promoter variants, and
+other regulatory elements. Because these methods and resources are evolving
+rapidly, bioinformatic infrastructure is needed to translate them into
+testable biological hypotheses. So alongside the bread-and-butter annotation
+of coding variants, this software is also built to expand capacity for
+discovering monogenic etiologies in the non-coding genome.
 
 ## What makes it different
 
