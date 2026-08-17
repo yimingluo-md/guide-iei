@@ -47,7 +47,9 @@ Two buttons install everything freely downloadable:
   exome review uses.
 - **Recommended for WGS** — the exome set plus what whole-genome review
   adds (SpliceAI genome-wide context, the ENCODE SCREEN regulatory data
-  with tissue and immune contexts).
+  with tissue and immune contexts). PromoterAI is also recommended for
+  WGS, but because it is licensed it cannot be included in the one-click
+  download — set it up once in Step 3 below.
 
 Progress is shown per dataset; interrupted downloads resume rather than
 restart. A third action, **Refresh changing sources**, updates ClinVar and
