@@ -49,9 +49,9 @@ the workbench runs on your machine and uses the browser as its screen.
 
 ## What the second command actually does
 
-`setup_environment.sh` is an **environment doctor**. Run without options it
-only *reports* — green `[ OK ]` lines for what is present, and an exact fix
-for anything missing. With `--install` it also *fixes* what can be fixed
+`setup_environment.sh` is a **setup check**. Run without options it only
+*reports* — green `[ OK ]` lines for what is present, and an exact fix for
+anything missing. With `--install` it also *fixes* what can be fixed
 without admin rights:
 
 - **Python and its one dependency** — checked, installed if missing.
@@ -71,9 +71,9 @@ without admin rights:
   patient data) so you know the installation works before you invest in
   dataset downloads.
 
-The doctor is safe to run repeatedly — it changes nothing that is already
-correct, and it is the first thing to re-run whenever something seems
-broken.
+The setup check is safe to run repeatedly — it changes nothing that is
+already correct, and it is the first thing to re-run whenever something
+seems broken.
 
 ## Windows: the WSL2 track
 
@@ -82,9 +82,11 @@ needs a Unix environment. Windows provides one, called **WSL2**, and the
 one-time setup is:
 
 1. In PowerShell (run as administrator): `wsl --install`, then reboot.
-   This installs Ubuntu Linux inside Windows.
-2. Install **Docker Desktop** and, in its settings, enable **WSL
-   integration** (Settings → Resources → WSL integration).
+   This installs Ubuntu Linux inside Windows (a ~1–2 GB download).
+2. Install
+   **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
+   and, in its settings, enable **WSL integration** (Settings → Resources →
+   WSL integration).
 3. Open the **Ubuntu** app from the Start menu — that window is your
    terminal — and run the three commands there.
 
@@ -92,6 +94,45 @@ One important habit: keep the GUIDE-IEI folder and its datasets **inside
 the Linux filesystem** (your Ubuntu home folder, `~/...`), not on
 `/mnt/c/...`. Files accessed across the Windows/Linux boundary are many
 times slower, and the large reference files feel it badly.
+
+### WSL2 disk space: plan before you download datasets
+
+WSL2 keeps its entire Linux filesystem in a single virtual-disk file that
+lives on your Windows system drive (`C:`) by default and **grows as you add
+data**. The Ubuntu install itself is small, but once the annotation
+datasets go in, that file will reach the sizes in the
+[next chapter](03-datasets.md) — roughly **90 GB for exome work, 150–250 GB
+for the full whole-genome stack**. So the practical rule is: the drive
+hosting WSL needs that much free space.
+
+If `C:` is too small, you have two good options and one fallback:
+
+- **Move WSL to a larger internal drive** (best). In PowerShell:
+
+  ```
+  wsl --shutdown
+  wsl --export Ubuntu D:\wsl\ubuntu.tar
+  wsl --unregister Ubuntu
+  wsl --import Ubuntu D:\wsl\Ubuntu D:\wsl\ubuntu.tar
+  ```
+
+  This relocates the whole Linux filesystem to `D:` (adjust the drive
+  letter). Do this **before** downloading datasets and there is almost
+  nothing to move. Export first, and only unregister after the export
+  succeeds.
+
+- **Move WSL to an external SSD.** The same export/import commands work
+  with an external drive as the destination, provided the drive is
+  **NTFS-formatted** and stays connected whenever you use GUIDE-IEI. Full
+  speed, because the Linux filesystem still lives inside the virtual disk.
+
+- **Fallback: datasets on an external drive via `/mnt`.** The **Storage**
+  page inside the application can place the annotation datasets at any
+  path, including a Windows drive visible in WSL as `/mnt/d/...` or
+  `/mnt/e/...`. This works, but it crosses the Windows/Linux boundary
+  described above, and the large indexed reference files (dbNSFP, SpliceAI)
+  pay the largest penalty — expect noticeably slower annotation. Prefer one
+  of the relocation options when you can.
 
 ## Common first-run problems
 

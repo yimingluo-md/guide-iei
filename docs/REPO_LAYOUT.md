@@ -10,7 +10,7 @@ nav_order: 16
 config/annotation.config.yaml   administrator defaults used by CLI and the UI
 docker/Dockerfile               VEP 113 + LOFTEE grch38 + samtools + DBD::SQLite
 docker/build.sh                 build the image (docker or podman)
-scripts/setup_environment.sh    host-environment doctor + no-admin bootstrap
+scripts/setup_environment.sh    host setup check + no-admin bootstrap
 scripts/download_references.sh  fetch VEP cache / FASTA / LOFTEE / RepeatMasker / SegDup
 scripts/install_recommended_datasets.sh  one-click exome/WGS public dataset setup
 scripts/update_refreshable_datasets.sh  refresh ClinVar + ClinGen variant curations

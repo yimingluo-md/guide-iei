@@ -107,7 +107,7 @@ Three commands get a new machine to a running workbench:
 
 ```bash
 git clone https://github.com/yimingluo-md/guide-iei.git && cd guide-iei
-bash scripts/setup_environment.sh --install   # environment doctor + user-space setup
+bash scripts/setup_environment.sh --install   # setup check + user-space install
 bash scripts/start_workbench.sh               # launch the workbench
 ```
 

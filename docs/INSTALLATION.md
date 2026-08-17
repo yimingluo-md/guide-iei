@@ -8,9 +8,9 @@ nav_order: 1
 
 [Manual home](index.md)
 
-## The environment doctor
+## The setup check
 
-Run the environment doctor after cloning — it checks everything below, prints
+Run the setup check after cloning — it checks everything below, prints
 an exact fix for anything missing, and `--install` fixes the user-space items
 itself (no admin rights, no Homebrew, nothing outside one managed folder):
 
@@ -74,9 +74,9 @@ The supported route is **WSL2** (Windows Subsystem for Linux 2), which is a real
 Linux kernel:
 
 1. Install WSL2 with a Linux distro (e.g. Ubuntu): `wsl --install` in an
-   elevated PowerShell, then reboot.
-2. Install **Docker Desktop** and enable its **WSL2 backend** (Settings →
-   Resources → WSL integration).
+   elevated PowerShell, then reboot (~1–2 GB download).
+2. Install **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
+   and enable its **WSL2 backend** (Settings → Resources → WSL integration).
 3. Open the WSL2 (Ubuntu) shell and clone + run the pipeline there exactly as a
    Linux user would.
 
@@ -84,6 +84,16 @@ Linux kernel:
 > the **WSL2 filesystem** (`~/...` inside the distro), *not* on a Windows drive
 > under `/mnt/c/...`. Cross-filesystem I/O to `/mnt/c` is very slow, which badly
 > hurts the multi-GB tabix reference reads (dbNSFP, SpliceAI, CADD).
+
+> **Disk-space caveat.** The WSL2 filesystem is a virtual-disk file on `C:` by
+> default, growing with use — it must accommodate the reference datasets
+> (~90 GB exome / 150–250 GB full WGS). If `C:` is small, relocate the distro
+> to a larger internal drive or an NTFS external SSD with
+> `wsl --export` / `wsl --unregister` / `wsl --import` **before** downloading
+> datasets; the User Guide's
+> [installation chapter](guide/02-install.md) walks through the commands.
+> Datasets on a `/mnt/*` drive via the Storage page work but pay the
+> cross-filesystem penalty above.
 
 ## Where to keep the clone (cloud-sync note)
 
