@@ -662,7 +662,9 @@ class CohortStoreTests(unittest.TestCase):
 
         imported = store.import_vcf(source)
         self.assertEqual(imported["import_mode"], "parallel_tabix_staged")
-        self.assertEqual(imported["reader_count"], 4)
+        # index_readers=4 is capped at os.cpu_count() (2 on CI runners).
+        self.assertEqual(imported["reader_count"], store.index_readers)
+        self.assertGreaterEqual(imported["reader_count"], 2)
         self.assertEqual(imported["variant_count"], 4)
         self.assertEqual(imported["records_processed"], 4)
         self.assertEqual(backend.sort_calls, 1)
@@ -767,7 +769,9 @@ class CohortStoreTests(unittest.TestCase):
             time.sleep(0.01)
         self.assertEqual(job["status"], "succeeded")
         self.assertEqual(job["phase"], "complete")
-        self.assertEqual(job["result"]["files"][0]["reader_count"], 4)
+        # index_readers=4 is capped at os.cpu_count() (2 on CI runners).
+        self.assertEqual(job["result"]["files"][0]["reader_count"], store.index_readers)
+        self.assertGreaterEqual(job["result"]["files"][0]["reader_count"], 2)
         self.assertEqual(job["result"]["files"][0]["variant_count"], 4)
 
     def test_auto_prepare_failure_falls_back_to_serial_staging(self):
@@ -802,7 +806,7 @@ class CohortStoreTests(unittest.TestCase):
         imported = store.import_vcf(source)
         self.assertFalse(imported["preparation_warning"])
         self.assertEqual(imported["import_mode"], "parallel_tabix_staged")
-        self.assertEqual(imported["reader_count"], 4)
+        self.assertEqual(imported["reader_count"], store.index_readers)
         self.assertEqual(imported["variant_count"], 4)
 
     def test_rejects_explicit_non_grch38_contig_length(self):
