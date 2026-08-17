@@ -21,10 +21,16 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Environment setup (doctor + user-space install)
         run: bash scripts/setup_environment.sh --install --yes --skip-container
+
+      # NumPy is optional for end users (only the one-time SCREEN preparation
+      # task needs it; its tests SKIP without it). CI installs it so the SCREEN
+      # preparation path is genuinely exercised rather than skipped.
+      - name: NumPy for the SCREEN preparation tests
+        run: python3 -m pip install --user numpy || python3 -m pip install --break-system-packages --user numpy
 
       - name: Doctor is idempotent and clean on second run
         run: bash scripts/setup_environment.sh --check --skip-container

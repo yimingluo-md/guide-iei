@@ -15,6 +15,18 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+try:
+    import numpy  # noqa: F401 — SCREEN preparation dependency, optional for end users
+    HAVE_NUMPY = True
+except ImportError:
+    HAVE_NUMPY = False
+
+# NumPy is only required for the one-time SCREEN preparation task, never for
+# end-user annotation or review, so its absence is a SKIP, not a failure.
+requires_numpy = unittest.skipUnless(
+    HAVE_NUMPY, "SKIP: NumPy not installed (only needed to prepare SCREEN context data)"
+)
+
 from pipeline.screen_ccre_dataset import (
     AGGREGATE_STATUS,
     PARTIAL_STATUS,
@@ -51,6 +63,7 @@ class ScreenCcreDatasetTests(unittest.TestCase):
             "cell_slims": [], "sample_type": "primary cell",
         }), "Other hematopoietic/immune")
 
+    @requires_numpy
     def test_histogram_identity_requires_unique_columns(self):
         selection = {
             "immune_biosamples": [{"index": 0}, {"index": 1}],
@@ -98,6 +111,7 @@ class ScreenCcreDatasetTests(unittest.TestCase):
             "organ_slims": ["brain"], "sample_type": "primary cell",
         }))
 
+    @requires_numpy
     def test_prepare_compact_categorical_matrices(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
