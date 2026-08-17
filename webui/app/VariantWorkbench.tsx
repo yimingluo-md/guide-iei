@@ -1032,7 +1032,7 @@ export default function VariantWorkbench() {
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark"><Icon name="dna" /></span><span>IEI Variant Review</span><span className="version">MVP 0.6</span></div>
+        <div className="brand"><span className="brand-mark"><Icon name="dna" /></span><span>GUIDE-IEI</span><span className="version">MVP 0.6</span></div>
         <div className="top-actions">
           <span className="privacy"><span className="status-dot" />Local analysis session</span>
           <button className="secondary-button glossary-button" title="Genetics glossary" onClick={() => { setView("glossary"); setSelected(null); }}>Glossary</button>

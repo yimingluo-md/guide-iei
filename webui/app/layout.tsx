@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "IEI Variant Review",
-  description: "Clinical review workbench for VEP-annotated IEI variants.",
+  title: "GUIDE-IEI",
+  description: "A clinician-developed, locally run, open-source WES/WGS analysis platform for inborn errors of immunity.",
   icons: {
     icon: "/favicon.svg",
     shortcut: "/favicon.svg",

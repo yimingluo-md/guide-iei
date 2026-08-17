@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import VariantWorkbench from "./VariantWorkbench";
 
 export const metadata: Metadata = {
-  title: "IEI Variant Review",
-  description: "Clinical review workbench for VEP-annotated IEI variants.",
+  title: "GUIDE-IEI",
+  description: "A clinician-developed, locally run, open-source WES/WGS analysis platform for inborn errors of immunity.",
 };
 
 export default function Home() {
