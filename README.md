@@ -139,16 +139,21 @@ The **[GUIDE-IEI manual](docs/index.md)** covers everything in detail:
 
 ## Future plans
 
-<!-- PLACEHOLDER — to be written by Yiming:
-     e.g. more epigenetic data layers, additional disease modules beyond IEI,
-     packaged one-click application builds, CNV/SV/repeat-expansion support
-     (currently SNVs and small indels only — deliberately left out of
-     "What GUIDE-IEI is not" because it belongs here as a plan). -->
+- **Deeper epigenetic context** — tissue- and cell-specific prediction of
+  regulatory-element target genes, and direct prediction of variant impact on
+  regulatory activity.
+- **CNV, SV, and repeat-expansion support** — the current release covers SNVs
+  and small indels only.
+- **A simple allele-fraction filter for suspected somatic variants** (see the
+  [FAQ](docs/FAQ.md)).
+- **Native SpliceAI and PromoterAI scoring for indels** — precomputed score
+  tables cover SNVs; indels currently ride the unscored-indel safety route,
+  and running the models locally would score them directly.
 
 ## Development disclosure
 
 This software has been developed with AI-assisted coding using **OpenAI Codex
-(GPT-5.6 Sol)** and **Anthropic Claude Code (Claude Opus 5)**, under human
+(GPT-5.6 Sol)** and **Anthropic Claude Code (Claude Fable 5 and Opus 5)**, under human
 direction and review. AI assistance does not constitute independent software
 validation; users remain responsible for validating the pipeline for their
 intended research or clinical-laboratory context.

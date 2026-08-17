@@ -25,6 +25,8 @@ review workbench in detail. For the project overview, see the
 5. [Understanding the output](OUTPUT.md) — the annotated VCF, LoF curation
    details, the annotation-QC certificate, container notes
 
+6. [FAQ](FAQ.md) — common questions, including somatic variants
+
 ## Reference
 
 - [Annotation sources](ANNOTATIONS.md) — what every source is, which tier it
