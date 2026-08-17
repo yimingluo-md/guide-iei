@@ -113,7 +113,7 @@ import {
   type VariantQcSettings,
   type VariantRow,
 } from "./vcf";
-import { GlossaryPanel, GlossaryText } from "./glossary";
+import { GlossaryText, GlossaryView } from "./glossary";
 import {
   DEFAULT_TRIO_THRESHOLDS,
   assessDeNovo,
@@ -143,7 +143,7 @@ import {
   type RegulatoryContextSet,
 } from "./regulatory-evidence";
 
-type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "sample_library" | "storage" | "phenotypes" | "gene_lists" | "gene_knowledge" | "import";
+type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "sample_library" | "storage" | "phenotypes" | "gene_lists" | "gene_knowledge" | "glossary" | "import";
 type AnalysisScope = "exome" | "whole_genome";
 type LibraryImportOptions = {
   keep: boolean;
@@ -499,7 +499,6 @@ function storeCustomGeneLists(lists: CustomGeneList[]) {
 export default function VariantWorkbench() {
   const [rows, setRows] = useState<VariantRow[]>([]);
   const [view, setView] = useState<View>("import");
-  const [glossaryOpen, setGlossaryOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [samples, setSamples] = useState<Set<string>>(new Set());
   const [impacts, setImpacts] = useState<Set<string>>(new Set(["HIGH", "MODERATE"]));
@@ -1036,13 +1035,12 @@ export default function VariantWorkbench() {
         <div className="brand"><span className="brand-mark"><Icon name="dna" /></span><span>IEI Variant Review</span><span className="version">MVP 0.6</span></div>
         <div className="top-actions">
           <span className="privacy"><span className="status-dot" />Local analysis session</span>
-          <button className="secondary-button glossary-button" title="Genetics glossary" onClick={() => setGlossaryOpen(true)}>Glossary</button>
+          <button className="secondary-button glossary-button" title="Genetics glossary" onClick={() => { setView("glossary"); setSelected(null); }}>Glossary</button>
           <button className="primary-button" onClick={() => { setView("import"); setSelected(null); }}><Icon name="upload" />Import VCF</button>
         </div>
       </header>
-      {glossaryOpen && <GlossaryPanel onClose={() => setGlossaryOpen(false)} />}
 
-      <div className={`workspace ${selected ? "review-mode" : ""} ${view === "cohort" ? "cohort-mode" : ""} ${view === "sample_library" ? "library-mode" : ""} ${view === "storage" ? "storage-mode" : ""} ${view === "phenotypes" ? "phenotype-mode" : ""} ${view === "family" ? "family-mode" : ""} ${view === "gene_lists" || view === "gene_knowledge" ? "gene-lists-mode" : ""} ${view === "import" ? "import-mode" : ""}`}>
+      <div className={`workspace ${selected ? "review-mode" : ""} ${view === "cohort" ? "cohort-mode" : ""} ${view === "sample_library" ? "library-mode" : ""} ${view === "storage" ? "storage-mode" : ""} ${view === "phenotypes" ? "phenotype-mode" : ""} ${view === "family" ? "family-mode" : ""} ${view === "gene_lists" || view === "gene_knowledge" || view === "glossary" ? "gene-lists-mode" : ""} ${view === "import" ? "import-mode" : ""}`}>
         <nav className="rail" aria-label="Primary navigation">
           <div className="nav-group-label">Review</div>
           {([
@@ -1058,6 +1056,7 @@ export default function VariantWorkbench() {
           <button className={`nav-item ${view === "phenotypes" ? "active" : ""}`} onClick={() => { setPhenotypeTarget(null); setView("phenotypes"); setSelected(null); }}><span>Phenotypes</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "gene_knowledge" ? "active" : ""}`} onClick={() => { setView("gene_knowledge"); setSelected(null); }}><span>Gene knowledge</span><Icon name="dna" /></button>
           <button className={`nav-item ${view === "gene_lists" ? "active" : ""}`} onClick={() => { setView("gene_lists"); setSelected(null); }}><span>Gene lists</span><span>{4 + customGeneLists.length}</span></button>
+          <button className={`nav-item ${view === "glossary" ? "active" : ""}`} onClick={() => { setView("glossary"); setSelected(null); }}><span>Glossary</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "storage" ? "active" : ""}`} onClick={() => { setView("storage"); setSelected(null); }}><span>Storage</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "import" ? "active" : ""}`} onClick={() => setView("import")}><span>Import & QC</span><Icon name="chevron" /></button>
           <div className="rail-note"><strong>Defaults active</strong><span>PASS upstream</span><span>MANE transcripts</span><span>Repeat/SegDup excluded</span></div>
@@ -1193,6 +1192,8 @@ export default function VariantWorkbench() {
             <PhenotypePanel initialIndividualId={phenotypeTarget} />
           ) : view === "gene_knowledge" ? (
             <GeneKnowledgeSettingsPanel />
+          ) : view === "glossary" ? (
+            <GlossaryView />
           ) : view === "gene_lists" ? (
             <GeneListsPanel
               geneSets={{ iei: ieiGenes, hi: hiGenes, dominant: dominantGenes }}

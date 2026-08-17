@@ -1,5 +1,5 @@
 "use client";
-// Tap-for-definition affordance over authored copy, plus a browsable panel.
+// Tap-for-definition affordance over authored copy, plus the Glossary page.
 // Definitions live in glossary-data.ts and are written once.
 
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -63,14 +63,9 @@ export function GlossaryText({ text }: { text: string }) {
   );
 }
 
-/** Searchable full glossary, opened from the topbar. */
-export function GlossaryPanel({ onClose }: { onClose: () => void }) {
+/** The Glossary page: searchable definitions grouped by category. */
+export function GlossaryView() {
   const [query, setQuery] = useState("");
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onClose]);
   const needle = query.trim().toLowerCase();
   const visible = GLOSSARY.filter((entry) =>
     !needle
@@ -78,41 +73,41 @@ export function GlossaryPanel({ onClose }: { onClose: () => void }) {
     || (entry.aliases ?? []).some((alias) => alias.toLowerCase().includes(needle))
     || entry.definition.toLowerCase().includes(needle));
   return (
-    <div className="glossary-overlay" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-      <div className="glossary-panel" role="dialog" aria-label="Glossary">
-        <header>
-          <div><p className="eyebrow">Reference</p><h2>Glossary</h2></div>
-          <input
-            autoFocus
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search terms…"
-            spellCheck={false}
-          />
-          <button type="button" className="secondary-button" onClick={onClose}>Close</button>
-        </header>
-        <div className="glossary-panel-body">
-          {GLOSSARY_CATEGORIES.map((category) => {
-            const entries = visible.filter((entry) => entry.category === category);
-            if (!entries.length) return null;
-            return (
-              <section key={category}>
-                <h3>{category}</h3>
-                {entries.map((entry) => (
-                  <article key={entry.id}>
-                    <strong>{entry.term}</strong>
-                    {(entry.aliases?.length || entry.exactAliases?.length) ? (
-                      <small>{[...(entry.aliases ?? []), ...(entry.exactAliases ?? [])].join(" · ")}</small>
-                    ) : null}
-                    <p>{entry.definition}</p>
-                  </article>
-                ))}
-              </section>
-            );
-          })}
-          {!visible.length && <p className="glossary-empty">No terms match “{query}”.</p>}
-        </div>
+    <div className="glossary-view">
+      <div className="section-title">
+        <div><p className="eyebrow">Reference</p><h2>Glossary</h2></div>
+        <span>Plain-language definitions of the genetics terms used across this workbench</span>
       </div>
+      <label className="form-field glossary-search">
+        <span>Search</span>
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Term, abbreviation, or words from a definition…"
+          spellCheck={false}
+        />
+      </label>
+      {GLOSSARY_CATEGORIES.map((category) => {
+        const entries = visible.filter((entry) => entry.category === category);
+        if (!entries.length) return null;
+        return (
+          <section className="glossary-section" key={category}>
+            <h3>{category}</h3>
+            <div className="glossary-entries">
+              {entries.map((entry) => (
+                <article key={entry.id}>
+                  <strong>{entry.term}</strong>
+                  {(entry.aliases?.length || entry.exactAliases?.length) ? (
+                    <small>Also: {[...(entry.aliases ?? []), ...(entry.exactAliases ?? [])].join(" · ")}</small>
+                  ) : null}
+                  <p>{entry.definition}</p>
+                </article>
+              ))}
+            </div>
+          </section>
+        );
+      })}
+      {!visible.length && <p className="glossary-empty">No terms match “{query}”.</p>}
     </div>
   );
 }

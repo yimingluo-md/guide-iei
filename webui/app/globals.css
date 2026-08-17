@@ -1236,19 +1236,15 @@ tbody tr:last-child td { border-bottom: 0; }
 .glossary-popover { position: absolute; z-index: 60; left: 0; top: calc(100% + 6px); display: flex; flex-direction: column; gap: 4px; width: 260px; max-width: 72vw; background: white; border: 1px solid #ccd5d1; border-radius: 8px; box-shadow: 0 8px 24px #24403a26; padding: 10px 12px; font-size: 10.5px; line-height: 1.5; color: #34443f; text-align: left; }
 .glossary-popover strong { font-size: 11px; color: #19786e; }
 .glossary-button { white-space: nowrap; }
-.glossary-overlay { position: fixed; inset: 0; z-index: 80; background: #24403a4d; display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px; }
-.glossary-panel { background: white; border-radius: 12px; border: 1px solid #ccd5d1; width: min(720px, 100%); max-height: 86vh; display: flex; flex-direction: column; overflow: hidden; }
-.glossary-panel header { display: flex; align-items: center; gap: 12px; padding: 14px 18px; border-bottom: 1px solid #e2e8e5; }
-.glossary-panel header h2 { margin: 0; font-size: 15px; }
-.glossary-panel header input { flex: 1; border: 1px solid #ccd5d1; border-radius: 6px; padding: 7px 10px; font-size: 11px; outline: 0; }
-.glossary-panel header input:focus { border-color: #5f9e94; }
-.glossary-panel-body { overflow-y: auto; padding: 12px 18px 20px; }
-.glossary-panel-body section h3 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #5c6965; margin: 16px 0 6px; }
-.glossary-panel-body article { padding: 8px 0; border-bottom: 1px solid #eef2f0; }
-.glossary-panel-body article strong { font-size: 11.5px; color: #223832; }
-.glossary-panel-body article small { margin-left: 8px; color: #7d8a85; font-size: 9.5px; }
-.glossary-panel-body article p { margin: 3px 0 0; font-size: 10.5px; line-height: 1.55; color: #46554f; }
-.glossary-empty { color: #5c6965; font-size: 11px; }
+.glossary-view { max-width: 900px; }
+.glossary-search { max-width: 420px; margin: 10px 0 4px; }
+.glossary-section h3 { font-size: 10px; text-transform: uppercase; letter-spacing: 0.08em; color: #5c6965; margin: 20px 0 8px; }
+.glossary-entries { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 10px; }
+.glossary-entries article { background: white; border: 1px solid #e2e8e5; border-radius: 8px; padding: 10px 12px; display: flex; flex-direction: column; gap: 3px; }
+.glossary-entries article strong { font-size: 12px; color: #223832; }
+.glossary-entries article small { color: #7d8a85; font-size: 9.5px; }
+.glossary-entries article p { margin: 2px 0 0; font-size: 10.5px; line-height: 1.55; color: #46554f; }
+.glossary-empty { color: #5c6965; font-size: 11px; margin-top: 14px; }
 .storage-restart-alert { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .storage-restart-alert > div { display: flex; flex-direction: column; gap: 2px; }
 .storage-restart-alert button { flex-shrink: 0; }
