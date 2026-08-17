@@ -143,7 +143,7 @@ ANNOTATION_SOURCE_SETUP = {
         "size_hint": "",
         "instructions": [
             "Included with the software — no action needed.",
-            "High confidence means the premature stop or frameshift is likely to truly abolish protein function; low confidence lists the specific reasons for doubt.",
+            "High confidence means the premature stop, frameshift, or splice-site change is likely to truly abolish protein function; low confidence lists the specific reasons for doubt.",
         ],
     },
     "spliceai": {
@@ -3181,7 +3181,7 @@ class AnnotationJobService:
         # subtitle answers "what question does this dataset answer for me".
         labels = {
             "dbnsfp": ("dbNSFP", "How damaging is each amino-acid change? One database bundling an extensive set of published predictors — AlphaMissense, REVEL, CADD (coding regions), SIFT, PolyPhen, MetaRNN, PrimateAI, conservation scores, and more"),
-            "loftee": ("LOFTEE", "When a variant creates a premature stop or frameshift, estimates how confident we can be that it truly abolishes the protein — high vs. low confidence, with reasons"),
+            "loftee": ("LOFTEE", "When a variant creates a premature stop or frameshift, or disrupts a canonical splice site, estimates how confident we can be that it truly abolishes the protein, and the reasons"),
             "spliceai": ("SpliceAI", "Predicts whether a variant disrupts RNA splicing, including variants outside the classic splice-site positions"),
             "repeatmasker": ("Repetitive-region flag", "Marks variants inside repetitive DNA, where sequencing and variant calling are less reliable"),
             "segdup": ("Duplicated-region flag", "Marks variants in segmental duplications — genomic segments with near-identical copies elsewhere in the genome, a classic source of false variant calls"),
@@ -3192,7 +3192,7 @@ class AnnotationJobService:
             "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create, to judge whether the damaged transcript is degraded or escapes and may make a truncated protein"),
             "clinvar_aa_match": ("Same-residue pathogenic match", "Flags variants that alter an amino acid where a different change at the same position is already reported pathogenic — e.g., Arg342Gln at a residue with reported pathogenic Arg342Trp"),
             "liftover": ("Hg19 build support", "Lets you analyze VCFs made against the older hg19/GRCh37 reference. Variants are converted to GRCh38 with safeguards and a full audit trail — nothing is silently dropped"),
-            "ccre": ("ENCODE cCRE regions SCREEN Registry V4", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
+            "ccre": ("ENCODE cCRE regions", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
             "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: shows in which tissues and immune cell types a regulatory region is active — adding tissue- and cell-level detail on top of the aggregate cCRE map"),
             "clingen_erepo": ("ClinGen expert-panel classifications", "Variant interpretations from ClinGen's disease-specific expert panels — the highest review level available. Stored locally; your variants are never sent to any server"),
         }
@@ -3401,7 +3401,7 @@ class AnnotationJobService:
         foundations = [
             {
                 "id": "vep_container",
-                "label": "Annotation engine",
+                "label": "Ensembl VEP (annotation engine)",
                 "description": "The core program that annotates your variants (Ensembl VEP). Version-locked so results are reproducible.",
                 "available": container_available,
                 "required": True,
@@ -3411,7 +3411,7 @@ class AnnotationJobService:
             },
             {
                 "id": "vep_cache",
-                "label": "Gene & transcript database",
+                "label": "Ensembl VEP cache (gene & transcript database)",
                 "description": "The local copy of human gene, transcript, and population data the engine reads (Ensembl VEP cache). Large (~25 GB) but one-time.",
                 "available": bool(cache_path and cache_path.exists()),
                 "required": True,

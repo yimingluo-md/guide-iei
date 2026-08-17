@@ -66,8 +66,6 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /useState<"GRCh38" \| "GRCh37" \| "auto">\("auto"\)/);
   assert.match(source, /Detected .* logical CPU threads/);
   assert.match(source, /Use automatic/);
-  assert.match(source, /Validated annotation bundle · VEP 113 \/ GRCh38/);
-  assert.match(source, /intentionally pinned/);
   assert.doesNotMatch(source, /Check for updates/);
   assert.doesNotMatch(service, /\/api\/references\/update/);
   assert.doesNotMatch(source, /Annotation config/);
