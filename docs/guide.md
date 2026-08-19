@@ -6,12 +6,12 @@ has_children: true
 
 # User Guide
 
-Step-by-step guidance for clinicians and wet-lab scientists. The guide
-assumes you know your genetics — candidate genes, variant classes,
-population frequencies — and does **not** assume software or bioinformatics
-experience beyond copying three setup commands. Chapters are ordered the way
-you will meet them: get oriented, install, set up datasets, then run your
-first analysis.
+Practical guidance for clinicians and wet-lab scientists. The guide assumes
+familiarity with clinical genetics — candidate genes, variant classes,
+population frequencies — and assumes **no** software or bioinformatics
+experience beyond copying three setup commands. Chapters follow the order in
+which the work is encountered: orientation, installation, dataset setup,
+then the first analysis.
 
-If you want the technical depth behind any step, every chapter links into the
-[Reference](reference.md) section.
+The technical detail behind every step is documented in the
+[Reference](reference.md) section, linked from each chapter.

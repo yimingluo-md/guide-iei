@@ -6,29 +6,29 @@ nav_order: 2
 
 # Install it on your computer
 
-Three commands take a new machine to a running workbench. This chapter
-explains what they do, walks each platform through them, and covers the
-common first-run problems.
+Installation consists of three commands. This chapter explains what each
+does, walks each platform through them, and addresses the problems most
+often encountered on first use.
 
-## What you need
+## Requirements
 
 - A reasonably modern computer: **Mac** (Intel or Apple Silicon), **Windows
-  10/11** (via WSL2 — explained below), or **Linux**.
-- **Disk space**: ~40 GB free for the exome reference datasets; more for
-  whole-genome work ([next chapter](03-datasets.md) has the full planning
-  table). Datasets can live on an external SSD if your internal drive is
-  small.
+  10/11** (via WSL2, described below), or **Linux**.
+- **Disk space**: approximately 110 GB for the exome reference datasets and
+  more for whole-genome work ([the next chapter](03-datasets.md) provides
+  the planning table). Datasets may reside on an external SSD when the
+  internal drive is small.
 - **No administrator rights are required on a Mac**, and nothing is
-  installed system-wide: everything the installer adds lives in one managed
-  folder (`~/.iei-variant-review/tools/`), and deleting that folder
-  uninstalls it all. On Linux/WSL2, one component (the container runtime)
-  is a system package; the installer prints the exact commands and asks
-  before running them.
+  installed system-wide: everything the installer adds is contained in one
+  managed folder (`~/.iei-variant-review/tools/`), and removing that folder
+  uninstalls it completely. On Linux and WSL2, one component — the
+  container runtime — is a system package; the installer prints the exact
+  commands and asks for confirmation before running them.
 
 ## The three commands
 
-Open a terminal (macOS: **Terminal** in Applications → Utilities; Windows:
-the **Ubuntu/WSL2** window — see below; Linux: any shell) and run:
+Open a terminal (macOS: **Terminal**, in Applications → Utilities; Windows:
+the **Ubuntu/WSL2** window described below; Linux: any shell) and run:
 
 ```bash
 git clone https://github.com/yimingluo-md/guide-iei.git && cd guide-iei
@@ -42,44 +42,44 @@ bash scripts/setup_environment.sh --install
 bash scripts/start_workbench.sh
 ```
 
-Then open **`http://127.0.0.1:3000`** in your browser — a local address:
-the workbench runs on your machine and uses the browser as its screen.
+Then open **`http://127.0.0.1:3000`** in a browser — a local address: the
+workbench runs on your machine and uses the browser as its display.
 
 *[Screenshot: terminal after setup_environment.sh --install completes, "Environment ready" summary]*
 
-## What the second command actually does
+## What the second command does
 
 `setup_environment.sh` is a **setup check**. Run without options it only
-*reports* — green `[ OK ]` lines for what is present, and an exact fix for
-anything missing. With `--install` it also *fixes* what can be fixed
-without admin rights:
+*reports*: green `[ OK ]` lines for what is present, and the exact remedy
+for anything missing. With `--install` it also corrects what can be
+corrected without administrator rights:
 
-- **Python and its one dependency** — checked, installed if missing.
-- **Node.js** (runs the workbench interface) — if your machine has no
-  suitable version, the official build is placed in the managed tools
-  folder. Your system is not touched.
+- **Python and its single dependency** — verified, installed if absent.
+- **Node.js** (runs the workbench interface) — when no suitable version is
+  found, the official build is placed in the managed tools folder, leaving
+  the system installation untouched.
 - **A container runtime** — the annotation engine (Ensembl VEP and its
-  plugins) runs inside a Linux container, so nothing bioinformatic is ever
-  installed on your machine directly. If you already have Docker Desktop or
-  Podman, it is detected and used. On a Mac without one, the installer sets
-  up a small, pinned, checksum-verified container stack in the managed
-  folder — no Homebrew, no admin password.
-- **Native bcftools/tabix** (optional, recommended) — speeds up file
-  operations several-fold; added automatically when a package manager is
+  plugins) runs inside a Linux container, so no bioinformatics software is
+  installed on the machine itself. An existing Docker Desktop or Podman
+  installation is detected and used; on a Mac without one, a small, pinned,
+  checksum-verified container stack is set up in the managed folder — no
+  Homebrew, no administrator password.
+- **Native bcftools/tabix** (optional, recommended) — accelerates file
+  operations severalfold; added automatically when a package manager is
   available.
-- **A smoke test** — the wiring is exercised end to end (no downloads, no
-  patient data) so you know the installation works before you invest in
-  dataset downloads.
+- **A smoke test** — the complete wiring is exercised end to end, with no
+  downloads and no patient data, so the installation is verified before any
+  time is invested in dataset downloads.
 
-The setup check is safe to run repeatedly — it changes nothing that is
-already correct, and it is the first thing to re-run whenever something
-seems broken.
+The setup check may be run repeatedly without consequence — it changes
+nothing that is already correct — and it is the first thing to re-run
+whenever the installation appears broken.
 
 ## Windows: the WSL2 track
 
-GUIDE-IEI cannot run from native Windows (Command Prompt, PowerShell) — it
-needs a Unix environment. Windows provides one, called **WSL2**, and the
-one-time setup is:
+GUIDE-IEI cannot run from native Windows (Command Prompt, PowerShell); it
+requires a Unix environment, which Windows provides through **WSL2**. The
+one-time setup:
 
 1. In PowerShell (run as administrator): `wsl --install`, then reboot.
    This installs Ubuntu Linux inside Windows (a ~1–2 GB download).
@@ -87,27 +87,28 @@ one-time setup is:
    **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
    and, in its settings, enable **WSL integration** (Settings → Resources →
    WSL integration).
-3. Open the **Ubuntu** app from the Start menu — that window is your
+3. Open the **Ubuntu** application from the Start menu — that window is the
    terminal — and run the three commands there.
 
-One important habit: keep the GUIDE-IEI folder and its datasets **inside
-the Linux filesystem** (your Ubuntu home folder, `~/...`), not on
-`/mnt/c/...`. Files accessed across the Windows/Linux boundary are many
-times slower, and the large reference files feel it badly.
+One important practice: keep the GUIDE-IEI folder and its datasets **inside
+the Linux filesystem** (the Ubuntu home folder, `~/...`), not under
+`/mnt/c/...`. Files accessed across the Windows/Linux boundary are read
+many times more slowly, and the large indexed reference files are affected
+most.
 
-### WSL2 disk space: plan before you download datasets
+### WSL2 disk space: plan before downloading datasets
 
 WSL2 keeps its entire Linux filesystem in a single virtual-disk file that
-lives on your Windows system drive (`C:`) by default and **grows as you add
-data**. The Ubuntu install itself is small, but once the annotation
-datasets go in, that file will reach the sizes in the
-[next chapter](03-datasets.md) — roughly **90 GB for exome work, 150–250 GB
-for the full whole-genome stack**. So the practical rule is: the drive
-hosting WSL needs that much free space.
+resides on the Windows system drive (`C:`) by default and **grows as data
+are added**. The Ubuntu installation itself is small, but once the
+annotation datasets are installed, this file reaches the sizes described in
+the [next chapter](03-datasets.md) — roughly **110 GB for exome work,
+150–250 GB for the full whole-genome stack**. The practical rule: the drive
+hosting WSL must have that much free space.
 
-If `C:` is too small, you have two good options and one fallback:
+When `C:` is too small, there are two good options and one fallback:
 
-- **Move WSL to a larger internal drive** (best). In PowerShell:
+- **Relocate WSL to a larger internal drive** (preferred). In PowerShell:
 
   ```
   wsl --shutdown
@@ -116,39 +117,41 @@ If `C:` is too small, you have two good options and one fallback:
   wsl --import Ubuntu D:\wsl\Ubuntu D:\wsl\ubuntu.tar
   ```
 
-  This relocates the whole Linux filesystem to `D:` (adjust the drive
-  letter). Do this **before** downloading datasets and there is almost
-  nothing to move. Export first, and only unregister after the export
-  succeeds.
+  This moves the entire Linux filesystem to `D:` (adjust the drive
+  letter). Performed **before** datasets are downloaded, there is almost
+  nothing to move. Export first; unregister only after the export has
+  succeeded.
 
-- **Move WSL to an external SSD.** The same export/import commands work
-  with an external drive as the destination, provided the drive is
-  **NTFS-formatted** and stays connected whenever you use GUIDE-IEI. Full
-  speed, because the Linux filesystem still lives inside the virtual disk.
+- **Relocate WSL to an external SSD.** The same export/import commands
+  accept an external destination, provided the drive is **NTFS-formatted**
+  and remains connected whenever GUIDE-IEI is used. Performance is
+  preserved, because the Linux filesystem still resides inside the virtual
+  disk.
 
 - **Fallback: datasets on an external drive via `/mnt`.** The **Storage**
   page inside the application can place the annotation datasets at any
-  path, including a Windows drive visible in WSL as `/mnt/d/...` or
-  `/mnt/e/...`. This works, but it crosses the Windows/Linux boundary
-  described above, and the large indexed reference files (dbNSFP, SpliceAI)
-  pay the largest penalty — expect noticeably slower annotation. Prefer one
-  of the relocation options when you can.
+  path, including a Windows drive visible in WSL as `/mnt/d/...`. This
+  works, but it crosses the Windows/Linux boundary described above, and
+  the large indexed reference files (dbNSFP, SpliceAI) pay the largest
+  penalty — annotation becomes noticeably slower. Prefer one of the
+  relocation options when possible.
 
 ## Common first-run problems
 
-| Symptom | Cause and fix |
+| Symptom | Cause and remedy |
 |---|---|
-| `[FIX]` line about the container daemon | The container runtime is installed but not running. The doctor prints the exact start command (e.g. `colima start ...`); Docker Desktop users: launch Docker Desktop. |
-| Workbench page will not load | The terminal running `start_workbench.sh` must stay open — it *is* the application. Restart it and watch for error lines. |
-| Everything is slow | Check the doctor's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
-| Cloned into OneDrive/Dropbox and git errors appear | Cloud-synced folders corrupt git's internals. Keep the clone in a normal folder (e.g. `~/guide-iei`); a sync helper exists if you want a synced copy ([Installation reference](../INSTALLATION.md)). |
-| Not sure what state things are in | Re-run `bash scripts/setup_environment.sh` (no options). It changes nothing and tells you exactly what is present and missing. |
+| `[FIX]` line about the container daemon | The container runtime is installed but not running. The setup check prints the exact start command (e.g. `colima start ...`); Docker Desktop users: launch Docker Desktop. |
+| The workbench page does not load | The terminal running `start_workbench.sh` must remain open — it *is* the application. Restart it and watch for error lines. |
+| Everything is slow | Check the setup check's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
+| Git errors after cloning into OneDrive/Dropbox | Cloud-synced folders corrupt git's internal files. Keep the clone in an ordinary folder (e.g. `~/guide-iei`); a sync helper exists for keeping a synced working copy ([Installation reference](../INSTALLATION.md)). |
+| Uncertain what state the installation is in | Re-run `bash scripts/setup_environment.sh` (no options). It changes nothing and reports exactly what is present and missing. |
 
 ## Uninstalling
 
 Delete the cloned `guide-iei` folder and the managed folder
-`~/.iei-variant-review/` (which also contains your sample library — export
-anything you want to keep first). Nothing else on the system was modified.
+`~/.iei-variant-review/` — noting that the latter also contains the sample
+library, so export anything worth keeping first. Nothing else on the system
+was modified.
 
 Technical reference: [Installation & requirements](../INSTALLATION.md)
 

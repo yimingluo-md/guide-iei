@@ -26,16 +26,16 @@ sequencing remains the appropriate confirmation.
 ## Does GUIDE-IEI ever send data off my machine?
 
 Annotation and review are fully local: patient VCFs, genotypes, and
-phenotype records never leave your computer. There is **one deliberate,
-opt-in exception**: on the variant page, an intronic or splice-region indel
-with no precomputed SpliceAI score offers a **"Get SpliceAI score online"**
-button. Clicking it sends that single variant's position and alleles
-(chromosome, position, ref, alt — nothing else) to the Broad Institute's
-public SpliceAI Lookup service and shows the returned scores, clearly
-labeled as an online result. It never runs automatically, never in batch,
-and each result is cached locally so a variant is sent at most once.
-Dataset downloads and ClinVar refreshes also use the internet, but those
-transfer only public reference data *to* your machine.
+phenotype records do not leave the computer. There is **one deliberate,
+opt-in exception**: on the variant page, an indel with no precomputed
+SpliceAI score offers a **"Get SpliceAI score online"** action. Invoking it
+transmits that single variant's position and alleles (chromosome, position,
+REF, ALT — nothing else) to the Broad Institute's public SpliceAI Lookup
+service and displays the returned scores, clearly labeled as an online
+result. The lookup never runs automatically, never in batch, and each
+result is stored locally so a variant is transmitted at most once. Dataset
+downloads and ClinVar refreshes also use the internet, but these transfer
+only public reference data *to* the machine.
 
 ## Where do I ask a question that is not answered here?
 

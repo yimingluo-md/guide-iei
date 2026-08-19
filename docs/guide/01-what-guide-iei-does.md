@@ -6,9 +6,9 @@ nav_order: 1
 
 # What GUIDE-IEI does
 
-A short orientation before you install.
+A brief orientation before installation.
 
-## The two halves
+## Two components
 
 1. **An annotation engine** — Ensembl VEP 113 with a curated plugin stack,
    run locally in a container. Each variant is annotated with gnomAD
