@@ -13,7 +13,8 @@ a clinician-developed, locally run, open-source WES/WGS analysis platform.
 
 - **New to GUIDE-IEI?** Start with the
   [User Guide](guide.md): what the software does, how to install it, and a
-  complete walkthrough of your first exome analysis.
+  complete walkthrough of your first exome analysis. (The chapter list is
+  on that page.)
 - **Looking for technical depth?** The [Reference](reference.md) section
   documents every annotation source, configuration option, and storage
   detail.
