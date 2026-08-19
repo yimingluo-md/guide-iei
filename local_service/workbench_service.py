@@ -24,14 +24,16 @@ import subprocess
 import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
-from urllib.parse import parse_qs, unquote, urlparse
+import urllib.error
+import urllib.request
+from urllib.parse import parse_qs, unquote, urlencode, urlparse
 
 from local_service.ccre_context import CcreContextStore
 from local_service.clingen_erepo import ClinGenErepoStore
@@ -338,6 +340,13 @@ RESOURCE_DOWNLOAD_COMMANDS = {
 # The downloaders themselves remain resumable; this guard prevents starting a
 # large resource on a volume that clearly cannot hold its finished payload.
 GIB = 1024 ** 3
+
+# Broad SpliceAI Lookup API (interactive single-variant use only; see
+# https://github.com/broadinstitute/SpliceAI-lookup). The site's defaults for
+# variant interpretation: masked scores, 500 bp window.
+SPLICEAI_LOOKUP_URL = "https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/"
+SPLICEAI_LOOKUP_DISTANCE = 500
+SPLICEAI_LOOKUP_MASK = 1
 RESOURCE_DOWNLOAD_OUTPUTS = {
     "spliceai": [(("plugins", "SpliceAI", "snv"), 30 * GIB, False)],
     # Check the two CADD payloads together when they share a filesystem.
@@ -2475,6 +2484,120 @@ class AnnotationJobService:
             "filename": output_path.name,
         }
 
+    def spliceai_lookup(self, payload: dict) -> dict:
+        """Fetch SpliceAI scores for one variant from the Broad's public API.
+
+        This is the single deliberate exception to "nothing leaves this
+        machine": the user explicitly clicks per variant, and only
+        chrom/pos/ref/alt are transmitted — no genotype, sample, or
+        phenotype data. Results are cached locally so a variant is never
+        queried twice. The API is interactive-use-only (a few requests per
+        minute); this endpoint is never called in a batch.
+        """
+        chrom = str(payload.get("chrom") or "").strip().removeprefix("chr")
+        ref = str(payload.get("ref") or "").strip().upper()
+        alt = str(payload.get("alt") or "").strip().upper()
+        try:
+            pos = int(payload.get("pos"))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("pos must be a positive integer") from exc
+        if not chrom or chrom not in {*map(str, range(1, 23)), "X", "Y", "MT", "M"}:
+            raise ValueError(f"unsupported chromosome for SpliceAI lookup: {chrom!r}")
+        if not re.fullmatch(r"[ACGT]+", ref) or not re.fullmatch(r"[ACGT]+", alt):
+            raise ValueError("ref and alt must be plain ACGT sequences")
+        distance = SPLICEAI_LOOKUP_DISTANCE
+        mask = SPLICEAI_LOOKUP_MASK
+        variant_key = f"{chrom}-{pos}-{ref}-{alt}"
+
+        cache_path = self.state_dir / "spliceai-lookup-cache.sqlite3"
+        with closing(sqlite3.connect(cache_path, timeout=30)) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS lookups ("
+                "variant_key TEXT NOT NULL, distance INTEGER NOT NULL,"
+                "mask INTEGER NOT NULL, retrieved_at TEXT NOT NULL,"
+                "response TEXT NOT NULL,"
+                "PRIMARY KEY (variant_key, distance, mask))"
+            )
+            row = connection.execute(
+                "SELECT retrieved_at, response FROM lookups"
+                " WHERE variant_key = ? AND distance = ? AND mask = ?",
+                (variant_key, distance, mask),
+            ).fetchone()
+            if row is not None:
+                return self._spliceai_lookup_result(
+                    json.loads(row[1]), variant_key, row[0], cached=True
+                )
+
+        base_url = os.environ.get("IEI_SPLICEAI_LOOKUP_URL", SPLICEAI_LOOKUP_URL)
+        query = urlencode({
+            "hg": "38", "distance": distance, "mask": mask, "variant": variant_key,
+        })
+        request = urllib.request.Request(
+            f"{base_url}?{query}",
+            headers={"User-Agent": "GUIDE-IEI variant workbench (single-variant interactive lookup)"},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=180) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            raise ValueError(
+                f"the Broad SpliceAI service rejected the request (HTTP {exc.code}); "
+                "it may be rate-limited — wait a minute and try again"
+            ) from exc
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            raise ValueError(
+                "the Broad SpliceAI service could not be reached — check the "
+                "internet connection and try again"
+            ) from exc
+        if isinstance(body, dict) and body.get("error"):
+            raise ValueError(f"Broad SpliceAI service error: {body['error']}")
+        if not isinstance(body, dict) or not isinstance(body.get("scores"), list):
+            raise ValueError("unexpected response format from the Broad SpliceAI service")
+
+        retrieved_at = utc_now()
+        with closing(sqlite3.connect(cache_path, timeout=30)) as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO lookups"
+                " (variant_key, distance, mask, retrieved_at, response)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (variant_key, distance, mask, retrieved_at, json.dumps(body)),
+            )
+            connection.commit()
+        return self._spliceai_lookup_result(body, variant_key, retrieved_at, cached=False)
+
+    @staticmethod
+    def _spliceai_lookup_result(
+        body: dict, variant_key: str, retrieved_at: str, cached: bool
+    ) -> dict:
+        transcripts = []
+        for entry in body.get("scores") or []:
+            if not isinstance(entry, dict):
+                continue
+            transcripts.append({
+                "gene": entry.get("g_name") or "",
+                "transcript": entry.get("t_id") or "",
+                "refseq": (entry.get("t_refseq_ids") or [None])[0],
+                "mane_select": entry.get("t_priority") == "MS",
+                "strand": entry.get("t_strand") or "",
+                "scores": {
+                    "acceptor_gain": {"delta": entry.get("DS_AG"), "position": entry.get("DP_AG")},
+                    "acceptor_loss": {"delta": entry.get("DS_AL"), "position": entry.get("DP_AL")},
+                    "donor_gain": {"delta": entry.get("DS_DG"), "position": entry.get("DP_DG")},
+                    "donor_loss": {"delta": entry.get("DS_DL"), "position": entry.get("DP_DL")},
+                },
+            })
+        # MANE Select first, then the rest in API order.
+        transcripts.sort(key=lambda item: not item["mane_select"])
+        return {
+            "variant": variant_key,
+            "distance": SPLICEAI_LOOKUP_DISTANCE,
+            "masked": bool(SPLICEAI_LOOKUP_MASK),
+            "retrieved_at": retrieved_at,
+            "cached": cached,
+            "source": "Broad SpliceAI Lookup API",
+            "transcripts": transcripts,
+        }
+
     def ccre_context(self, payload: dict) -> dict:
         """Return local SCREEN overlap and Ensembl TSS proximity context."""
         config_value = payload.get("config_path") or (
@@ -4058,6 +4181,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     self.service.start_wgs_review(self._body()),
                     HTTPStatus.ACCEPTED,
                 )
+                return
+            if path == "/api/spliceai-lookup":
+                self._json(self.service.spliceai_lookup(self._body()))
                 return
             if path == "/api/ccre-context":
                 self._json(self.service.ccre_context(self._body()))

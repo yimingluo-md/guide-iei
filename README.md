@@ -8,7 +8,9 @@ GUIDE-IEI annotates exome and genome VCFs with a comprehensive, curated
 annotation stack (Ensembl VEP, LOFTEE, dbNSFP, ClinVar, ClinGen, SpliceAI,
 ENCODE SCREEN regulatory data, and more) and opens the results in a local
 review workbench built for clinicians and wet-lab scientists. Everything runs
-on your own computer: patient variants never leave your machine.
+on your own computer: patient variants never leave your machine (with one
+opt-in exception — a per-variant online SpliceAI lookup you explicitly
+request; see the [FAQ](docs/FAQ.md)).
 
 ## Motivation
 
@@ -47,7 +49,8 @@ discovering monogenic etiologies in the non-coding genome.
 
 - **Free and open source** — MIT-licensed, no subscription, no per-sample fee.
 - **Runs entirely locally** — annotation and review happen on your own
-  workstation; no patient data is uploaded to any service.
+  workstation; no patient data is uploaded to any service (the sole
+  exception is an opt-in, per-variant online SpliceAI lookup).
 - **Built for clinicians and wet-lab scientists** — plain-language dataset
   setup, a click-to-define glossary for every genetics term, and guided
   one-click installation of the recommended datasets.

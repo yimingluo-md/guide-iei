@@ -1092,6 +1092,36 @@ export async function getCcreContext(
   });
 }
 
+export interface SpliceAiLookupResult {
+  variant: string;
+  distance: number;
+  masked: boolean;
+  retrieved_at: string;
+  cached: boolean;
+  source: string;
+  transcripts: {
+    gene: string;
+    transcript: string;
+    refseq: string | null;
+    mane_select: boolean;
+    strand: string;
+    scores: Record<
+      "acceptor_gain" | "acceptor_loss" | "donor_gain" | "donor_loss",
+      { delta: string | null; position: number | null }
+    >;
+  }[];
+}
+
+/** Explicit per-variant online lookup — the one deliberate network exception. */
+export async function spliceAiLookup(
+  variant: { chrom: string; pos: number; ref: string; alt: string },
+) {
+  return request<SpliceAiLookupResult>("/api/spliceai-lookup", {
+    method: "POST",
+    body: JSON.stringify(variant),
+  });
+}
+
 export async function getScreenContextCatalog() {
   return request<ScreenContextCatalog>("/api/screen-context/catalog");
 }

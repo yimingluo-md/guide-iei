@@ -24,8 +24,9 @@ A short orientation before you install.
    in one place, keep reviewed cases in a persistent sample library, and
    run genotype-first searches across everything you have reviewed before.
 
-Everything runs on your own computer. No patient data leaves your machine,
-no account, no subscription.
+Everything runs on your own computer. No patient data leaves your machine
+(one opt-in exception: a per-variant online SpliceAI lookup you explicitly
+request — see the [FAQ](../FAQ.md)), no account, no subscription.
 
 ## Input
 

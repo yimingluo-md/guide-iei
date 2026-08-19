@@ -100,6 +100,8 @@ import {
   type StorageLocationKind,
   type StorageLocationTest,
   type StorageMigrationJob,
+  spliceAiLookup,
+  type SpliceAiLookupResult,
 } from "./local-service";
 import {
   ADDITIONAL_DBNSFP_PREDICTORS,
@@ -411,6 +413,97 @@ type VariantCoordinates = {
   ref: string;
   alt: string;
 };
+
+const SPLICEAI_LOOKUP_CONSENT_KEY = "guideIeiSpliceaiOnlineLookupOk";
+
+/** Per-variant, user-initiated online SpliceAI lookup for unscored indels.
+ *  The one deliberate exception to fully-local operation: only
+ *  chrom/pos/ref/alt leave the machine, and only on an explicit click. */
+function SpliceAiOnlineLookup({ variant }: { variant: VariantCoordinates }) {
+  const [phase, setPhase] = useState<"idle" | "confirm" | "loading" | "done" | "error">("idle");
+  const [result, setResult] = useState<SpliceAiLookupResult | null>(null);
+  const [message, setMessage] = useState("");
+
+  const run = () => {
+    setPhase("loading");
+    spliceAiLookup(variant)
+      .then((value) => { setResult(value); setPhase("done"); })
+      .catch((reason) => {
+        setMessage(reason instanceof Error ? reason.message : "The lookup failed.");
+        setPhase("error");
+      });
+  };
+  const begin = () => {
+    if (window.localStorage.getItem(SPLICEAI_LOOKUP_CONSENT_KEY) === "yes") run();
+    else setPhase("confirm");
+  };
+
+  if (phase === "done" && result) {
+    const mane = result.transcripts[0];
+    const others = result.transcripts.slice(1);
+    return (
+      <div className="spliceai-lookup">
+        <span>SpliceAI online lookup</span>
+        <div className="spliceai-lookup-body">
+          {mane ? (
+            <>
+              <strong>{mane.gene} · {mane.transcript}{mane.mane_select ? " · MANE Select" : ""}</strong>
+              <dl>
+                <div><dt>Acceptor gain</dt><dd>{mane.scores.acceptor_gain.delta ?? "—"} <small>{mane.scores.acceptor_gain.position ?? ""} bp</small></dd></div>
+                <div><dt>Acceptor loss</dt><dd>{mane.scores.acceptor_loss.delta ?? "—"} <small>{mane.scores.acceptor_loss.position ?? ""} bp</small></dd></div>
+                <div><dt>Donor gain</dt><dd>{mane.scores.donor_gain.delta ?? "—"} <small>{mane.scores.donor_gain.position ?? ""} bp</small></dd></div>
+                <div><dt>Donor loss</dt><dd>{mane.scores.donor_loss.delta ?? "—"} <small>{mane.scores.donor_loss.position ?? ""} bp</small></dd></div>
+              </dl>
+              {others.length > 0 && <details><summary>{others.length} more transcript{others.length > 1 ? "s" : ""}</summary>{others.map((item) => <p key={item.transcript} className="mono">{item.transcript}: AG {item.scores.acceptor_gain.delta ?? "—"} · AL {item.scores.acceptor_loss.delta ?? "—"} · DG {item.scores.donor_gain.delta ?? "—"} · DL {item.scores.donor_loss.delta ?? "—"}</p>)}</details>}
+            </>
+          ) : <strong>No overlapping transcript was scored.</strong>}
+          <small>
+            Online result from the {result.source} ({result.masked ? "masked" : "raw"} scores,
+            distance {result.distance}) — not from the installed dataset.
+            Retrieved {result.retrieved_at}{result.cached ? " (stored locally from an earlier lookup)" : ""}.
+          </small>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="spliceai-lookup">
+      <span>SpliceAI online lookup</span>
+      <div className="spliceai-lookup-body">
+        {phase === "confirm" ? (
+          <>
+            <p>
+              This sends <strong>only this variant&apos;s position and alleles</strong>
+              {" "}({variant.chrom}:{variant.pos} {variant.ref}›{variant.alt}) to the Broad
+              Institute&apos;s public SpliceAI server. No sample, genotype, or phenotype
+              information is transmitted. Results are stored locally so the variant is not
+              sent again.
+            </p>
+            <div className="spliceai-lookup-actions">
+              <button className="primary-button dark" onClick={() => { window.localStorage.setItem(SPLICEAI_LOOKUP_CONSENT_KEY, "yes"); run(); }}>Agree and look up</button>
+              <button className="secondary-button" onClick={() => setPhase("idle")}>Cancel</button>
+            </div>
+          </>
+        ) : phase === "loading" ? (
+          <p>Contacting the Broad SpliceAI service… scoring an indel can take up to a minute.</p>
+        ) : (
+          <>
+            {phase === "error" && <p className="spliceai-lookup-error">{message}</p>}
+            <p>
+              The precomputed SpliceAI table covers SNVs only, so this indel has no local
+              score. You can request one from the Broad&apos;s public SpliceAI service —
+              an explicit online lookup for this single variant.
+            </p>
+            <div className="spliceai-lookup-actions">
+              <button className="secondary-button" onClick={begin}>{phase === "error" ? "Try again" : "Get SpliceAI score online (Broad lookup)"}</button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function fullVariantId(row: VariantCoordinates) {
   return `${row.chrom}:${row.pos}:${row.ref}:${row.alt}`;
@@ -1514,6 +1607,8 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
       <section className="review-section"><div className="section-title"><div><p className="eyebrow">Computational evidence</p><h2>Predictors</h2></div><span>{predictorCards.length + additionalPredictorCards.length} shown</span></div><div className="predictor-card-grid">{[...predictorCards, ...additionalPredictorCards].map((item) => <div className={`predictor-card ${item.strong ? "strong" : ""}`} key={item.key}><span>{item.label}</span><strong>{compactNumber(item.value ?? null, item.label.includes("CADD") ? 1 : 3)}</strong><small>{item.value === null || item.value === undefined ? "No score for this variant" : item.note || "Available"}</small></div>)}</div>{visibleInfo.has("loGoFunc") && selected.loGoFuncAlleleAvailable && <div className="logofunc-evidence"><div><span>LoGoFunc missense mechanism</span><strong>{selected.loGoFuncPrediction || "Allele available; transcript/protein mismatch"}{selectedLoGoFuncScore !== null ? ` · ${compactNumber(selectedLoGoFuncScore, 3)}` : ""}</strong><small>Research prediction; not a clinical classification or LOFTEE result.</small></div><dl><div><dt>Neutral</dt><dd>{compactNumber(selected.loGoFuncNeutral, 3)}</dd></div><div><dt>GOF</dt><dd>{compactNumber(selected.loGoFuncGof, 3)}</dd></div><div><dt>LOF</dt><dd>{compactNumber(selected.loGoFuncLof, 3)}</dd></div></dl><p>Source {selected.loGoFuncSourceTranscript || "—"} · {selected.loGoFuncSourceHgvsp || "—"} · {cleanLabel(selected.loGoFuncMatch)}</p></div>}{visibleInfo.has("loftee") && <div className="loftee-line loftee-detail-line"><span>LOFTEE</span><div className="loftee-line-content"><strong>{selected.haplotypeFrameStatus === "FRAME_RESTORED_CONFIRMED" ? `Not LoF after confirmed haplotype reconstruction · per-variant ${lofteeDisplayLabel(selected)}` : lofteeDisplayLabel(selected)}</strong>{isReferenceDisruptedTranscript(selected) && !selected.loftee && <small>LOFTEE evaluates standard protein-coding transcripts. This transcript&apos;s reference-genome haplotype already has a disrupted open reading frame, although other human haplotypes may be translated.</small>}{isStartLostVariant(selected) && !selected.loftee && <small>Start-loss variants require separate assessment of downstream in-frame initiation sites and transcript context. No PVS1 conclusion is assigned here.</small>}{lofteeCodes(selected.lofteeFilter).map((code) => <small key={`filter:${code}`}><b>LC reason:</b> {lofteeExplanation(code, "filter")} <code>{code}</code></small>)}{lofteeCodes(selected.lofteeFlags).map((code) => <small key={`flag:${code}`}><b>Flag:</b> {lofteeExplanation(code, "flag")} <code>{code}</code></small>)}</div></div>}{visibleInfo.has("loftee") && selected.ptcCalcStatus && <div className="loftee-line loftee-detail-line"><span>Frameshift PTC calculation</span><div className="loftee-line-content"><strong>{isReferenceDisruptedTranscript(selected) ? "Not calculated · reference transcript CDS is already disrupted" : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? "Not applicable · single-exon transcript" : ptcCalculationStatusLabel(selected.ptcCalcStatus)}</strong>{isReferenceDisruptedTranscript(selected) ? <><small>A reliable patient-specific PTC/NMD position cannot be calculated against an already-disrupted reference ORF.</small><small>Technical status: <code>{selected.ptcCalcStatus}</code></small></> : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? <><small>This transcript has no downstream exon–exon junction, so the conventional 50–55-nt exon-junction NMD rule is not applicable.</small><small>Premature stops in single-exon transcripts may escape exon-junction-complex-dependent NMD; assess transcript-specific RNA and protein evidence separately.</small>{(selected.loftee50bp || selected.loftee50bpOriginal) && <small>Stored technical value: <code>{selected.loftee50bp || selected.loftee50bpOriginal}</code> · not interpreted for this transcript</small>}</> : <>{selected.ptcDistanceFromLastExon !== null && <small>{ptcDistanceLabel(selected.ptcDistanceFromLastExon)}</small>}{selected.loftee50bp && <small><b>{ptcRuleLabel(selected.loftee50bp)}</b></small>}{selected.loftee50bpChanged && <small>Replaced original LOFTEE coordinate-based result: {selected.loftee50bpOriginal || "not recorded"}</small>}</>}</div></div>}{selected.haplotypeFrameStatus && <div className="loftee-line"><span>Sample haplotype</span><strong>{haplotypeFrameLabel(selected.haplotypeFrameStatus)}{selected.haplotypeFramePartners?.length ? ` · partner ${selected.haplotypeFramePartners.join(", ")}` : ""}{selected.haplotypeProteinChange ? ` · ${selected.haplotypeProteinChange}` : ""}</strong></div>}</section>
 
       {isHighImpactSpliceVariant(selected) && <div className="splicing-evidence-row"><span>Splicing evidence</span><div><small>Site</small><strong>{spliceSiteLabel(selected)}</strong></div><div title={cleanLabel(selected.consequence)}><small>VEP</small><strong>{selected.impact} · {primarySpliceConsequenceLabel(selected.consequence)}</strong></div><div><small>LOFTEE</small><strong>{selected.loftee || "Not annotated"}</strong></div><div><small>SpliceAI</small><strong>{spliceAiDisplay(selected.spliceAI)}</strong></div></div>}
+
+      {selected.spliceAI == null && selected.ref.length !== selected.alt.length && /^[ACGT]+$/.test(selected.ref) && /^[ACGT]+$/.test(selected.alt) && <SpliceAiOnlineLookup key={fullVariantId(selected)} variant={{ chrom: selected.chrom, pos: selected.pos, ref: selected.ref, alt: selected.alt }} />}
 
       <div className="evidence-layout">
         {trio && <TrioGenotypeEvidence row={selected} trio={trio} assessment={deNovo}/>}

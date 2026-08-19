@@ -738,6 +738,83 @@ class AnnotationJobServiceTests(unittest.TestCase):
         start_job.assert_called_once()
         self.assertEqual(result["status"], "queued")
 
+    def test_spliceai_lookup_fetches_once_then_serves_from_cache(self):
+        canned = {
+            "variant": "8-140300616-T-G",
+            "scores": [
+                {
+                    "DS_AG": "0.045", "DS_AL": "0.827", "DS_DG": "0.000", "DS_DL": "0.000",
+                    "DP_AG": -32, "DP_AL": -2, "DP_DG": 66, "DP_DL": -147,
+                    "g_name": "TRAPPC9", "t_id": "ENST00000438773.4",
+                    "t_refseq_ids": ["NM_001160372.4"], "t_priority": "N", "t_strand": "-",
+                },
+                {
+                    "DS_AG": "0.045", "DS_AL": "0.827", "DS_DG": "0.000", "DS_DL": "0.000",
+                    "DP_AG": -32, "DP_AL": -2, "DP_DG": 66, "DP_DL": -147,
+                    "g_name": "TRAPPC9", "t_id": "ENST00000438774.1",
+                    "t_refseq_ids": [], "t_priority": "MS", "t_strand": "-",
+                },
+            ],
+        }
+        calls = []
+
+        class FakeResponse(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        def fake_urlopen(request, timeout=0):
+            calls.append(request.full_url)
+            return FakeResponse(json.dumps(canned).encode("utf-8"))
+
+        import local_service.workbench_service as module
+        with patch.object(module.urllib.request, "urlopen", fake_urlopen):
+            first = self.service.spliceai_lookup(
+                {"chrom": "chr8", "pos": 140300616, "ref": "t", "alt": "g"}
+            )
+            second = self.service.spliceai_lookup(
+                {"chrom": "8", "pos": 140300616, "ref": "T", "alt": "G"}
+            )
+        self.assertEqual(len(calls), 1)
+        self.assertIn("variant=8-140300616-T-G", calls[0])
+        self.assertFalse(first["cached"])
+        self.assertTrue(second["cached"])
+        self.assertEqual(first["source"], "Broad SpliceAI Lookup API")
+        self.assertTrue(first["masked"])
+        # MANE Select transcript is sorted first even though the API listed it second.
+        self.assertTrue(first["transcripts"][0]["mane_select"])
+        self.assertEqual(
+            first["transcripts"][0]["scores"]["acceptor_loss"],
+            {"delta": "0.827", "position": -2},
+        )
+
+    def test_spliceai_lookup_rejects_bad_input_and_reports_api_errors(self):
+        with self.assertRaisesRegex(ValueError, "unsupported chromosome"):
+            self.service.spliceai_lookup({"chrom": "chr99", "pos": 5, "ref": "A", "alt": "T"})
+        with self.assertRaisesRegex(ValueError, "plain ACGT"):
+            self.service.spliceai_lookup({"chrom": "1", "pos": 5, "ref": "A", "alt": "<DEL>"})
+
+        class FakeResponse(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        import local_service.workbench_service as module
+        with patch.object(
+            module.urllib.request, "urlopen",
+            lambda request, timeout=0: FakeResponse(
+                json.dumps({"error": "rate limit exceeded"}).encode("utf-8")
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "rate limit exceeded"):
+                self.service.spliceai_lookup(
+                    {"chrom": "1", "pos": 1000, "ref": "AT", "alt": "A"}
+                )
+
     def test_native_resource_picker_returns_selected_folder_without_user_path_typing(self):
         selected = Path(self.temp.name) / "dbNSFP5.3.1a"
         selected.mkdir()
