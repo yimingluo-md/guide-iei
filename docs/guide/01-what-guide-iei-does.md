@@ -25,8 +25,8 @@ A brief orientation before installation.
    run genotype-first searches across everything you have reviewed before.
 
 Everything runs on your own computer. No patient data leaves your machine
-(one opt-in exception: a per-variant online SpliceAI lookup you explicitly
-request — see the [FAQ](../FAQ.md)), no account, no subscription.
+(one opt-in exception: a per-variant online SpliceAI lookup for indels,
+requested explicitly — see the [FAQ](../FAQ.md)), no account, no subscription.
 
 ## Input
 

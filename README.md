@@ -10,7 +10,7 @@ regulatory data, and more) and presents the results in a local review
 workbench designed for clinicians and wet-lab scientists. All analysis is
 performed on the user's own computer; patient variants do not leave the
 machine, with a single opt-in exception — a per-variant online SpliceAI
-lookup requested explicitly by the user ([FAQ](docs/FAQ.md)).
+lookup for indels, requested explicitly by the user ([FAQ](docs/FAQ.md)).
 
 ## Motivation
 
@@ -51,7 +51,7 @@ discovering monogenic etiologies in the non-coding genome.
   per-sample cost.
 - **Locally run** — annotation and review are performed on the user's own
   workstation; no patient data is uploaded to any service (the sole
-  exception is an opt-in, per-variant online SpliceAI lookup).
+  exception is an opt-in, per-variant online SpliceAI lookup for indels).
 - **Designed for clinicians and wet-lab scientists** — dataset setup written
   in plain language, a click-to-define glossary for the genetics terminology
   used throughout, and guided one-click installation of the recommended
