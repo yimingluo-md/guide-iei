@@ -128,6 +128,36 @@ test("imports a real gzip-compressed .vcf.gz file", async () => {
   assert.equal(result.summary.intakeQc.every((check) => check.status === "pass"), true);
 });
 
+
+test("oversized files are refused before parsing, with routing guidance", async () => {
+  const oversized = { name: "cohort.vep.vcf.gz", size: 150 * 1024 * 1024 };
+  await assert.rejects(
+    () => parseVcfFiles([oversized]),
+    /too large[\s\S]*Whole genome analysis scope/,
+  );
+});
+
+test("many-sample cohort files are refused at the header, with routing guidance", async () => {
+  const samples = Array.from({ length: 20 }, (_, i) => `S${i + 1}`);
+  const vcf = "##fileformat=VCFv4.2\n"
+    + "##reference=GRCh38\n"
+    + "##contig=<ID=1,length=248956422>\n"
+    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n";
+  const real = new File([vcf], "cohort.vcf");
+  const wrapped = {
+    name: real.name,
+    size: 25 * 1024 * 1024,
+    slice: (...args) => real.slice(...args),
+    stream: () => real.stream(),
+    text: () => real.text(),
+    arrayBuffer: () => real.arrayBuffer(),
+  };
+  await assert.rejects(
+    () => parseVcfFiles([wrapped]),
+    /multi-sample cohort VCF \(20 samples[\s\S]*Whole genome analysis scope/,
+  );
+});
+
 test("preserves separate disease-specific ClinGen expert assertions", async () => {
   const tokens = [
     ["G", "uuid-a", "CA1", "Pathogenic", "Disease A", "MONDO:1", "Autosomal dominant inheritance", "Panel A", "2026-01-01"],

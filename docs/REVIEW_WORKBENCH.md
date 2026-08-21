@@ -21,6 +21,14 @@ accepts dropped `.vcf` / `.vcf.gz` files or a selected folder, then opens a
 second screen for parameters and dataset readiness. See `webui/README.md` for
 the workflow and WSL2 instructions.
 
+**Choosing a review path by file size.** Exome-scope review parses the VCF
+in the browser — appropriate for single-patient files, where it keeps the
+entire workflow interactive. Large or many-sample files (over ~100 MB
+compressed, or 16+ samples) are refused with directions rather than parsed:
+import these with the **Whole genome** analysis scope, which prepares the
+file on the local service and reads it incrementally, regardless of whether
+the underlying assay was an exome.
+
 ## Sample Library
 
 The persistent **Sample Library** is the source of truth for retained

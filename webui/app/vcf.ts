@@ -422,6 +422,15 @@ export function preferredClinicalTranscriptRows(rows: VariantRow[]) {
 
 const EMPTY = new Set(["", ".", "-"]);
 
+// In-browser review guards (see parseVcfFiles). A compressed VCF expands
+// roughly 10x when decompressed and again per record x sample when parsed;
+// past these bounds the tab dies of memory exhaustion. 100 MB compressed
+// keeps the decompressed text near 1 GB; the cohort guard catches smaller
+// files whose sample count multiplies the per-record cost.
+export const EXOME_REVIEW_MAX_COMPRESSED_BYTES = 100 * 1024 * 1024;
+export const COHORT_SAMPLE_GUARD = 16;
+export const COHORT_SIZE_GUARD_BYTES = 20 * 1024 * 1024;
+
 function decode(value: string | undefined) {
   // VEP CSQ fields are percent-encoded only: '+' is a literal character and
   // load-bearing in HGVS (c.730+1G>A). Form-decoding it to a space corrupts
@@ -924,8 +933,20 @@ export async function parseVcfFiles(
   let duplicateRecordOccurrences = 0;
 
   for (const file of files) {
-    if (file.size > 300 * 1024 * 1024) {
-      warnings.push(`${file.name}: larger than 300 MB; use a PASS-prefiltered VCF for this browser MVP.`);
+    // In-browser parsing materializes the decompressed VCF (roughly 10x the
+    // compressed size) plus one object per record x sample. It is designed
+    // for single-patient exomes; beyond these bounds the tab dies slowly of
+    // memory exhaustion, so refuse with directions instead of crashing.
+    if (file.size > EXOME_REVIEW_MAX_COMPRESSED_BYTES) {
+      throw new Error(
+        `${file.name} is ${Math.round(file.size / 1024 / 1024)} MB — too large `
+        + "for in-browser exome review, which is designed for single-patient "
+        + "files. Import it with the Whole genome analysis scope instead: the "
+        + "file is then prepared on the local service and never loaded whole "
+        + "into the browser. (With the coding route active, every rare coding "
+        + "variant is retained; clear the popmax field to keep common "
+        + "variants too.)",
+      );
     }
     const lines = await vcfHeaderLines(file);
     const assembly = assemblyFromHeader(lines);
@@ -956,6 +977,16 @@ export async function parseVcfFiles(
       throw new Error(`${file.name}: VCF header must include FORMAT and at least one sample column`);
     }
     samples = headerColumns.slice(9);
+    if (samples.length >= COHORT_SAMPLE_GUARD && file.size >= COHORT_SIZE_GUARD_BYTES) {
+      throw new Error(
+        `${file.name} is a multi-sample cohort VCF (${samples.length} samples, `
+        + `${Math.round(file.size / 1024 / 1024)} MB). In-browser exome review `
+        + "is designed for single-patient files and would exhaust the "
+        + "browser's memory. Import it with the Whole genome analysis scope "
+        + "instead — the file is then prepared on the local service and read "
+        + "incrementally.",
+      );
+    }
     const duplicateSamples = samples.filter(
       (sample, index) => !sample || samples.indexOf(sample) !== index || sampleNames.has(sample),
     );

@@ -37,6 +37,17 @@ result is stored locally so a variant is transmitted at most once. Dataset
 downloads and ClinVar refreshes also use the internet, but these transfer
 only public reference data *to* the machine.
 
+## Can I review a multi-sample cohort VCF?
+
+Yes — with the right path. Exome-scope review parses the file in the
+browser, which is designed for single-patient exomes; a joint-called cohort
+file (tens of samples, hundreds of MB) would exhaust the browser's memory,
+so it is refused with directions instead. Import such files with the
+**Whole genome** analysis scope: the local service prepares them and the
+browser reads the result incrementally. With the coding route active, every
+rare coding variant is retained; clear the popmax field at import to keep
+common variants as well.
+
 ## Where do I ask a question that is not answered here?
 
 Open an issue on the
