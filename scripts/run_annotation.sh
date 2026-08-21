@@ -506,7 +506,13 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
         ASSEMBLY="${ASSEMBLY:-GRCh38}"
         case "$RUNTIME" in
             docker|podman)
+                # PERLIO=:unix (unbuffered raw IO): with many-sample cohorts,
+                # haplo segfaults inside Perl's buffered-IO layer, truncating
+                # its JSON mid-write and losing containers silently. Unbuffered
+                # IO avoids the crashing layer entirely; verified empirically
+                # (exit 139 + truncated output -> exit 0 + complete output).
                 "$RUNTIME" run --rm \
+                    -e PERLIO=:unix \
                     -v "${CANDIDATE_DIR}:/work:rw" \
                     -v "${CACHE_DIR}:/cache:rw" \
                     -v "${FASTA_DIR}:/fasta:ro" \
@@ -520,6 +526,7 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
                 ;;
             singularity|apptainer)
                 "$RUNTIME" exec \
+                    --env PERLIO=:unix \
                     --bind "${CANDIDATE_DIR}:/work" \
                     --bind "${CACHE_DIR}:/cache" \
                     --bind "${FASTA_DIR}:/fasta:ro" \

@@ -166,6 +166,43 @@ class MultiAllelicGenotypeTests(unittest.TestCase):
             self.assertEqual(counts[PARTIAL], 1)
 
 
+class TruncatedContainerTests(unittest.TestCase):
+    """A truncated haplo JSON line (crash mid-write) degrades loudly, not
+    fatally: the bad container is counted and skipped, valid containers on
+    other lines still contribute events."""
+
+    def test_truncated_line_is_counted_and_skipped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            candidate = root / "candidate.vcf"
+            haplo = root / "haplo.json"
+            candidate.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+                "1\t100\tv1\tA\tAT,ATT\t99\tPASS\t.\tGT\t1/2\n"
+                "1\t200\tv2\tAG\tA\t99\tPASS\t.\tGT\t1/1\n",
+                encoding="utf-8",
+            )
+            valid = json.dumps({
+                "transcript_id": "ENST1",
+                "protein_haplotypes": [{
+                    "name": "ENSP1:34AB>CD",
+                    "contributing_variants": ["v1", "v2"],
+                    "samples": {"S1": 1},
+                    "has_indel": 1,
+                    "flags": ["indel"],
+                }],
+            })
+            haplo.write_text(
+                valid + "\n" + valid[: len(valid) // 2] + "\n",
+                encoding="utf-8",
+            )
+            genotypes, _ = parse_candidate_genotypes(candidate)
+            events, counts = restoring_events(haplo, genotypes)
+            self.assertEqual(counts["unparseable_container_lines"], 1)
+            self.assertEqual(counts[PARTIAL], 1)
+
+
 class HemizygousCisTests(unittest.TestCase):
     """Decision D4: haploid non-PAR X/Y calls are in cis by construction."""
 

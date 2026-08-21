@@ -243,7 +243,23 @@ def restoring_events(
         for raw in handle:
             if not raw.strip():
                 continue
-            transcript = json.loads(raw)
+            try:
+                transcript = json.loads(raw)
+            except ValueError:
+                # A truncated container line means haplo crashed mid-write
+                # (seen when its buffered output is cut by a segfault).
+                # Losing one transcript's haplotype refinement must degrade
+                # loudly, not kill the whole annotation deliverable: affected
+                # variants simply keep their per-variant LOFTEE consequences.
+                counters["unparseable_container_lines"] += 1
+                print(
+                    "WARN haplotype container line could not be parsed "
+                    "(truncated haplo output?); its transcript's haplotype "
+                    "evidence is unavailable and per-variant consequences "
+                    "stand",
+                    file=sys.stderr,
+                )
+                continue
             transcript_id = str(transcript.get("transcript_id") or "")
             for haplotype in transcript.get("protein_haplotypes") or []:
                 variants = [
