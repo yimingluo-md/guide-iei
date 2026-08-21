@@ -47,7 +47,7 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /CADD and promoterAI on by default/);
   assert.match(source, /Indexing and prefiltering WGS/);
   assert.match(source, /Whole-genome indexing and prefiltering progress/);
-  assert.match(source, /PASS\/QC AND \(popmax ≤ threshold OR popmax unavailable\)/);
+  assert.match(source, /PASS-or-unfiltered\/QC AND \(popmax ≤ threshold OR popmax unavailable\)/);
   assert.match(source, /wgsImportJob\.records_scanned/);
   assert.match(await readFile(new URL("app/vcf.ts", root), "utf8"), /async function\* fileLines/);
   assert.doesNotMatch(await readFile(new URL("app/vcf.ts", root), "utf8"), /decoded\.join/);

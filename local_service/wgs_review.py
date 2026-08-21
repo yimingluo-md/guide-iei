@@ -130,7 +130,7 @@ def _filter_header(
         f"MinSpliceAI={value(options.min_spliceai)},"
         f"MinPromoterAIAbs={value(options.min_promoterai_abs)},"
         f"NoncodingMode={options.noncoding_mode},"
-        "SiteFilter=PASS,PopulationMissing=Retain,EvidenceMissing=DoesNotQualify,"
+        "SiteFilter=PASSorUnfiltered,PopulationMissing=Retain,EvidenceMissing=DoesNotQualify,"
         f"ExomeRegions={'CandidateRoute' if retain_exome_regions else 'Disabled'},"
         f"CCREResource={ccre_bed_path.name if ccre_bed_path else 'Unavailable'},"
         f"PromoterMap={promoter_map_path.name if promoter_map_path else 'Unavailable'},"
@@ -287,7 +287,10 @@ def evaluate_record(
     columns = line.rstrip("\r\n").split("\t")
     if len(columns) < 8:
         raise ValueError("encountered a structurally invalid VCF record")
-    if columns[6] != "PASS":
+    # Site FILTER: PASS and "." (site filtering not applied upstream) are both
+    # eligible; explicit failure labels are excluded. Same policy as the
+    # annotation pre-filter and the exome review parser.
+    if columns[6] not in ("PASS", "."):
         return False, ()
     chrom = normalize_chromosome(columns[0])
     try:
@@ -651,7 +654,7 @@ class WgsReviewStore:
             # v5: worker interval slicing normalizes contig names — v4 review
             # caches built from chr-prefixed VCFs under-retained coding and
             # cCRE variants and must be rebuilt.
-            "review_format_version": 5,
+            "review_format_version": 6,
             "source": str(source),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,

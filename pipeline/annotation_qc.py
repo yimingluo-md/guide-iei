@@ -748,6 +748,7 @@ details pre {{ white-space: pre-wrap; background: #f7f9f9; padding: 1rem }}
 <h1>Annotation completeness certificate</h1>
 <p><strong>Overall: {html.escape(report['overall_status'])}</strong></p>
 <p>This report measures annotation coverage; it is not a clinical classification.</p>
+{''.join(f'<p class="warn">Run note: {html.escape(note)}</p>' for note in report.get('run_notes', []))}
 <p><code>{html.escape(report['input_vcf'])}</code></p>
 <p>{summary['records']} records · {summary['pass_records']} PASS ·
 {len(summary['samples'])} sample(s)</p>
@@ -775,10 +776,17 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--json", type=Path)
     parser.add_argument("--html", type=Path)
     parser.add_argument("--max-missing-examples", type=int)
+    parser.add_argument(
+        "--note", action="append", default=[],
+        help="run-level provenance note to record in the certificate "
+             "(repeatable); e.g. the unfiltered-callset FILTER policy note",
+    )
     args = parser.parse_args(argv)
     json_path = args.json or Path(str(args.vcf) + ".annotation_qc.json")
     html_path = args.html or Path(str(args.vcf) + ".annotation_qc.html")
     report = build_report(args.config, args.vcf, args.max_missing_examples)
+    if args.note:
+        report["run_notes"] = list(args.note)
     write_report(report, json_path, html_path)
     print(
         f"annotation completeness: {report['overall_status']} "

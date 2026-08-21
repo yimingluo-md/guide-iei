@@ -34,8 +34,10 @@ bash scripts/run_annotation.sh \
 
 The run will:
 
-1. retain only explicit `FILTER=PASS` records and **restrict the input to
-   coding exons + splice sites** (defaults; builds the BED once from the
+1. retain `FILTER=PASS` and unfiltered (`FILTER=.`) records — per VCFv4.x,
+   `.` means site filtering was not applied, which is treated as missing
+   evidence rather than failure; records with explicit failure labels are
+   excluded — and **restrict the input to coding exons + splice sites** (defaults; builds the BED once from the
    release-matched Ensembl GTF — see *Scope* below),
 2. retain all transcript consequences, flag the preferred consequence per ALT
    allele and gene, annotate MANE transcript status for the review UI, and
@@ -51,7 +53,7 @@ The run will:
 Useful flags: `--dry-run` (print the assembled container command and stop),
 `--no-clinvar` (skip the per-run ClinVar download), `--all-variants` (annotate
 **every** variant, not just coding+splice — for WGS / non-coding work; see
-*Scope* below), `--include-filtered` (retain non-PASS calls for deliberate
+*Scope* below), `--include-filtered` (retain even explicitly failed calls for deliberate
 review/debugging), and `--input-assembly GRCh38|GRCh37|auto`. GRCh38 is the
 canonical annotation/cohort assembly; GRCh37 is converted with the
 assembly-gap-aware BCFtools/liftover plugin before any GRCh38 region filter,

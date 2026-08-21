@@ -58,6 +58,9 @@ annotation datasets**.
 
 - **PASS variants only**: on. Variants flagged as unreliable during
   generation of the VCF (alignment and variant calling) are excluded.
+  Records the upstream caller never filtered (FILTER `.`) are retained —
+  absence of filtering is not evidence of failure — and a run note is
+  recorded when an entire callset arrives unfiltered.
 - **Coding + splice regions**: on. Annotation is restricted to coding exons
   and canonical splice sites.
 

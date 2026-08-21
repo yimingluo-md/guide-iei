@@ -763,7 +763,9 @@ def _stage_vcf_records(
                 chrom_raw, pos_raw, rsid, ref, alt_raw, qual_raw,
                 filter_value, raw_info, format_value,
             ) = columns[:9]
-            if filter_value != "PASS":
+            if filter_value not in ("PASS", "."):
+                # "." = site filtering not applied upstream (VCFv4.x); only
+                # explicit failure labels exclude a record.
                 excluded_records += 1
                 continue
             pass_records += 1
@@ -1977,7 +1979,7 @@ class CohortStore:
                         if len(columns) < 10:
                             continue
                         chrom_raw, pos_raw, rsid, ref, alt_raw, qual_raw, filter_value, raw_info, format_value = columns[:9]
-                        if filter_value != "PASS":
+                        if filter_value not in ("PASS", "."):
                             excluded_records += 1
                             continue
                         pass_records += 1
@@ -3570,7 +3572,7 @@ class CohortStore:
                     if line.startswith("#") or not line.strip():
                         continue
                     columns = line.rstrip("\r\n").split("\t")
-                    if len(columns) < 9 + len(header.samples) or columns[6] != "PASS":
+                    if len(columns) < 9 + len(header.samples) or columns[6] not in ("PASS", "."):
                         continue
                     alternate_count = len(columns[4].split(","))
                     carries = False

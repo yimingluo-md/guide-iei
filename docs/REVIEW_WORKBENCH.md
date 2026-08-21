@@ -106,7 +106,7 @@ four-reader candidate filter before SQLite staging. The default requires
 `gnomAD popmax <= 0.01` or an unavailable per-variant value, then retains the
 union of coding/essential-splice, qualifying SpliceAI, qualifying promoterAI,
 and ENCODE SCREEN cCRE-overlap routes. **Full WGS** is an advanced option that
-indexes every PASS carrier call from the original VCF. It supports exhaustive
+indexes every PASS/unfiltered carrier call from the original VCF. It supports exhaustive
 exact searches within those indexed calls but can use roughly 10 GB of SQLite
 space for one genome, so it is not recommended for routine workstation use.
 Users may replace the cCRE route with all noncoding regions or no additional

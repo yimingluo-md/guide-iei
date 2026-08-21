@@ -9,7 +9,8 @@
 #
 # Steps:
 #   0a. Resolve input assembly; liftover GRCh37/hg19 to canonical GRCh38.
-#   0b. (default) retain FILTER=PASS and restrict to GRCh38 coding+splice BED.
+#   0b. (default) retain FILTER=PASS or unfiltered (".") records and restrict
+#      to the GRCh38 coding+splice BED. Explicit failure labels are excluded.
 #      Region filtering is skipped with --all-variants or
 #      region.coding_only:false. PASS filtering is skipped only with
 #      --include-filtered or run.pass_only:false.
@@ -166,13 +167,22 @@ fi
 
 VIEW_ARGS=()
 FILTER_LABELS=()
+PASS_FILTER_ON=0
+FILTER_POLICY_NOTE=""
 if [[ "$INCLUDE_FILTERED" == "1" ]]; then
     log "--include-filtered: PASS filter OFF (retaining non-PASS records)."
 elif [[ "$PASS_ONLY" == "false" ]]; then
     log "run.pass_only:false — PASS filter OFF (retaining non-PASS records)."
 else
-    VIEW_ARGS+=( -f PASS )
-    FILTER_LABELS+=( "FILTER=PASS" )
+    # Site FILTER policy: PASS and "." are both eligible. Per VCFv4.x, "."
+    # means site filtering was not applied — treating it as a failure would
+    # conflate missing evidence with failure (the popmax principle) and
+    # silently empty never-hard-filtered cohort VCFs. Records with explicit
+    # failure labels (LowQual, MONOALLELIC, ...) remain excluded. The review
+    # workbench parser applies the same policy.
+    VIEW_ARGS+=( -f PASS,. )
+    FILTER_LABELS+=( "FILTER=PASS-or-unfiltered" )
+    PASS_FILTER_ON=1
 fi
 if [[ -n "$REGION_BED" ]]; then
     VIEW_ARGS+=( -R "$REGION_BED" )
@@ -217,13 +227,35 @@ if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
             }
         fi
         NBEFORE="$(hts bcftools view -H "$INPUT" | wc -l | tr -d ' ')"
+        # FILTER census: identifies a never-hard-filtered callset (no PASS
+        # labels at all) so the run can say so, and gives the zero-retained
+        # error measured facts instead of a differential to work through.
+        NPASS=""; NUNFILTERED=""
+        if [[ "$PASS_FILTER_ON" == "1" ]]; then
+            FILTER_CENSUS="$(hts bcftools query -f '%FILTER\n' "$INPUT" 2>/dev/null | awk '
+                $0 == "PASS" { pass++ }
+                $0 == "." { unfiltered++ }
+                END { printf "%d %d", pass+0, unfiltered+0 }' || true)"
+            NPASS="${FILTER_CENSUS%% *}"; NUNFILTERED="${FILTER_CENSUS##* }"
+            if [[ "${NPASS:-0}" -eq 0 && "${NUNFILTERED:-0}" -gt 0 ]]; then
+                NEXCLUDED=$(( NBEFORE - NUNFILTERED ))
+                FILTER_POLICY_NOTE="No record in this VCF carries FILTER=PASS: upstream site filtering was not applied. ${NUNFILTERED} unfiltered ('.') records were retained; ${NEXCLUDED} records with explicit failure labels were excluded. Weigh per-variant call quality during review."
+                warn "$FILTER_POLICY_NOTE"
+            fi
+        fi
         hts bcftools view "${VIEW_ARGS[@]}" -O z -o "$FILT" "$INPUT" \
             || die "input pre-filter failed"
         hts tabix -p vcf -f "$FILT" 2>/dev/null || true
         NAFTER="$(hts bcftools view -H "$FILT" | wc -l | tr -d ' ')"
         log "input pre-filter (${FILTER_LABELS[*]}): ${NBEFORE} -> ${NAFTER} variants"
         if [[ "$NAFTER" -eq 0 ]]; then
-            die "input pre-filter retained 0 of ${NBEFORE} variants. For a diagnostic run this almost always means a contig-naming, assembly, or region-BED mismatch rather than a genuinely empty callset — verify the input assembly and region.bed, or rerun with --all-variants / --include-filtered to inspect."
+            if [[ "$PASS_FILTER_ON" == "1" && "${NPASS:-0}" -eq 0 && "${NUNFILTERED:-0}" -eq 0 ]]; then
+                die "input pre-filter retained 0 of ${NBEFORE} variants: every record carries an explicit FILTER failure label (no PASS and no '.'). The callset failed upstream site filtering; rerun with --include-filtered to inspect it deliberately."
+            fi
+            VCF_CONTIGS="$( { hts bcftools view -H "$INPUT" 2>/dev/null | awk -F'\t' 'NR<=200{print $1} NR==200{exit}' | sort -u | awk 'NR<=3' | paste -sd ',' -; } || true)"
+            BED_COUNT="$( { gunzip -c "$REGION_BED" 2>/dev/null | wc -l | tr -d ' '; } || echo unreadable)"
+            BED_CONTIGS="$( { gunzip -c "$REGION_BED" 2>/dev/null | awk -F'\t' 'NR<=200{print $1} NR==200{exit}' | sort -u | awk 'NR<=3' | paste -sd ',' -; } || true)"
+            die "input pre-filter retained 0 of ${NBEFORE} variants. Measured: ${NPASS:-n/a} PASS + ${NUNFILTERED:-n/a} unfiltered records satisfy the FILTER criterion, yet none overlap the region BED. VCF contigs begin: ${VCF_CONTIGS:-unreadable}; BED contigs begin: ${BED_CONTIGS:-unreadable}; BED intervals: ${BED_COUNT}. This isolates a contig-naming, assembly, or region-BED problem (including an unreadable/empty BED on a disconnected drive) — verify the input assembly and region.bed, or rerun with --all-variants to inspect."
         fi
         INPUT="$FILT"
     else
@@ -599,8 +631,9 @@ fi
 # ============================================================================ #
 if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
     log "=== annotation completeness certificate ==="
-    python3 "${ROOT}/pipeline/annotation_qc.py" \
-        --config "$CONFIG" --vcf "$FINAL_OUTPUT" \
+    QC_ARGS=( --config "$CONFIG" --vcf "$FINAL_OUTPUT" )
+    [[ -n "$FILTER_POLICY_NOTE" ]] && QC_ARGS+=( --note "$FILTER_POLICY_NOTE" )
+    python3 "${ROOT}/pipeline/annotation_qc.py" "${QC_ARGS[@]}" \
         || die "annotation completeness certificate generation failed"
 fi
 

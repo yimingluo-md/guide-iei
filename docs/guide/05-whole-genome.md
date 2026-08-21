@@ -33,8 +33,8 @@ for plausibly disease-relevant variation*: a variant is excluded only when
 there is affirmative evidence it is common or falls outside every category
 of interest — never because data are missing.
 
-Two conditions are required of every variant: a PASS filter status with
-acceptable call quality, and a gnomAD popmax ≤ 0.01 **or no available
+Two conditions are required of every variant: a PASS or unfiltered (`.`)
+site FILTER with acceptable call quality, and a gnomAD popmax ≤ 0.01 **or no available
 popmax value** — an unscored variant is deliberately retained rather than
 discarded for lack of data. A variant meeting these conditions is kept if
 it satisfies **any** of four criteria:

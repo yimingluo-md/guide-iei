@@ -84,6 +84,17 @@ class WgsPrefilterTests(unittest.TestCase):
         self.assertFalse(record_passes(
             unannotated.replace("\tPASS\t", "\tLowQual\t"), HEADER, options, {}
         ))
+        # "." = site filtering not applied upstream — eligible like PASS;
+        # only explicit failure labels exclude (never-hard-filtered cohort
+        # VCFs must not be silently emptied).
+        self.assertTrue(record_passes(
+            unannotated.replace("\tPASS\t", "\t.\t"), HEADER, options,
+            {"1": ((90, 110),)}
+        ))
+        self.assertFalse(record_passes(
+            unannotated.replace("\tPASS\t", "\tMONOALLELIC\t"), HEADER, options,
+            {"1": ((90, 110),)}
+        ))
 
     def test_exome_is_a_route_after_population_frequency(self):
         strict = WgsPrefilterOptions(
