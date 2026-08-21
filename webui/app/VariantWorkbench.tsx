@@ -1026,7 +1026,7 @@ export default function VariantWorkbench() {
         }
       }
       setImportProgress("Parsing retained annotations…");
-      const result = await parseVcfFiles(reviewFiles);
+      const result = await parseVcfFiles(reviewFiles, { serverPrepared: analysisScope === "whole_genome" });
       result.summary.warnings.unshift(...wgsMessages);
       if (libraryOptions.keep) {
         setImportProgress("Saving the review set to the Sample Library…");
@@ -2467,7 +2467,7 @@ function CohortPanel({ onReview }: {
         try {
           const parsed = await parseVcfFiles([
             new File([sourceFile.vcf], sourceFile.name, { type: "text/vcf" }),
-          ], { retainRawAnnotations: true });
+          ], { retainRawAnnotations: true, serverPrepared: true });
           parserWarnings.push(...parsed.summary.warnings);
           if (!intakeQc.length) intakeQc.push(...parsed.summary.intakeQc);
           const selections = new Map(sourceFile.selections.map((selection) => [
@@ -2536,7 +2536,7 @@ function CohortPanel({ onReview }: {
       for (const sourceFile of source.files) {
         const parsed = await parseVcfFiles([
           new File([sourceFile.vcf], sourceFile.name, { type: "text/vcf" }),
-        ], { retainRawAnnotations: true });
+        ], { retainRawAnnotations: true, serverPrepared: true });
         reviewRows.push(...parsed.rows.map((row) => ({
           ...row,
           source: sourceFile.source_path,
@@ -2958,7 +2958,7 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
   async function openDataset(dataset: SampleLibraryDataset) {
     setWorking(dataset.id); setError(""); setMessage("Opening the managed review VCF…");
     try {
-      const parsed = await parseVcfFiles([await openSampleLibraryFile(dataset.id, dataset.original_name)], { retainRawAnnotations: true });
+      const parsed = await parseVcfFiles([await openSampleLibraryFile(dataset.id, dataset.original_name)], { retainRawAnnotations: true, serverPrepared: true });
       parsed.summary.warnings.unshift(`Reopened from Sample Library · ${dataset.profile_label}`);
       onReview(parsed.rows.map((row) => ({
         ...row,

@@ -142,6 +142,7 @@ test("many-sample cohort files are refused at the header, with routing guidance"
   const vcf = "##fileformat=VCFv4.2\n"
     + "##reference=GRCh38\n"
     + "##contig=<ID=1,length=248956422>\n"
+    + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">\n`
     + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n";
   const real = new File([vcf], "cohort.vcf");
   const wrapped = {
@@ -156,6 +157,10 @@ test("many-sample cohort files are refused at the header, with routing guidance"
     () => parseVcfFiles([wrapped]),
     /multi-sample cohort VCF \(20 samples[\s\S]*Whole genome analysis scope/,
   );
+  // The same file parses when it is the service-prepared review output —
+  // the guards protect direct user intake only, never the prepared path.
+  const prepared = await parseVcfFiles([wrapped], { serverPrepared: true });
+  assert.ok(Array.isArray(prepared.rows));
 });
 
 test("preserves separate disease-specific ClinGen expert assertions", async () => {

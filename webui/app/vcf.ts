@@ -919,7 +919,7 @@ async function vcfHeaderLines(file: File) {
 
 export async function parseVcfFiles(
   files: File[],
-  options: { retainRawAnnotations?: boolean } = {},
+  options: { retainRawAnnotations?: boolean; serverPrepared?: boolean } = {},
 ): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
   const rows: VariantRow[] = [];
   const evidenceByVariant = new Map<string, Record<string, GenotypeEvidence>>();
@@ -937,7 +937,7 @@ export async function parseVcfFiles(
     // compressed size) plus one object per record x sample. It is designed
     // for single-patient exomes; beyond these bounds the tab dies slowly of
     // memory exhaustion, so refuse with directions instead of crashing.
-    if (file.size > EXOME_REVIEW_MAX_COMPRESSED_BYTES) {
+    if (!options.serverPrepared && file.size > EXOME_REVIEW_MAX_COMPRESSED_BYTES) {
       throw new Error(
         `${file.name} is ${Math.round(file.size / 1024 / 1024)} MB — too large `
         + "for in-browser exome review, which is designed for single-patient "
@@ -977,7 +977,7 @@ export async function parseVcfFiles(
       throw new Error(`${file.name}: VCF header must include FORMAT and at least one sample column`);
     }
     samples = headerColumns.slice(9);
-    if (samples.length >= COHORT_SAMPLE_GUARD && file.size >= COHORT_SIZE_GUARD_BYTES) {
+    if (!options.serverPrepared && samples.length >= COHORT_SAMPLE_GUARD && file.size >= COHORT_SIZE_GUARD_BYTES) {
       throw new Error(
         `${file.name} is a multi-sample cohort VCF (${samples.length} samples, `
         + `${Math.round(file.size / 1024 / 1024)} MB). In-browser exome review `
