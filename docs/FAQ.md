@@ -39,14 +39,16 @@ only public reference data *to* the machine.
 
 ## Can I review a multi-sample cohort VCF?
 
-Yes — with the right path. Exome-scope review parses the file in the
-browser, which is designed for single-patient exomes; a joint-called cohort
-file (tens of samples, hundreds of MB) would exhaust the browser's memory,
-so it is refused with directions instead. Import such files with the
-**Whole genome** analysis scope: the local service prepares them and the
-browser reads the result incrementally. With the coding route active, every
-rare coding variant is retained; clear the popmax field at import to keep
-common variants as well.
+Yes — through **Cohort search**, which is the workflow built for cohorts.
+The review workspace opens a complete file for a single patient or a small
+family; a joint-called cohort (tens of samples) exceeds what a browser can
+hold in memory no matter how the file is prepared, so cohort-scale files
+are refused with directions rather than left to freeze the tab. The
+designed path: index the annotated cohort VCF once in **Cohort search**
+(the records live in a local database, not the browser), then query
+carriers of a candidate gene or an exact variant, and send the matched
+findings into the review workspace — only the matched records, with their
+complete evidence, are ever opened.
 
 ## Where do I ask a question that is not answered here?
 

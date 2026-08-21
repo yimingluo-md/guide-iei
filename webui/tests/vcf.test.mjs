@@ -155,12 +155,17 @@ test("many-sample cohort files are refused at the header, with routing guidance"
   };
   await assert.rejects(
     () => parseVcfFiles([wrapped]),
-    /multi-sample cohort VCF \(20 samples[\s\S]*Whole genome analysis scope/,
+    /cohort-scale VCF \(20 samples[\s\S]*Cohort search/,
   );
-  // The same file parses when it is the service-prepared review output —
-  // the guards protect direct user intake only, never the prepared path.
-  const prepared = await parseVcfFiles([wrapped], { serverPrepared: true });
-  assert.ok(Array.isArray(prepared.rows));
+  // A service-PREPARED cohort file is refused too — the review workspace
+  // cannot hold cohort-wide genotype evidence no matter who prepared it —
+  // while bounded server-retrieved record sets (matched findings) parse.
+  await assert.rejects(
+    () => parseVcfFiles([wrapped], { intake: "prepared-review" }),
+    /cohort-scale VCF[\s\S]*Cohort search/,
+  );
+  const records = await parseVcfFiles([wrapped], { intake: "server-records" });
+  assert.ok(Array.isArray(records.rows));
 });
 
 test("preserves separate disease-specific ClinGen expert assertions", async () => {

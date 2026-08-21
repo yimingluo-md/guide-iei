@@ -21,13 +21,15 @@ accepts dropped `.vcf` / `.vcf.gz` files or a selected folder, then opens a
 second screen for parameters and dataset readiness. See `webui/README.md` for
 the workflow and WSL2 instructions.
 
-**Choosing a review path by file size.** Exome-scope review parses the VCF
-in the browser — appropriate for single-patient files, where it keeps the
-entire workflow interactive. Large or many-sample files (over ~100 MB
-compressed, or 16+ samples) are refused with directions rather than parsed:
-import these with the **Whole genome** analysis scope, which prepares the
-file on the local service and reads it incrementally, regardless of whether
-the underlying assay was an exome.
+**Choosing a path by file shape.** Exome-scope review parses the VCF in
+the browser — appropriate for single-patient files, where it keeps the
+entire workflow interactive. A large single-patient file (over ~100 MB
+compressed) belongs in the **Whole genome** analysis scope, which prepares
+it on the local service. A **cohort-scale file (16+ samples)** belongs in
+**Cohort search**, whatever its size: the review workspace opens complete
+files for one patient or a small family, and cohort-wide genotype evidence
+exceeds browser memory no matter which path prepared the file. Cohort-scale
+files are refused at review intake with directions to the cohort workflow.
 
 ## Sample Library
 
