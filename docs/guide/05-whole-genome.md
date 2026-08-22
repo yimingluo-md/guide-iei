@@ -40,10 +40,10 @@ discarded for lack of data. A variant meeting these conditions is kept if
 it satisfies **any** of four criteria:
 
 1. it lies within coding exons or canonical splice sites;
-2. SpliceAI ≥ 0.5, capturing predicted splice-altering variants at any
-   depth within an intron;
-3. |PromoterAI| ≥ 0.8, capturing predicted expression-altering promoter
-   variants; or
+2. SpliceAI ≥ a pre-defined cutoff (default 0.5), capturing predicted
+   splice-altering variants at any depth within an intron;
+3. |PromoterAI| ≥ a pre-defined cutoff (default 0.8), capturing predicted
+   expression-altering promoter variants; or
 4. it overlaps an ENCODE candidate cis-regulatory element (this criterion
    can be broadened to all non-coding sequence, or omitted).
 
@@ -71,16 +71,60 @@ default.
 ## Interpreting non-coding candidates
 
 The review workspace is unchanged from exome analysis, with regulatory
-context added. Candidates can be examined by the criterion through which
-they qualified — splice-predicted, promoter-predicted, or
-regulatory-element overlap. For each variant, the installed SCREEN
-registry is queried directly, reporting either overlap with a candidate
-cis-regulatory element or verified non-overlap. An overlapping element is
-shown with its accession, class, and all Ensembl transcription start sites
-within ±500 kb with strand-aware distances; a curated layer of ENCODE
-evidence indicates the tissues and immune or hematopoietic cell types in
-which the element shows activity, resolved by donor where the underlying
-data permit.
+context added, and candidates can be examined by the criterion through
+which they qualified. In practice, the developer recommends concentrating
+first on the two non-coding variant classes with relatively
+well-established disease mechanisms and better prediction:
+
+1. **Deep intronic splice-disrupting variants (SpliceAI).** A high delta
+   score deep within an intron predicts disruption of normal splicing —
+   cryptic exon inclusion, exon skipping, or intron retention. Whether
+   the score reflects loss of a native site or gain of a cryptic one, the
+   functional consequence is corruption of the normal transcript:
+   effectively a **loss-of-function mechanism**. SpliceAI does not
+   predict expression increase.
+2. **Promoter variants (PromoterAI).** PromoterAI
+   ([Illumina, *Science* 2025](https://www.science.org/doi/10.1126/science.ads7373))
+   is a deep neural network from the group that produced SpliceAI; it
+   reads the sequence context around a transcription start site and
+   returns a **signed** score from −1 to +1 for a variant's predicted
+   effect on expression. The sign matters clinically: a negative score
+   predicts under-expression — a haploinsufficiency-type mechanism —
+   while a positive score predicts **over-expression**, a dosage-gain
+   mechanism no splice predictor can capture.
+
+Both predictions remain predictions: a qualifying score nominates a
+mechanism to be tested — transcript analysis for splice candidates,
+expression studies for promoter candidates — not a conclusion.
+
+**Regulatory-element overlap** is a broader and correspondingly weaker
+criterion, and reading it requires one piece of background. Much of the
+genome's regulatory logic is written in **epigenomic** marks rather than
+sequence: chromatin accessibility, promoter- and enhancer-associated
+histone modifications (H3K4me3, H3K27ac), and CTCF binding. The ENCODE
+consortium integrated these assays across hundreds of biosamples into a
+registry of **candidate cis-regulatory elements (cCREs)** — approximately
+2.35 million short segments of GRCh38, each classified by its biochemical
+signature (promoter-like, proximal or distal enhancer-like, CTCF-bound,
+chromatin-accessible). *Candidate* is the operative word: a cCRE is a
+reproducible biochemical signature, not a demonstrated regulatory
+function.
+
+Crucially, the registry is genome-wide but **activity is
+cell-type-specific**: an element may be open and active in one lineage
+and silent in another. For a disease of the immune system, the
+informative question is therefore not "does this variant fall in a cCRE?"
+but "is that element active in the relevant immune cell types — and was
+that cell type actually assayed?" GUIDE-IEI prepares the SCREEN data to
+answer exactly that question, at two levels: organ- and tissue-level
+classifications for body-wide context, and a curated immune-cell layer
+with donor-level evidence. The detailed semantics of this display are
+covered in [Reading a variant page](09-reading-a-variant.md).
+
+Prediction in this territory is younger than for splicing or promoters;
+future development is planned for regulatory-region prediction, including
+assignment of regulatory elements to their target genes and variant-level
+impact scores.
 
 *[Screenshot: whole-genome variant detail with Regulatory evidence tab]*
 

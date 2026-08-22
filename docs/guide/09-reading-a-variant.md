@@ -188,17 +188,21 @@ transcript and protein change LoGoFunc scored, and flags any mismatch
 with the transcript under review rather than silently transferring the
 score.
 
-## Splicing
+## Splicing (SpliceAI)
 
-SpliceAI delta scores are shown with the affected position and type
-(donor/acceptor, gain/loss), drawn from the precomputed MANE table. The
-research convention of 0.5 is a convention, not a boundary: a score of
-0.45 adjacent to a weak splice site in a compelling candidate gene
-warrants attention. Deep intronic variants are precisely where SpliceAI
-contributes most; in whole-genome work they reach the review set through
-the SpliceAI selection criterion. An `IEI_UNSCORED_INDEL` flag indicates a
-variant retained despite the absence of a precomputed score — the score is
-missing, not reassuring.
+SpliceAI ([Jaganathan et al., *Cell* 2019](https://doi.org/10.1016/j.cell.2018.12.015))
+is a deep residual neural network that predicts, for every position, the
+probability of being a splice donor or acceptor from up to 10 kb of
+flanking pre-mRNA sequence alone — no conservation or annotation
+features. A variant's **delta scores** quantify how much it changes those
+probabilities nearby, reported as four values — acceptor gain, acceptor
+loss, donor gain, donor loss — each with the position of the affected
+site. The bundled table is Ensembl's precomputed MANE-transcript SNV set
+with **masked** scores: changes that strengthen already-annotated sites
+or weaken unannotated ones are zeroed, leaving the disease-relevant
+directions. An `IEI_UNSCORED_INDEL` flag indicates a variant retained
+despite the absence of a precomputed score — the score is missing, not
+reassuring.
 
 For an unscored **indel**, the variant page offers **"Get SpliceAI score
 online (Broad lookup)"** — a per-variant request to the Broad Institute's
@@ -209,6 +213,23 @@ variant's position and alleles — never sample, genotype, or phenotype
 data — and the result is stored locally so a variant is sent at most once.
 Results are labeled as online lookups (masked scores, 500 bp window) and
 inform the reviewer only; they never enter the VCF or any filter.
+
+## Promoter variants (PromoterAI)
+
+PromoterAI ([Illumina, *Science* 2025](https://www.science.org/doi/10.1126/science.ads7373))
+extends the SpliceAI lineage from splicing to transcription initiation: a
+deep neural network reads the sequence surrounding a transcription start
+site and scores a variant's predicted effect on that gene's expression.
+The bundled table covers variants within ±500 bp of Ensembl TSSs, and the
+score is **signed**, from −1 through +1: negative predicts
+**under-expression** — functionally, haploinsufficiency where the gene is
+dosage-sensitive — while positive predicts **over-expression**, a
+dosage-gain mechanism unreachable by any coding or splicing predictor.
+The variant page shows the score with the TSS and transcript it was
+computed against. As everywhere in this panel, the score nominates a
+mechanism for expression-level confirmation; it does not establish one.
+Because promoters lie outside exome capture, PromoterAI annotation
+applies to whole-genome analysis only.
 
 ## ClinVar and ClinGen
 
@@ -240,13 +261,51 @@ short-read variant calling is error-prone. They are grounds for examining
 the sample's read-level evidence — depth, allele balance, genotype
 quality — not grounds for automatic dismissal.
 
-## Regulatory evidence (whole-genome imports)
+## Regulatory evidence: ENCODE cCREs and SCREEN (whole-genome imports)
 
-Discussed in [Whole-genome analysis](05-whole-genome.md): cCRE overlap,
-gene-TSS proximity context, and tissue/immune activity constitute position
-and context, never independent evidence of pathogenicity.
+Most regulatory information is epigenomic rather than sequence-based:
+chromatin accessibility, the promoter- and enhancer-associated histone
+marks H3K4me3 and H3K27ac, and CTCF occupancy. ENCODE's **SCREEN Registry
+V4** integrates these assays into approximately 2.35 million **candidate
+cis-regulatory elements** across GRCh38, each classified by biochemical
+signature: promoter-like (PLS), proximal and distal enhancer-like (pELS,
+dELS), CTCF-bound, or chromatin-accessible. Two caveats are built into
+the name: *candidate* — a reproducible biochemical signature, not a
+demonstrated function — and cell-type specificity: elements are defined
+genome-wide, but an element active in one lineage may be silent in
+another.
+
+The variant page queries the installed registry directly and reports
+overlap — accession, class, and every Ensembl transcription start site
+within ±500 kb with strand-aware distances — or verified non-overlap.
+Activity is then shown at two levels: organ- and tissue-level
+classifications for body-wide context, and a curated immune-cell layer of
+28 cell-type contexts spanning T- and B-cell subsets, NK cells,
+monocytes, dendritic cells, granulocytes, and hematopoietic progenitors,
+each backed by identified donors from baseline, untreated primary cells.
+
+Three display conventions keep this evidence honest:
+
+- **Donor counts, not averages.** Activity calls are categorical; the
+  page reports how many donors support each class in each cell type, and
+  disagreement between donors is shown as disagreement.
+- **Unavailable is never rendered as inactive.** Many immune cell types
+  were assayed for chromatin accessibility only; where the classifying
+  assays were never performed, the display says so rather than implying a
+  negative result.
+- **Parent cell types are summaries.** A call at "T cell" that aggregates
+  its subsets is marked as a summary, not independent confirmation of
+  each subset.
+
+What the evidence licenses is deliberately modest: the variant lies in
+sequence with regulatory potential, active — or not assayable — in the
+cell types of interest. Position is not mechanism, the listed genes are
+proximity context rather than predicted targets, and the causal argument
+must be built from converging evidence and functional study.
 
 Technical reference: [Annotation sources](../ANNOTATIONS.md) — dataset
-provenance, versions, and preparation for every source above.
+provenance, versions, and preparation for every source above — and
+[SCREEN tissue & immune data](../SCREEN_TISSUE_IMMUNE_DATA.md) for the
+regulatory layer's full preparation record.
 
 Next: [Quality control and sanity checks](10-quality-control.md)
