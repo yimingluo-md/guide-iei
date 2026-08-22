@@ -3489,7 +3489,7 @@ class AnnotationJobService:
                 source_version = generated[:10]
             available_in = (
                 ["whole_genome"]
-                if source_id in {"promoterai", "cadd_wgs", "ccre"}
+                if source_id in {"promoterai", "cadd_wgs", "ccre", "screen_context"}
                 else ["exome", "whole_genome"]
             )
             sources.append({
