@@ -4035,11 +4035,19 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/sample-library/") and path.endswith("/file"):
             dataset_id = path.split("/")[3]
             try:
-                self._file(self.service.sample_library.file(dataset_id))
+                # Reviews open the dataset's own sample projection; a
+                # multi-sample managed source is never handed to the browser
+                # whole.
+                self._file(self.service.sample_library.review_file(dataset_id))
             except KeyError:
                 self._json({"error": "library dataset not found"}, HTTPStatus.NOT_FOUND)
             except FileNotFoundError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except (ValueError, RuntimeError) as exc:
+                self._json(
+                    {"error": f"sample projection failed: {exc}"},
+                    HTTPStatus.BAD_REQUEST,
+                )
         elif path.startswith("/api/sample-library/") and path.endswith("/phenotype"):
             dataset_id = path.split("/")[3]
             phenotype = self.service.sample_library.phenotype(dataset_id)

@@ -499,6 +499,68 @@ class SampleLibrary:
             raise FileNotFoundError(f"managed review VCF is missing: {path}")
         return path
 
+    def review_file(self, dataset_id: str) -> Path:
+        """Path a review should open for this dataset.
+
+        A managed VCF carrying many sample columns (a jointly-called family
+        or cohort source) is projected down to this dataset's own sample:
+        one genotype column, carrier records only — the same shape the
+        cohort complete-set path produces, and the shape the review
+        workspace is built for. Single-sample files are served as stored.
+        Projections are cached beside the managed files, keyed by checksum
+        and sample, so repeat opens are instant.
+        """
+        record = self.get(dataset_id)
+        if not record:
+            raise KeyError(dataset_id)
+        source = self._managed_path(record["managed_path"])
+        if not source.is_file():
+            raise FileNotFoundError(f"managed review VCF is missing: {source}")
+        sample = str(record.get("vcf_sample_name") or "")
+        if not sample:
+            return source
+        header = read_vcf_header(source)
+        if len(header.samples) <= 1:
+            return source
+        if sample not in header.samples:
+            raise ValueError(
+                f"sample {sample!r} is not present in the managed review VCF"
+            )
+        backend = self.cohort.hts_backend
+        if backend is None:
+            # Without htslib the projection cannot be built; serve the stored
+            # file — the browser refuses cohort-scale files with directions
+            # instead of freezing, so this degrades loudly, not silently.
+            return source
+        checksum = str(record.get("managed_checksum") or source.stem)
+        safe_sample = "".join(
+            ch if ch.isalnum() or ch in "._-" else "_" for ch in sample
+        )
+        projected = self.files_dir / f"{checksum}.{safe_sample}.review.vcf.gz"
+        if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
+            return projected
+        partial = projected.with_name(projected.name + f".{os.getpid()}.partial.vcf.gz")
+        try:
+            subset = backend.run(
+                "bcftools",
+                ["view", "-s", sample, "-O", "z", "-o", str(partial), str(source)],
+            )
+            if subset.returncode != 0:
+                raise RuntimeError(
+                    f"sample projection failed for {sample}: {subset.stderr.strip()[:400]}"
+                )
+            carriers = backend.run(
+                "bcftools",
+                ["view", "-i", 'GT[0]="alt"', "-O", "z", "-o", str(projected), str(partial)],
+            )
+            if carriers.returncode != 0:
+                raise RuntimeError(
+                    f"carrier filtering failed for {sample}: {carriers.stderr.strip()[:400]}"
+                )
+        finally:
+            partial.unlink(missing_ok=True)
+        return projected
+
     def map_identity(self, dataset_id: str, payload: dict) -> dict:
         mode = str(payload.get("mode") or "unavailable")
         if mode not in {"existing", "create", "unavailable"}:

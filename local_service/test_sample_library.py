@@ -40,6 +40,41 @@ class SampleLibraryTests(unittest.TestCase):
             "retained_record_count": 4,
         }
 
+    def test_review_file_projects_the_datasets_own_sample(self):
+        """Opening a dataset from a multi-sample managed source hands the
+        review its own sample only: one genotype column, carrier records
+        only — never the whole cohort matrix."""
+        from local_service.cohort_store import HtsBackend, read_vcf_header
+        backend = HtsBackend.discover()
+        result = self.library.import_vcf(self.vcf, self.payload(include=False))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+        self.assertEqual(set(by_sample), {"P1", "P2"})
+
+        if backend is None:
+            # Without htslib the stored file is served; the browser-side
+            # guard turns that into directions instead of a freeze.
+            self.assertEqual(
+                self.library.review_file(by_sample["P1"]["id"]),
+                self.library.file(by_sample["P1"]["id"]),
+            )
+            return
+
+        self.cohort.hts_backend = backend
+        projected = self.library.review_file(by_sample["P1"]["id"])
+        self.assertNotEqual(projected, self.library.file(by_sample["P1"]["id"]))
+        header = read_vcf_header(projected)
+        self.assertEqual(header.samples, ("P1",))
+        import gzip
+        with gzip.open(projected, "rt", encoding="utf-8") as handle:
+            records = [line for line in handle if line.strip() and not line.startswith("#")]
+        # P1 carries records 1 and 3 of the fixture; record 2 is 0/0 for P1.
+        positions = {line.split("\t")[1] for line in records}
+        self.assertIn("100", positions)
+        self.assertNotIn("200", positions)
+        # The projection is cached: a second open returns the same file.
+        again = self.library.review_file(by_sample["P1"]["id"])
+        self.assertEqual(again, projected)
+
     def test_persistent_import_identity_profile_and_reopen(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=True))
         self.assertEqual(len(result["datasets"]), 2)

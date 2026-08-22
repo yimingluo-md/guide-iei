@@ -106,6 +106,12 @@ def write_vcf(path: Path):
     text = (
         "##fileformat=VCFv4.2\n"
         "##contig=<ID=1,length=248956422>\n"
+        '##INFO=<ID=IEI_UNSCORED_INDEL,Number=.,Type=String,Description="Unscored indel routes">\n'
+        '##FILTER=<ID=LowQual,Description="Low quality">\n'
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+        '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\n'
+        '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">\n'
+        '##FORMAT=<ID=GQ,Number=1,Type=Integer,Description="Genotype quality">\n'
         '##INFO=<ID=CSQ,Number=.,Type=String,Description="Consequence annotations. Format: '
         + "|".join(CSQ_FIELDS)
         + '">\n'
