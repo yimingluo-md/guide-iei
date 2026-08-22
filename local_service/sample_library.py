@@ -883,6 +883,44 @@ class SampleLibrary:
             )
         return self.get(dataset_id) or {}
 
+    def bulk_apply(self, dataset_ids: list[str], action: str) -> dict:
+        """Apply remove / cohort-add to many datasets in one request.
+
+        One request, one report — a thousand datasets must not cost a
+        thousand HTTP round-trips, and an interruption must leave a
+        legible outcome instead of a half-done mystery.
+        """
+        if action not in {"remove", "cohort_add"}:
+            raise ValueError("action must be remove or cohort_add")
+        ids = [str(value) for value in dataset_ids if str(value).strip()]
+        if not ids:
+            raise ValueError("select at least one dataset")
+        succeeded: list[str] = []
+        skipped: list[str] = []
+        failures: list[dict] = []
+        for dataset_id in ids:
+            try:
+                record = self.get(dataset_id)
+                if not record:
+                    raise KeyError("library dataset not found")
+                if action == "cohort_add":
+                    if record.get("cohort_index_status") == "ready":
+                        skipped.append(dataset_id)
+                        continue
+                    self.reindex(dataset_id)
+                else:
+                    self.remove(dataset_id)
+                succeeded.append(dataset_id)
+            except Exception as error:  # per-item isolation is the point
+                failures.append({"id": dataset_id, "error": str(error)[:300]})
+        return {
+            "action": action,
+            "requested": len(ids),
+            "succeeded": len(succeeded),
+            "skipped": len(skipped),
+            "failures": failures,
+        }
+
     def remove(self, dataset_id: str, remove_managed_file: bool = True) -> dict:
         record = self.get(dataset_id)
         if not record:

@@ -172,6 +172,28 @@ transfer disk but is not recommended for the active library because locking
 and crash-safety semantics are weaker. Read-only annotation files can live on
 slower storage, but tabix-heavy VEP runs can become materially slower.
 
+## Bulk import and collection scale
+
+The Sample Library's **Bulk import** panel queues a folder or list of
+annotated VCFs for serial intake: each file runs the same candidate
+prefilter as a single import (exome default gnomAD popmax ≤ 0.01; genomes
+use the Compact WGS prefilter), is stored as a managed dataset, and — by
+default — is added to Cohort Search as it completes. The queue is
+persisted (`bulk-intake.sqlite3` in the service state directory), so an
+interrupted batch resumes automatically when the service restarts;
+per-file failures are recorded with their errors and never stop the run.
+One bulk job runs at a time, up to 5,000 files per job.
+
+The design target is a 1,000-genome collection on one workstation. At that
+size the library page paginates (50 datasets per page; search and bulk
+actions always apply to the full collection), library additions and
+removals run as a single batched request with a per-item outcome report,
+and every Cohort Search query form — variant, gene, gene list, region —
+answers from covering indexes rather than table scans (the test suite
+asserts the query plans). Reviewing, by contrast, stays a per-case or
+per-subset activity: large collections are meant to be queried through
+Cohort Search, not opened wholesale in the browser.
+
 ## Storage management
 
 The Storage page reports:

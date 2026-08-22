@@ -73,6 +73,23 @@ settings. The **Sample Library** page reopens a review, edits its sample
 label, connects phenotype records, rebuilds its cohort entry, or removes the
 managed dataset without deleting an external original VCF.
 
+**Bulk intake queue.** `POST /api/bulk-intake` accepts a list of files or
+directories (directories are expanded recursively to `.vcf`/`.vcf.gz`; up
+to 5,000 files per job), an analysis scope, prefilter settings (exome
+default: gnomAD popmax ≤ 0.01, coding only; whole-genome default: the
+Compact WGS prefilter), and an include-in-cohort flag. Items are persisted
+to `bulk-intake.sqlite3` and processed serially by a single worker:
+prefilter → managed review VCF → Sample Library import (with cohort
+indexing when enabled). Per-file failures are recorded and do not stop the
+queue; interrupted items are reset and the job resumes automatically at
+service start. One job runs at a time; `GET /api/bulk-intake` reports
+progress and `POST /api/bulk-intake/{id}/cancel` stops a running job
+(already-imported files are kept). Bulk library maintenance uses
+`POST /api/sample-library/bulk` (`remove` or `cohort_add` over a list of
+dataset ids, with a per-item outcome report), and the library page
+paginates at 50 datasets while search, selection, and bulk actions operate
+on the full filtered set.
+
 See [Sample Library & storage](SAMPLE_LIBRARY_AND_STORAGE.md) for the full
 model.
 

@@ -682,6 +682,11 @@ class AnnotationJobService:
         self._stop = threading.Event()
         self._recover_stale_storage_migrations()
         self._terminate_orphaned_resource_jobs()
+        self._bulk_intake_lock = threading.Lock()
+        self._bulk_intake_thread: threading.Thread | None = None
+        self._bulk_intake_cancelled: set[str] = set()
+        if start_worker:
+            self._resume_bulk_intake()
         self._worker: threading.Thread | None = None
         for job_id in self.store.queued_ids():
             self._queue.put(job_id)
@@ -2484,6 +2489,287 @@ class AnnotationJobService:
             "filename": output_path.name,
         }
 
+    # ------------------------------------------------------------------
+    # Bulk intake: a durable, resumable queue for importing many annotated
+    # VCFs (e.g. hundreds of genomes) into the Sample Library and Cohort
+    # search. The item list is recorded up front in SQLite; a single worker
+    # processes items sequentially and survives service restarts — prefilter
+    # caching and library de-duplication make re-running an item idempotent,
+    # so resume is simply "reset running items to queued and continue."
+    # ------------------------------------------------------------------
+
+    def _bulk_intake_connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.state_dir / "bulk-intake.sqlite3", timeout=60)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA busy_timeout=60000")
+        connection.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS bulk_jobs (
+              id TEXT PRIMARY KEY,
+              created_at TEXT NOT NULL,
+              updated_at TEXT NOT NULL,
+              status TEXT NOT NULL,
+              options TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS bulk_items (
+              job_id TEXT NOT NULL REFERENCES bulk_jobs(id) ON DELETE CASCADE,
+              position INTEGER NOT NULL,
+              path TEXT NOT NULL,
+              status TEXT NOT NULL,
+              error TEXT NOT NULL DEFAULT '',
+              datasets INTEGER NOT NULL DEFAULT 0,
+              updated_at TEXT NOT NULL,
+              PRIMARY KEY (job_id, position)
+            );
+            CREATE INDEX IF NOT EXISTS bulk_items_status_idx
+              ON bulk_items(job_id, status, position);
+            """
+        )
+        return connection
+
+    @staticmethod
+    def _expand_bulk_paths(paths: list, recursive: bool) -> list[str]:
+        expanded: list[str] = []
+        seen: set[str] = set()
+        for raw in paths:
+            text = str(raw or "").strip()
+            if not text:
+                continue
+            candidate = Path(text).expanduser()
+            entries: list[Path]
+            if candidate.is_dir():
+                pattern = "**/*" if recursive else "*"
+                entries = sorted(
+                    item for item in candidate.glob(pattern)
+                    if item.is_file()
+                    and re.search(r"\.vcf(?:\.gz)?$", item.name, re.IGNORECASE)
+                )
+            else:
+                entries = [candidate]
+            for item in entries:
+                resolved = str(item.resolve())
+                if resolved not in seen:
+                    seen.add(resolved)
+                    expanded.append(resolved)
+        return expanded
+
+    def start_bulk_intake(self, payload: dict) -> dict:
+        self._ensure_active_storage_available(require_workspace=True)
+        scope = str(payload.get("analysis_scope") or "whole_genome")
+        if scope not in {"exome", "whole_genome"}:
+            raise ValueError("analysis_scope must be exome or whole_genome")
+        raw_paths = payload.get("paths")
+        if not isinstance(raw_paths, list):
+            raise ValueError("paths must be a list of VCF files or directories")
+        items = self._expand_bulk_paths(raw_paths, bool(payload.get("recursive", True)))
+        if not items:
+            raise ValueError("no .vcf/.vcf.gz files were found in the given paths")
+        if len(items) > 5000:
+            raise ValueError(f"{len(items)} files exceeds the 5000-file queue limit")
+        filters = payload.get("filters")
+        if not isinstance(filters, dict) or not filters:
+            filters = (
+                {"max_gnomad_popmax": 0.01, "min_spliceai": None,
+                 "min_promoterai_abs": None, "noncoding_mode": "none"}
+                if scope == "exome" else {}
+            )
+        WgsPrefilterOptions.from_payload(filters)  # validate now, loudly
+        options = {
+            "analysis_scope": scope,
+            "filters": filters,
+            "include_in_cohort": bool(payload.get("include_in_cohort", True)),
+        }
+        with self._bulk_intake_lock:
+            with closing(self._bulk_intake_connect()) as connection, connection:
+                active = connection.execute(
+                    "SELECT id FROM bulk_jobs WHERE status IN ('queued','running')"
+                ).fetchone()
+                if active:
+                    raise ValueError(
+                        f"bulk intake {active['id']} is still running — wait for it "
+                        "to finish or cancel it first"
+                    )
+                job_id = uuid.uuid4().hex
+                now = utc_now()
+                connection.execute(
+                    "INSERT INTO bulk_jobs (id, created_at, updated_at, status, options)"
+                    " VALUES (?,?,?,?,?)",
+                    (job_id, now, now, "queued", json.dumps(options)),
+                )
+                connection.executemany(
+                    "INSERT INTO bulk_items (job_id, position, path, status, updated_at)"
+                    " VALUES (?,?,?,?,?)",
+                    [(job_id, index, path, "queued", now) for index, path in enumerate(items)],
+                )
+            self._start_bulk_intake_worker(job_id)
+        return self.bulk_intake_snapshot(job_id)
+
+    def _start_bulk_intake_worker(self, job_id: str) -> None:
+        if self._bulk_intake_thread and self._bulk_intake_thread.is_alive():
+            return
+        self._bulk_intake_thread = threading.Thread(
+            target=self._run_bulk_intake, args=(job_id,),
+            name=f"bulk-intake-{job_id[:8]}", daemon=True,
+        )
+        self._bulk_intake_thread.start()
+
+    def _resume_bulk_intake(self) -> None:
+        with closing(self._bulk_intake_connect()) as connection, connection:
+            connection.execute(
+                "UPDATE bulk_items SET status='queued', updated_at=?"
+                " WHERE status='running'", (utc_now(),)
+            )
+            row = connection.execute(
+                "SELECT id FROM bulk_jobs WHERE status IN ('queued','running')"
+                " ORDER BY created_at LIMIT 1"
+            ).fetchone()
+        if row:
+            self._start_bulk_intake_worker(row["id"])
+
+    def _run_bulk_intake(self, job_id: str) -> None:
+        with closing(self._bulk_intake_connect()) as connection, connection:
+            row = connection.execute(
+                "SELECT options FROM bulk_jobs WHERE id=?", (job_id,)
+            ).fetchone()
+            if not row:
+                return
+            options = json.loads(row["options"])
+            connection.execute(
+                "UPDATE bulk_jobs SET status='running', updated_at=? WHERE id=?",
+                (utc_now(), job_id),
+            )
+        while not self._stop.is_set():
+            if job_id in self._bulk_intake_cancelled:
+                with closing(self._bulk_intake_connect()) as connection, connection:
+                    connection.execute(
+                        "UPDATE bulk_items SET status='skipped', updated_at=?"
+                        " WHERE job_id=? AND status='queued'", (utc_now(), job_id)
+                    )
+                    connection.execute(
+                        "UPDATE bulk_jobs SET status='cancelled', updated_at=? WHERE id=?",
+                        (utc_now(), job_id),
+                    )
+                self._bulk_intake_cancelled.discard(job_id)
+                return
+            with closing(self._bulk_intake_connect()) as connection, connection:
+                item = connection.execute(
+                    "SELECT position, path FROM bulk_items"
+                    " WHERE job_id=? AND status='queued' ORDER BY position LIMIT 1",
+                    (job_id,),
+                ).fetchone()
+                if item:
+                    connection.execute(
+                        "UPDATE bulk_items SET status='running', updated_at=?"
+                        " WHERE job_id=? AND position=?",
+                        (utc_now(), job_id, item["position"]),
+                    )
+            if not item:
+                with closing(self._bulk_intake_connect()) as connection, connection:
+                    connection.execute(
+                        "UPDATE bulk_jobs SET status='completed', updated_at=? WHERE id=?",
+                        (utc_now(), job_id),
+                    )
+                return
+            status, error, dataset_count = "succeeded", "", 0
+            try:
+                dataset_count = self._bulk_intake_item(item["path"], options)
+            except Exception as exc:
+                status, error = "failed", str(exc)[:400]
+            with closing(self._bulk_intake_connect()) as connection, connection:
+                connection.execute(
+                    "UPDATE bulk_items SET status=?, error=?, datasets=?, updated_at=?"
+                    " WHERE job_id=? AND position=?",
+                    (status, error, dataset_count, utc_now(), job_id, item["position"]),
+                )
+
+    def _bulk_intake_item(self, path: str, options: dict) -> int:
+        result = self.prefilter_wgs_review({
+            "path": path, "filters": options.get("filters") or {},
+        })
+        prepared = self.wgs_review_file(result["id"])
+        scope = options.get("analysis_scope") or "whole_genome"
+        imported = self.sample_library.import_vcf(prepared, {
+            "analysis_scope": scope,
+            "index_scope": "compact",
+            "include_in_cohort": bool(options.get("include_in_cohort", True)),
+            "capture_kit": "",
+            "qc_settings": {},
+            "prefilter_settings": options.get("filters") or {},
+            "retention_routes": (
+                ["exome region", "popmax prefilter"] if scope == "exome"
+                else ["coding/essential-splice", "SpliceAI", "promoterAI", "noncoding"]
+            ),
+            "source_record_count": result.get("records_scanned"),
+            "retained_record_count": result.get("records_retained"),
+            "original_path": path,
+            "original_name": Path(path).name,
+        })
+        return len(imported.get("datasets") or [])
+
+    def bulk_intake_snapshot(self, job_id: str | None = None) -> dict:
+        with closing(self._bulk_intake_connect()) as connection:
+            if job_id is None:
+                row = connection.execute(
+                    "SELECT * FROM bulk_jobs ORDER BY created_at DESC LIMIT 1"
+                ).fetchone()
+            else:
+                row = connection.execute(
+                    "SELECT * FROM bulk_jobs WHERE id=?", (job_id,)
+                ).fetchone()
+            if not row:
+                return {"job": None}
+            counts = {
+                status: count for status, count in connection.execute(
+                    "SELECT status, COUNT(*) FROM bulk_items WHERE job_id=?"
+                    " GROUP BY status", (row["id"],)
+                )
+            }
+            current = connection.execute(
+                "SELECT path FROM bulk_items WHERE job_id=? AND status='running'"
+                " ORDER BY position LIMIT 1", (row["id"],)
+            ).fetchone()
+            failures = [
+                {"path": item["path"], "error": item["error"]}
+                for item in connection.execute(
+                    "SELECT path, error FROM bulk_items"
+                    " WHERE job_id=? AND status='failed' ORDER BY position LIMIT 20",
+                    (row["id"],),
+                )
+            ]
+            datasets = connection.execute(
+                "SELECT COALESCE(SUM(datasets),0) FROM bulk_items WHERE job_id=?",
+                (row["id"],),
+            ).fetchone()[0]
+        total = sum(counts.values())
+        return {"job": {
+            "id": row["id"],
+            "status": row["status"],
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "options": json.loads(row["options"]),
+            "total": total,
+            "queued": counts.get("queued", 0),
+            "running": counts.get("running", 0),
+            "succeeded": counts.get("succeeded", 0),
+            "failed": counts.get("failed", 0),
+            "skipped": counts.get("skipped", 0),
+            "datasets": datasets,
+            "current_path": current["path"] if current else None,
+            "failures": failures,
+        }}
+
+    def cancel_bulk_intake(self, job_id: str) -> dict:
+        self._bulk_intake_cancelled.add(str(job_id))
+        with closing(self._bulk_intake_connect()) as connection, connection:
+            row = connection.execute(
+                "SELECT status FROM bulk_jobs WHERE id=?", (str(job_id),)
+            ).fetchone()
+            if not row:
+                raise KeyError("bulk intake job not found")
+            if row["status"] not in {"queued", "running"}:
+                self._bulk_intake_cancelled.discard(str(job_id))
+        return self.bulk_intake_snapshot(str(job_id))
+
     def spliceai_lookup(self, payload: dict) -> dict:
         """Fetch SpliceAI scores for one variant from the Broad's public API.
 
@@ -4026,6 +4312,10 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             )})
         elif path == "/api/sample-library/profiles":
             self._json({"profiles": self.service.sample_library.profiles()})
+        elif path == "/api/bulk-intake":
+            self._json(self.service.bulk_intake_snapshot())
+        elif path.startswith("/api/bulk-intake/"):
+            self._json(self.service.bulk_intake_snapshot(path.split("/")[3]))
         elif path == "/api/storage":
             self._json(self.service.storage_stats())
         elif path == "/api/storage/locations":
@@ -4269,6 +4559,25 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     allow_unknown_assembly=bool(
                         body.get("allow_unknown_assembly", False)
                     ),
+                ))
+                return
+            if path == "/api/bulk-intake":
+                self._json(self.service.start_bulk_intake(self._body()), HTTPStatus.CREATED)
+                return
+            if path.startswith("/api/bulk-intake/") and path.endswith("/cancel"):
+                try:
+                    self._json(self.service.cancel_bulk_intake(path.split("/")[3]))
+                except KeyError:
+                    self._json({"error": "bulk intake job not found"}, HTTPStatus.NOT_FOUND)
+                return
+            if path == "/api/sample-library/bulk":
+                body = self._body(max_bytes=4_000_000)
+                dataset_ids = body.get("dataset_ids")
+                if not isinstance(dataset_ids, list):
+                    raise ValueError("dataset_ids must be a list")
+                self._json(self.service.sample_library.bulk_apply(
+                    [str(value) for value in dataset_ids],
+                    str(body.get("action") or ""),
                 ))
                 return
             if path == "/api/sample-library/review-file":

@@ -847,6 +847,33 @@ class CohortStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "5 Mb"):
             store.query({"mode": "region", "region": "1:1-6000002"})
 
+    def test_every_search_mode_uses_an_index_not_a_table_scan(self):
+        """Guard against schema drift reintroducing full scans: at cohort
+        scale (millions of rows) a SCAN turns millisecond queries into
+        half-minute ones with no error to point at."""
+        import sqlite3 as sql
+        source = self.root / "plans.vcf"
+        write_vcf(source)
+        store = CohortStore(self.root / "plans.sqlite3")
+        store.import_vcf(source)
+        probes = {
+            "variant_key": ("SELECT v.id FROM cohort_variants v WHERE v.variant_key = ? COLLATE NOCASE", ("1:100:A:G",)),
+            "rsid": ("SELECT v.id FROM cohort_variants v WHERE v.rsid = ? COLLATE NOCASE", ("rsExact",)),
+            "region": ("SELECT v.id FROM cohort_variants v WHERE v.chrom = ? AND v.pos BETWEEN ? AND ?", ("1", 1, 500)),
+            "gene": ("SELECT a.id FROM cohort_annotations a WHERE a.gene = ?", ("NFKB1",)),
+            "gene_list": ("SELECT a.id FROM cohort_annotations a WHERE a.gene IN (?,?)", ("NFKB1", "IL10RA")),
+            "carriers": ("SELECT g.id FROM cohort_genotypes g WHERE g.variant_id = ?", (1,)),
+        }
+        with sql.connect(self.root / "plans.sqlite3") as connection:
+            for name, (statement, parameters) in probes.items():
+                plan = " | ".join(
+                    row[-1] for row in connection.execute(
+                        "EXPLAIN QUERY PLAN " + statement, parameters
+                    )
+                )
+                self.assertIn("SEARCH", plan, f"{name} does not SEARCH an index: {plan}")
+                self.assertNotIn("SCAN", plan.split("SEARCH")[0], f"{name} scans: {plan}")
+
     def test_rejects_explicit_non_grch38_contig_length(self):
         wrong = self.root / "wrong-build.vcf"
         write_vcf(wrong)

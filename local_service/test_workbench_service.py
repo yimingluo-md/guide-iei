@@ -10,6 +10,7 @@ import threading
 import time
 import unittest
 import urllib.request
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -814,6 +815,62 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 self.service.spliceai_lookup(
                     {"chrom": "1", "pos": 1000, "ref": "AT", "alt": "A"}
                 )
+
+    def test_bulk_intake_queue_processes_items_and_records_failures(self):
+        vcf_dir = Path(self.temp.name) / "bulk-src"
+        vcf_dir.mkdir()
+        for name in ("a.vcf.gz", "b.vcf.gz", "broken.vcf.gz"):
+            (vcf_dir / name).write_bytes(b"placeholder")
+
+        def fake_prefilter(payload, progress=None):
+            if "broken" in payload["path"]:
+                raise ValueError("synthetic prefilter failure")
+            return {"id": "rv1", "records_scanned": 100, "records_retained": 10}
+
+        prepared = Path(self.temp.name) / "prepared.vcf.gz"
+        prepared.write_bytes(b"prepared")
+        with patch.object(self.service, "prefilter_wgs_review", side_effect=fake_prefilter), \
+             patch.object(self.service, "wgs_review_file", return_value=prepared), \
+             patch.object(self.service.sample_library, "import_vcf",
+                          return_value={"datasets": [{"id": "d1"}]}):
+            snapshot = self.service.start_bulk_intake({
+                "paths": [str(vcf_dir)], "analysis_scope": "exome",
+            })
+            self.assertEqual(snapshot["job"]["total"], 3)
+            with self.assertRaisesRegex(ValueError, "still running|wait"):
+                self.service.start_bulk_intake({"paths": [str(vcf_dir)]})
+            for _ in range(400):
+                snapshot = self.service.bulk_intake_snapshot(snapshot["job"]["id"])
+                if snapshot["job"]["status"] in {"completed", "cancelled"}:
+                    break
+                time.sleep(0.02)
+        job = snapshot["job"]
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["succeeded"], 2)
+        self.assertEqual(job["failed"], 1)
+        self.assertEqual(job["datasets"], 2)
+        self.assertIn("synthetic prefilter failure", job["failures"][0]["error"])
+        # A finished queue no longer blocks a new one.
+        exome_default = job["options"]["filters"]
+        self.assertEqual(exome_default["max_gnomad_popmax"], 0.01)
+        self.assertIsNone(exome_default["min_spliceai"])
+
+    def test_bulk_intake_resume_resets_interrupted_items(self):
+        source = Path(self.temp.name) / "resume.vcf.gz"
+        source.write_bytes(b"placeholder")
+        with closing(self.service._bulk_intake_connect()) as connection, connection:
+            now = "2026-08-22T00:00:00+00:00"
+            connection.execute(
+                "INSERT INTO bulk_jobs (id, created_at, updated_at, status, options)"
+                " VALUES ('jobx', ?, ?, 'running', '{}')", (now, now))
+            connection.execute(
+                "INSERT INTO bulk_items (job_id, position, path, status, updated_at)"
+                " VALUES ('jobx', 0, ?, 'running', ?)", (str(source), now))
+        with patch.object(self.service, "_start_bulk_intake_worker") as start:
+            self.service._resume_bulk_intake()
+            start.assert_called_once_with("jobx")
+        snapshot = self.service.bulk_intake_snapshot("jobx")
+        self.assertEqual(snapshot["job"]["queued"], 1)
 
     def test_native_resource_picker_returns_selected_folder_without_user_path_typing(self):
         selected = Path(self.temp.name) / "dbNSFP5.3.1a"

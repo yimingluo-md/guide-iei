@@ -113,6 +113,36 @@ workspace with each record's complete evidence restored.
 When a new gene–disease association is published, this is the two-minute
 check across the entire collection — without touching the original files.
 
+## Building a large collection: bulk import
+
+Importing genomes one at a time is fine for a clinic week and wrong for a
+research cohort. The **Bulk import** panel at the top of the Sample
+Library takes a folder (or a pasted list of files) of annotated VCFs and
+works through them **one file at a time**: each is candidate-filtered
+exactly as a single import would be — the population-frequency ceiling
+plus, for genomes, the non-coding retention routes — then stored in the
+library and, by default, added to Cohort Search as it lands.
+
+Three properties matter at scale:
+
+- **It resumes.** The queue is recorded on disk. Close the app or restart
+  the workstation mid-batch and the remaining files pick up where they
+  left off; nothing is imported twice.
+- **One failure is one failure.** A truncated or mis-annotated file is
+  recorded with its error and the queue moves on. The status card lists
+  every failed file for review; the rest of the batch is unaffected.
+- **Serial on purpose.** One file at a time keeps memory flat and leaves
+  the workstation usable; a genome's own prefilter dominates the time, so
+  parallelism would buy little and cost stability.
+
+A batch of 1,000 genomes is therefore an overnight-to-weekend job that
+needs no supervision, and the collection it produces is queried — not
+browsed. The library page itself stays responsive at that size (datasets
+are listed 50 to a page; search and bulk actions cover the whole
+collection, not the visible page), and Cohort Search answers gene, panel,
+variant, and region questions against the full collection from its index
+in seconds.
+
 ## Bounds worth knowing
 
 - **Review size.** A browser review stays responsive to roughly 350,000

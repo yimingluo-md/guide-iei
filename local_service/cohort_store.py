@@ -693,6 +693,13 @@ COHORT_SECONDARY_INDEXES = {
         "CREATE INDEX cohort_variants_rsid_nocase_idx "
         "ON cohort_variants(rsid COLLATE NOCASE)"
     ),
+    # The exact-variant query compares variant_key COLLATE NOCASE; the
+    # binary-collated primary key cannot serve that and degrades to a full
+    # index scan at cohort scale.
+    "cohort_variants_key_nocase_idx": (
+        "CREATE INDEX cohort_variants_key_nocase_idx "
+        "ON cohort_variants(variant_key COLLATE NOCASE)"
+    ),
     "cohort_annotations_gene_idx": (
         "CREATE INDEX cohort_annotations_gene_idx "
         "ON cohort_annotations(gene, mane, impact)"
@@ -1104,6 +1111,8 @@ class CohortStore:
                     ON cohort_variants(rsid);
                 CREATE INDEX IF NOT EXISTS cohort_variants_rsid_nocase_idx
                     ON cohort_variants(rsid COLLATE NOCASE);
+                CREATE INDEX IF NOT EXISTS cohort_variants_key_nocase_idx
+                    ON cohort_variants(variant_key COLLATE NOCASE);
                 CREATE INDEX IF NOT EXISTS cohort_annotations_gene_idx
                     ON cohort_annotations(gene, mane, impact);
                 CREATE INDEX IF NOT EXISTS cohort_annotations_variant_idx

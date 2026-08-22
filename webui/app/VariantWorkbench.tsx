@@ -100,6 +100,8 @@ import {
   type StorageLocationKind,
   type StorageLocationTest,
   type StorageMigrationJob,
+  bulkSampleLibraryAction,
+  startBulkIntake, getBulkIntake, cancelBulkIntake, type BulkIntakeJob,
   openSampleLibraryReviewSelection,
   spliceAiLookup,
   type SpliceAiLookupResult,
@@ -2990,14 +2992,112 @@ function StoragePanel() {
     {stats && <><div className="storage-grid">{Object.entries({ ...stats.locations, annotation_datasets: stats.annotation_bytes }).map(([key, value]) => <article key={key}><span>{cleanLabel(key)}</span><strong>{compactFileSize(value)}</strong></article>)}</div><div className="storage-detail"><span>{stats.datasets} library datasets · {stats.managed_unique_files} unique managed VCF files</span><span>SQLite reclaimable space: <strong>{compactFileSize(stats.database_reclaimable_bytes)}</strong></span><code>{stats.state_dir}</code>{stats.workspace_dir !== stats.state_dir && <code>Temporary workspace: {stats.workspace_dir}</code>}</div></>}{message && <div className="alert">{message}</div>}{error && <div className="alert error">{error}</div>}<div className="storage-actions"><article><h2>Clean rebuildable files</h2><p>Removes old browser uploads, cohort preparation copies, WGS review cache, and partial files. Persistent managed VCFs are retained.</p><button className="secondary-button" disabled={working || Boolean(activeMigration)} onClick={() => void clean()}>Clean temporary data</button></article><article><h2>Return unused database space</h2><p>Removing cohort samples makes SQLite pages reusable but does not shrink the file. Compact only when substantial reclaimable space is shown.</p><button className="secondary-button" disabled={working || Boolean(activeMigration) || !stats?.database_reclaimable_bytes} onClick={() => void compact()}>Compact database</button></article></div></div>;
 }
 
+function BulkIntakePanel({ onLibraryChanged }: { onLibraryChanged: () => void }) {
+  const [job, setJob] = useState<BulkIntakeJob | null>(null);
+  const [pathsText, setPathsText] = useState("");
+  const [scope, setScope] = useState<"exome" | "whole_genome">("whole_genome");
+  const [popmax, setPopmax] = useState("0.01");
+  const [includeInCohort, setIncludeInCohort] = useState(true);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
+  const jobActive = job !== null && (job.status === "queued" || job.status === "running");
+  const finishedCount = job ? job.succeeded + job.failed + job.skipped : 0;
+  // Pick up a queue that is already running (including one resumed by the
+  // service after a restart), and poll while it works.
+  useEffect(() => {
+    let cancelled = false;
+    const poll = async () => {
+      try {
+        const state = await getBulkIntake();
+        if (!cancelled) setJob(state.job);
+      } catch { /* service offline; the surrounding page reports that */ }
+    };
+    void poll();
+    const timer = window.setInterval(() => { void poll(); }, 4000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, []);
+  const lastStatus = useRef<string | null>(null);
+  useEffect(() => {
+    if (job && lastStatus.current && lastStatus.current !== job.status &&
+        (job.status === "completed" || job.status === "cancelled")) onLibraryChanged();
+    lastStatus.current = job?.status ?? null;
+  }, [job, onLibraryChanged]);
+  async function start() {
+    const paths = pathsText.split("\n").map((line) => line.trim()).filter(Boolean);
+    if (!paths.length) { setError("List at least one VCF file or folder."); return; }
+    setStarting(true); setError("");
+    try {
+      const parsedPopmax = Number.parseFloat(popmax);
+      const popmaxValue = Number.isFinite(parsedPopmax) ? parsedPopmax : 0.01;
+      const filters = scope === "exome"
+        ? { max_gnomad_popmax: popmaxValue, min_spliceai: null, min_promoterai_abs: null, noncoding_mode: "none" }
+        : { max_gnomad_popmax: popmaxValue };
+      const state = await startBulkIntake({ paths, analysis_scope: scope, filters, include_in_cohort: includeInCohort });
+      setJob(state.job);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Bulk import could not start."); }
+    finally { setStarting(false); }
+  }
+  async function cancel() {
+    if (!job) return;
+    if (!window.confirm("Cancel the bulk import? Files already imported stay in the library; remaining files are skipped.")) return;
+    try { setJob((await cancelBulkIntake(job.id)).job); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "The queue could not be cancelled."); }
+  }
+  return <details className="bulk-intake" open={jobActive}>
+    <summary><span><strong>Bulk import</strong><small>Queue a folder of annotated VCFs — each file is candidate-filtered and added to the library one at a time; the queue survives restarts and resumes on its own.</small></span>{jobActive && <em>{finishedCount} of {job.total} done</em>}</summary>
+    <div className="bulk-intake-body">
+      {!jobActive && <>
+        <label className="bulk-intake-paths"><span>VCF files or folders on this computer, one per line</span>
+          <textarea value={pathsText} onChange={(event) => setPathsText(event.target.value)} rows={3} placeholder={"/data/annotated-genomes\n/data/batch2/case17.vep.vcf.gz"} spellCheck={false}/>
+          <small>Folders are searched, subfolders included, for .vcf and .vcf.gz files. Each file must be a VEP-annotated single-sample VCF from this pipeline.</small>
+        </label>
+        <div className="bulk-intake-options">
+          <label><span>Assay</span><select value={scope} onChange={(event) => setScope(event.target.value === "exome" ? "exome" : "whole_genome")}><option value="whole_genome">Whole genome</option><option value="exome">Exome</option></select></label>
+          <label><span>gnomAD popmax ≤</span><input value={popmax} onChange={(event) => setPopmax(event.target.value)} inputMode="decimal"/></label>
+          <label className="bulk-intake-check"><input type="checkbox" checked={includeInCohort} onChange={(event) => setIncludeInCohort(event.target.checked)}/><span>Add each sample to Cohort Search as it lands</span></label>
+          <button className="primary-button dark" disabled={starting} onClick={() => void start()}>{starting ? "Starting…" : "Start bulk import"}</button>
+        </div>
+        <small className="bulk-intake-note">{scope === "whole_genome" ? "Whole-genome files pass through the same candidate reduction as a single import: PASS or unfiltered sites, the population-frequency ceiling above, and the coding / splice / promoter / regulatory-element routes." : "Exome files keep protein-coding candidates under the population-frequency ceiling above; no whole-genome routes are applied."}</small>
+      </>}
+      {job && (jobActive || job.failed > 0 || !lastStatusIsOld(job)) && <div className={`bulk-intake-status ${job.status}`}>
+        <div className="bulk-intake-progress">
+          <strong>{job.status === "completed" ? "Bulk import complete" : job.status === "cancelled" ? "Bulk import cancelled" : "Importing…"}</strong>
+          <span>{job.succeeded} imported · {job.failed} failed · {job.skipped} skipped · {job.queued + job.running} remaining of {job.total}</span>
+          {jobActive && job.current_path && <small className="mono" title={job.current_path}>Working on {fileName(job.current_path)}</small>}
+          {jobActive && <small>Safe to close this page or the app — the queue resumes when the service restarts.</small>}
+        </div>
+        {job.failures.length > 0 && <details className="bulk-intake-failures"><summary>{job.failed} file{job.failed === 1 ? "" : "s"} failed — review before re-running</summary><ul>{job.failures.map((failure) => <li key={failure.path}><span className="mono" title={failure.path}>{fileName(failure.path)}</span><small>{failure.error}</small></li>)}</ul></details>}
+        {jobActive && <button className="danger-text-button" onClick={() => void cancel()}>Cancel remaining files</button>}
+      </div>}
+      {error && <div className="alert error">{error}</div>}
+    </div>
+  </details>;
+}
+
+// A finished job stays visible for the session in which it ran; a stale
+// completed job from a previous week should not reopen the panel.
+function lastStatusIsOld(job: BulkIntakeJob): boolean {
+  return Date.now() - Date.parse(job.updated_at) > 24 * 60 * 60 * 1000;
+}
+
 function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: VariantRow[], summary: ImportSummary, scope: AnalysisScope) => void; onManagePhenotype: (individualId?: string | null) => void }) {
   const [datasets, setDatasets] = useState<SampleLibraryDataset[]>([]);
   const [query, setQuery] = useState("");
+  // The page renders a fixed window of cards so a 1000-dataset library opens
+  // as fast as a 10-dataset one; selection and bulk actions operate on the
+  // full (filtered) set, not the visible page.
+  const LIBRARY_PAGE_SIZE = 50;
+  const [libraryPage, setLibraryPage] = useState(0);
+  const pageCount = Math.max(1, Math.ceil(datasets.length / LIBRARY_PAGE_SIZE));
+  const currentPage = Math.min(libraryPage, pageCount - 1);
+  const pagedDatasets = datasets.slice(
+    currentPage * LIBRARY_PAGE_SIZE, (currentPage + 1) * LIBRARY_PAGE_SIZE,
+  );
   const [working, setWorking] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   async function refresh(value = query) {
-    try { setDatasets(await getSampleLibrary(value)); setError(""); }
+    try { setDatasets(await getSampleLibrary(value)); setLibraryPage(0); setError(""); }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Sample Library is unavailable."); }
   }
   useEffect(() => { void refresh(""); }, []); // eslint-disable-line react-hooks/exhaustive-deps
@@ -3062,18 +3162,15 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
     finally { setWorking(""); }
   }
   async function addSelectedToCohort() {
-    const chosen = datasets.filter((dataset) => selectedDatasets.has(dataset.id)
-      && (dataset.cohort_index_status ?? (dataset.include_in_cohort ? "needs_repair" : "not_included")) === "not_included");
-    if (!chosen.length) { setMessage("Every selected dataset is already in Cohort Search."); return; }
+    const ids = [...selectedDatasets];
+    if (!ids.length) return;
     setWorking("bulk-add"); setError("");
-    const failures: string[] = [];
-    for (const dataset of chosen) {
-      try { await reindexSampleLibraryDataset(dataset.id, false); }
-      catch (reason) { failures.push(reason instanceof Error ? reason.message : dataset.id); }
-    }
-    await refresh();
-    if (failures.length) setError(`${failures.length} of ${chosen.length} additions failed: ${failures[0]}`);
-    else setMessage(`${chosen.length} dataset${chosen.length > 1 ? "s" : ""} added to Cohort Search.`);
+    try {
+      const report = await bulkSampleLibraryAction(ids, "cohort_add");
+      await refresh();
+      if (report.failures.length) setError(`${report.failures.length} of ${report.requested} additions failed: ${report.failures[0].error}`);
+      else setMessage(`${report.succeeded} added to Cohort Search${report.skipped ? `, ${report.skipped} already present` : ""}.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Bulk addition failed."); }
     setWorking("");
   }
   async function removeSelected() {
@@ -3081,15 +3178,13 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
     if (!ids.length) return;
     if (!window.confirm(`Remove ${ids.length} dataset${ids.length > 1 ? "s" : ""} from the Sample Library and Cohort Search? Original source VCFs are not deleted.`)) return;
     setWorking("bulk-remove"); setError("");
-    const failures: string[] = [];
-    for (const id of ids) {
-      try { await removeSampleLibraryDataset(id); }
-      catch (reason) { failures.push(reason instanceof Error ? reason.message : id); }
-    }
-    await refresh();
-    setSelectedDatasets(new Set());
-    if (failures.length) setError(`${failures.length} of ${ids.length} removals failed: ${failures[0]}`);
-    else setMessage(`${ids.length} dataset${ids.length > 1 ? "s" : ""} removed. Original source VCFs were not deleted.`);
+    try {
+      const report = await bulkSampleLibraryAction(ids, "remove");
+      await refresh();
+      setSelectedDatasets(new Set());
+      if (report.failures.length) setError(`${report.failures.length} of ${report.requested} removals failed: ${report.failures[0].error}`);
+      else setMessage(`${report.succeeded} dataset${report.succeeded === 1 ? "" : "s"} removed. Original source VCFs were not deleted.`);
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Bulk removal failed."); }
     setWorking("");
   }
   async function remove(dataset: SampleLibraryDataset) {
@@ -3107,6 +3202,7 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
   }
   return <div className="data-page library-page"><div className="data-page-header"><div><p className="eyebrow">Persistent source of truth</p><h1>Sample Library</h1><p>Reopen review sets, connect phenotype records, and rebuild the derived Cohort Search index.</p></div><div className="library-summary"><strong>{datasets.length}</strong><span>genomic datasets</span></div></div>
     <div className="library-toolbar"><label className="search"><Icon name="search"/><input value={query} placeholder="Find sample, individual, or VCF…" onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void refresh(); }}/></label><button className="secondary-button" onClick={() => void refresh()}>Search</button></div>
+    <BulkIntakePanel onLibraryChanged={() => void refresh()}/>
     <div className="profile-caveat"><strong>Positive carrier findings remain useful across profiles.</strong><span>Absence from a candidate index is not evidence that the individual lacks a variant. Compare assay and profile badges before interpreting coverage.</span></div>
     {message && <div className="alert">{message}</div>}{error && <div className="alert error">{error}</div>}
     {datasets.length > 1 && <div className="library-combined-bar">
@@ -3118,7 +3214,8 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
         <button className="secondary-button danger-button" disabled={selectedDatasets.size === 0 || working !== ""} onClick={() => void removeSelected()}>{working === "bulk-remove" ? "Removing…" : `Remove selected (${selectedDatasets.size || 0})`}</button>
       </div>
     </div>}
-    <div className="library-list">{datasets.map((dataset) => {
+    {datasets.length > LIBRARY_PAGE_SIZE && <div className="library-pagination"><span>Showing {currentPage * LIBRARY_PAGE_SIZE + 1}–{Math.min((currentPage + 1) * LIBRARY_PAGE_SIZE, datasets.length)} of {datasets.length} datasets</span><div><button className="secondary-button" disabled={currentPage === 0} onClick={() => setLibraryPage(currentPage - 1)}>Previous</button><span>Page {currentPage + 1} of {pageCount}</span><button className="secondary-button" disabled={currentPage >= pageCount - 1} onClick={() => setLibraryPage(currentPage + 1)}>Next</button></div></div>}
+    <div className="library-list">{pagedDatasets.map((dataset) => {
       const cohortStatus = dataset.cohort_index_status ?? (dataset.include_in_cohort ? "needs_repair" : "not_included");
       return <article className="library-card" key={dataset.id}>
         <header><label className="library-select" title="Select for combined review"><input type="checkbox" checked={selectedDatasets.has(dataset.id)} onChange={(event) => setSelectedDatasets((current) => { const next = new Set(current); if (event.target.checked) next.add(dataset.id); else next.delete(dataset.id); return next; })}/></label><div><strong>{dataset.sample_label}</strong><span>{dataset.individual_id ? `Individual ${dataset.individual_id}` : "Phenotype not linked"} · VCF sample {dataset.vcf_sample_name}</span></div><div className="profile-badges"><span>{dataset.analysis_scope === "whole_genome" ? "WGS" : "WES/exome"}</span><span>{dataset.index_scope === "full" ? "Full index" : "Compact candidate"}</span><span className={cohortStatus === "needs_repair" ? "warning" : cohortStatus === "not_included" ? "muted" : ""}>{cohortStatus === "ready" ? "Included in Cohort Search" : cohortStatus === "needs_repair" ? "Cohort index needs repair" : "Library only"}</span></div></header>

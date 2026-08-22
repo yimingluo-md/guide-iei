@@ -1304,6 +1304,65 @@ export async function importSampleLibrary(payload: {
   });
 }
 
+export type BulkIntakeJob = {
+  id: string;
+  status: "queued" | "running" | "completed" | "cancelled";
+  created_at: string;
+  updated_at: string;
+  options: { analysis_scope: "exome" | "whole_genome"; filters: Record<string, unknown>; include_in_cohort: boolean };
+  total: number;
+  queued: number;
+  running: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+  datasets: number;
+  current_path: string | null;
+  failures: { path: string; error: string }[];
+};
+
+export async function startBulkIntake(payload: {
+  paths: string[];
+  analysis_scope: "exome" | "whole_genome";
+  filters?: Record<string, unknown>;
+  include_in_cohort?: boolean;
+  recursive?: boolean;
+}) {
+  return request<{ job: BulkIntakeJob }>("/api/bulk-intake", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function getBulkIntake() {
+  return request<{ job: BulkIntakeJob | null }>("/api/bulk-intake");
+}
+
+export async function cancelBulkIntake(jobId: string) {
+  return request<{ job: BulkIntakeJob }>(
+    `/api/bulk-intake/${encodeURIComponent(jobId)}/cancel`,
+    { method: "POST" },
+  );
+}
+
+export type SampleLibraryBulkReport = {
+  action: string;
+  requested: number;
+  succeeded: number;
+  skipped: number;
+  failures: { id: string; error: string }[];
+};
+
+export async function bulkSampleLibraryAction(
+  datasetIds: string[],
+  action: "remove" | "cohort_add",
+) {
+  return request<SampleLibraryBulkReport>("/api/sample-library/bulk", {
+    method: "POST",
+    body: JSON.stringify({ dataset_ids: datasetIds, action }),
+  });
+}
+
 export async function openSampleLibraryReviewSelection(
   datasetIds: string[],
   fallbackName: string,

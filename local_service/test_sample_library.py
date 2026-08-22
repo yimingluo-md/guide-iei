@@ -101,6 +101,23 @@ class SampleLibraryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one dataset"):
             self.library.review_file_combined([])
 
+    def test_bulk_apply_reports_per_item_outcomes(self):
+        result = self.library.import_vcf(self.vcf, self.payload(include=False))
+        ids = [d["id"] for d in result["datasets"]]
+        report = self.library.bulk_apply(ids + ["no-such-dataset"], "cohort_add")
+        # Both datasets share one managed file: indexing the first also
+        # readies the second, which is then skipped as already present.
+        self.assertEqual(report["succeeded"] + report["skipped"], 2)
+        self.assertEqual(report["failures"][0]["id"], "no-such-dataset")
+        # Idempotent: already-indexed datasets are skipped, not failed.
+        again = self.library.bulk_apply(ids, "cohort_add")
+        self.assertEqual(again["skipped"], 2)
+        removed = self.library.bulk_apply(ids, "remove")
+        self.assertEqual(removed["succeeded"], 2)
+        self.assertEqual(self.library.list(), [])
+        with self.assertRaisesRegex(ValueError, "remove or cohort_add"):
+            self.library.bulk_apply(ids, "explode")
+
     def test_persistent_import_identity_profile_and_reopen(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=True))
         self.assertEqual(len(result["datasets"]), 2)
