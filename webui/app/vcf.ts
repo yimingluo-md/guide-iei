@@ -147,6 +147,10 @@ export type VariantRow = {
   /** Cohort review mode: the carrying individuals for this variant. */
   carriers?: CohortCarrier[];
   cohortSampleCount?: number;
+  /** True only for the MANE Select transcript (mane also covers Plus Clinical). */
+  maneSelect?: boolean;
+  /** One-row-per-variant display: the other transcript/gene rows collapsed into this one. */
+  collapsedTranscriptRows?: VariantRow[];
   libraryDatasetId?: string;
   librarySampleId?: string;
   libraryIndividualId?: string | null;
@@ -417,6 +421,38 @@ function transcriptGroupKey(row: VariantRow) {
  * consequence. For an allele-gene with no MANE consequence, retain VEP's
  * PICK=1 fallback selected by --flag_pick_allele_gene.
  */
+const IMPACT_SEVERITY: Record<string, number> = { HIGH: 0, MODERATE: 1, LOW: 2, MODIFIER: 3 };
+
+/**
+ * One-row-per-variant display collapse. Filters run on the full row set
+ * first, so a row that qualified through any gene or transcript keeps its
+ * variant visible; the representative is then chosen by clinical priority
+ * (MANE Select, then MANE Plus Clinical, then consequence severity, then
+ * PICK), and the remaining rows ride along for the "+N" indicator. Rows are
+ * grouped per sample so family review keeps one row per carrying member.
+ */
+export function collapseToOneRowPerVariant(rows: VariantRow[]): VariantRow[] {
+  const groups = new Map<string, VariantRow[]>();
+  for (const row of rows) {
+    const key = `${row.sample}:${row.chrom}:${row.pos}:${row.ref}:${row.alt}`;
+    groups.set(key, [...(groups.get(key) ?? []), row]);
+  }
+  const rank = (row: VariantRow) => [
+    row.maneSelect ? 0 : row.mane ? 1 : 2,
+    IMPACT_SEVERITY[row.impact] ?? 4,
+    row.picked ? 0 : 1,
+  ];
+  return [...groups.values()].map((group) => {
+    if (group.length === 1) return group[0];
+    const sorted = [...group].sort((left, right) => {
+      const a = rank(left); const b = rank(right);
+      return a[0] - b[0] || a[1] - b[1] || a[2] - b[2];
+    });
+    const [representative, ...others] = sorted;
+    return { ...representative, collapsedTranscriptRows: others };
+  });
+}
+
 export function preferredClinicalTranscriptRows(rows: VariantRow[]) {
   const maneGroups = new Set(
     rows.filter((row) => row.mane).map(transcriptGroupKey),
@@ -1412,6 +1448,7 @@ export async function parseVcfFiles(
               readPosRankSum: maximum(info, ["ReadPosRankSum"]),
               baseQRankSum: maximum(info, ["BaseQRankSum"]),
               mane,
+              maneSelect: truthy(first(combined, ["MANE_SELECT"])),
               picked,
               repeat: truthy(first(combined, ["RepeatMasker", "REPEATMASKER"])),
               segdup: truthy(first(combined, ["SegDup", "SEGDUP"])),

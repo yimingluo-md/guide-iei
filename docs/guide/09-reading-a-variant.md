@@ -37,6 +37,19 @@ full transcript table is the appropriate reference. IMPACT
 (HIGH/MODERATE/…) is VEP's coarse consequence tier: useful for filtering,
 too coarse for judging an individual variant.
 
+**Why a variant can legitimately appear on two transcripts.** Most genes
+have exactly one clinically designated transcript (MANE Select), but some
+— TCF3 is a classic example — additionally carry a **MANE Plus Clinical**
+transcript: an isoform the clinical community needs for interpreting
+certain diseases. Both consequences are real and both are retained.
+Variants in overlapping genes similarly carry one consequence per gene.
+The variant list's **One row per variant** display (on by default) shows
+each variant once, represented by its highest-priority transcript, with a
+**+N** chip counting the collapsed rows — hover the chip to see them, or
+open the variant for the complete transcript table. Turning the toggle
+off restores one row per transcript and gene. Nothing is filtered either
+way; this is presentation only.
+
 ## Loss-of-function evidence
 
 For putative loss-of-function variants (stop-gained, frameshift, essential

@@ -46,7 +46,7 @@ export const GLOSSARY: GlossaryEntry[] = [
   {
     id: "mane", term: "MANE Select", aliases: ["MANE Plus Clinical", "MANE"],
     category: "Genome & data",
-    definition: "The single transcript per gene jointly agreed by NCBI and Ensembl as the clinical standard; this workbench displays MANE consequences by default. MANE Plus Clinical adds transcripts needed for some diseases.",
+    definition: "The single transcript per gene jointly agreed by NCBI and Ensembl as the clinical standard. Some genes also have a MANE Plus Clinical transcript — an additional isoform needed to interpret certain diseases — so one variant can legitimately carry two MANE-designated consequence rows; the one-row-per-variant display shows MANE Select and counts the rest in a +N chip.",
   },
   // ---------------------------------------------------------- Variant effects
   {

@@ -14,6 +14,7 @@ const {
   isHeterozygousGenotype,
   STANDARD_VARIANT_QC,
   parseVcfFiles,
+  collapseToOneRowPerVariant,
   preferredClinicalTranscriptRows,
   variantQcFailures,
 } = await import(moduleUrl);
@@ -196,6 +197,22 @@ test("a cohort file must be imported on its own", async () => {
     ]),
     /reviewed one file at a time/,
   );
+});
+
+test("one-row-per-variant collapse prefers MANE Select and keeps the rest as a chip", () => {
+  const base = { sample: "P1", chrom: "19", pos: 1620980, ref: "G", alt: "A", picked: true, impact: "HIGH" };
+  const maneSelect = { ...base, key: "a", gene: "TCF3", transcript: "ENST00000262965", mane: true, maneSelect: true };
+  const manePlus = { ...base, key: "b", gene: "TCF3", transcript: "ENST00000588136", mane: true, maneSelect: false };
+  const neighborGene = { ...base, key: "c", gene: "LINC1", transcript: "ENST00000756700", mane: false, maneSelect: false, impact: "MODIFIER" };
+  const otherVariant = { ...base, key: "d", pos: 999, gene: "TCF3", transcript: "ENST00000262965", mane: true, maneSelect: true };
+  const collapsed = collapseToOneRowPerVariant([manePlus, neighborGene, maneSelect, otherVariant]);
+  assert.equal(collapsed.length, 2);
+  const merged = collapsed.find((row) => row.pos === 1620980);
+  assert.equal(merged.transcript, "ENST00000262965");
+  assert.deepEqual(merged.collapsedTranscriptRows.map((row) => row.key).sort(), ["b", "c"]);
+  // Per-sample grouping: the same variant in two samples stays two rows.
+  const twoSamples = collapseToOneRowPerVariant([maneSelect, { ...manePlus, sample: "P2" }]);
+  assert.equal(twoSamples.length, 2);
 });
 
 test("preserves separate disease-specific ClinGen expert assertions", async () => {

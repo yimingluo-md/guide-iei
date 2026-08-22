@@ -21,6 +21,10 @@ shows **one row per variant**, and the genotype column reports how many
 individuals carry it (for example, `3/88 carry`). Every familiar filter
 applies unchanged — population frequency, IMPACT, gene lists, predictors,
 ClinVar — so the screening loop is the same one used for a single exome.
+The **One row per variant** display (on by default) additionally collapses
+multiple transcript or gene consequences of the same variant — MANE Select
+plus MANE Plus Clinical, or overlapping genes — into a single row with a
++N indicator ([Reading a variant page](09-reading-a-variant.md)).
 
 Opening a variant adds a **Carriers** panel to the evidence: each carrying
 individual with genotype, depth, genotype quality, allele depths, and
