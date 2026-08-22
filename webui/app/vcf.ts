@@ -276,6 +276,8 @@ export type ImportSummary = {
   files: number;
   samples: number;
   cohortMode?: boolean;
+  /** Aggregated across separately-called files: carrier counts have no denominator. */
+  separatelyCalled?: boolean;
   passRecords: number;
   excludedNonPass: number;
   rows: number;
@@ -975,11 +977,20 @@ async function vcfHeaderLines(file: File) {
 
 export async function parseVcfFiles(
   files: File[],
-  options: { retainRawAnnotations?: boolean; intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number } = {},
+  options: { retainRawAnnotations?: boolean; intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number; aggregateMaxPopmax?: number | null } = {},
 ): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
   const rows: VariantRow[] = [];
   let importCohortMode = false;
   let cohortCarrierEntries = 0;
+  // Separately-called aggregation: several files whose sample columns sum to
+  // cohort scale are reviewed as one variant-centric list. Carriers are
+  // aggregated per variant across files; individuals without a record at a
+  // site are NOT confirmed reference, so these rows carry no denominator.
+  const headerSampleCounts = await Promise.all(files.map((file) => vcfSampleCount(file)));
+  const totalHeaderSamples = headerSampleCounts.reduce((sum, count) => sum + count, 0);
+  const aggregatedCohort = files.length > 1 && totalHeaderSamples >= COHORT_SAMPLE_GUARD;
+  const aggregatedVariants = new Map<string, { carriers: CohortCarrier[] } | { dropped: true }>();
+  const clinvarReleaseByFile = new Map<string, string>();
   const carrierEntryCap = options.carrierEntryCap ?? 3_000_000;
   const evidenceByVariant = new Map<string, Record<string, GenotypeEvidence>>();
   const sampleNames = new Set<string>();
@@ -1040,16 +1051,16 @@ export async function parseVcfFiles(
     // Cohort review mode: at 16+ sample columns the per-sample row model
     // (one row per carrier, an all-samples genotype map on every row) would
     // exhaust browser memory, so the parser switches to one row per variant
-    // with a compact carrier list. Family-scale files (2-15 samples) keep the
-    // per-sample model that trio analysis and the phenotype tab are built on.
-    const cohortMode = samples.length >= COHORT_SAMPLE_GUARD;
+    // with a compact carrier list. Family-scale imports (2-15 samples total)
+    // keep the per-sample model that trio analysis and the phenotype tab are
+    // built on. A single jointly-called file keeps its carrier denominator;
+    // separately-called aggregation does not.
+    const jointCohortFile = samples.length >= COHORT_SAMPLE_GUARD && files.length === 1;
+    const cohortMode = jointCohortFile || aggregatedCohort;
     if (cohortMode) importCohortMode = true;
-    if (cohortMode && files.length > 1) {
-      throw new Error(
-        `${file.name} has ${samples.length} samples: cohort files are `
-        + "reviewed one file at a time — import it on its own.",
-      );
-    }
+    const clinvarHeader = lines.find((line) => /clinvar/i.test(line) && /20\d{2}[-_.]?\d{2}/.test(line));
+    const clinvarRelease = clinvarHeader?.match(/(20\d{2}[-_.]?\d{2}(?:[-_.]?\d{2})?)/)?.[1];
+    if (clinvarRelease) clinvarReleaseByFile.set(file.name, clinvarRelease);
     const duplicateSamples = samples.filter(
       (sample, index) => !sample || samples.indexOf(sample) !== index || sampleNames.has(sample),
     );
@@ -1225,6 +1236,31 @@ export async function parseVcfFiles(
         });
         if (!cohortMode) evidenceByVariant.set(variantEvidenceKey, mergedEvidence);
 
+        // Separately-called aggregation: the first file to present a variant
+        // emits its rows; later files only append their carriers to the
+        // shared array those rows reference. The popmax decision is made
+        // once per variant, at parse time, so the union of many exomes
+        // stays bounded (an unavailable popmax always retains the variant).
+        if (aggregatedCohort && cohortCarriers) {
+          const existing = aggregatedVariants.get(variantEvidenceKey);
+          if (existing) {
+            if (!("dropped" in existing)) existing.carriers.push(...cohortCarriers);
+            return;
+          }
+          const popmaxThreshold = options.aggregateMaxPopmax ?? null;
+          if (popmaxThreshold !== null) {
+            const probe = { ...alleleIndexedInfo(info, altIndex, alts.length), ...(consequences[0] ?? {}) };
+            const variantPopmax = maximum(probe, [
+              "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax", "gnomAD_popmax_AF",
+              "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
+            ]);
+            if (variantPopmax !== null && variantPopmax > popmaxThreshold) {
+              aggregatedVariants.set(variantEvidenceKey, { dropped: true });
+              return;
+            }
+          }
+          aggregatedVariants.set(variantEvidenceKey, { carriers: cohortCarriers });
+        }
         // Cohort mode emits ONE row set per variant (sample = the cohort),
         // carrying the compact carrier list; the representative genotype
         // fields come from the best-supported carrier. Per-sample mode is
@@ -1435,10 +1471,12 @@ export async function parseVcfFiles(
               loeuf: maximum(combined, ["LOEUF", "loeuf", "oe_lof_upper", "gnomAD_LOEUF"]),
               missenseZ: maximum(combined, ["mis_z", "missense_z", "gnomAD_mis_z"]),
               carriers: cohortCarriers ?? undefined,
-              cohortSampleCount: cohortMode ? samples.length : undefined,
-              genotype: cohortMode
-                ? `${cohortCarriers!.length}/${samples.length} carry`
-                : genotype.gt,
+              cohortSampleCount: jointCohortFile ? samples.length : undefined,
+              genotype: !cohortMode
+                ? genotype.gt
+                : jointCohortFile
+                  ? `${cohortCarriers!.length}/${samples.length} carry`
+                  : `${cohortCarriers!.length} carry`,
               dp: genotype.dp,
               gq: genotype.gq,
               adRef: genotype.adRef,
@@ -1609,12 +1647,36 @@ export async function parseVcfFiles(
     },
   ];
 
+  if (aggregatedCohort) {
+    // Later files appended carriers to the shared arrays after the rows were
+    // emitted; refresh the labels and carrier-keyed evidence maps once.
+    for (const row of rows) {
+      if (!row.carriers) continue;
+      row.genotype = `${row.carriers.length} carry`;
+      row.sampleGenotypes = Object.fromEntries(
+        row.carriers.map((entry) => [entry.sample, entry.evidence]),
+      );
+    }
+    const releases = [...new Set(clinvarReleaseByFile.values())];
+    if (releases.length > 1) {
+      warnings.push(
+        "These files were annotated against different ClinVar releases ("
+        + [...clinvarReleaseByFile.entries()].map(([name, release]) => `${name}: ${release}`).join("; ")
+        + "). ClinVar classifications may differ between files annotated at different times.",
+      );
+    }
+    warnings.push(
+      "Separately called files: carrier counts have no denominator — an individual "
+      + "without a record at a site is not confirmed reference.",
+    );
+  }
   return {
     rows,
     summary: {
       files: files.length,
       samples: sampleNames.size,
       cohortMode: importCohortMode,
+      separatelyCalled: aggregatedCohort,
       passRecords,
       excludedNonPass,
       rows: rows.length,

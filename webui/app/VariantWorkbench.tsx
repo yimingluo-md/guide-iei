@@ -1061,7 +1061,10 @@ export default function VariantWorkbench() {
         }
       }
       setImportProgress("Parsing retained annotations…");
-      const result = await parseVcfFiles(reviewFiles, { intake: analysisScope === "whole_genome" ? "prepared-review" : "user" });
+      const result = await parseVcfFiles(reviewFiles, {
+        intake: analysisScope === "whole_genome" ? "prepared-review" : "user",
+        aggregateMaxPopmax: analysisScope === "exome" ? exomeCohortPopmax : undefined,
+      });
       result.summary.warnings.unshift(...wgsMessages);
       if (libraryOptions.keep) {
         setImportProgress("Saving the review set to the Sample Library…");
@@ -1650,11 +1653,13 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
       {selected.spliceAI == null && selected.ref.length !== selected.alt.length && /^[ACGT]+$/.test(selected.ref) && /^[ACGT]+$/.test(selected.alt) && <SpliceAiOnlineLookup key={fullVariantId(selected)} variant={{ chrom: selected.chrom, pos: selected.pos, ref: selected.ref, alt: selected.alt }} />}
 
       <div className="evidence-layout">
-        {selected.carriers && <EvidenceSection eyebrow="Cohort evidence" title={`Carriers · ${selected.carriers.length} of ${selected.cohortSampleCount ?? "?"} individuals`}>
+        {selected.carriers && <EvidenceSection eyebrow="Cohort evidence" title={selected.cohortSampleCount ? `Carriers · ${selected.carriers.length} of ${selected.cohortSampleCount} individuals` : `Carriers · ${selected.carriers.length} individual${selected.carriers.length === 1 ? "" : "s"} (separately called)`}>
           <div className="cohort-carriers-table"><table><thead><tr><th>Individual</th><th>GT</th><th>DP</th><th>GQ</th><th>AD</th><th>AB</th><th>FT</th></tr></thead><tbody>
             {selected.carriers.map((carrier) => <tr key={carrier.sample}><td>{carrier.sample}</td><td className="mono">{carrier.evidence.gt}</td><td>{carrier.evidence.dp ?? "—"}</td><td>{carrier.evidence.gq ?? "—"}</td><td>{carrier.evidence.adRef ?? "—"}, {carrier.evidence.adAlt ?? "—"}</td><td>{compactNumber(carrier.evidence.alleleBalance, 2)}</td><td>{carrier.evidence.genotypeFilter || "—"}</td></tr>)}
           </tbody></table></div>
-          <p className="constraint-note">Sample-evidence fields elsewhere on this page describe the best-supported carrier; this table is the complete carrier list.</p>
+          <p className="constraint-note">{selected.cohortSampleCount
+            ? "Jointly called file: non-carrying individuals are confirmed reference at this site. Sample-evidence fields elsewhere on this page describe the best-supported carrier."
+            : "Separately called files: individuals without a record at this site are not confirmed reference — no carrier denominator is claimed. Sample-evidence fields elsewhere on this page describe the best-supported carrier."}</p>
         </EvidenceSection>}
         {trio && <TrioGenotypeEvidence row={selected} trio={trio} assessment={deNovo}/>}
         {visibleInfo.has("quality") && <EvidenceSection eyebrow="Sample evidence" title="Call quality"><EvidenceGrid items={[
@@ -2991,9 +2996,24 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
     setWorking("combined"); setError("");
     setMessage(`Preparing a combined review for ${datasetIds.length} individuals…`);
     try {
-      const file = await openSampleLibraryReviewSelection(datasetIds, "combined.review.vcf.gz");
-      const parsed = await parseVcfFiles([file], { retainRawAnnotations: true, intake: "prepared-review" });
-      parsed.summary.warnings.unshift(`Combined review · ${label}`);
+      // One projection per managed source file: a within-file selection keeps
+      // joint-callset semantics; selections spanning files are aggregated by
+      // the parser as separately called (no carrier denominator).
+      const chosen = datasets.filter((dataset) => datasetIds.includes(dataset.id));
+      const groups = new Map<string, string[]>();
+      for (const dataset of chosen) {
+        const key = dataset.managed_checksum || dataset.id;
+        groups.set(key, [...(groups.get(key) ?? []), dataset.id]);
+      }
+      const files: File[] = [];
+      let index = 0;
+      for (const ids of groups.values()) {
+        index += 1;
+        if (groups.size > 1) setMessage(`Preparing projection ${index} of ${groups.size}…`);
+        files.push(await openSampleLibraryReviewSelection(ids, `combined-${index}.review.vcf.gz`));
+      }
+      const parsed = await parseVcfFiles(files, { retainRawAnnotations: true, intake: "prepared-review" });
+      parsed.summary.warnings.unshift(`Combined review · ${label}${groups.size > 1 ? ` · ${groups.size} source files` : ""}`);
       onReview(parsed.rows, parsed.summary, datasets[0]?.analysis_scope ?? "exome");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Combined review could not be opened."); }
     finally { setWorking(""); setMessage(""); }

@@ -37,6 +37,18 @@ phenotype tab (both remain available when reviewing an individual or a
 small family, where rows are per-sample as before — files with 2–15
 samples keep the family-oriented behavior unchanged).
 
+**Two forms of carrier count, by provenance.** A single jointly-called
+file shows `3/88 carry`: every individual was genotyped at every site, so
+non-carriers are confirmed reference and the denominator is earned.
+**Separately-called aggregation** — several files whose samples sum to 16
+or more, or a library selection spanning source files — shows `3 carry`
+with **no denominator**: an individual whose file has no record at a site
+is *not* confirmed reference. The missing denominator is itself the
+signal. Aggregated imports also apply the candidate-import popmax
+threshold at parse time, warn when the files were annotated against
+different ClinVar releases, and refuse duplicate sample names across
+files.
+
 **Routes into cohort review:**
 
 - **Import → Review annotated VCF** with either scope. A cohort **exome**
@@ -48,8 +60,13 @@ samples keep the family-oriented behavior unchanged).
   frequency plus the non-coding retention criteria). Either way, the
   prepared result opens in cohort mode, and the prefilter is what keeps
   the carrier volume reviewable.
-- **Sample Library → Select all → Open combined review**: reopens a
-  stored cohort in cohort review mode at any time.
+- **Import → Review annotated VCF** with several exome files at once:
+  when the sample columns sum to 16+, the files are aggregated as
+  separately called (above).
+- **Sample Library → any selection → Open combined review**: a selection
+  within one source file keeps joint semantics; a selection spanning
+  files — including Select all over a heterogeneous library — opens as a
+  separately-called aggregation.
 
 ## Reviewing individuals and subsets from a cohort
 

@@ -183,20 +183,65 @@ test("cohort imports respect the carrier-entry cap with prefilter guidance", asy
   );
 });
 
-test("a cohort file must be imported on its own", async () => {
+test("a joint cohort file mixed with other files aggregates without a denominator", async () => {
   const samples = Array.from({ length: 20 }, (_, i) => `S${i + 1}`);
+  const genotypes = samples.map((s) => (s === "S1" ? "0/1:30:99:15,15" : "0/0:30:99:30,0"));
   const cohort = "##fileformat=VCFv4.2\n"
     + "##reference=GRCh38\n"
     + "##contig=<ID=1,length=248956422>\n"
     + `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${CSQ_FIELDS.join("|")}">\n`
-    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n";
-  await assert.rejects(
-    () => parseVcfFiles([
-      new File([cohort], "cohort.vcf"),
-      new File([VCF], "patient.vcf"),
-    ]),
-    /reviewed one file at a time/,
-  );
+    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n"
+    + `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t` + genotypes.join("\t") + "\n";
+  const result = await parseVcfFiles([
+    new File([cohort], "cohort.vcf"),
+    new File([VCF], "patient.vcf"),
+  ]);
+  assert.equal(result.summary.separatelyCalled, true);
+  const shared = result.rows.find((row) => row.pos === 100);
+  // S1 (from the joint file) and PATIENT (separate file) both carry — but
+  // mixed provenance means no denominator is claimed.
+  assert.equal(shared.genotype, "2 carry");
+  assert.deepEqual(shared.carriers.map((c) => c.sample).sort(), ["PATIENT", "S1"]);
+  assert.equal(shared.cohortSampleCount, undefined);
+});
+
+test("separately-called files aggregate: N carry, popmax at parse, drift warning", async () => {
+  const fileFor = (name, sampleNames, records, clinvarDate) => {
+    const vcf = "##fileformat=VCFv4.2\n"
+      + "##reference=GRCh38\n"
+      + "##contig=<ID=1,length=248956422>\n"
+      + `##INFO=<ID=ClinVar_path_aa_match,Number=1,Type=Integer,Description="ClinVar release ${clinvarDate}">\n`
+      + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">\n`
+      + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sampleNames.join("\t") + "\n"
+      + records.join("\n") + "\n";
+    return new File([vcf], name);
+  };
+  const rare = (gts) => `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t${gts.join("\t")}`;
+  const common = (gts) => `1\t300\trs3\tG\tC\t99\tPASS\tCSQ=${PASS_CSQ.replace("|0.0002|", "|0.35|")}\tGT:DP:GQ:AD\t${gts.join("\t")}`;
+  const groupA = Array.from({ length: 9 }, (_, i) => `A${i + 1}`);
+  const groupB = Array.from({ length: 9 }, (_, i) => `B${i + 1}`);
+  const carryFirst = (names) => names.map((name, index) => (index === 0 ? "0/1:30:99:15,15" : "0/0:30:99:30,0"));
+  const fileA = fileFor("groupA.vcf", groupA, [rare(carryFirst(groupA)), common(carryFirst(groupA))], "2026-08-01");
+  const fileB = fileFor("groupB.vcf", groupB, [rare(carryFirst(groupB))], "2026-06-15");
+
+  const result = await parseVcfFiles([fileA, fileB], { aggregateMaxPopmax: 0.01 });
+  assert.equal(result.summary.cohortMode, true);
+  assert.equal(result.summary.separatelyCalled, true);
+  assert.equal(result.summary.samples, 18);
+  assert.equal(result.rows.length, 1);
+  const row = result.rows[0];
+  assert.equal(row.genotype, "2 carry");
+  assert.equal(row.cohortSampleCount, undefined);
+  assert.deepEqual(row.carriers.map((c) => c.sample).sort(), ["A1", "B1"]);
+  assert.ok(result.summary.warnings.some((w) => w.includes("different ClinVar releases")));
+  assert.ok(result.summary.warnings.some((w) => w.includes("not confirmed reference")));
+
+  const smallA = fileFor("smallA.vcf", ["S1"], [rare(["0/1:30:99:15,15"])], "2026-08-01");
+  const smallB = fileFor("smallB.vcf", ["S2"], [rare(["0/1:25:80:12,13"])], "2026-08-01");
+  const family = await parseVcfFiles([smallA, smallB]);
+  assert.ok(!family.summary.cohortMode);
+  assert.equal(family.rows.length, 2);
+  assert.equal(family.rows[0].genotype, "0/1");
 });
 
 test("one-row-per-variant collapse prefers MANE Select and keeps the rest as a chip", () => {
@@ -210,7 +255,6 @@ test("one-row-per-variant collapse prefers MANE Select and keeps the rest as a c
   const merged = collapsed.find((row) => row.pos === 1620980);
   assert.equal(merged.transcript, "ENST00000262965");
   assert.deepEqual(merged.collapsedTranscriptRows.map((row) => row.key).sort(), ["b", "c"]);
-  // Per-sample grouping: the same variant in two samples stays two rows.
   const twoSamples = collapseToOneRowPerVariant([maneSelect, { ...manePlus, sample: "P2" }]);
   assert.equal(twoSamples.length, 2);
 });

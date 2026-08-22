@@ -39,9 +39,16 @@ per-patient phenotype tab are unavailable in cohort mode. A cohort import
 exceeding ~3 million carrier entries (an unfiltered callset) is refused
 with directions to the population-frequency prefilter. The Sample Library
 can open one individual (per-sample projection) or any selection —
-including Select all — as a combined review (family behavior at 15 or
-fewer samples, cohort mode above that); selections can also be removed
-from the library in bulk.
+including Select all, and selections spanning different source files — as
+a combined review (family behavior at 15 or fewer samples, cohort mode
+above that); selections can also be removed from the library in bulk.
+Multiple exome files import together the same way: summed samples of 16+
+aggregate as separately called. Carrier counts carry a denominator
+(`3/88 carry`) only for a single jointly-called source, where
+non-carriers are confirmed reference; separately-called aggregations show
+`3 carry` and state that absent individuals are not confirmed reference.
+Aggregated imports apply the popmax threshold at parse, surface
+ClinVar-release drift between files, and refuse duplicate sample names.
 
 ## Sample Library
 
