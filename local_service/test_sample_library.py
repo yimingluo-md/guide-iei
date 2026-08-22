@@ -58,6 +58,11 @@ class SampleLibraryTests(unittest.TestCase):
                 self.library.file(by_sample["P1"]["id"]),
             )
             return
+        if not backend.native_tools.get("bcftools"):
+            self.skipTest(
+                "no native bcftools: the container backend needs the built "
+                "annotation image, which this environment does not have"
+            )
 
         self.cohort.hts_backend = backend
         projected = self.library.review_file(by_sample["P1"]["id"])
@@ -88,7 +93,7 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(whole, self.library.file(by_sample["P1"]["id"]))
 
         # A single selection delegates to the per-sample projection.
-        if backend is not None:
+        if backend is not None and backend.native_tools.get("bcftools"):
             self.cohort.hts_backend = backend
             single = self.library.review_file_combined([by_sample["P1"]["id"]])
             self.assertEqual(read_vcf_header(single).samples, ("P1",))
