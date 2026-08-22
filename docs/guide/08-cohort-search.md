@@ -42,8 +42,8 @@ samples keep the family-oriented behavior unchanged).
 - **Import → Review annotated VCF** with either scope. A cohort **exome**
   file (16+ samples) is prepared on the local service automatically under
   the Exome scope: PASS-or-unfiltered records in coding regions, filtered
-  by a gnomAD popmax threshold (default ≤ 0.01, adjustable beside the
-  scope selector; clear it to keep common variants). A cohort **genome**
+  by a gnomAD popmax threshold (default ≤ 0.01, set in the **Cohort exome
+  candidate import** panel; clear it to keep common variants). A cohort **genome**
   takes the Whole genome scope with its full prefilter (population
   frequency plus the non-coding retention criteria). Either way, the
   prepared result opens in cohort mode, and the prefilter is what keeps
