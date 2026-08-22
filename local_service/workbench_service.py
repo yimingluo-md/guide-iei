@@ -4212,6 +4212,13 @@ class AnnotationJobService:
 
     def shutdown(self) -> None:
         self._stop.set()
+        # The bulk-intake worker stops between items on _stop. Give it a
+        # moment to finish the current bookkeeping write; a worker deep in a
+        # long prefilter is left as a daemon — the interrupted item is reset
+        # to queued and resumed at the next service start.
+        bulk_thread = self._bulk_intake_thread
+        if bulk_thread and bulk_thread.is_alive():
+            bulk_thread.join(timeout=2)
         with self._process_lock:
             running = list(self._processes.items())
         for job_id, process in running:

@@ -822,7 +822,15 @@ class AnnotationJobServiceTests(unittest.TestCase):
         for name in ("a.vcf.gz", "b.vcf.gz", "broken.vcf.gz"):
             (vcf_dir / name).write_bytes(b"placeholder")
 
+        # The first item blocks until released, so the single-active-job
+        # refusal is asserted while the queue is provably still running —
+        # on a fast machine an ungated queue of three mocked items can
+        # complete before the second start_bulk_intake call.
+        release_first_item = threading.Event()
+        self.addCleanup(release_first_item.set)
+
         def fake_prefilter(payload, progress=None):
+            release_first_item.wait(timeout=10)
             if "broken" in payload["path"]:
                 raise ValueError("synthetic prefilter failure")
             return {"id": "rv1", "records_scanned": 100, "records_retained": 10}
@@ -839,6 +847,7 @@ class AnnotationJobServiceTests(unittest.TestCase):
             self.assertEqual(snapshot["job"]["total"], 3)
             with self.assertRaisesRegex(ValueError, "still running|wait"):
                 self.service.start_bulk_intake({"paths": [str(vcf_dir)]})
+            release_first_item.set()
             for _ in range(400):
                 snapshot = self.service.bulk_intake_snapshot(snapshot["job"]["id"])
                 if snapshot["job"]["status"] in {"completed", "cancelled"}:
