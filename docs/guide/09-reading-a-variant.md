@@ -109,31 +109,27 @@ on every annotation:
   the HumDiv-trained model is the standing column, the HumVar model is
   in the optional set below). Retained for continuity with two decades
   of literature more than for standalone accuracy.
-- **MetaRNN** — a recurrent-network meta-predictor over component scores
-  and population frequencies. 0–1, higher = deleterious. Being
-  frequency-aware, it partially re-counts rarity you have already
-  filtered on.
-- **PrimateAI** — a deep network using common variation in non-human
-  primates as its benign training proxy, an elegant answer to the
-  circularity problem below. 0–1, higher = deleterious.
-- **Conservation triple** — **GERP++ RS** (substitution deficit at the
-  position; higher = stronger constraint), **phyloP100way** (positive =
-  conserved, negative = accelerated), **phastCons100way** (0–1
-  probability of lying in a conserved element). Nucleotide-level and
-  consequence-agnostic — informative precisely because they know nothing
-  about proteins.
+
+The default panel is deliberately this small. In the developer's
+judgment, further predictors contribute limited additional information
+to interpretation and decision-making — most correlate strongly with the
+panel above — while every added column costs annotation time and output
+size. Everything else dbNSFP offers is available per job.
 
 ### Optional dbNSFP predictors
 
-dbNSFP bundles far more predictors than any review needs at once; the
-remainder are **off by default** to keep annotated VCFs lean and because
-most add correlated rather than independent evidence. Any subset can be
-enabled per job under **Run VEP first → Additional dbNSFP predictors**;
-the one-click **Recommended extended** selection (marked ✓) covers the
-methodologically distinct ones.
+Any subset can be enabled per job under **Run VEP first → Additional
+dbNSFP predictors**. The **Extended set** column below marks the
+predictors included in the one-click **Recommended extended** selection —
+those chosen for being methodologically distinct rather than duplicative.
 
-| Predictor | Approach | Direction | ✓ |
+| Predictor | Approach | Direction | Extended set |
 |---|---|---|---|
+| MetaRNN | Recurrent-network meta-predictor over component scores and population frequencies | 0–1, higher | ✓ |
+| PrimateAI | Deep network using common variation in non-human primates as its benign training proxy | 0–1, higher | ✓ |
+| GERP++ RS | Substitution deficit at the nucleotide position | higher = constrained | ✓ |
+| phyloP 100-way | Per-position conservation across 100 vertebrates | positive = conserved, negative = accelerated | ✓ |
+| phastCons 100-way | Probability of lying within a conserved element | 0–1 | |
 | SIFT4G | SIFT recomputed over broader ortholog alignments | lower = deleterious | ✓ |
 | PolyPhen-2 HVAR | Same classifier, trained Mendelian-vs-common (the authors' recommendation for Mendelian work) | higher = damaging | ✓ |
 | MutationTaster | Bayes classifier over conservation, splice, and mRNA features | probability attached to its disease/polymorphism call | |
@@ -166,8 +162,8 @@ Three structural caveats apply to any predictor comparison:
 - **Circularity.** Many predictors train on ClinVar or HGMD; a variant
   adjacent to known pathogenic entries scores high partly because of that
   adjacency. Their agreement with ClinVar is therefore not independent
-  confirmation. ESM1b, popEVE, PrimateAI, and the conservation scores are
-  the most label-free lines in the panel.
+  confirmation. ESM1b, popEVE, PrimateAI, and the conservation scores —
+  all in the optional set — are the most label-free lines available.
 - **Shared inputs.** The meta-predictors (REVEL, MetaSVM/LR, MetaRNN,
   BayesDel, ClinPred) consume overlapping component sets. Agreement
   *among* them counts for less than agreement *across* method families —
@@ -266,7 +262,9 @@ quality — not grounds for automatic dismissal.
 Most regulatory information is epigenomic rather than sequence-based:
 chromatin accessibility, the promoter- and enhancer-associated histone
 marks H3K4me3 and H3K27ac, and CTCF occupancy. ENCODE's **SCREEN Registry
-V4** integrates these assays into approximately 2.35 million **candidate
+V4** ([An expanded registry of candidate cis-regulatory elements,
+*Nature* 2026](https://www.nature.com/articles/s41586-025-09909-9))
+integrates these assays into approximately 2.37 million **candidate
 cis-regulatory elements** across GRCh38, each classified by biochemical
 signature: promoter-like (PLS), proximal and distal enhancer-like (pELS,
 dELS), CTCF-bound, or chromatin-accessible. Two caveats are built into

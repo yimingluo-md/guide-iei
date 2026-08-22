@@ -138,9 +138,10 @@ scripts/prepare_dbnsfp.sh /path/to/download_folder
    GRCh38 columns (~200 GB scratch, several hours).
 
 This writes the configured `plugins.dbNSFP.path` (+ `.tbi`). The default
-`plugins.dbNSFP.columns` list is the always-on core: CADD, REVEL,
-AlphaMissense, SIFT, PolyPhen, MetaRNN, PrimateAI and common conservation
-scores. On the VEP settings screen, **Additional dbNSFP predictors** appends
+`plugins.dbNSFP.columns` list is a deliberately small always-on core: CADD,
+REVEL, AlphaMissense, SIFT, and PolyPhen-2. Everything further — MetaRNN,
+PrimateAI, the conservation scores, and the wider optional catalog — is
+selected per job. On the VEP settings screen, **Additional dbNSFP predictors** appends
 validated fields to that job's generated config. The service checks every
 choice against the installed file header. Avoid `ALL`: it adds hundreds of
 columns and produces unnecessarily large VCFs.

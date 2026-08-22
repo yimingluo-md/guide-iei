@@ -96,6 +96,11 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "clingen_erepo": "required",
 }
 DBNSFP_OPTIONAL_PREDICTORS = [
+    {"id": "metarnn", "label": "MetaRNN", "category": "Ensemble", "columns": ["MetaRNN_score", "MetaRNN_pred"], "recommended": True},
+    {"id": "primateai", "label": "PrimateAI", "category": "Protein model", "columns": ["PrimateAI_score", "PrimateAI_pred"], "recommended": True},
+    {"id": "gerp", "label": "GERP++ RS", "category": "Conservation", "columns": ["GERP++_RS"], "recommended": True},
+    {"id": "phylop100", "label": "phyloP 100-way", "category": "Conservation", "columns": ["phyloP100way_vertebrate"], "recommended": True},
+    {"id": "phastcons100", "label": "phastCons 100-way", "category": "Conservation", "columns": ["phastCons100way_vertebrate"], "recommended": False},
     {"id": "sift4g", "label": "SIFT4G", "category": "Established", "columns": ["SIFT4G_score", "SIFT4G_pred"], "recommended": True},
     {"id": "polyphen_hvar", "label": "PolyPhen HVAR", "category": "Established", "columns": ["Polyphen2_HVAR_score", "Polyphen2_HVAR_pred"], "recommended": True},
     {"id": "mutation_taster", "label": "MutationTaster", "category": "Established", "columns": ["MutationTaster_score", "MutationTaster_pred"], "recommended": False},

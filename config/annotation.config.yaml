@@ -225,6 +225,9 @@ plugins:
     # Core columns always pulled into CSQ. Additional curated predictors can be
     # selected for each job in the local UI; the generated job config appends
     # only those fields. Avoid `ALL` (hundreds of columns and very large VCFs).
+    # The default panel is deliberately small (AlphaMissense, CADD, REVEL,
+    # SIFT, PolyPhen-2); every further predictor is selected per job in the
+    # local UI, which appends its columns to the generated job config.
     columns:
       - SIFT_score
       - SIFT_pred
@@ -235,13 +238,6 @@ plugins:
       - REVEL_score
       - AlphaMissense_score
       - AlphaMissense_pred
-      - MetaRNN_score
-      - MetaRNN_pred
-      - PrimateAI_score
-      - PrimateAI_pred
-      - GERP++_RS
-      - phyloP100way_vertebrate
-      - phastCons100way_vertebrate
 
   LoF:                       # LOFTEE — tier: auto (Broad loftee_data GRCh38)
     enabled: true

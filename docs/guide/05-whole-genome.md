@@ -104,7 +104,7 @@ sequence: chromatin accessibility, promoter- and enhancer-associated
 histone modifications (H3K4me3, H3K27ac), and CTCF binding. The ENCODE
 consortium integrated these assays across hundreds of biosamples into a
 registry of **candidate cis-regulatory elements (cCREs)** — approximately
-2.35 million short segments of GRCh38, each classified by its biochemical
+2.37 million short segments of GRCh38, each classified by its biochemical
 signature (promoter-like, proximal or distal enhancer-like, CTCF-bound,
 chromatin-accessible). *Candidate* is the operative word: a cCRE is a
 reproducible biochemical signature, not a demonstrated regulatory
