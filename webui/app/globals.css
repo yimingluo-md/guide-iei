@@ -1250,6 +1250,9 @@ tbody tr:last-child td { border-bottom: 0; }
 .glossary-button { white-space: nowrap; }
 .settings-note { margin: 4px 0 8px; font-size: 9.5px; line-height: 1.5; color: #7d8a85; }
 .collapse-chip { background: #eef4f2; border: 1px solid #cfdeda; border-radius: 8px; padding: 0 6px; font-size: 9px; color: #2f6f64; font-weight: 700; cursor: help; }
+.cohort-query-tabs { grid-template-columns: 0.85fr 1.55fr 0.8fr 1.1fr; }
+.cohort-query-tabs button { font-size: 9.5px; padding: 0 4px; }
+.cohort-card-head-actions { display: flex; align-items: center; gap: 8px; }
 .library-combined-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid #d9e5e1; border-radius: 6px; background: #f7faf9; font-size: 11px; color: #46554f; }
 .library-combined-bar > div { display: flex; gap: 8px; }
 .library-select { display: flex; align-items: center; margin-right: 8px; }

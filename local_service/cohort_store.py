@@ -2954,8 +2954,8 @@ class CohortStore:
 
     def query(self, payload: dict) -> dict:
         mode = str(payload.get("mode") or "variant")
-        if mode not in {"variant", "gene", "gene_list"}:
-            raise ValueError("mode must be 'variant', 'gene', or 'gene_list'")
+        if mode not in {"variant", "gene", "gene_list", "region"}:
+            raise ValueError("mode must be 'variant', 'gene', 'gene_list', or 'region'")
         limit = max(1, min(int(payload.get("limit") or 500), 5000))
         variant_conditions: list[str] = []
         variant_parameters: list = []
@@ -2978,6 +2978,28 @@ class CohortStore:
                     "(v.rsid = ? COLLATE NOCASE OR v.variant_key = ? COLLATE NOCASE)"
                 )
                 variant_parameters.extend([query, query])
+        elif mode == "region":
+            raw = str(payload.get("region") or payload.get("query") or "").strip()
+            match = re.fullmatch(
+                r"(?:chr)?([0-9]{1,2}|[XYM]|MT)\s*:\s*([\d,]+)\s*[-–]\s*([\d,]+)",
+                raw, re.IGNORECASE,
+            )
+            if not match:
+                raise ValueError(
+                    "region must look like chrom:start-end, e.g. 1:117000000-117500000"
+                )
+            chrom = normalize_chromosome(match.group(1))
+            start = int(match.group(2).replace(",", ""))
+            end = int(match.group(3).replace(",", ""))
+            if end < start:
+                start, end = end, start
+            if end - start > 5_000_000:
+                raise ValueError(
+                    "the region spans more than 5 Mb — narrow the window "
+                    "(regulatory context rarely needs more than ±500 kb)"
+                )
+            variant_conditions.append("(v.chrom = ? AND v.pos BETWEEN ? AND ?)")
+            variant_parameters.extend([chrom, start, end])
         elif mode == "gene_list":
             raw_genes = payload.get("genes")
             if isinstance(raw_genes, str):
@@ -3004,8 +3026,8 @@ class CohortStore:
             annotation_conditions.append("a.gene = ?")
             annotation_parameters.append(gene)
 
-        # Qualifying-variant filters apply to both gene modes.
-        if mode in ("gene", "gene_list"):
+        # Qualifying-variant filters apply to the gene and region modes.
+        if mode in ("gene", "gene_list", "region"):
             impacts = [
                 str(value).upper() for value in payload.get("impacts", ["HIGH", "MODERATE"])
                 if str(value).upper() in ALLOWED_IMPACTS

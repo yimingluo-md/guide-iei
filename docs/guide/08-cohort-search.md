@@ -97,11 +97,15 @@ Cohort Search" enabled, or use the library's per-dataset and bulk actions
 (Add to Cohort Search, Remove selected). The records live in a local
 database on this workstation.
 
-Three query forms: an **exact variant** (locus or rsID), **qualifying
-variants in one gene**, and a **gene list** — paste symbols or insert a
-saved list from Gene lists (an IUIS panel, a custom panel), up to 2,000
-genes per query, with the same qualifying filters (impact, popmax,
-predictors, ClinVar). This is the scalable route for large collections:
+Four query forms: an **exact variant** (locus or rsID); **qualifying
+variants in one gene**; a **gene list** — paste symbols or insert a saved
+list from Gene lists (an IUIS panel, a custom panel), up to 2,000 genes
+per query; and a **genomic region** (`chrom:start-end`, up to 5 Mb) for
+non-coding questions — who carries anything in this enhancer window, this
+promoter, this topological neighborhood. Opening the region tab selects
+all IMPACT tiers, because non-coding records are MODIFIER and the coding
+default would hide them. The gene and region forms share the qualifying
+filters (impact, popmax, predictors, ClinVar). This is the scalable route for large collections:
 screening 50 genomes against a panel is one query, and only the matched
 findings are ever opened. Matched findings flow into the review
 workspace with each record's complete evidence restored.

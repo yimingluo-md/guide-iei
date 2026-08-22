@@ -2264,7 +2264,8 @@ function CohortPanel({ onReview }: {
   const [indexing, setIndexing] = useState(false);
   const [importResult, setImportResult] = useState<CohortImportResult | null>(null);
   const [importJob, setImportJob] = useState<CohortImportJob | null>(null);
-  const [mode, setMode] = useState<"variant" | "gene" | "gene_list">("variant");
+  const [mode, setMode] = useState<"variant" | "gene" | "gene_list" | "region">("variant");
+  const [regionQuery, setRegionQuery] = useState("");
   const [geneListText, setGeneListText] = useState("");
   const [savedListsOpen, setSavedListsOpen] = useState(false);
   const [exactQuery, setExactQuery] = useState("");
@@ -2397,6 +2398,10 @@ function CohortPanel({ onReview }: {
       setError("Enter a variant such as 4:1004329:C:T or an rsID.");
       return;
     }
+    if (mode === "region" && !regionQuery.trim()) {
+      setError("Enter a genomic window like 1:117000000-117500000.");
+      return;
+    }
     if (mode === "gene_list" && !parseGeneList(geneListText).size) {
       setError("Paste at least one gene symbol, or insert a saved list.");
       return;
@@ -2419,7 +2424,9 @@ function CohortPanel({ onReview }: {
         mode,
         ...(mode === "gene_list"
           ? { genes: [...parseGeneList(geneListText)] }
-          : { gene: gene.trim().toUpperCase() }),
+          : mode === "region"
+            ? { region: regionQuery.trim() }
+            : { gene: gene.trim().toUpperCase() }),
         impacts: [...impacts],
         max_popmax: optionalNumber(maxPopmax),
         min_cadd: optionalNumber(minCadd),
@@ -2637,7 +2644,7 @@ function CohortPanel({ onReview }: {
   }
 
   return <div className="cohort-page">
-    <div className="content-header"><div><p className="eyebrow">Genotype-first discovery</p><h1>Search the local cohort</h1><p className="subtitle">Find every individual carrying an exact variant, or carriers of qualifying variants in a gene.</p></div><div className="cohort-header-actions">{queryResult?.rows.length ? <button className="secondary-button" onClick={() => downloadCohortTsv(queryResult.rows)}>Export carriers</button> : null}<button className="secondary-button" onClick={() => { const opening = !managingSamples; setManagingSamples(opening); setSampleMessage(""); if (opening) void loadSamples(""); }}>{managingSamples ? "Close sample manager" : "Manage samples"}</button></div></div>
+    <div className="content-header"><div><p className="eyebrow">Genotype-first discovery</p><h1>Search the local cohort</h1><p className="subtitle">Find every individual carrying an exact variant, or carriers of qualifying variants in a gene.</p></div><div className="cohort-header-actions">{queryResult?.rows.length ? <button className="secondary-button" onClick={() => downloadCohortTsv(queryResult.rows)}>Export carriers</button> : null}</div></div>
 
     <div className="cohort-stats">
       <Stat value={stats?.individuals ?? 0} label="individuals"/>
@@ -2647,25 +2654,26 @@ function CohortPanel({ onReview }: {
     </div>
     {stats && <div className={`cohort-profile-banner ${stats.prefiltered_files ? "prefiltered" : "full"}`}><strong>{stats.prefiltered_files ? stats.full_files ? "Mixed cohort index" : "Compact clinical cohort index" : "Full cohort index"}</strong><span>{stats.full_files.toLocaleString()} full file{stats.full_files === 1 ? "" : "s"} · {stats.prefiltered_files.toLocaleString()} prefiltered file{stats.prefiltered_files === 1 ? "" : "s"}{stats.prefiltered_files ? " · absent noncoding variants may have been excluded during import" : " · exact searches are exhaustive for indexed PASS carrier calls"}</span></div>}
 
-    {managingSamples && <section className="cohort-sample-manager">
-      <div className="cohort-results-head"><div><p className="eyebrow">Indexed entries</p><h2>Manage cohort samples</h2></div><span>Removal is recoverable by reimporting the source VCF.</span></div>
-      <div className="sample-manager-toolbar"><label className="search"><Icon name="search"/><input value={sampleQuery} onChange={(event) => setSampleQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void loadSamples()} placeholder="Find sample ID…"/></label><button className="secondary-button" disabled={sampleWorking} onClick={() => void loadSamples()}>{sampleOperation === "removing" ? "Removing…" : sampleOperation === "loading" ? "Loading…" : "Search"}</button><button className="secondary-button" disabled={!cohortSamples.length} onClick={() => setSelectedSampleIds(selectedSampleIds.size === cohortSamples.length ? new Set() : new Set(cohortSamples.map((sample) => sample.id)))}>{selectedSampleIds.size === cohortSamples.length && cohortSamples.length ? "Clear all" : "Select all shown"}</button><button className="danger-button" disabled={sampleWorking || indexing || !selectedSampleIds.size} onClick={() => void removeSelectedSamples()}>Remove selected ({selectedSampleIds.size})</button></div>
-      {sampleMessage && <div className={sampleOperation === "removing" ? "alert" : "alert success"}>{sampleMessage}</div>}
-      {cohortSamples.length ? <div className="cohort-sample-list">{cohortSamples.map((sample) => <label key={sample.id}><input type="checkbox" checked={selectedSampleIds.has(sample.id)} onChange={(event) => setSelectedSampleIds((current) => toggleSet(current, sample.id, event.target.checked))}/><span><strong>{sample.name}</strong><small title={sample.source_path}>{fileName(sample.source_path)} · {sample.carrier_observations.toLocaleString()} carrier calls</small></span><em className={sample.import_profile}>{cohortProfileLabel(sample.import_profile, sample.analysis_scope)}</em></label>)}</div> : !sampleWorking && <div className="empty-state compact"><h2>No indexed samples</h2><p>Add an annotated VCF to populate the cohort.</p></div>}
-    </section>}
 
     <div className="cohort-control-grid">
       <section className="cohort-card">
-        <div className="cohort-card-head"><div><p className="eyebrow">Cohort data</p><h2>Cohort membership</h2></div><span className="local-only-badge">SQLite · local only</span></div>
+        <div className="cohort-card-head"><div><p className="eyebrow">Cohort data</p><h2>Cohort membership</h2></div><div className="cohort-card-head-actions"><button className="secondary-button" onClick={() => { const opening = !managingSamples; setManagingSamples(opening); setSampleMessage(""); if (opening) void loadSamples(""); }}>{managingSamples ? "Close sample manager" : "Manage samples"}</button><span className="local-only-badge">SQLite · local only</span></div></div>
         <p>Samples enter and leave Cohort search through the <strong>Sample Library</strong>: keep a review in the library with “Include qualifying variants in Cohort Search” enabled, or use the library cards and bulk actions (Add to Cohort Search, Repair, Rebuild, Remove). Every indexed record stays on this workstation.</p>
         {importJob && (indexing || importJob.status === "failed") && <div className={`cohort-import-progress ${importJob.status}`}><div><strong>{importJob.status === "queued" ? "Preparing cohort import" : importJob.status === "failed" ? "Import stopped" : ["preparing_index", "filtering", "compressing", "indexing_output"].includes(importJob.phase) ? `Prefiltering ${fileName(importJob.current_path) || "WGS VCF"}` : importJob.phase === "merging" ? `Merging staged records for ${fileName(importJob.current_path) || "VCF"}` : `Indexing ${fileName(importJob.current_path) || "VCFs"}`}</strong><span>{importPercent.toFixed(1)}% · {importJob.completed_files}/{importJob.total_files} files</span></div><div className="progress-track" role="progressbar" aria-label="Cohort VCF import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(importPercent)}><span style={{ width: `${importPercent}%` }} /></div></div>}
+        {managingSamples && <section className="cohort-sample-manager">
+          <div className="cohort-results-head"><div><p className="eyebrow">Indexed entries</p><h2>Manage cohort samples</h2></div><span>Removal is recoverable by reimporting the source VCF.</span></div>
+          <div className="sample-manager-toolbar"><label className="search"><Icon name="search"/><input value={sampleQuery} onChange={(event) => setSampleQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void loadSamples()} placeholder="Find sample ID…"/></label><button className="secondary-button" disabled={sampleWorking} onClick={() => void loadSamples()}>{sampleOperation === "removing" ? "Removing…" : sampleOperation === "loading" ? "Loading…" : "Search"}</button><button className="secondary-button" disabled={!cohortSamples.length} onClick={() => setSelectedSampleIds(selectedSampleIds.size === cohortSamples.length ? new Set() : new Set(cohortSamples.map((sample) => sample.id)))}>{selectedSampleIds.size === cohortSamples.length && cohortSamples.length ? "Clear all" : "Select all shown"}</button><button className="danger-button" disabled={sampleWorking || indexing || !selectedSampleIds.size} onClick={() => void removeSelectedSamples()}>Remove selected ({selectedSampleIds.size})</button></div>
+          {sampleMessage && <div className={sampleOperation === "removing" ? "alert" : "alert success"}>{sampleMessage}</div>}
+          {cohortSamples.length ? <div className="cohort-sample-list">{cohortSamples.map((sample) => <label key={sample.id}><input type="checkbox" checked={selectedSampleIds.has(sample.id)} onChange={(event) => setSelectedSampleIds((current) => toggleSet(current, sample.id, event.target.checked))}/><span><strong>{sample.name}</strong><small title={sample.source_path}>{fileName(sample.source_path)} · {sample.carrier_observations.toLocaleString()} carrier calls</small></span><em className={sample.import_profile}>{cohortProfileLabel(sample.import_profile, sample.analysis_scope)}</em></label>)}</div> : !sampleWorking && <div className="empty-state compact"><h2>No indexed samples</h2><p>Add an annotated VCF to populate the cohort.</p></div>}
+        </section>}
       </section>
 
       <section className="cohort-card query-card">
         <div className="cohort-card-head"><div><p className="eyebrow">Carrier query</p><h2>Who carries it?</h2></div></div>
-        <div className="query-mode" role="group" aria-label="Cohort query type"><button className={mode === "variant" ? "active" : ""} onClick={() => setMode("variant")}>Exact variant</button><button className={mode === "gene" ? "active" : ""} onClick={() => setMode("gene")}>Qualifying variants in gene</button><button className={mode === "gene_list" ? "active" : ""} onClick={() => setMode("gene_list")}>Gene list</button></div>
+        <div className="query-mode cohort-query-tabs" role="group" aria-label="Cohort query type"><button className={mode === "variant" ? "active" : ""} onClick={() => setMode("variant")}>Exact variant</button><button className={mode === "gene" ? "active" : ""} onClick={() => setMode("gene")}>Qualifying variants in gene</button><button className={mode === "gene_list" ? "active" : ""} onClick={() => setMode("gene_list")}>Gene list</button><button className={mode === "region" ? "active" : ""} onClick={() => { setMode("region"); setImpacts(new Set(IMPACTS)); }}>Genomic region</button></div>
         {mode === "variant" ? <><label className="form-field"><span>Variant, locus, or rsID</span><input value={exactQuery} onChange={(event) => setExactQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && searchCohort()} placeholder="4:1004329:C:T or rs121918472" /></label><p className="query-note">Exact searches return all indexed non-reference carriers; pathogenicity and frequency filters are not applied.{stats?.prefiltered_files ? " Compact-profile files may not contain noncoding variants excluded during import." : ""}</p></> : <>
-          {mode === "gene" ? <label className="form-field"><span>Gene symbol</span><input value={gene} onChange={(event) => setGene(event.target.value.toUpperCase())} onKeyDown={(event) => event.key === "Enter" && searchCohort()} placeholder="NFKB1" /></label>
+          {mode === "region" ? <><label className="form-field"><span>Genomic window (GRCh38)</span><input value={regionQuery} onChange={(event) => setRegionQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && searchCohort()} placeholder="1:117,000,000-117,500,000 (up to 5 Mb)" /></label><p className="query-note">For non-coding work: all IMPACT tiers were selected when you opened this tab — non-coding records are MODIFIER and would otherwise be hidden. Narrow the chips below to focus.</p></>
+          : mode === "gene" ? <label className="form-field"><span>Gene symbol</span><input value={gene} onChange={(event) => setGene(event.target.value.toUpperCase())} onKeyDown={(event) => event.key === "Enter" && searchCohort()} placeholder="NFKB1" /></label>
           : <div className="gene-list-query"><label className="form-field"><span>Gene symbols <small>{parseGeneList(geneListText).size} unique</small></span><textarea value={geneListText} onChange={(event) => setGeneListText(event.target.value)} rows={5} placeholder={"NFKB1\nCTLA4\nSTAT3 — or insert a saved list"} spellCheck={false} /></label><div className="gene-list-query-actions"><button className="secondary-button" onClick={() => setSavedListsOpen((current) => !current)}>Insert saved list</button>{savedListsOpen && <div className="gene-list-menu">{storedCustomGeneLists().length === 0 && <span>No saved lists yet — create them under Gene lists.</span>}{storedCustomGeneLists().map((list) => <button key={list.id} onClick={() => { setGeneListText((current) => [current.trim(), [...list.genes].sort().join("\n")].filter(Boolean).join("\n")); setSavedListsOpen(false); }}>{list.name} · {list.genes.size}</button>)}</div>}</div></div>}
           <div className="qualifying-grid">
             <div><span className="qualifying-label">Impact</span><div className="chip-grid">{IMPACTS.map((impact) => <button key={impact} className={`impact-chip ${impact.toLowerCase()} ${impacts.has(impact) ? "selected" : ""}`} onClick={() => setImpacts((current) => toggleSet(current, impact, !current.has(impact)))}>{impact}</button>)}</div></div>

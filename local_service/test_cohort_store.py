@@ -832,6 +832,21 @@ class CohortStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "2000-gene"):
             store.query({"mode": "gene_list", "genes": [f"G{i}" for i in range(2001)]})
 
+    def test_region_query_returns_window_records_with_optional_filters(self):
+        source = self.root / "region.vcf"
+        write_vcf(source)
+        store = CohortStore(self.root / "region.sqlite3")
+        store.import_vcf(source)
+        # Impacts cleared: a non-coding window must not silently hide
+        # MODIFIER records behind the coding-default impact filter.
+        result = store.query({"mode": "region", "region": "chr1:100-250", "impacts": []})
+        positions = sorted({row["pos"] for row in result["rows"]})
+        self.assertEqual(positions, [100, 200])
+        with self.assertRaisesRegex(ValueError, "chrom:start-end"):
+            store.query({"mode": "region", "region": "NFKB1"})
+        with self.assertRaisesRegex(ValueError, "5 Mb"):
+            store.query({"mode": "region", "region": "1:1-6000002"})
+
     def test_rejects_explicit_non_grch38_contig_length(self):
         wrong = self.root / "wrong-build.vcf"
         write_vcf(wrong)
