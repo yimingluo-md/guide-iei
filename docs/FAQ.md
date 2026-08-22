@@ -44,8 +44,9 @@ mode**: one row per variant, the usual filters, and a per-variant
 **Carriers** panel listing which individuals carry it with their genotype
 evidence. For a large fresh cohort file, import through the **Whole
 genome** analysis scope so the local service prefilters it first; a stored
-cohort reopens from the Sample Library ("Open all samples of this file"),
-which also supports opening one individual or a selected subset.
+cohort reopens from the Sample Library (Select all → Open combined
+review), which also supports opening one individual or a selected subset,
+and removing selected datasets in bulk.
 **Cohort search** complements this with genotype-first queries — carriers
 of a gene or an exact variant across everything indexed. One bound: an
 unfiltered cohort where common variants are carried by nearly everyone can

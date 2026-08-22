@@ -40,8 +40,8 @@ samples keep the family-oriented behavior unchanged).
   (population frequency, retention criteria), and the prepared result
   opens in cohort mode. This is the recommended route for a fresh cohort
   file, because the prefilter is what keeps the carrier volume reviewable.
-- **Sample Library → Open all samples of this file**: reopens a stored
-  cohort dataset in cohort review mode at any time.
+- **Sample Library → Select all → Open combined review**: reopens a
+  stored cohort in cohort review mode at any time.
 
 ## Reviewing individuals and subsets from a cohort
 
@@ -51,12 +51,15 @@ dataset. From there:
 - **Open review** on one individual opens a normal single-patient review —
   the service projects that person's genotype column and carried variants
   from the stored file.
-- **Select several individuals** (checkboxes) and **Open combined review**
-  — for example, three affected members of one family within the cohort.
-  With 15 or fewer selected, the review behaves like a family file,
-  including trio analysis when applicable; with 16 or more, cohort mode
-  applies.
-- **Open all samples of this file** — full cohort review, as above.
+- **Select several individuals** (checkboxes, or **Select all**) and
+  **Open combined review** — for example, three affected members of one
+  family within the cohort. With 15 or fewer selected, the review behaves
+  like a family file, including trio analysis when applicable; with 16 or
+  more, cohort mode applies. Selecting every individual reopens the whole
+  cohort.
+- **Remove selected** deletes the chosen datasets from the library and
+  Cohort Search in one action, after confirmation; original source VCFs
+  are never deleted.
 
 ## Cohort search: genotype-first questions
 

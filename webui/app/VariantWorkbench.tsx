@@ -3007,6 +3007,22 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
     catch (reason) { setError(reason instanceof Error ? reason.message : "Cohort Search entry could not be removed."); }
     finally { setWorking(""); }
   }
+  async function removeSelected() {
+    const ids = [...selectedDatasets];
+    if (!ids.length) return;
+    if (!window.confirm(`Remove ${ids.length} dataset${ids.length > 1 ? "s" : ""} from the Sample Library and Cohort Search? Original source VCFs are not deleted.`)) return;
+    setWorking("bulk-remove"); setError("");
+    const failures: string[] = [];
+    for (const id of ids) {
+      try { await removeSampleLibraryDataset(id); }
+      catch (reason) { failures.push(reason instanceof Error ? reason.message : id); }
+    }
+    await refresh();
+    setSelectedDatasets(new Set());
+    if (failures.length) setError(`${failures.length} of ${ids.length} removals failed: ${failures[0]}`);
+    else setMessage(`${ids.length} dataset${ids.length > 1 ? "s" : ""} removed. Original source VCFs were not deleted.`);
+    setWorking("");
+  }
   async function remove(dataset: SampleLibraryDataset) {
     if (!window.confirm(`Remove ${dataset.sample_label} / ${dataset.original_name} from the Sample Library and Cohort Search? The original VCF is not deleted.`)) return;
     setWorking(dataset.id); setError("");
@@ -3025,11 +3041,11 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
     <div className="profile-caveat"><strong>Positive carrier findings remain useful across profiles.</strong><span>Absence from a candidate index is not evidence that the individual lacks a variant. Compare assay and profile badges before interpreting coverage.</span></div>
     {message && <div className="alert">{message}</div>}{error && <div className="alert error">{error}</div>}
     {datasets.length > 1 && <div className="library-combined-bar">
-      <span>{selectedDatasets.size ? `${selectedDatasets.size} selected` : "Select individuals for a combined review, or open the whole file"}</span>
+      <span>{selectedDatasets.size ? `${selectedDatasets.size} selected` : "Select individuals to review together or remove in bulk"}</span>
       <div>
+        <button className="secondary-button" disabled={working !== ""} onClick={() => setSelectedDatasets(selectedDatasets.size === datasets.length ? new Set() : new Set(datasets.map((d) => d.id)))}>{selectedDatasets.size === datasets.length ? "Clear selection" : "Select all"}</button>
         <button className="secondary-button" disabled={selectedDatasets.size < 2 || working !== ""} onClick={() => void openCombined([...selectedDatasets], `${selectedDatasets.size} selected individuals`)}>Open combined review ({selectedDatasets.size || 0})</button>
-        <button className="secondary-button" disabled={working !== ""} onClick={() => { const sameFile = datasets.filter((d) => d.managed_checksum === datasets[0].managed_checksum); void openCombined(sameFile.map((d) => d.id), `all ${sameFile.length} individuals`); }}>Open all samples of this file</button>
-        {selectedDatasets.size > 0 && <button className="secondary-button" onClick={() => setSelectedDatasets(new Set())}>Clear</button>}
+        <button className="secondary-button danger-button" disabled={selectedDatasets.size === 0 || working !== ""} onClick={() => void removeSelected()}>{working === "bulk-remove" ? "Removing…" : `Remove selected (${selectedDatasets.size || 0})`}</button>
       </div>
     </div>}
     <div className="library-list">{datasets.map((dataset) => {

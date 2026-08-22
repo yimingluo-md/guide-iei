@@ -34,9 +34,10 @@ allele balance per carrying individual). Family analysis and the
 per-patient phenotype tab are unavailable in cohort mode. A cohort import
 exceeding ~3 million carrier entries (an unfiltered callset) is refused
 with directions to the population-frequency prefilter. The Sample Library
-can open one individual (per-sample projection), a selected subset
-(combined review; family behavior at 15 or fewer samples), or all samples
-of a stored file (cohort mode).
+can open one individual (per-sample projection) or any selection —
+including Select all — as a combined review (family behavior at 15 or
+fewer samples, cohort mode above that); selections can also be removed
+from the library in bulk.
 
 ## Sample Library
 
