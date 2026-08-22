@@ -26,7 +26,11 @@ the browser — appropriate for single-patient and family files (2–15
 samples keep per-sample rows, preserving trio analysis and the phenotype
 tab). A large single-patient file (over ~100 MB compressed) belongs in the
 **Whole genome** analysis scope, which prepares it on the local service. A
-**cohort-scale file (16+ samples)** opens in **cohort review mode**: one
+**cohort-scale file (16+ samples)** is first prepared on the local service
+under either scope — for the Exome scope: PASS-or-unfiltered records in
+coding regions with a gnomAD popmax threshold (default 0.01, adjustable at
+import); for the Whole genome scope: the full WGS prefilter — and then
+opens in **cohort review mode**: one
 row per variant with a compact carrier list instead of per-sample rows and
 an all-samples genotype map — the memory shape that cannot scale. Each
 variant's detail view gains a Carriers panel (genotype, depth, quality,

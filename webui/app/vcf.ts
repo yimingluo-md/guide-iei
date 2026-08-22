@@ -944,6 +944,18 @@ async function* fileLines(file: File) {
   }
 }
 
+/** Cheap header peek: sample-column count without reading the body. */
+export async function vcfSampleCount(file: File): Promise<number> {
+  try {
+    const lines = await vcfHeaderLines(file);
+    const chrom = lines.find((line) => line.startsWith("#CHROM\t"));
+    if (!chrom) return 0;
+    return Math.max(0, chrom.split("\t").length - 9);
+  } catch {
+    return 0;
+  }
+}
+
 async function vcfHeaderLines(file: File) {
   const lines: string[] = [];
   for await (const line of fileLines(file)) {

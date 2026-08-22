@@ -39,11 +39,15 @@ samples keep the family-oriented behavior unchanged).
 
 **Routes into cohort review:**
 
-- **Import → Review annotated VCF → Whole genome scope** for a large
-  cohort file: the local service prefilters and compacts it first
-  (population frequency, retention criteria), and the prepared result
-  opens in cohort mode. This is the recommended route for a fresh cohort
-  file, because the prefilter is what keeps the carrier volume reviewable.
+- **Import → Review annotated VCF** with either scope. A cohort **exome**
+  file (16+ samples) is prepared on the local service automatically under
+  the Exome scope: PASS-or-unfiltered records in coding regions, filtered
+  by a gnomAD popmax threshold (default ≤ 0.01, adjustable beside the
+  scope selector; clear it to keep common variants). A cohort **genome**
+  takes the Whole genome scope with its full prefilter (population
+  frequency plus the non-coding retention criteria). Either way, the
+  prepared result opens in cohort mode, and the prefilter is what keeps
+  the carrier volume reviewable.
 - **Sample Library → Select all → Open combined review**: reopens a
   stored cohort in cohort review mode at any time.
 

@@ -1248,6 +1248,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .glossary-popover { position: absolute; z-index: 60; left: 0; top: calc(100% + 6px); display: flex; flex-direction: column; gap: 4px; width: 260px; max-width: 72vw; background: white; border: 1px solid #ccd5d1; border-radius: 8px; box-shadow: 0 8px 24px #24403a26; padding: 10px 12px; font-size: 10.5px; line-height: 1.5; color: #34443f; text-align: left; }
 .glossary-popover strong { font-size: 11px; color: #19786e; }
 .glossary-button { white-space: nowrap; }
+.exome-cohort-prefilter { margin: 8px 0 2px; display: flex; flex-direction: column; gap: 4px; max-width: 460px; }
+.exome-cohort-prefilter > small { color: #7d8a85; font-size: 9.5px; line-height: 1.5; }
 .settings-note { margin: 4px 0 8px; font-size: 9.5px; line-height: 1.5; color: #7d8a85; }
 .collapse-chip { background: #eef4f2; border: 1px solid #cfdeda; border-radius: 8px; padding: 0 6px; font-size: 9px; color: #2f6f64; font-weight: 700; cursor: help; }
 .library-combined-bar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 12px; border: 1px solid #d9e5e1; border-radius: 6px; background: #f7faf9; font-size: 11px; color: #46554f; }

@@ -108,6 +108,7 @@ import {
   ADDITIONAL_DBNSFP_PREDICTORS,
   candidateCompoundHetKeys,
   collapseToOneRowPerVariant,
+  vcfSampleCount,
   NO_VARIANT_QC,
   parseVcfFiles,
   preferredClinicalTranscriptRows,
@@ -966,6 +967,7 @@ export default function VariantWorkbench() {
     libraryOptions: LibraryImportOptions = {
       keep: true, includeInCohort: true,
     },
+    exomeCohortPopmax: number | null = 0.01,
   ) {
     if (!list?.length && !workstationPaths.length) return;
     setImporting(true);
@@ -975,8 +977,30 @@ export default function VariantWorkbench() {
       let reviewFiles = Array.from(list ?? []);
       const wgsMessages: string[] = [];
       const librarySources: SampleLibraryImportSource[] = [];
-      if (analysisScope === "whole_genome") {
-        if (!wgsFilters) throw new Error("Whole-genome prefilter settings are required.");
+      // Cohort exome files (16+ samples) take the same server-side prepared
+      // route as whole-genome imports, without changing the exome scope:
+      // PASS-or-unfiltered + gnomAD popmax, coding regions only — the score
+      // and regulatory routes stay disabled.
+      let serverPrepFilters: WgsPrefilterOptions | undefined =
+        analysisScope === "whole_genome" ? wgsFilters : undefined;
+      if (analysisScope === "exome") {
+        for (const file of reviewFiles) {
+          if ((await vcfSampleCount(file)) >= 16) {
+            serverPrepFilters = {
+              max_gnomad_popmax: exomeCohortPopmax,
+              min_spliceai: null,
+              min_promoterai_abs: null,
+              noncoding_mode: "none",
+            };
+            wgsMessages.push(
+              `Cohort exome import: prepared on the local service (gnomAD popmax ${exomeCohortPopmax === null ? "filter off" : `≤ ${exomeCohortPopmax}`}, coding regions).`,
+            );
+            break;
+          }
+        }
+      }
+      if (serverPrepFilters) {
+        if (analysisScope === "whole_genome" && !wgsFilters) throw new Error("Whole-genome prefilter settings are required.");
         const batch = `wgs-review-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
         const sources = workstationPaths.map((path) => ({ path, name: fileName(path) }));
         for (let index = 0; index < reviewFiles.length; index += 1) {
@@ -989,7 +1013,7 @@ export default function VariantWorkbench() {
         for (let index = 0; index < sources.length; index += 1) {
           const source = sources[index];
           setImportProgress(`Indexing and prefiltering WGS ${index + 1} of ${sources.length} with four readers…`);
-          let job = await prefilterWgsReview(source.path, wgsFilters);
+          let job = await prefilterWgsReview(source.path, serverPrepFilters);
           setWgsImportJob(job);
           while (job.status === "queued" || job.status === "running") {
             setImportProgress(`WGS ${index + 1} of ${sources.length}: ${job.message}`);
@@ -1047,7 +1071,7 @@ export default function VariantWorkbench() {
           index_scope: "compact",
           include_in_cohort: libraryOptions.includeInCohort,
           qc_settings: { ...qcSettings, preset: qcPreset, include_failing: includeQcFailing },
-          prefilter_settings: analysisScope === "whole_genome" ? wgsFilters : {},
+          prefilter_settings: serverPrepFilters ?? {},
           retention_routes: analysisScope === "whole_genome"
             ? ["coding/essential-splice", "SpliceAI", "promoterAI", wgsFilters?.noncoding_mode === "ccre" ? "ENCODE cCRE" : wgsFilters?.noncoding_mode === "all" ? "all noncoding" : "no additional noncoding", "unscored relevant indels"]
             : ["exome region"],
@@ -3103,11 +3127,12 @@ function IdentityMappingDialog({ datasets, onComplete }: { datasets: PendingIden
   </div>{error && <div className="alert error">{error}</div>}<footer><button className="secondary-button" onClick={onComplete}>Finish later</button><button className="primary-button dark" disabled={working} onClick={save}>{working ? "Saving…" : index + 1 < datasets.length ? "Save and continue" : "Finish"}</button></footer></section></div>;
 }
 
-function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, pendingFiles, onStageFiles, onImportFiles, qcSettings, setQcSettings, qcPreset, setQcPreset, includeQcFailing, setIncludeQcFailing }: { importing: boolean; importProgress: string; wgsImportJob: WgsReviewJob | null; error: string; summary: ImportSummary | null; pendingFiles: File[]; onStageFiles: (files: File[]) => void; onImportFiles: (files: File[], analysisScope: AnalysisScope, filters: WgsPrefilterOptions, workstationPaths: string[], libraryOptions: LibraryImportOptions) => void; qcSettings: VariantQcSettings; setQcSettings: React.Dispatch<React.SetStateAction<VariantQcSettings>>; qcPreset: "standard" | "none" | "custom"; setQcPreset: (value: "standard" | "none" | "custom") => void; includeQcFailing: boolean; setIncludeQcFailing: (value: boolean) => void }) {
+function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, pendingFiles, onStageFiles, onImportFiles, qcSettings, setQcSettings, qcPreset, setQcPreset, includeQcFailing, setIncludeQcFailing }: { importing: boolean; importProgress: string; wgsImportJob: WgsReviewJob | null; error: string; summary: ImportSummary | null; pendingFiles: File[]; onStageFiles: (files: File[]) => void; onImportFiles: (files: File[], analysisScope: AnalysisScope, filters: WgsPrefilterOptions, workstationPaths: string[], libraryOptions: LibraryImportOptions, exomeCohortPopmax?: number | null) => void; qcSettings: VariantQcSettings; setQcSettings: React.Dispatch<React.SetStateAction<VariantQcSettings>>; qcPreset: "standard" | "none" | "custom"; setQcPreset: (value: "standard" | "none" | "custom") => void; includeQcFailing: boolean; setIncludeQcFailing: (value: boolean) => void }) {
   const [mode, setMode] = useState<"review" | "annotate">(
     pendingFiles.length ? "review" : "annotate",
   );
   const [analysisScope, setAnalysisScope] = useState<AnalysisScope>("exome");
+  const [exomeCohortPopmax, setExomeCohortPopmax] = useState<string>("0.01");
   const [wgsFilters, setWgsFilters] = useState<WgsPrefilterOptions>({ ...DEFAULT_WGS_PREFILTER });
   const [wgsWorkstationPaths, setWgsWorkstationPaths] = useState("");
   const [keepInLibrary, setKeepInLibrary] = useState(true);
@@ -3142,6 +3167,7 @@ function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, 
       <div className="analysis-scope-switch" role="radiogroup" aria-label="Analysis region">
         <button role="radio" aria-checked={analysisScope === "exome"} className={analysisScope === "exome" ? "active" : ""} onClick={() => setAnalysisScope("exome")}><strong>Exome region only</strong><span>Coding exons and splice-region padding</span></button>
         <button role="radio" aria-checked={analysisScope === "whole_genome"} className={analysisScope === "whole_genome" ? "active" : ""} onClick={() => setAnalysisScope("whole_genome")}><strong>Whole genome</strong><span>Indexed server-side intake and conservative prefiltering</span></button>
+      {analysisScope === "exome" && <div className="exome-cohort-prefilter"><label className="form-field"><span>Cohort files: gnomAD popmax ≤ <small>optional</small></span><input inputMode="decimal" value={exomeCohortPopmax} onChange={(event) => setExomeCohortPopmax(event.target.value)} placeholder="0.01"/></label><small>A file with 16+ samples is prepared on the local service before review: PASS-or-unfiltered records in coding regions, filtered by this population-frequency threshold (clear the field to keep common variants). Single-patient and family files are read directly and are not affected.</small></div>}
       </div>
       <div className="intake-mode-switch" role="tablist" aria-label="VCF intake route">
         <button role="tab" aria-selected={mode === "annotate"} className={mode === "annotate" ? "active" : ""} onClick={() => setMode("annotate")}><strong>Run VEP first</strong><span>Start with a raw or hard-filtered VCF</span></button>
@@ -3177,7 +3203,7 @@ function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, 
       </section>
       {error && <div className="alert error">{error}</div>}
       {analysisScope === "whole_genome" && importing && <div className={`cohort-import-progress wgs-import-progress ${wgsImportJob?.status === "failed" ? "failed" : ""}`}><div><strong>{wgsImportJob?.message || importProgress || "Preparing whole-genome input…"}</strong><span>{wgsPercent.toFixed(1)}%</span></div><div className="progress-track" role="progressbar" aria-label="Whole-genome indexing and prefiltering progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(wgsPercent)}><span style={{ width: `${wgsPercent}%` }} /></div><small>{wgsImportJob ? `${wgsImportJob.records_scanned.toLocaleString()} records scanned · ${wgsImportJob.records_retained.toLocaleString()} retained · ${wgsImportJob.reader_count} reader${wgsImportJob.reader_count === 1 ? "" : "s"}` : "Staging the selected WGS VCF on this workstation"}</small></div>}
-      <div className="review-import-actions"><span>{importing && importProgress ? importProgress : pendingFiles.length || activeWgsPaths.length ? analysisScope === "whole_genome" ? "The indexed WGS prefilter runs locally before browser review." : "The selected files will be read using the thresholds above." : "Select one or more annotated VCFs to continue."}</span><button className="primary-button dark" disabled={importing || (pendingFiles.length === 0 && activeWgsPaths.length === 0)} onClick={() => onImportFiles(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths, { keep: keepInLibrary, includeInCohort: keepInLibrary && includeInCohort })}>{importing ? analysisScope === "whole_genome" ? "Preparing WGS…" : "Importing annotations…" : "Import and review variants"}</button></div>
+      <div className="review-import-actions"><span>{importing && importProgress ? importProgress : pendingFiles.length || activeWgsPaths.length ? analysisScope === "whole_genome" ? "The indexed WGS prefilter runs locally before browser review." : "The selected files will be read using the thresholds above." : "Select one or more annotated VCFs to continue."}</span><button className="primary-button dark" disabled={importing || (pendingFiles.length === 0 && activeWgsPaths.length === 0)} onClick={() => onImportFiles(pendingFiles, analysisScope, submittedWgsFilters, activeWgsPaths, { keep: keepInLibrary, includeInCohort: keepInLibrary && includeInCohort }, exomeCohortPopmax.trim() === "" ? null : optionalNumber(exomeCohortPopmax) ?? 0.01)}>{importing ? analysisScope === "whole_genome" ? "Preparing WGS…" : "Importing annotations…" : "Import and review variants"}</button></div>
     </section><RecentReviewFiles onStageFiles={onStageFiles} onWgsPath={(path) => { onStageFiles([]); setAnalysisScope("whole_genome"); setWgsWorkstationPaths(path); setMode("review"); }}/></> : <AnnotationPanel analysisScope={analysisScope} onReviewPath={(path) => { onStageFiles([]); setAnalysisScope("whole_genome"); setWgsWorkstationPaths(path); setMode("review"); }} onReviewFile={(files) => { onStageFiles(files); setMode("review"); }} />}
 
     {summary && <div className="import-summary"><h2>Last review import</h2><div className="stat-grid"><Stat value={summary.files} label="files"/><Stat value={summary.samples} label="samples"/><Stat value={summary.rows} label="transcript rows"/></div><div className="intake-check-grid">{summary.intakeQc.map((check) => <div className={`intake-check ${check.status}`} key={check.id}><span>{check.status === "pass" ? "✓" : "!"}</span><div><strong>{check.label}</strong><small>{check.detail}</small></div></div>)}</div>{summary.warnings.map((warning) => <div className="alert" key={warning}>{warning}</div>)}</div>}
