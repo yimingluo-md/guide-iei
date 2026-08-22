@@ -27,5 +27,5 @@ The technical detail behind every step is documented in the
 7. [Phenotypes and the Sample Library](guide/07-phenotypes-and-library.md) *(in progress)*
 8. [Cohort analysis: review and search](guide/08-cohort-search.md)
 9. [Reading a variant page](guide/09-reading-a-variant.md)
-10. [Quality control and sanity checks](guide/10-quality-control.md) *(in progress)*
+10. [Quality control and sanity checks](guide/10-quality-control.md)
 11. [Limitations and when to be skeptical](guide/11-limitations.md) *(in progress)*
