@@ -75,6 +75,27 @@ class SampleLibraryTests(unittest.TestCase):
         again = self.library.review_file(by_sample["P1"]["id"])
         self.assertEqual(again, projected)
 
+    def test_review_file_combined_projects_selected_samples_or_serves_whole_file(self):
+        from local_service.cohort_store import HtsBackend, read_vcf_header
+        backend = HtsBackend.discover()
+        result = self.library.import_vcf(self.vcf, self.payload(include=False))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+
+        # Selecting every sample of the file serves the stored file whole.
+        whole = self.library.review_file_combined(
+            [by_sample["P1"]["id"], by_sample["P2"]["id"]]
+        )
+        self.assertEqual(whole, self.library.file(by_sample["P1"]["id"]))
+
+        # A single selection delegates to the per-sample projection.
+        if backend is not None:
+            self.cohort.hts_backend = backend
+            single = self.library.review_file_combined([by_sample["P1"]["id"]])
+            self.assertEqual(read_vcf_header(single).samples, ("P1",))
+
+        with self.assertRaisesRegex(ValueError, "at least one dataset"):
+            self.library.review_file_combined([])
+
     def test_persistent_import_identity_profile_and_reopen(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=True))
         self.assertEqual(len(result["datasets"]), 2)

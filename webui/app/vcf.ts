@@ -138,10 +138,15 @@ export const ADDITIONAL_DBNSFP_PREDICTORS: DbnsfpPredictorDefinition[] = [
   { id: "popeve", label: "popEVE", scoreColumn: "popEVE_score", predictionColumn: "popEVE_pred" },
 ];
 
+export type CohortCarrier = { sample: string; evidence: GenotypeEvidence };
+
 export type VariantRow = {
   key: string;
   source: string;
   sample: string;
+  /** Cohort review mode: the carrying individuals for this variant. */
+  carriers?: CohortCarrier[];
+  cohortSampleCount?: number;
   libraryDatasetId?: string;
   librarySampleId?: string;
   libraryIndividualId?: string | null;
@@ -266,6 +271,7 @@ export type VariantRow = {
 export type ImportSummary = {
   files: number;
   samples: number;
+  cohortMode?: boolean;
   passRecords: number;
   excludedNonPass: number;
   rows: number;
@@ -421,6 +427,8 @@ export function preferredClinicalTranscriptRows(rows: VariantRow[]) {
 }
 
 const EMPTY = new Set(["", ".", "-"]);
+
+export const COHORT_ROW_SAMPLE = "Cohort";
 
 // In-browser review guards (see parseVcfFiles). A compressed VCF expands
 // roughly 10x when decompressed and again per record x sample when parsed;
@@ -919,9 +927,12 @@ async function vcfHeaderLines(file: File) {
 
 export async function parseVcfFiles(
   files: File[],
-  options: { retainRawAnnotations?: boolean; intake?: "user" | "prepared-review" | "server-records" } = {},
+  options: { retainRawAnnotations?: boolean; intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number } = {},
 ): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
   const rows: VariantRow[] = [];
+  let importCohortMode = false;
+  let cohortCarrierEntries = 0;
+  const carrierEntryCap = options.carrierEntryCap ?? 3_000_000;
   const evidenceByVariant = new Map<string, Record<string, GenotypeEvidence>>();
   const sampleNames = new Set<string>();
   const warnings: string[] = [];
@@ -978,19 +989,17 @@ export async function parseVcfFiles(
       throw new Error(`${file.name}: VCF header must include FORMAT and at least one sample column`);
     }
     samples = headerColumns.slice(9);
-    if (intake !== "server-records" && samples.length >= COHORT_SAMPLE_GUARD && file.size >= COHORT_SIZE_GUARD_BYTES) {
-      // Applies to user intake AND to service-prepared review files: the
-      // review workspace opens complete files for one patient or a small
-      // family, and a cohort-wide file freezes the tab regardless of which
-      // path prepared it. Cohorts are indexed and queried, not opened whole.
+    // Cohort review mode: at 16+ sample columns the per-sample row model
+    // (one row per carrier, an all-samples genotype map on every row) would
+    // exhaust browser memory, so the parser switches to one row per variant
+    // with a compact carrier list. Family-scale files (2-15 samples) keep the
+    // per-sample model that trio analysis and the phenotype tab are built on.
+    const cohortMode = samples.length >= COHORT_SAMPLE_GUARD;
+    if (cohortMode) importCohortMode = true;
+    if (cohortMode && files.length > 1) {
       throw new Error(
-        `${file.name} is a cohort-scale VCF (${samples.length} samples, `
-        + `${Math.round(file.size / 1024 / 1024)} MB). The review workspace `
-        + "opens complete files for a single patient or small family; a "
-        + "cohort this wide exhausts the browser's memory. Use Cohort search "
-        + "instead: index the annotated VCF once (Cohort search → import), "
-        + "then query carriers of a gene or exact variant and review the "
-        + "matched findings — only matched records are ever opened.",
+        `${file.name} has ${samples.length} samples: cohort files are `
+        + "reviewed one file at a time — import it on its own.",
       );
     }
     const duplicateSamples = samples.filter(
@@ -1132,6 +1141,26 @@ export async function parseVcfFiles(
                 genotypeClass: "other", genotypeFilter: "",
               } satisfies GenotypeEvidence,
         ]));
+        // Cohort mode: keep only the carriers per variant — an all-samples
+        // map on every row is exactly the memory shape that cannot scale.
+        const cohortCarriers = cohortMode
+          ? fallbackSamples
+              .map((sampleName) => ({ sample: sampleName, evidence: sampleGenotypes[sampleName] }))
+              .filter((entry) => entry.evidence.carrier && entry.evidence.called)
+          : null;
+        if (cohortCarriers) {
+          cohortCarrierEntries += cohortCarriers.length;
+          if (cohortCarrierEntries > carrierEntryCap) {
+            throw new Error(
+              `${file.name}: this cohort import exceeds ${carrierEntryCap.toLocaleString()} `
+              + "carrier genotypes — likely an unfiltered callset where common "
+              + "variants are carried by most individuals. Import it through the "
+              + "Whole genome analysis scope with the population-frequency "
+              + "prefilter (gnomAD popmax) enabled, then review the prepared "
+              + "result.",
+            );
+          }
+        }
         const mergedEvidence = evidenceByVariant.get(variantEvidenceKey) ?? {};
         Object.entries(sampleGenotypes).forEach(([sample, evidence]) => {
           const previous = mergedEvidence[sample];
@@ -1146,10 +1175,26 @@ export async function parseVcfFiles(
             mergedEvidence[sample] = evidence;
           }
         });
-        evidenceByVariant.set(variantEvidenceKey, mergedEvidence);
+        if (!cohortMode) evidenceByVariant.set(variantEvidenceKey, mergedEvidence);
 
-        fallbackSamples.forEach((sample) => {
-          const genotype = sampleGenotypes[sample];
+        // Cohort mode emits ONE row set per variant (sample = the cohort),
+        // carrying the compact carrier list; the representative genotype
+        // fields come from the best-supported carrier. Per-sample mode is
+        // unchanged: one row set per carrying sample.
+        const carrierEvidenceMap = cohortCarriers
+          ? Object.fromEntries(cohortCarriers.map((entry) => [entry.sample, entry.evidence]))
+          : null;
+        const cohortRepresentative = cohortCarriers && cohortCarriers.length
+          ? cohortCarriers.reduce((best, entry) =>
+              (entry.evidence.gq ?? -1) > (best.evidence.gq ?? -1) ? entry : best)
+          : null;
+        const rowSamples = cohortMode
+          ? (cohortRepresentative ? [COHORT_ROW_SAMPLE] : [])
+          : fallbackSamples;
+        rowSamples.forEach((sample) => {
+          const genotype = cohortMode
+            ? cohortRepresentative!.evidence
+            : sampleGenotypes[sample];
           if (!genotype.carrier) return;
           const unscoredIndelReasons = alleleInfoReasons(
             info, "IEI_UNSCORED_INDEL", altIndex,
@@ -1192,7 +1237,7 @@ export async function parseVcfFiles(
             const haplotypeFrame = haplotypeFrameEvidence(
               info.IEI_HAPLOTYPE_FRAME,
               currentVariant,
-              sample,
+              cohortMode ? cohortRepresentative!.sample : sample,
               first(combined, ["Feature"]),
             );
             const popmax = maximum(combined, [
@@ -1341,7 +1386,11 @@ export async function parseVcfFiles(
               pLi: maximum(combined, ["pLI", "gnomAD_pLI", "ExAC_pLI"]),
               loeuf: maximum(combined, ["LOEUF", "loeuf", "oe_lof_upper", "gnomAD_LOEUF"]),
               missenseZ: maximum(combined, ["mis_z", "missense_z", "gnomAD_mis_z"]),
-              genotype: genotype.gt,
+              carriers: cohortCarriers ?? undefined,
+              cohortSampleCount: cohortMode ? samples.length : undefined,
+              genotype: cohortMode
+                ? `${cohortCarriers!.length}/${samples.length} carry`
+                : genotype.gt,
               dp: genotype.dp,
               gq: genotype.gq,
               adRef: genotype.adRef,
@@ -1353,7 +1402,7 @@ export async function parseVcfFiles(
               genotypeClass: genotype.genotypeClass,
               genotypeFilter: genotype.genotypeFilter,
               sourceRecordOrdinal: recordOccurrence,
-              sampleGenotypes,
+              sampleGenotypes: carrierEvidenceMap ?? sampleGenotypes,
               siteDepth: maximum(info, ["DP"]),
               qd: maximum(info, ["QD"]),
               mq: maximum(info, ["MQ"]),
@@ -1516,6 +1565,7 @@ export async function parseVcfFiles(
     summary: {
       files: files.length,
       samples: sampleNames.size,
+      cohortMode: importCohortMode,
       passRecords,
       excludedNonPass,
       rows: rows.length,

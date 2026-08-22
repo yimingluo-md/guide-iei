@@ -137,35 +137,65 @@ test("oversized files are refused before parsing, with routing guidance", async 
   );
 });
 
-test("many-sample cohort files are refused at the header, with routing guidance", async () => {
+test("cohort files parse variant-centrically: one row per variant with carriers", async () => {
   const samples = Array.from({ length: 20 }, (_, i) => `S${i + 1}`);
+  const genotypes1 = samples.map((s) => (s === "S1" ? "0/1:30:99:15,15" : "0/0:30:99:30,0"));
+  const genotypes2 = samples.map((s) => (s === "S2" || s === "S3" ? "0/1:25:80:12,13" : "0/0:25:80:25,0"));
   const vcf = "##fileformat=VCFv4.2\n"
     + "##reference=GRCh38\n"
     + "##contig=<ID=1,length=248956422>\n"
     + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">\n`
+    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n"
+    + `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t` + genotypes1.join("\t") + "\n"
+    + `1\t200\trs2\tC\tT\t99\tPASS\tCSQ=${PASS_CSQ.replace("missense_variant", "stop_gained")}\tGT:DP:GQ:AD\t` + genotypes2.join("\t") + "\n";
+  const result = await parseVcfFiles([new File([vcf], "cohort.vcf")]);
+  assert.equal(result.summary.cohortMode, true);
+  assert.equal(result.summary.samples, 20);
+  // One row per variant (single transcript each), not one per carrier.
+  assert.equal(result.rows.length, 2);
+  const first = result.rows.find((row) => row.pos === 100);
+  const second = result.rows.find((row) => row.pos === 200);
+  assert.equal(first.genotype, "1/20 carry");
+  assert.deepEqual(first.carriers.map((c) => c.sample), ["S1"]);
+  assert.equal(first.carriers[0].evidence.gt, "0/1");
+  assert.equal(first.carriers[0].evidence.dp, 30);
+  assert.equal(first.cohortSampleCount, 20);
+  assert.equal(second.genotype, "2/20 carry");
+  assert.deepEqual(second.carriers.map((c) => c.sample).sort(), ["S2", "S3"]);
+  // The carriers-only evidence map replaces the all-samples map.
+  assert.deepEqual(Object.keys(first.sampleGenotypes), ["S1"]);
+});
+
+test("cohort imports respect the carrier-entry cap with prefilter guidance", async () => {
+  const samples = Array.from({ length: 20 }, (_, i) => `S${i + 1}`);
+  const carriedByAll = samples.map(() => "0/1:30:99:15,15");
+  const vcf = "##fileformat=VCFv4.2\n"
+    + "##reference=GRCh38\n"
+    + "##contig=<ID=1,length=248956422>\n"
+    + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">\n`
+    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n"
+    + `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t` + carriedByAll.join("\t") + "\n"
+    + `1\t200\trs2\tC\tT\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t` + carriedByAll.join("\t") + "\n";
+  await assert.rejects(
+    () => parseVcfFiles([new File([vcf], "cohort.vcf")], { carrierEntryCap: 30 }),
+    /carrier genotypes[\s\S]*population-frequency/,
+  );
+});
+
+test("a cohort file must be imported on its own", async () => {
+  const samples = Array.from({ length: 20 }, (_, i) => `S${i + 1}`);
+  const cohort = "##fileformat=VCFv4.2\n"
+    + "##reference=GRCh38\n"
+    + "##contig=<ID=1,length=248956422>\n"
+    + `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${CSQ_FIELDS.join("|")}">\n`
     + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n";
-  const real = new File([vcf], "cohort.vcf");
-  const wrapped = {
-    name: real.name,
-    size: 25 * 1024 * 1024,
-    slice: (...args) => real.slice(...args),
-    stream: () => real.stream(),
-    text: () => real.text(),
-    arrayBuffer: () => real.arrayBuffer(),
-  };
   await assert.rejects(
-    () => parseVcfFiles([wrapped]),
-    /cohort-scale VCF \(20 samples[\s\S]*Cohort search/,
+    () => parseVcfFiles([
+      new File([cohort], "cohort.vcf"),
+      new File([VCF], "patient.vcf"),
+    ]),
+    /reviewed one file at a time/,
   );
-  // A service-PREPARED cohort file is refused too — the review workspace
-  // cannot hold cohort-wide genotype evidence no matter who prepared it —
-  // while bounded server-retrieved record sets (matched findings) parse.
-  await assert.rejects(
-    () => parseVcfFiles([wrapped], { intake: "prepared-review" }),
-    /cohort-scale VCF[\s\S]*Cohort search/,
-  );
-  const records = await parseVcfFiles([wrapped], { intake: "server-records" });
-  assert.ok(Array.isArray(records.rows));
 });
 
 test("preserves separate disease-specific ClinGen expert assertions", async () => {

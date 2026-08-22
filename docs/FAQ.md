@@ -39,16 +39,19 @@ only public reference data *to* the machine.
 
 ## Can I review a multi-sample cohort VCF?
 
-Yes — through **Cohort search**, which is the workflow built for cohorts.
-The review workspace opens a complete file for a single patient or a small
-family; a joint-called cohort (tens of samples) exceeds what a browser can
-hold in memory no matter how the file is prepared, so cohort-scale files
-are refused with directions rather than left to freeze the tab. The
-designed path: index the annotated cohort VCF once in **Cohort search**
-(the records live in a local database, not the browser), then query
-carriers of a candidate gene or an exact variant, and send the matched
-findings into the review workspace — only the matched records, with their
-complete evidence, are ever opened.
+Yes — directly. A file with 16 or more samples opens in **cohort review
+mode**: one row per variant, the usual filters, and a per-variant
+**Carriers** panel listing which individuals carry it with their genotype
+evidence. For a large fresh cohort file, import through the **Whole
+genome** analysis scope so the local service prefilters it first; a stored
+cohort reopens from the Sample Library ("Open all samples of this file"),
+which also supports opening one individual or a selected subset.
+**Cohort search** complements this with genotype-first queries — carriers
+of a gene or an exact variant across everything indexed. One bound: an
+unfiltered cohort where common variants are carried by nearly everyone can
+exceed the browser's carrier capacity; the import then directs you to the
+population-frequency prefilter instead of freezing. See the
+[cohort analysis chapter](guide/08-cohort-search.md).
 
 ## Where do I ask a question that is not answered here?
 

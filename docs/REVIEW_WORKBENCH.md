@@ -22,14 +22,21 @@ second screen for parameters and dataset readiness. See `webui/README.md` for
 the workflow and WSL2 instructions.
 
 **Choosing a path by file shape.** Exome-scope review parses the VCF in
-the browser — appropriate for single-patient files, where it keeps the
-entire workflow interactive. A large single-patient file (over ~100 MB
-compressed) belongs in the **Whole genome** analysis scope, which prepares
-it on the local service. A **cohort-scale file (16+ samples)** belongs in
-**Cohort search**, whatever its size: the review workspace opens complete
-files for one patient or a small family, and cohort-wide genotype evidence
-exceeds browser memory no matter which path prepared the file. Cohort-scale
-files are refused at review intake with directions to the cohort workflow.
+the browser — appropriate for single-patient and family files (2–15
+samples keep per-sample rows, preserving trio analysis and the phenotype
+tab). A large single-patient file (over ~100 MB compressed) belongs in the
+**Whole genome** analysis scope, which prepares it on the local service. A
+**cohort-scale file (16+ samples)** opens in **cohort review mode**: one
+row per variant with a compact carrier list instead of per-sample rows and
+an all-samples genotype map — the memory shape that cannot scale. Each
+variant's detail view gains a Carriers panel (genotype, depth, quality,
+allele balance per carrying individual). Family analysis and the
+per-patient phenotype tab are unavailable in cohort mode. A cohort import
+exceeding ~3 million carrier entries (an unfiltered callset) is refused
+with directions to the population-frequency prefilter. The Sample Library
+can open one individual (per-sample projection), a selected subset
+(combined review; family behavior at 15 or fewer samples), or all samples
+of a stored file (cohort mode).
 
 ## Sample Library
 

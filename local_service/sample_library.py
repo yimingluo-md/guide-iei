@@ -561,6 +561,76 @@ class SampleLibrary:
             partial.unlink(missing_ok=True)
         return projected
 
+    def review_file_combined(self, dataset_ids: list[str]) -> Path:
+        """Path a combined review should open for several datasets.
+
+        All datasets must come from the same managed source file. Selecting
+        every sample serves the stored file unchanged (cohort review mode
+        parses it variant-centrically in the browser); a subset is projected
+        to just those sample columns with records where any selected sample
+        carries an alternate allele, cached by checksum + sample set.
+        """
+        ids = [str(value) for value in dataset_ids if str(value).strip()]
+        if not ids:
+            raise ValueError("select at least one dataset")
+        if len(ids) == 1:
+            return self.review_file(ids[0])
+        records = []
+        for dataset_id in ids:
+            record = self.get(dataset_id)
+            if not record:
+                raise KeyError(dataset_id)
+            records.append(record)
+        checksums = {str(r.get("managed_checksum") or "") for r in records}
+        if len(checksums) != 1:
+            raise ValueError(
+                "combined review requires datasets from the same imported file"
+            )
+        source = self._managed_path(records[0]["managed_path"])
+        if not source.is_file():
+            raise FileNotFoundError(f"managed review VCF is missing: {source}")
+        wanted = [str(r.get("vcf_sample_name") or "") for r in records]
+        if any(not name for name in wanted):
+            raise ValueError("every selected dataset needs a VCF sample name")
+        header = read_vcf_header(source)
+        missing = [name for name in wanted if name not in header.samples]
+        if missing:
+            raise ValueError(
+                f"samples not present in the managed review VCF: {', '.join(missing)}"
+            )
+        if set(wanted) == set(header.samples):
+            return source
+        backend = self.cohort.hts_backend
+        if backend is None:
+            return source
+        ordered = sorted(set(wanted))
+        selection_id = hashlib.sha256("\n".join(ordered).encode("utf-8")).hexdigest()[:16]
+        checksum = checksums.pop() or source.stem
+        projected = self.files_dir / f"{checksum}.subset-{selection_id}.review.vcf.gz"
+        if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
+            return projected
+        partial = projected.with_name(projected.name + f".{os.getpid()}.partial.vcf.gz")
+        try:
+            subset = backend.run(
+                "bcftools",
+                ["view", "-s", ",".join(ordered), "-O", "z", "-o", str(partial), str(source)],
+            )
+            if subset.returncode != 0:
+                raise RuntimeError(
+                    f"sample projection failed: {subset.stderr.strip()[:400]}"
+                )
+            carriers = backend.run(
+                "bcftools",
+                ["view", "-i", 'GT[*]="alt"', "-O", "z", "-o", str(projected), str(partial)],
+            )
+            if carriers.returncode != 0:
+                raise RuntimeError(
+                    f"carrier filtering failed: {carriers.stderr.strip()[:400]}"
+                )
+        finally:
+            partial.unlink(missing_ok=True)
+        return projected
+
     def map_identity(self, dataset_id: str, payload: dict) -> dict:
         mode = str(payload.get("mode") or "unavailable")
         if mode not in {"existing", "create", "unavailable"}:

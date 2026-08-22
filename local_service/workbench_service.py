@@ -4271,6 +4271,22 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     ),
                 ))
                 return
+            if path == "/api/sample-library/review-file":
+                body = self._body()
+                dataset_ids = body.get("dataset_ids")
+                if not isinstance(dataset_ids, list):
+                    raise ValueError("dataset_ids must be a list")
+                try:
+                    self._file(
+                        self.service.sample_library.review_file_combined(
+                            [str(value) for value in dataset_ids]
+                        )
+                    )
+                except KeyError:
+                    self._json({"error": "library dataset not found"}, HTTPStatus.NOT_FOUND)
+                except FileNotFoundError as exc:
+                    self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+                return
             if path == "/api/sample-library/import":
                 self._json(
                     self.service.import_sample_library(self._body()),

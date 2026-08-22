@@ -1302,6 +1302,26 @@ export async function importSampleLibrary(payload: {
   });
 }
 
+export async function openSampleLibraryReviewSelection(
+  datasetIds: string[],
+  fallbackName: string,
+) {
+  const response = await fetch(`${SERVICE_URL}/api/sample-library/review-file`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ dataset_ids: datasetIds }),
+  });
+  if (!response.ok) {
+    const payload = await response.json().catch(() => ({}));
+    throw new Error(payload.error ?? `Local service returned ${response.status}`);
+  }
+  const disposition = response.headers.get("Content-Disposition") ?? "";
+  const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+  return new File([await response.blob()], name, {
+    type: response.headers.get("Content-Type") || "application/octet-stream",
+  });
+}
+
 export async function openSampleLibraryFile(datasetId: string, fallbackName: string) {
   const response = await fetch(`${SERVICE_URL}/api/sample-library/${encodeURIComponent(datasetId)}/file`);
   if (!response.ok) {
