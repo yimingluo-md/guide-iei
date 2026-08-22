@@ -98,7 +98,6 @@ export type ServiceCapabilities = {
       label: string;
       category: string;
       columns: string[];
-      recommended: boolean;
       available: boolean;
     }[];
     defaults: {

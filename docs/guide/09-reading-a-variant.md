@@ -119,41 +119,42 @@ size. Everything else dbNSFP offers is available per job.
 ### Optional dbNSFP predictors
 
 Any subset can be enabled per job under **Run VEP first → Additional
-dbNSFP predictors**. The **Extended set** column below marks the
-predictors included in the one-click **Recommended extended** selection —
-those chosen for being methodologically distinct rather than duplicative.
+dbNSFP predictors**; there is no preset — each predictor is a deliberate
+per-job choice. When selecting several, prefer methodological diversity
+over near-duplicates (an ensemble, a conservation score, and a protein
+language model tell you more together than three ensembles do).
 
-| Predictor | Approach | Direction | Extended set |
-|---|---|---|---|
-| MetaRNN | Recurrent-network meta-predictor over component scores and population frequencies | 0–1, higher | ✓ |
-| PrimateAI | Deep network using common variation in non-human primates as its benign training proxy | 0–1, higher | ✓ |
-| GERP++ RS | Substitution deficit at the nucleotide position | higher = constrained | ✓ |
-| phyloP 100-way | Per-position conservation across 100 vertebrates | positive = conserved, negative = accelerated | ✓ |
-| phastCons 100-way | Probability of lying within a conserved element | 0–1 | |
-| SIFT4G | SIFT recomputed over broader ortholog alignments | lower = deleterious | ✓ |
-| PolyPhen-2 HVAR | Same classifier, trained Mendelian-vs-common (the authors' recommendation for Mendelian work) | higher = damaging | ✓ |
-| MutationTaster | Bayes classifier over conservation, splice, and mRNA features | probability attached to its disease/polymorphism call | |
-| MutationAssessor | Subfamily-specific conservation patterns | higher = greater impact | ✓ |
-| PROVEAN | Alignment delta score | more negative = more disruptive | ✓ |
-| VEST4 | Random forest, HGMD-vs-common training | 0–1, higher | ✓ |
-| MetaSVM / MetaLR | SVM / logistic-regression meta-predictors over component scores + allele frequency | higher = deleterious | ✓ |
-| M-CAP | Classifier tuned for high sensitivity on rare missense | 0–1, higher | ✓ |
-| MutPred2 | Pathogenicity probability plus inferred molecular mechanism (which property is altered) | 0–1, higher | ✓ |
-| MVP | Deep residual network | 0–1, higher | |
-| gMVP | Graph attention over local protein structural/functional context | 0–1, higher | |
-| MPC | Deleteriousness conditioned on *regional* missense constraint within the gene | higher | ✓ |
-| DEOGEN2 | Adds domain, interaction, and pathway context | 0–1, higher | |
-| BayesDel (addAF) | Bayesian meta-score integrating allele frequency | higher = deleterious | ✓ |
-| BayesDel (noAF) | The same score without the frequency term | higher = deleterious | |
-| ClinPred | Boosted trees + random forest trained on ClinVar, frequency-aware | 0–1, higher | ✓ |
-| LIST-S2 | Taxonomy-aware conservation (local identity and shared taxa) | 0–1, higher | |
-| VARITY R | Trained for rare variants with weighting designed to reduce database circularity | 0–1, higher | ✓ |
-| VARITY ER | The extremely-rare-variant counterpart | 0–1, higher | |
-| ESM1b | 650M-parameter protein language model, zero-shot (no pathogenicity labels seen in training) | more negative = damaging | ✓ |
-| PHACTboost | Gradient boosting over phylogeny-derived PHACT scores | higher | |
-| MutFormer | Transformer trained on human protein sequences | higher | |
-| MutScore | Adds positional clustering of known pathogenic missense | 0–1, higher | |
-| popEVE | Deep generative evolutionary model (EVE lineage) calibrated against population data | more negative = more severe | |
+| Predictor | Approach | Direction |
+|---|---|---|
+| MetaRNN | Recurrent-network meta-predictor over component scores and population frequencies | 0–1, higher |
+| PrimateAI | Deep network using common variation in non-human primates as its benign training proxy | 0–1, higher |
+| GERP++ RS | Substitution deficit at the nucleotide position | higher = constrained |
+| phyloP 100-way | Per-position conservation across 100 vertebrates | positive = conserved, negative = accelerated |
+| phastCons 100-way | Probability of lying within a conserved element | 0–1 |
+| SIFT4G | SIFT recomputed over broader ortholog alignments | lower = deleterious |
+| PolyPhen-2 HVAR | Same classifier, trained Mendelian-vs-common (the authors' recommendation for Mendelian work) | higher = damaging |
+| MutationTaster | Bayes classifier over conservation, splice, and mRNA features | probability attached to its disease/polymorphism call |
+| MutationAssessor | Subfamily-specific conservation patterns | higher = greater impact |
+| PROVEAN | Alignment delta score | more negative = more disruptive |
+| VEST4 | Random forest, HGMD-vs-common training | 0–1, higher |
+| MetaSVM / MetaLR | SVM / logistic-regression meta-predictors over component scores + allele frequency | higher = deleterious |
+| M-CAP | Classifier tuned for high sensitivity on rare missense | 0–1, higher |
+| MutPred2 | Pathogenicity probability plus inferred molecular mechanism (which property is altered) | 0–1, higher |
+| MVP | Deep residual network | 0–1, higher |
+| gMVP | Graph attention over local protein structural/functional context | 0–1, higher |
+| MPC | Deleteriousness conditioned on *regional* missense constraint within the gene | higher |
+| DEOGEN2 | Adds domain, interaction, and pathway context | 0–1, higher |
+| BayesDel (addAF) | Bayesian meta-score integrating allele frequency | higher = deleterious |
+| BayesDel (noAF) | The same score without the frequency term | higher = deleterious |
+| ClinPred | Boosted trees + random forest trained on ClinVar, frequency-aware | 0–1, higher |
+| LIST-S2 | Taxonomy-aware conservation (local identity and shared taxa) | 0–1, higher |
+| VARITY R | Trained for rare variants with weighting designed to reduce database circularity | 0–1, higher |
+| VARITY ER | The extremely-rare-variant counterpart | 0–1, higher |
+| ESM1b | 650M-parameter protein language model, zero-shot (no pathogenicity labels seen in training) | more negative = damaging |
+| PHACTboost | Gradient boosting over phylogeny-derived PHACT scores | higher |
+| MutFormer | Transformer trained on human protein sequences | higher |
+| MutScore | Adds positional clustering of known pathogenic missense | 0–1, higher |
+| popEVE | Deep generative evolutionary model (EVE lineage) calibrated against population data | more negative = more severe |
 
 ### Reading the panel critically
 
