@@ -79,9 +79,12 @@ model.
 ## Cohort search
 
 The workbench provides a local **genotype-first cohort search** derived from
-the library. Add directories of annotated single- or multi-sample VCFs once,
-then query every carrier of an exact variant/rsID or carriers of qualifying
-variants in a gene. The indexed variant, annotation, and non-reference
+the library. Cohort membership is managed through the Sample Library
+(per-dataset and bulk Add/Remove actions; review imports join at intake
+when "Include qualifying variants in Cohort Search" is enabled). Query
+every carrier of an exact variant/rsID, carriers of qualifying variants in
+a gene, or carriers across a **gene list** (pasted or inserted from saved
+Gene lists; up to 2,000 genes per query). The indexed variant, annotation, and non-reference
 genotype records stay in `~/.iei-variant-review/cohort.sqlite3`. Directly
 indexed external VCFs remain in place; library-derived cohort entries can be
 rebuilt from their managed review VCF.

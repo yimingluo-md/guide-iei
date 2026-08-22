@@ -560,7 +560,7 @@ export type CohortQueryRow = {
 };
 
 export type CohortQueryResult = {
-  mode: "variant" | "gene";
+  mode: "variant" | "gene" | "gene_list";
   total: number;
   limit: number;
   truncated: boolean;
@@ -641,9 +641,10 @@ export type CohortSampleReview = {
 };
 
 export type CohortQuery = {
-  mode: "variant" | "gene";
+  mode: "variant" | "gene" | "gene_list";
   query?: string;
   gene?: string;
+  genes?: string[];
   impacts?: string[];
   max_popmax?: number | null;
   min_cadd?: number | null;

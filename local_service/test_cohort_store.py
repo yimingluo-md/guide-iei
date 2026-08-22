@@ -815,6 +815,23 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(imported["reader_count"], store.index_readers)
         self.assertEqual(imported["variant_count"], 4)
 
+    def test_gene_list_query_matches_any_listed_gene(self):
+        source = self.root / "genelist.vcf"
+        write_vcf(source)
+        store = CohortStore(self.root / "genelist.sqlite3")
+        store.import_vcf(source)
+        result = store.query({
+            "mode": "gene_list", "genes": "NFKB1, IL10RA\nNOSUCHGENE",
+        })
+        genes = {row["gene"] for row in result["rows"]}
+        self.assertIn("NFKB1", genes)
+        # Default qualifying filters (HIGH/MODERATE) still apply.
+        self.assertTrue(all(row["impact"] in {"HIGH", "MODERATE"} for row in result["rows"]))
+        with self.assertRaisesRegex(ValueError, "at least one gene"):
+            store.query({"mode": "gene_list", "genes": "  ,  "})
+        with self.assertRaisesRegex(ValueError, "2000-gene"):
+            store.query({"mode": "gene_list", "genes": [f"G{i}" for i in range(2001)]})
+
     def test_rejects_explicit_non_grch38_contig_length(self):
         wrong = self.root / "wrong-build.vcf"
         write_vcf(wrong)

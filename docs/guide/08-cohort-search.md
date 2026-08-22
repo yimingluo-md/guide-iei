@@ -90,23 +90,35 @@ dataset. From there:
 
 Cohort review answers "what variants are here, and who carries each."
 **Cohort search** answers the inverse: *who carries qualifying variants in
-this gene?* or *who carries this exact variant?* — across every file ever
-indexed, not only one import. Index the annotated cohort VCF once
-(Cohort search → import; records live in a local database), then query by
-gene, variant, or rsID. Matched findings can be sent into the review
-workspace, where the service restores each record's complete evidence.
+this gene?* or *who carries this exact variant?* — across every indexed
+case, not only one import. Membership is managed entirely through the
+**Sample Library**: keep a review with "Include qualifying variants in
+Cohort Search" enabled, or use the library's per-dataset and bulk actions
+(Add to Cohort Search, Remove selected). The records live in a local
+database on this workstation.
+
+Three query forms: an **exact variant** (locus or rsID), **qualifying
+variants in one gene**, and a **gene list** — paste symbols or insert a
+saved list from Gene lists (an IUIS panel, a custom panel), up to 2,000
+genes per query, with the same qualifying filters (impact, popmax,
+predictors, ClinVar). This is the scalable route for large collections:
+screening 50 genomes against a panel is one query, and only the matched
+findings are ever opened. Matched findings flow into the review
+workspace with each record's complete evidence restored.
 
 When a new gene–disease association is published, this is the two-minute
 check across the entire collection — without touching the original files.
 
 ## Bounds worth knowing
 
-- **Carrier volume.** Cohort review stores one entry per carrier per
-  variant. Rare-variant sets (the prepared import) keep this small; an
-  *unfiltered* cohort, where common variants are carried by nearly
-  everyone, can exceed the browser's capacity. The import refuses beyond
-  ~3 million carrier entries with directions to apply the
-  population-frequency prefilter — a named limit rather than a frozen tab.
+- **Review size.** A browser review stays responsive to roughly 350,000
+  rows — routine loads sit far below it (a genome ~40k rows, a genome trio
+  ~120k, an 88-sample cohort exome ~87k), and the line is reached around
+  8–9 genomes opened together. Beyond it, and beyond ~3 million carrier
+  genotypes for unfiltered callsets, the import stops with directions —
+  open fewer individuals, or use the gene-list search — rather than
+  freezing. Large collections belong in Cohort search, which has no such
+  limit.
 - **No cohort allele frequencies.** The software deliberately does not
   compute them: callability, capture, and retention profiles are not
   comparable across heterogeneous imports. Positive carrier findings are

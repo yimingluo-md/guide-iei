@@ -476,6 +476,10 @@ export const COHORT_ROW_SAMPLE = "Cohort";
 export const EXOME_REVIEW_MAX_COMPRESSED_BYTES = 100 * 1024 * 1024;
 export const COHORT_SAMPLE_GUARD = 16;
 export const COHORT_SIZE_GUARD_BYTES = 20 * 1024 * 1024;
+// One real calibration point: an 88-sample cohort exome review carries ~87k
+// rows comfortably. The cap sits ~4x above it; routine loads (single genome
+// ~40k rows, genome trio ~120k) stay far below.
+export const REVIEW_ROW_CAP = 350_000;
 
 function decode(value: string | undefined) {
   // VEP CSQ fields are percent-encoded only: '+' is a literal character and
@@ -977,7 +981,7 @@ async function vcfHeaderLines(file: File) {
 
 export async function parseVcfFiles(
   files: File[],
-  options: { retainRawAnnotations?: boolean; intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number; aggregateMaxPopmax?: number | null } = {},
+  options: { retainRawAnnotations?: boolean; intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number; aggregateMaxPopmax?: number | null; rowCap?: number } = {},
 ): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
   const rows: VariantRow[] = [];
   let importCohortMode = false;
@@ -992,6 +996,7 @@ export async function parseVcfFiles(
   const aggregatedVariants = new Map<string, { carriers: CohortCarrier[] } | { dropped: true }>();
   const clinvarReleaseByFile = new Map<string, string>();
   const carrierEntryCap = options.carrierEntryCap ?? 3_000_000;
+  const rowCap = options.rowCap ?? REVIEW_ROW_CAP;
   const evidenceByVariant = new Map<string, Record<string, GenotypeEvidence>>();
   const sampleNames = new Set<string>();
   const warnings: string[] = [];
@@ -1275,6 +1280,18 @@ export async function parseVcfFiles(
         const rowSamples = cohortMode
           ? (cohortRepresentative ? [COHORT_ROW_SAMPLE] : [])
           : fallbackSamples;
+        if (rows.length > rowCap) {
+          throw new Error(
+            `This import exceeds ${rowCap.toLocaleString()} review rows — beyond `
+            + "what a browser review stays responsive at. "
+            + (aggregatedCohort
+              ? "Open fewer individuals at once, or index these files in Cohort "
+                + "search and query carriers by gene list — only matched records "
+                + "are ever opened."
+              : "Open fewer files or samples at once, or use Cohort search for "
+                + "cross-sample questions."),
+          );
+        }
         rowSamples.forEach((sample) => {
           const genotype = cohortMode
             ? cohortRepresentative!.evidence

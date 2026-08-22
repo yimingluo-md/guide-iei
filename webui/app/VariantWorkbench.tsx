@@ -2264,7 +2264,9 @@ function CohortPanel({ onReview }: {
   const [indexing, setIndexing] = useState(false);
   const [importResult, setImportResult] = useState<CohortImportResult | null>(null);
   const [importJob, setImportJob] = useState<CohortImportJob | null>(null);
-  const [mode, setMode] = useState<"variant" | "gene">("variant");
+  const [mode, setMode] = useState<"variant" | "gene" | "gene_list">("variant");
+  const [geneListText, setGeneListText] = useState("");
+  const [savedListsOpen, setSavedListsOpen] = useState(false);
   const [exactQuery, setExactQuery] = useState("");
   const [gene, setGene] = useState("");
   const [impacts, setImpacts] = useState<Set<string>>(new Set(["HIGH", "MODERATE"]));
@@ -2395,6 +2397,10 @@ function CohortPanel({ onReview }: {
       setError("Enter a variant such as 4:1004329:C:T or an rsID.");
       return;
     }
+    if (mode === "gene_list" && !parseGeneList(geneListText).size) {
+      setError("Paste at least one gene symbol, or insert a saved list.");
+      return;
+    }
     if (mode === "gene" && !gene.trim()) {
       setError("Enter a gene symbol.");
       return;
@@ -2411,7 +2417,9 @@ function CohortPanel({ onReview }: {
         limit: 1000,
       } : {
         mode,
-        gene: gene.trim().toUpperCase(),
+        ...(mode === "gene_list"
+          ? { genes: [...parseGeneList(geneListText)] }
+          : { gene: gene.trim().toUpperCase() }),
         impacts: [...impacts],
         max_popmax: optionalNumber(maxPopmax),
         min_cadd: optionalNumber(minCadd),
@@ -2648,22 +2656,17 @@ function CohortPanel({ onReview }: {
 
     <div className="cohort-control-grid">
       <section className="cohort-card">
-        <div className="cohort-card-head"><div><p className="eyebrow">Cohort data</p><h2>Index annotated VCFs</h2></div><span className="local-only-badge">SQLite · local only</span></div>
-        <p>Enter GRCh38 VEP-annotated <span className="mono">.vcf</span> or <span className="mono">.vcf.gz</span> files. The local SQLite index retains non-reference carriers rather than every reference call, allowing hundreds of samples when workstation memory and disk are adequate. Lifted GRCh37 calls retain their original locus.</p>
-        <div className="query-mode cohort-import-profile" role="group" aria-label="Cohort import profile"><button className={importProfile === "prefiltered" ? "active" : ""} onClick={() => { setImportProfile("prefiltered"); setCohortAnalysisScope("whole_genome"); }}><strong>Compact WGS · recommended</strong><span>Gentle candidate prefilter first</span></button><button className={importProfile === "full" ? "active" : ""} onClick={() => setImportProfile("full")}><strong>Advanced full index</strong><span>Every PASS/unfiltered carrier; high disk use</span></button></div>
-        {importProfile === "full" ? <div className="cohort-scope-selector"><span>Source variant scope</span><div className="query-mode" role="group" aria-label="Indexed source variant scope"><button className={cohortAnalysisScope === "exome" ? "active" : ""} onClick={() => setCohortAnalysisScope("exome")}>Exome</button><button className={cohortAnalysisScope === "whole_genome" ? "active" : ""} onClick={() => setCohortAnalysisScope("whole_genome")}>Whole genome</button></div><small>This provenance label controls whether regulatory evidence is available when the individual is reopened.</small></div> : <p className="cohort-scope-fixed"><strong>Source scope:</strong> Whole genome · recorded with the Compact WGS filter settings below.</p>}
-        {importProfile === "prefiltered" && <div className="cohort-prefilter-settings"><div className="cohort-prefilter-note"><strong>Compact WGS candidate import</strong><span><GlossaryText text="A PASS or unfiltered (.) site FILTER, QC, and population frequency are required first. Coding/essential-splice, SpliceAI, promoterAI, and the selected noncoding region route are then combined with OR. Unscored intronic/promoter indels are retained with a review flag." /></span></div><div className="cohort-prefilter-grid"><label className="form-field"><span>gnomAD popmax ≤</span><input inputMode="decimal" value={prefilter.max_gnomad_popmax ?? ""} onChange={(event) => setPrefilter({ ...prefilter, max_gnomad_popmax: optionalNumber(event.target.value) })}/></label><label className="form-field"><span>SpliceAI ≥</span><input inputMode="decimal" value={prefilter.min_spliceai ?? ""} onChange={(event) => setPrefilter({ ...prefilter, min_spliceai: optionalNumber(event.target.value) })}/></label><label className="form-field"><span>|promoterAI| ≥</span><input inputMode="decimal" value={prefilter.min_promoterai_abs ?? ""} onChange={(event) => setPrefilter({ ...prefilter, min_promoterai_abs: optionalNumber(event.target.value) })}/></label></div><NoncodingModePicker value={prefilter.noncoding_mode} onChange={(noncoding_mode) => setPrefilter({ ...prefilter, noncoding_mode })}/><p className="wgs-filter-logic"><strong>Logic:</strong> PASS-or-unfiltered/QC AND (popmax ≤ threshold OR popmax unavailable) AND (exonic/essential-splice OR SpliceAI OR promoterAI OR selected noncoding regions OR explicitly flagged unscored intronic/promoter indel).</p></div>}
-        <label className="form-field"><span>VCF file or directory path(s)</span><textarea rows={4} value={sourcePaths} onChange={(event) => setSourcePaths(event.target.value)} placeholder={"/absolute/path/annotated-vcfs\n/absolute/path/cohort.vcf.gz"} /></label>
-        <div className="cohort-actions"><div><Check label="Search subdirectories" checked={recursive} onChange={setRecursive}/><Check label="I confirm header-ambiguous VCFs are GRCh38" checked={allowUnknownAssembly} onChange={setAllowUnknownAssembly}/></div><button className="primary-button dark" disabled={indexing} onClick={indexSources}>{indexing ? "Indexing VCFs…" : "Add or refresh cohort"}</button></div>
-        {importJob && (indexing || importJob.status === "failed") && <div className={`cohort-import-progress ${importJob.status}`}><div><strong>{importJob.status === "queued" ? "Preparing cohort import" : importJob.status === "failed" ? "Import stopped" : ["preparing_index", "filtering", "compressing", "indexing_output"].includes(importJob.phase) ? `Prefiltering ${fileName(importJob.current_path) || "WGS VCF"}` : importJob.phase === "merging" ? `Merging staged records for ${fileName(importJob.current_path) || "VCF"}` : `Indexing ${fileName(importJob.current_path) || "VCFs"}`}</strong><span>{importPercent.toFixed(1)}% · {importJob.completed_files}/{importJob.total_files} files · {(importJob.import_profile === "prefiltered" ? importJob.prefilter_records_scanned : importJob.records_processed).toLocaleString()} records scanned</span></div><div className="progress-track" role="progressbar" aria-label="Cohort VCF import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(importPercent)}><span style={{ width: `${importPercent}%` }} /></div><small>{compactFileSize(importJob.processed_bytes)} of {compactFileSize(importJob.total_bytes)} · {importJob.import_profile === "prefiltered" ? `${importJob.prefilter_records_retained.toLocaleString()} records retained by prefilter · ` : ""}{importJob.pass_records.toLocaleString()} PASS records staged · {importJob.carrier_count.toLocaleString()} carrier calls · {importJob.reader_count} reader{importJob.reader_count === 1 ? "" : "s"}</small></div>}
-        {importResult && <div className="cohort-import-result"><strong>{importResult.imported} indexed · {importResult.skipped} unchanged · {importResult.failed} failed</strong>{importResult.files.slice(0, 6).map((item) => <span key={item.path} className={item.status === "failed" ? "failed" : ""}>{fileName(item.path)} — {item.status}{item.import_profile === "prefiltered" ? ` · compact WGS (${(item.prefilter_records_retained ?? 0).toLocaleString()} of ${(item.prefilter_records_scanned ?? 0).toLocaleString()} retained)` : ` · full ${item.analysis_scope === "whole_genome" ? "WGS" : "exome"}`}{item.reader_count ? ` · ${item.reader_count} reader${item.reader_count === 1 ? "" : "s"}` : ""}{item.cache_hit ? " · prepared cache reused" : ""}{item.preparation_warning ? ` · ${item.preparation_warning}` : ""}{item.error ? `: ${item.error}` : ""}</span>)}{importResult.files.length > 6 && <span>+ {importResult.files.length - 6} more files</span>}</div>}
+        <div className="cohort-card-head"><div><p className="eyebrow">Cohort data</p><h2>Cohort membership</h2></div><span className="local-only-badge">SQLite · local only</span></div>
+        <p>Samples enter and leave Cohort search through the <strong>Sample Library</strong>: keep a review in the library with “Include qualifying variants in Cohort Search” enabled, or use the library cards and bulk actions (Add to Cohort Search, Repair, Rebuild, Remove). Every indexed record stays on this workstation.</p>
+        {importJob && (indexing || importJob.status === "failed") && <div className={`cohort-import-progress ${importJob.status}`}><div><strong>{importJob.status === "queued" ? "Preparing cohort import" : importJob.status === "failed" ? "Import stopped" : ["preparing_index", "filtering", "compressing", "indexing_output"].includes(importJob.phase) ? `Prefiltering ${fileName(importJob.current_path) || "WGS VCF"}` : importJob.phase === "merging" ? `Merging staged records for ${fileName(importJob.current_path) || "VCF"}` : `Indexing ${fileName(importJob.current_path) || "VCFs"}`}</strong><span>{importPercent.toFixed(1)}% · {importJob.completed_files}/{importJob.total_files} files</span></div><div className="progress-track" role="progressbar" aria-label="Cohort VCF import progress" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(importPercent)}><span style={{ width: `${importPercent}%` }} /></div></div>}
       </section>
 
       <section className="cohort-card query-card">
         <div className="cohort-card-head"><div><p className="eyebrow">Carrier query</p><h2>Who carries it?</h2></div></div>
-        <div className="query-mode" role="group" aria-label="Cohort query type"><button className={mode === "variant" ? "active" : ""} onClick={() => setMode("variant")}>Exact variant</button><button className={mode === "gene" ? "active" : ""} onClick={() => setMode("gene")}>Qualifying variants in gene</button></div>
+        <div className="query-mode" role="group" aria-label="Cohort query type"><button className={mode === "variant" ? "active" : ""} onClick={() => setMode("variant")}>Exact variant</button><button className={mode === "gene" ? "active" : ""} onClick={() => setMode("gene")}>Qualifying variants in gene</button><button className={mode === "gene_list" ? "active" : ""} onClick={() => setMode("gene_list")}>Gene list</button></div>
         {mode === "variant" ? <><label className="form-field"><span>Variant, locus, or rsID</span><input value={exactQuery} onChange={(event) => setExactQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && searchCohort()} placeholder="4:1004329:C:T or rs121918472" /></label><p className="query-note">Exact searches return all indexed non-reference carriers; pathogenicity and frequency filters are not applied.{stats?.prefiltered_files ? " Compact-profile files may not contain noncoding variants excluded during import." : ""}</p></> : <>
-          <label className="form-field"><span>Gene symbol</span><input value={gene} onChange={(event) => setGene(event.target.value.toUpperCase())} onKeyDown={(event) => event.key === "Enter" && searchCohort()} placeholder="NFKB1" /></label>
+          {mode === "gene" ? <label className="form-field"><span>Gene symbol</span><input value={gene} onChange={(event) => setGene(event.target.value.toUpperCase())} onKeyDown={(event) => event.key === "Enter" && searchCohort()} placeholder="NFKB1" /></label>
+          : <div className="gene-list-query"><label className="form-field"><span>Gene symbols <small>{parseGeneList(geneListText).size} unique</small></span><textarea value={geneListText} onChange={(event) => setGeneListText(event.target.value)} rows={5} placeholder={"NFKB1\nCTLA4\nSTAT3 — or insert a saved list"} spellCheck={false} /></label><div className="gene-list-query-actions"><button className="secondary-button" onClick={() => setSavedListsOpen((current) => !current)}>Insert saved list</button>{savedListsOpen && <div className="gene-list-menu">{storedCustomGeneLists().length === 0 && <span>No saved lists yet — create them under Gene lists.</span>}{storedCustomGeneLists().map((list) => <button key={list.id} onClick={() => { setGeneListText((current) => [current.trim(), [...list.genes].sort().join("\n")].filter(Boolean).join("\n")); setSavedListsOpen(false); }}>{list.name} · {list.genes.size}</button>)}</div>}</div></div>}
           <div className="qualifying-grid">
             <div><span className="qualifying-label">Impact</span><div className="chip-grid">{IMPACTS.map((impact) => <button key={impact} className={`impact-chip ${impact.toLowerCase()} ${impacts.has(impact) ? "selected" : ""}`} onClick={() => setImpacts((current) => toggleSet(current, impact, !current.has(impact)))}>{impact}</button>)}</div></div>
             <label className="form-field"><span>gnomAD popmax ≤</span><input value={maxPopmax} onChange={(event) => setMaxPopmax(event.target.value)} inputMode="decimal" /></label>
@@ -3050,6 +3053,21 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
     catch (reason) { setError(reason instanceof Error ? reason.message : "Cohort Search entry could not be removed."); }
     finally { setWorking(""); }
   }
+  async function addSelectedToCohort() {
+    const chosen = datasets.filter((dataset) => selectedDatasets.has(dataset.id)
+      && (dataset.cohort_index_status ?? (dataset.include_in_cohort ? "needs_repair" : "not_included")) === "not_included");
+    if (!chosen.length) { setMessage("Every selected dataset is already in Cohort Search."); return; }
+    setWorking("bulk-add"); setError("");
+    const failures: string[] = [];
+    for (const dataset of chosen) {
+      try { await reindexSampleLibraryDataset(dataset.id, false); }
+      catch (reason) { failures.push(reason instanceof Error ? reason.message : dataset.id); }
+    }
+    await refresh();
+    if (failures.length) setError(`${failures.length} of ${chosen.length} additions failed: ${failures[0]}`);
+    else setMessage(`${chosen.length} dataset${chosen.length > 1 ? "s" : ""} added to Cohort Search.`);
+    setWorking("");
+  }
   async function removeSelected() {
     const ids = [...selectedDatasets];
     if (!ids.length) return;
@@ -3088,6 +3106,7 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
       <div>
         <button className="secondary-button" disabled={working !== ""} onClick={() => setSelectedDatasets(selectedDatasets.size === datasets.length ? new Set() : new Set(datasets.map((d) => d.id)))}>{selectedDatasets.size === datasets.length ? "Clear selection" : "Select all"}</button>
         <button className="secondary-button" disabled={selectedDatasets.size < 2 || working !== ""} onClick={() => void openCombined([...selectedDatasets], `${selectedDatasets.size} selected individuals`)}>Open combined review ({selectedDatasets.size || 0})</button>
+        <button className="secondary-button" disabled={selectedDatasets.size === 0 || working !== ""} onClick={() => void addSelectedToCohort()}>{working === "bulk-add" ? "Adding…" : "Add to Cohort Search"}</button>
         <button className="secondary-button danger-button" disabled={selectedDatasets.size === 0 || working !== ""} onClick={() => void removeSelected()}>{working === "bulk-remove" ? "Removing…" : `Remove selected (${selectedDatasets.size || 0})`}</button>
       </div>
     </div>}

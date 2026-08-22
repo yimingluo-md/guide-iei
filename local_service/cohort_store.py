@@ -2954,8 +2954,8 @@ class CohortStore:
 
     def query(self, payload: dict) -> dict:
         mode = str(payload.get("mode") or "variant")
-        if mode not in {"variant", "gene"}:
-            raise ValueError("mode must be 'variant' or 'gene'")
+        if mode not in {"variant", "gene", "gene_list"}:
+            raise ValueError("mode must be 'variant', 'gene', or 'gene_list'")
         limit = max(1, min(int(payload.get("limit") or 500), 5000))
         variant_conditions: list[str] = []
         variant_parameters: list = []
@@ -2978,6 +2978,25 @@ class CohortStore:
                     "(v.rsid = ? COLLATE NOCASE OR v.variant_key = ? COLLATE NOCASE)"
                 )
                 variant_parameters.extend([query, query])
+        elif mode == "gene_list":
+            raw_genes = payload.get("genes")
+            if isinstance(raw_genes, str):
+                raw_genes = re.split(r"[\s,;]+", raw_genes)
+            if not isinstance(raw_genes, list):
+                raise ValueError("genes must be a list or whitespace/comma-separated text")
+            genes = sorted({
+                str(value).strip().upper() for value in raw_genes if str(value).strip()
+            })
+            if not genes:
+                raise ValueError("provide at least one gene symbol")
+            if len(genes) > 2000:
+                raise ValueError(
+                    f"{len(genes)} genes exceeds the 2000-gene query limit — split the list"
+                )
+            annotation_conditions.append(
+                "a.gene IN (" + ",".join("?" for _ in genes) + ")"
+            )
+            annotation_parameters.extend(genes)
         else:
             gene = str(payload.get("gene") or payload.get("query") or "").strip().upper()
             if not gene:
@@ -2985,6 +3004,8 @@ class CohortStore:
             annotation_conditions.append("a.gene = ?")
             annotation_parameters.append(gene)
 
+        # Qualifying-variant filters apply to both gene modes.
+        if mode in ("gene", "gene_list"):
             impacts = [
                 str(value).upper() for value in payload.get("impacts", ["HIGH", "MODERATE"])
                 if str(value).upper() in ALLOWED_IMPACTS
