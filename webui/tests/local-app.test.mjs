@@ -320,7 +320,6 @@ test("provides persistent genotype-first cohort indexing and carrier search", as
   assert.match(source, /REVIEW THIS VARIANT/);
   assert.match(source, /Complete stored review sets were loaded using each source's original cohort import profile/);
   assert.match(source, /Full source INFO, VEP CSQ, and sample FORMAT annotations were loaded on demand/);
-  assert.match(source, /All source VCF annotations/);
   assert.match(source, /Variant details/);
   assert.match(source, /Compact WGS/);
   assert.match(source, /Compact WGS candidate import/);

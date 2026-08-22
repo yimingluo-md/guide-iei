@@ -1361,9 +1361,8 @@ export default function VariantWorkbench() {
             <>
               <div className="content-header">
                 <div><p className="eyebrow">{summary ? `${summary.files} imported file${summary.files === 1 ? "" : "s"}` : "No VCF imported"}</p><h1>{view === "compound" ? "Candidate compound heterozygotes" : view === "saved" ? "Saved candidates" : "Prioritized variants"}</h1><p className="subtitle">{filtered.length} transcript-level rows · {new Set(filtered.map((row) => row.gene)).size} genes · {new Set(filtered.map((row) => row.sample)).size} samples</p></div>
-                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} /><button className="secondary-button" onClick={() => downloadTsv(filtered)}>Export TSV</button></div>
+                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} oneRowPerVariant={oneRowPerVariant} setOneRowPerVariant={setOneRowPerVariant} /><button className="secondary-button" onClick={() => downloadTsv(filtered)}>Export TSV</button></div>
               </div>
-              {summary && <label className="one-row-toggle" title="Show each variant once, represented by its highest-priority transcript (MANE Select, then MANE Plus Clinical, then most severe consequence). A +N chip counts the collapsed transcript/gene rows; the variant page always lists every transcript."><input type="checkbox" checked={oneRowPerVariant} onChange={(event) => setOneRowPerVariant(event.target.checked)}/><span>One row per variant</span></label>}
               {summary && <div className="qc-strip"><span><strong>{summary.samples}</strong> samples</span><span><strong>{summary.intakeQc.filter((check) => check.status === "pass").length}</strong> intake checks passed</span><span><strong>{qcFailingCalls}</strong> calls {includeQcFailing ? "flagged" : "hidden by QC"}</span>{(summary.warnings.length > 0 || summary.intakeQc.some((check) => check.status === "warning")) && <button onClick={() => setView("import")}>Review intake QC</button>}</div>}
               <VariantTable rows={prioritizedRows} hasImportedData={Boolean(summary)} saved={saved} setSaved={setSaved} setSelected={setSelected} compoundKeys={compoundKeys} visibleInfo={visibleInfo} trio={trio} trioThresholds={trioThresholds} trioCompoundVariantKeys={trioCompoundVariantKeys} qcSettings={qcSettings} />
             </>
@@ -1432,6 +1431,8 @@ function DisplaySettingsButton({
   availableDbnsfpPredictors,
   visibleDbnsfpPredictors,
   setVisibleDbnsfpPredictors,
+  oneRowPerVariant,
+  setOneRowPerVariant,
 }: {
   open: boolean;
   setOpen: (value: boolean) => void;
@@ -1440,6 +1441,8 @@ function DisplaySettingsButton({
   availableDbnsfpPredictors: Set<string>;
   visibleDbnsfpPredictors: Set<string>;
   setVisibleDbnsfpPredictors: React.Dispatch<React.SetStateAction<Set<string>>>;
+  oneRowPerVariant?: boolean;
+  setOneRowPerVariant?: (value: boolean) => void;
 }) {
   const toggle = (item: DisplayItem, checked: boolean) => setVisibleInfo((current) => toggleSet(current, item, checked));
   const toggleDbnsfp = (id: string, checked: boolean) => setVisibleDbnsfpPredictors((current) => toggleSet(current, id, checked));
@@ -1452,7 +1455,7 @@ function DisplaySettingsButton({
     ["quality", "Call quality"], ["population", "Population & regions"], ["gnomadPopulations", "All gnomAD population frequencies"], ["clinvar", "ClinVar"], ["transcript", "Transcript"], ["geneConstraint", "Gene constraint"],
   ];
   const detectedDbnsfp = ADDITIONAL_DBNSFP_PREDICTORS.filter((item) => availableDbnsfpPredictors.has(item.id));
-  return <div className="display-settings"><button className={`secondary-button ${open ? "active" : ""}`} onClick={() => setOpen(!open)}>Display settings</button>{open && <div className="settings-popover"><div className="settings-head"><div><strong>Information shown</strong><span>Saved on this workstation</span></div><button onClick={() => setOpen(false)}>×</button></div><h3>Evidence sections</h3><div className="settings-grid">{sections.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>Core predictors</h3><div className="settings-grid">{predictors.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>Additional dbNSFP predictors <span className="detected-count">{detectedDbnsfp.length} detected</span></h3>{detectedDbnsfp.length ? <div className="settings-grid">{detectedDbnsfp.map((item) => <Check key={item.id} label={item.label} checked={visibleDbnsfpPredictors.has(item.id)} onChange={(checked) => toggleDbnsfp(item.id, checked)} />)}</div> : <p className="settings-empty">None were present in this VCF’s CSQ schema.</p>}<button className="settings-reset" onClick={() => { setVisibleInfo(new Set(DEFAULT_DISPLAY)); setVisibleDbnsfpPredictors(new Set()); }}>Restore defaults</button></div>}</div>;
+  return <div className="display-settings"><button className={`secondary-button ${open ? "active" : ""}`} onClick={() => setOpen(!open)}>Display settings</button>{open && <div className="settings-popover"><div className="settings-head"><div><strong>Information shown</strong><span>Saved on this workstation</span></div><button onClick={() => setOpen(false)}>×</button></div>{setOneRowPerVariant && <><h3>Variant list</h3><div className="settings-grid"><Check label="One row per variant" checked={Boolean(oneRowPerVariant)} onChange={setOneRowPerVariant} /></div><p className="settings-note">Each variant appears once, represented by its highest-priority transcript (MANE Select, then MANE Plus Clinical, then most severe consequence). A +N chip counts the collapsed transcript/gene rows; the variant page always lists every transcript.</p></>}<h3>Evidence sections</h3><div className="settings-grid">{sections.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>Core predictors</h3><div className="settings-grid">{predictors.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>Additional dbNSFP predictors <span className="detected-count">{detectedDbnsfp.length} detected</span></h3>{detectedDbnsfp.length ? <div className="settings-grid">{detectedDbnsfp.map((item) => <Check key={item.id} label={item.label} checked={visibleDbnsfpPredictors.has(item.id)} onChange={(checked) => toggleDbnsfp(item.id, checked)} />)}</div> : <p className="settings-empty">None were present in this VCF’s CSQ schema.</p>}<button className="settings-reset" onClick={() => { setVisibleInfo(new Set(DEFAULT_DISPLAY)); setVisibleDbnsfpPredictors(new Set()); }}>Restore defaults</button></div>}</div>;
 }
 
 function ccreDistanceLabel(distance: number) {
@@ -1652,7 +1655,6 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
         ]} /><p className="constraint-note">{selected.constraintRelease ? `Loaded automatically from bundled gnomAD v${selected.constraintRelease} gene constraint data using its selected MANE/canonical transcript. gnomAD recommends LOEUF over pLI for current interpretation.` : "No matching gene was found in the bundled gnomAD constraint table. Constraint metrics remain unavailable for this gene."}</p></EvidenceSection>}
       </div>
       <GeneKnowledgeSummary gene={selected.gene} onOpen={() => setReviewSection("gene")}/>
-      {selected.rawVcfEvidence && <RawVcfEvidencePanel evidence={selected.rawVcfEvidence}/>}
       {analysisScope === "whole_genome" && <RegulatorySummary evidence={screenEvidence} loading={screenEvidenceLoading} error={screenEvidenceError} codingConsequence={hasCodingTranscriptConsequence(selected)} onOpen={() => setReviewSection("regulatory")}/>}
       <div className="interpretation-banner"><strong>Review aid, not a classification</strong><span>This workspace organizes evidence; it does not assign ACMG/AMP criteria or replace clinical interpretation.</span></div>
       </>}
@@ -1926,20 +1928,6 @@ function EvidenceGrid({ items }: { items: [string, React.ReactNode][] }) {
   return <dl className="evidence-grid">{items.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value === null || value === undefined || value === "" ? "—" : value}</dd></div>)}</dl>;
 }
 
-function RawVcfEvidencePanel({ evidence }: {
-  evidence: NonNullable<VariantRow["rawVcfEvidence"]>;
-}) {
-  const groups = [
-    ["Variant INFO", evidence.info],
-    ["Selected VEP consequence", evidence.consequence],
-    ["Sample FORMAT", evidence.format],
-  ] as const;
-  const fieldCount = groups.reduce(
-    (total, [, fields]) => total + Object.keys(fields).length,
-    0,
-  );
-  return <section className="raw-vcf-evidence"><details><summary><span><strong>All source VCF annotations</strong><small>Loaded on demand from the indexed source record</small></span><em>{fieldCount} populated fields</em></summary><div className="raw-vcf-groups">{groups.map(([label, fields]) => <section key={label}><h3>{label}</h3><dl>{Object.entries(fields).sort(([left], [right]) => left.localeCompare(right)).map(([field, value]) => <div key={field}><dt>{field}</dt><dd><code>{rawVcfDisplayValue(value)}</code></dd></div>)}</dl></section>)}</div></details></section>;
-}
 
 function rawVcfDisplayValue(value: string) {
   try {
