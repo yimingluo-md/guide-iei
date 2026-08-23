@@ -317,8 +317,15 @@ class SoftwareUpdateTests(unittest.TestCase):
         ))
         summary = self.updater(second).install()
         self.assertNotIn("docs/Guide.md", summary["files_removed"])
-        renamed = [p for p in (self.repo / "docs").iterdir() if p.name.lower() == "guide.md"]
-        self.assertTrue(renamed and renamed[0].read_text() == "guide v2\n")
+        # The manifest-named file must carry the new content. On a
+        # case-insensitive filesystem (the clinician default) both
+        # spellings are one file — the deletion skip is what keeps it
+        # alive; on a case-sensitive one the old spelling lingers as a
+        # harmless stale copy (the documented cost of the skip), so only
+        # the new spelling's content is asserted.
+        self.assertEqual(
+            (self.repo / "docs" / "guide.md").read_text(), "guide v2\n"
+        )
 
     def test_interrupted_install_is_detected_and_repairable(self):
         """A crash mid-swap can leave the tree claiming the NEW version;
