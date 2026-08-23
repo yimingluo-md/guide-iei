@@ -652,7 +652,13 @@ class WgsReviewStore:
 
         stat = source.stat()
         from local_service.cohort_store import _content_probe, _full_content_sha256
-        source_sha = _full_content_sha256(source)
+        # This fingerprint is computed on EVERY review open, not just on
+        # imports, so it keeps the original 1 GiB hashing ceiling: at the
+        # import-path 8 GiB ceiling a routine cache-hit open of a mid-size
+        # genome would stall ~20 s just recomputing a known hash. Larger
+        # files stay on the probe here; the import gates still hash them
+        # up to their own limit.
+        source_sha = _full_content_sha256(source, limit=1 << 30)
         fingerprint_value = {
             # v5: worker interval slicing normalizes contig names — v4 review
             # caches built from chr-prefixed VCFs under-retained coding and

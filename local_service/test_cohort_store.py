@@ -764,6 +764,70 @@ class CohortStoreTests(unittest.TestCase):
             len(store.query({"mode": "variant", "query": "1:100:A:G"})["rows"]), 0,
         )
 
+    def test_managed_destination_binds_to_the_content_key(self):
+        """The managed file is filed UNDER the caller's checksum: bytes
+        that do not hash to that key must be refused BEFORE an existing
+        healthy destination is touched — an A->B->A source swap timed
+        around the old re-checks replaced a checksum-A managed file with
+        B's variants."""
+        source = self.root / "bind.vcf"
+        write_vcf(source)
+        store = CohortStore(
+            self.root / "bind.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        from local_service.sample_library import _sha256
+        key_a = _sha256(source)
+        managed_dir = self.root / "managed"
+        destination, _, _ = store.prepare_managed_vcf(source, managed_dir, key_a)
+        healthy = destination.read_bytes()
+        # The source now holds B (same samples, different variants) while
+        # the caller still presents A's key — the exact swap scenario.
+        source.write_text(source.read_text().replace("1\t100\t", "1\t105\t"))
+        with self.assertRaisesRegex(ValueError, "changed while"):
+            store.prepare_managed_vcf(source, managed_dir, key_a)
+        self.assertEqual(destination.read_bytes(), healthy)
+        # With the CURRENT content's own key, the import proceeds.
+        key_b = _sha256(source)
+        dest_b, _, _ = store.prepare_managed_vcf(source, managed_dir, key_b)
+        self.assertNotEqual(dest_b, destination)
+        # No snapshot temporaries linger.
+        self.assertEqual(list(managed_dir.glob("*.snapshot*")), [])
+
+    def test_identity_less_rows_reindex_instead_of_passing_unchanged(self):
+        """A row with neither probe nor sha cannot honestly be called
+        unchanged: certifying current bytes onto rows indexed from unknown
+        content presented a trust-on-first-use hash as verified."""
+        import sqlite3 as _sqlite3
+        source = self.root / "legacy.vcf"
+        write_vcf(source)
+        aligned = source.stat().st_mtime_ns // 1000 * 1000
+        os.utime(source, ns=(aligned, aligned))
+        database = self.root / "legacy.sqlite3"
+        store = CohortStore(
+            database, enable_auto_index=True,
+            hts_backend=FakeHtsBackend(), index_readers=2,
+        )
+        store.import_vcf(source)
+        with _sqlite3.connect(database) as connection:
+            connection.execute(
+                "UPDATE cohort_files SET content_probe='', content_sha256=''"
+            )
+        stat = source.stat()
+        source.write_text(source.read_text().replace("1\t100\t", "1\t101\t"))
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        second = store.import_vcf(source)
+        self.assertNotEqual(second.get("status"), "unchanged")
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:101:A:G"})["rows"]), 1,
+        )
+        # The reindex itself wrote true identity; a further import with
+        # nothing changed is unchanged again.
+        third = store.import_vcf(source)
+        self.assertEqual(third.get("status"), "unchanged")
+
     def test_full_hash_closes_the_probe_blind_window(self):
         """The stripe probe samples 512KiB regardless of file size, leaving
         interior blind windows. For files small enough to hash completely,

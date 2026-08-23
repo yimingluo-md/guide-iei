@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 import uuid
 import zlib
 from contextlib import contextmanager
@@ -644,6 +645,15 @@ class SampleLibrary:
         covers the first compressed block, while truncation removes the
         tail. A missing SOURCE is a caller-level error and surfaces from
         here rather than masquerading as a cache miss.
+
+        Accepted limit, deliberately: a structurally valid projection with
+        the right samples but WRONG interior variants is served. No
+        internal path can produce one (staging is per-invocation unique,
+        publishes are atomic, and the cache name binds the source's full
+        checksum plus the exact sample name); forging one requires a
+        same-privilege writer inside the app-private state dir, which
+        could equally rewrite the database itself. Content hashing on
+        every open was weighed against that threat model and declined.
         """
         source_mtime = source.stat().st_mtime
         try:
@@ -1298,12 +1308,24 @@ class SampleLibrary:
             # neither, so hard-killed builds accumulated forever.
             for pattern in (
                 "*.partial", "*.partial.vcf.gz", "*.staged.vcf.gz",
-                "*.building.vcf.gz",
+                "*.building.vcf.gz", "*.snapshot.vcf", "*.snapshot.vcf.gz",
             ):
                 for path in root.rglob(pattern):
-                    if path.is_file():
-                        path.unlink()
-                        removed.append(str(path))
+                    if not path.is_file():
+                        continue
+                    if ".snapshot." in path.name:
+                        # A snapshot lives for the WHOLE hash+prepare of a
+                        # running import (minutes for large files) — a
+                        # cleanup sweep must only reap crash leftovers,
+                        # never an import in flight.
+                        try:
+                            age = time.time() - path.stat().st_mtime
+                        except OSError:
+                            continue
+                        if age < 3600:
+                            continue
+                    path.unlink()
+                    removed.append(str(path))
         return removed
 
     def compact_database(self) -> dict:

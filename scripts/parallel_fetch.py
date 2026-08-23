@@ -53,6 +53,11 @@ def remote_metadata(url: str) -> tuple[int, str, str]:
     )
 
 
+class RemoteChangedError(RuntimeError):
+    """The remote file changed during the download — retrying the same
+    range cannot succeed; the whole download must restart."""
+
+
 def bsd_sum(path: Path) -> tuple[int, int]:
     """Return the checksum and 1 KiB block count emitted by BSD/POSIX `sum`."""
     result = subprocess.run(["sum", str(path)], check=True, capture_output=True, text=True)
@@ -71,7 +76,8 @@ def md5(path: Path) -> str:
 
 
 def load_resume_state(state_path: Path, partial: Path, url: str,
-                      total: int, etag: str | None, chunk_size: int) -> set[int]:
+                      total: int, etag: str | None, chunk_size: int,
+                      last_modified: str | None = None) -> set[int]:
     """Ranges safe to skip on resume.
 
     The completed set is only trustworthy while the partial file it
@@ -79,12 +85,39 @@ def load_resume_state(state_path: Path, partial: Path, url: str,
     partial was deleted recreated a zero-filled sparse file and published
     it as a finished download. Metadata mismatches remain hard errors (the
     remote changed); a missing or wrong-size partial just restarts.
+
+    Last-Modified is part of the identity: without it, a remote that
+    changed while keeping the same size (and serving no ETag) let a
+    resume COMBINE ranges of two different versions into one published
+    file — stamped afterwards with the new version's metadata, so the
+    mix was never detectable again. A state written before the field
+    existed cannot prove which version its ranges came from, so when the
+    remote NOW reports a Last-Modified the state is discarded and the
+    download restarts — one-time, self-extinguishing. A bare presence
+    flap (one side reports a date, the other does not) also restarts
+    rather than hard-erroring: absence is unknown, not evidence of
+    change.
     """
     if not state_path.exists():
         return set()
     state = json.loads(state_path.read_text())
     expected = {"url": url, "size": total, "etag": etag, "chunk_size": chunk_size}
     if any(state.get(key) != value for key, value in expected.items()):
+        raise RuntimeError(f"resume metadata differs; move aside {state_path} and {partial}")
+    stored_modified = state.get("last_modified") if "last_modified" in state else None
+    if stored_modified is None and last_modified:
+        print("resume state predates remote-version tracking and the remote "
+              "reports one; restarting the download from scratch", flush=True)
+        state_path.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
+        return set()
+    if stored_modified is not None and bool(stored_modified) != bool(last_modified):
+        print("the remote's version metadata changed shape; restarting the "
+              "download from scratch", flush=True)
+        state_path.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
+        return set()
+    if stored_modified and last_modified and stored_modified != last_modified:
         raise RuntimeError(f"resume metadata differs; move aside {state_path} and {partial}")
     if not partial.exists() or partial.stat().st_size != total:
         print("resume state found but the partial file is missing or the wrong "
@@ -229,6 +262,8 @@ def main() -> int:
                 prior.get("url") != args.url
                 or prior.get("size") != total
                 or prior.get("etag") != etag
+                or ("last_modified" in prior
+                    and prior.get("last_modified") != remote_modified)
             ):
                 state_file.unlink(missing_ok=True)
                 Path(f"{output}.parallel").unlink(missing_ok=True)
@@ -237,8 +272,10 @@ def main() -> int:
     state_path = Path(f"{output}.ranges.json")
     chunk_size = args.chunk_mib * 1024 * 1024
     chunks = [(start, min(total - 1, start + chunk_size - 1)) for start in range(0, total, chunk_size)]
-    completed = load_resume_state(state_path, partial, args.url, total, etag, chunk_size)
-    state = {"url": args.url, "size": total, "etag": etag, "chunk_size": chunk_size,
+    completed = load_resume_state(state_path, partial, args.url, total, etag,
+                                  chunk_size, remote_modified)
+    state = {"url": args.url, "size": total, "etag": etag,
+             "last_modified": remote_modified, "chunk_size": chunk_size,
              "completed": sorted(completed)}
 
     descriptor = os.open(partial, os.O_CREAT | os.O_RDWR, 0o644)
@@ -293,6 +330,46 @@ def main() -> int:
                     raise RuntimeError(
                         f"range {index}: expected Content-Range {expected_range}, received {actual}"
                     )
+                # Every range must come from the SAME remote version the
+                # initial probe saw, or a remote update mid-download
+                # assembles a mixed-version file that passes every size
+                # check. Same rule as the acceptance branch: an agreeing
+                # Last-Modified vetoes an ETag-only difference so
+                # rotating per-node ETags on load-balanced mirrors do not
+                # fail healthy transfers.
+                range_etags = re.findall(
+                    r'^etag:\s*(.+?)\s*$', headers,
+                    flags=re.IGNORECASE | re.MULTILINE,
+                )
+                range_modified = re.findall(
+                    r'^last-modified:\s*(.+?)\s*$', headers,
+                    flags=re.IGNORECASE | re.MULTILINE,
+                )
+                range_etag = range_etags[-1] if range_etags else ""
+                range_lm = range_modified[-1] if range_modified else ""
+                lm_known = bool(range_lm and remote_modified)
+                lm_moved = lm_known and range_lm != remote_modified
+                etag_moved = bool(
+                    range_etag and etag
+                    and strip_weak(range_etag) != strip_weak(etag)
+                )
+                # An ETag-only difference with no Last-Modified to
+                # arbitrate is ambiguous: rotating per-node ETags on
+                # load-balanced mirrors look exactly like a changed
+                # remote. When the caller supplied an end-to-end checksum
+                # the final verification arbitrates, so ambiguity must
+                # not fail a healthy transfer; without one, restarting is
+                # the only safe reading.
+                if lm_moved or (
+                    etag_moved and not lm_known
+                    and not (expected_sum or expected_md5)
+                ):
+                    raise RemoteChangedError(
+                        f"range {index}: the remote file changed during the "
+                        "download (its ETag/Last-Modified no longer match "
+                        "the initial probe); run the download again to "
+                        "fetch the current version"
+                    )
                 received = range_file.stat().st_size
                 if received != expected_length:
                     raise RuntimeError(f"range {index}: received {received} of {expected_length} bytes")
@@ -317,6 +394,12 @@ def main() -> int:
                 range_file.unlink()
                 header_file.unlink(missing_ok=True)
                 return index
+            except RemoteChangedError:
+                # A changed remote cannot be retried into agreement —
+                # burning five attempts per chunk just delays the message.
+                range_file.unlink(missing_ok=True)
+                header_file.unlink(missing_ok=True)
+                raise
             except Exception:
                 range_file.unlink(missing_ok=True)
                 header_file.unlink(missing_ok=True)
@@ -335,7 +418,12 @@ def main() -> int:
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.connections) as executor:
             futures = {executor.submit(download, index): index for index in pending}
             for future in concurrent.futures.as_completed(futures):
-                index = future.result()
+                try:
+                    index = future.result()
+                except RemoteChangedError:
+                    # Nothing queued behind this can succeed either.
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise
                 with lock:
                     completed.add(index)
                     start, end = chunks[index]
@@ -350,18 +438,30 @@ def main() -> int:
 
     if len(completed) != len(chunks):
         raise RuntimeError("not all ranges completed")
+    def _discard_proven_bad(reason: str):
+        # The assembled bytes failed verification: keeping them (and the
+        # state that vouches for their ranges) wedged every retry into
+        # refetching nothing and failing the same check forever.
+        partial.unlink(missing_ok=True)
+        state_path.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"{reason}; the partial download was discarded — run again to "
+            "fetch the current file"
+        )
+
     if expected_sum:
         actual_sum = bsd_sum(partial)
         if actual_sum != expected_sum:
-            raise RuntimeError(
-                f"completed download failed checksum: expected {expected_sum}, received {actual_sum}"
+            _discard_proven_bad(
+                f"completed download failed checksum: expected "
+                f"{expected_sum}, received {actual_sum}"
             )
     if expected_md5:
         actual_md5 = md5(partial)
         if actual_md5 != expected_md5:
-            raise RuntimeError(
-                "completed download failed MD5: "
-                f"expected {expected_md5}, received {actual_md5}"
+            _discard_proven_bad(
+                f"completed download failed MD5: expected {expected_md5}, "
+                f"received {actual_md5}"
             )
     partial.replace(output)
     # Record which remote version these bytes are: checksum-less callers can

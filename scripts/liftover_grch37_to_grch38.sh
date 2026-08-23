@@ -130,14 +130,22 @@ def sidecar_agrees(identity, path):
     return not fields or fields[0] == recorded
 def tabix_index_ok(path):
     # Structural check for legacy provenances that never recorded the
-    # index: the file must at least BE a tabix index (BGZF-compressed,
-    # TBI magic), not arbitrary bytes at the right name.
+    # index: gzip magic, TBI magic, and a parseable TBI header with a
+    # plausible sequence count — magic bytes alone accepted a 4-byte
+    # payload htslib would choke on.
     try:
         with open(path, "rb") as handle:
             if handle.read(2) != b"\x1f\x8b":
                 return False
+        import struct
         with gzip.open(path, "rb") as handle:
-            return handle.read(4) == b"TBI\x01"
+            head = handle.read(4 + 8 * 4)
+        if len(head) < 4 + 8 * 4 or head[:4] != b"TBI\x01":
+            return False
+        n_ref, fmt, col_seq, col_beg, col_end, meta, skip, l_nm = (
+            struct.unpack("<8i", head[4:])
+        )
+        return n_ref >= 1 and 0 <= l_nm <= (1 << 27) and col_seq >= 0
     except (OSError, EOFError, zlib.error):
         # Truncated gzip raises EOFError and corrupt deflate zlib.error —
         # neither is an OSError; an escape here printed a raw traceback

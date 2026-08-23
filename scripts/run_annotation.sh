@@ -376,7 +376,10 @@ if [[ "$DRY" != "1" ]] \
         else
             # The matcher will run against the previous catalog; its output
             # must be labeled with THAT release, not the current one.
-            AA_MATCH_RELEASE="$(cat "$STAMP" 2>/dev/null || echo unknown)"
+            # The stamp line is "release format sha cachetag"; only the
+            # release belongs in the evidence label.
+            AA_MATCH_RELEASE="$(cut -d' ' -f1 "$STAMP" 2>/dev/null || true)"
+            AA_MATCH_RELEASE="${AA_MATCH_RELEASE:-unknown}"
             warn "aa-match reference rebuild failed; using the previous catalog (release ${AA_MATCH_RELEASE}) and labeling the evidence accordingly."
         fi
     fi

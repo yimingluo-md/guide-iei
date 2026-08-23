@@ -366,16 +366,36 @@ def _content_probe(path: Path, block: int = 65536) -> str:
         return ""
 
 
-_FULL_HASH_LIMIT = 1 << 30  # 1 GiB
+_FULL_HASH_LIMIT = 8 << 30  # 8 GiB
+
+
+def _copy_with_sha256(source: Path, destination: Path) -> str:
+    """Copy source to destination, hashing the streamed bytes — the digest
+    describes exactly the bytes the destination holds, at zero extra I/O
+    over the copy itself, with no size limit."""
+    digest = hashlib.sha256()
+    with source.open("rb") as reader, destination.open("wb") as writer:
+        while block := reader.read(4 * 1024 * 1024):
+            digest.update(block)
+            writer.write(block)
+    # No copystat: the copy's own mtime is its creation time, which the
+    # snapshot cleanup age-gate relies on to tell a crash leftover from a
+    # snapshot serving a running import.
+    return digest.hexdigest()
 
 
 def _full_content_sha256(path: Path, limit: int = _FULL_HASH_LIMIT) -> str:
-    """Complete sha256 for files small enough to hash in negligible time.
+    """Complete sha256 for files small enough to hash in tolerable time.
 
-    The stripe probe leaves interior blind windows by design; for exome-
-    scale files a full hash costs milliseconds and closes them entirely.
-    Files above the limit return "" and stay on the probe-only rule — the
-    multi-GB case the probe's docstring exists for.
+    The stripe probe leaves interior blind windows by design; a full read
+    closes them. Measured cost is ~0.5 s/GiB on a native interpreter
+    (~3 s/GiB under a Rosetta/OpenSSL-1.1 Python), so the 8 GiB limit
+    covers every exome-scale artifact — multi-sample annotated VCFs
+    included — at single-digit seconds per explicit import. Files above
+    the limit return "" and stay on the probe-only rule — the documented
+    multi-GB whole-genome tradeoff. Note: changing this limit changes the
+    hash for files in the affected band, so their prepare-cache
+    fingerprints miss once and rebuild — a one-time upgrade cost.
     """
     try:
         if path.stat().st_size > limit:
@@ -1972,22 +1992,35 @@ class CohortStore:
             )
             if (
                 existing and not force
+                # Identity-less rows reindex once (same rationale as the
+                # main gate: size+mtime alone cannot honestly say
+                # "unchanged").
+                and (existing_probe or existing_sha)
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
                 and (not existing_probe or existing_probe == content_probe)
                 and (not existing_sha or not content_sha or existing_sha == content_sha)
+                and ((existing_probe and content_probe)
+                     or (existing_sha and content_sha))
                 and existing["import_profile"] == import_profile
                 and existing["analysis_scope"] == analysis_scope
             ):
-                # Backfill identity fields legacy rows never gained (same
-                # rationale as the main gate).
+                # Backfill the full hash onto probe-era rows (same
+                # rationale as the main gate; identity-less rows reindex
+                # instead of reaching this branch).
                 if (content_sha and not existing_sha) or (
                     content_probe and not existing_probe
                 ):
+                    # Monotone: a freshly computed empty value (read
+                    # failure) must never erase stored identity.
                     connection.execute(
-                        "UPDATE cohort_files SET content_probe=?, "
-                        "content_sha256=? WHERE id=?",
-                        (content_probe, content_sha, existing["id"]),
+                        "UPDATE cohort_files SET "
+                        "content_probe=CASE WHEN ?!='' THEN ? "
+                        "ELSE content_probe END, "
+                        "content_sha256=CASE WHEN ?!='' THEN ? "
+                        "ELSE content_sha256 END WHERE id=?",
+                        (content_probe, content_probe,
+                         content_sha, content_sha, existing["id"]),
                     )
                 result = dict(existing)
                 try:
@@ -2419,7 +2452,8 @@ class CohortStore:
 
     def _prepare_indexed_vcf(
         self, path: Path, progress: Callable[[dict], None] | None = None
-    , content_hint: str | None = None) -> PreparedVcf:
+    , content_hint: str | None = None, content_addressed: bool = False,
+    full_sha: str | None = None, display_name: str | None = None) -> PreparedVcf:
         if not self.enable_auto_index:
             return PreparedVcf(path, path, None, False, False)
         if self.hts_backend is None:
@@ -2452,11 +2486,23 @@ class CohortStore:
         # edit re-imported after the identity gate correctly fired still
         # read THIS stale working copy — and the import then stamped its row
         # with the new file's hash, laundering stale data as verified.
-        fingerprint = hashlib.sha256(
-            f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
-            f"{_content_probe(path)}\0{_full_content_sha256(path)}\0"
-            f"{content_hint or ''}".encode()
-        ).hexdigest()[:20]
+        if content_addressed and content_hint:
+            # The caller verified content_hint IS the full sha256 of these
+            # exact bytes (snapshot flow): the cache entry is addressed by
+            # the content alone, so uniquely named snapshots of identical
+            # imports share one entry and a swapped path can never alias.
+            fingerprint = hashlib.sha256(
+                f"content\0{content_hint}".encode()
+            ).hexdigest()[:20]
+        else:
+            # Callers that already hold the file's full digest pass it down
+            # (full_sha) so the fingerprint never pays a second full read.
+            fingerprint = hashlib.sha256(
+                f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
+                f"{_content_probe(path)}\0"
+                f"{full_sha if full_sha is not None else _full_content_sha256(path)}\0"
+                f"{content_hint or ''}".encode()
+            ).hexdigest()[:20]
         cache_dir = self.prepared_dir / fingerprint
         cache_dir.mkdir(parents=True, exist_ok=True)
         source_name = path.name
@@ -2464,6 +2510,10 @@ class CohortStore:
             if source_name.lower().endswith(suffix):
                 source_name = source_name[:-len(suffix)]
                 break
+        if content_addressed and content_hint:
+            # Snapshot inputs carry a unique name per import; the cache
+            # entry must not inherit it or identical content never hits.
+            source_name = "content"
         prepared = cache_dir / f"{source_name}.prepared.vcf.gz"
         cached_index = (
             self.hts_backend.validate_index(prepared)
@@ -2476,10 +2526,17 @@ class CohortStore:
         # to one cache entry, and a shared deterministic temp let a second
         # preparation delete the first's in-progress output mid-write.
         temporary = cache_dir / f".{source_name}.{uuid.uuid4().hex}.building.vcf.gz"
-        for candidate in (
-            temporary, Path(f"{temporary}.tbi"), Path(f"{temporary}.csi"),
-            prepared, Path(f"{prepared}.tbi"), Path(f"{prepared}.csi"),
-        ):
+        preclean = [temporary, Path(f"{temporary}.tbi"), Path(f"{temporary}.csi")]
+        if not (content_addressed and content_hint):
+            # Path-keyed cache dirs are private to one source path; a
+            # stale final entry there is safe to sweep. Content-addressed
+            # dirs are SHARED by every concurrent import of identical
+            # content — deleting the final files here destroyed a sibling
+            # importer's just-published entry mid-copy. Publishes are
+            # atomic os.replace, so leaving a stale final is safe: this
+            # build simply replaces it.
+            preclean += [prepared, Path(f"{prepared}.tbi"), Path(f"{prepared}.csi")]
+        for candidate in preclean:
             if candidate.exists():
                 candidate.unlink()
         try:
@@ -2511,7 +2568,8 @@ class CohortStore:
                 None,
                 False,
                 False,
-                f"automatic BGZF preparation/indexing failed for {path.name}; "
+                f"automatic BGZF preparation/indexing failed for "
+                f"{display_name or path.name}; "
                 f"using serial staged import: {error}",
             )
         return PreparedVcf(path, prepared, index_path, True, False)
@@ -2530,31 +2588,59 @@ class CohortStore:
         The cohort preparation directory is a cache and may be cleaned. This
         method therefore copies the prepared representation into a separate,
         content-addressed managed directory before returning it.
+
+        The destination is filed UNDER content_key, so every byte published
+        here must provably descend from content that hashes to that key.
+        Re-reading the live source path cannot prove it: an A->B->A swap
+        timed around the reads passed every re-check while the prepared
+        bytes were B's — and REPLACED a healthy managed file. The source is
+        therefore snapshotted ONCE, hashed as it streams (any size — the
+        caller already paid full hashes of these bytes), and every later
+        step (re-encode, copy, publish) reads only the frozen snapshot.
         """
         source = source.resolve()
         destination_directory.mkdir(parents=True, exist_ok=True)
-        # The caller's content_key IS the full source sha256: feed it into
-        # the prepare-cache fingerprint so the working-copy cache can never
-        # be weaker than the identity the managed copy is filed under (the
-        # probe's blind window allowed exactly that inversion).
-        prepared = self._prepare_indexed_vcf(source, content_hint=content_key)
-        # The destination is filed UNDER content_key. Before an existing
-        # destination is repaired — or a new one published — from these
-        # prepared bytes, prove the bytes descend from content the key
-        # actually hashes: a source swapped between the caller's checksum
-        # and this preparation previously CLOBBERED the committed managed
-        # copy even though the import itself was then refused. A byte-copy
-        # preparation must hash to the key itself; a re-encoded preparation
-        # is accepted only while the source still hashes to the key.
-        prepared_sha = _full_content_sha256(prepared.path)
-        if prepared_sha and prepared_sha != content_key:
-            source_sha = _full_content_sha256(source)
-            if source_sha and source_sha != content_key:
+        snapshot_suffix = (
+            ".vcf.gz" if source.name.lower().endswith((".gz", ".bgz")) else ".vcf"
+        )
+        snapshot = destination_directory / (
+            f".{content_key}.{uuid.uuid4().hex}.snapshot{snapshot_suffix}"
+        )
+        try:
+            snapshot_sha = _copy_with_sha256(source, snapshot)
+            if snapshot_sha != content_key:
                 raise ValueError(
                     f"{source.name} changed while it was being imported — "
                     "wait for the file to finish copying, then import it "
                     "again"
                 )
+            return self._prepare_managed_from_snapshot(
+                source, snapshot, destination_directory, content_key
+            )
+        finally:
+            snapshot.unlink(missing_ok=True)
+
+    def _prepare_managed_from_snapshot(
+        self, source: Path, snapshot: Path,
+        destination_directory: Path, content_key: str,
+    ) -> tuple[Path, Path | None, str]:
+        # A BGZF snapshot needs no re-encoding: it is published straight
+        # from the verified bytes and indexed at the destination, so an
+        # already-indexed pipeline output never materializes a THIRD full
+        # copy in the prepare cache (an 8 GiB source would otherwise cost
+        # +8 GiB steady-state). Sources needing a sort/re-encode go
+        # through the content-addressed prepare cache; an unsorted BGZF
+        # falls back to it too when destination indexing fails.
+        if is_bgzf(snapshot) and self.hts_backend is not None:
+            prepared = PreparedVcf(snapshot, snapshot, None, False, False)
+        else:
+            # The prepare cache is keyed by the verified content itself:
+            # the snapshot path is unique per import, and content identity
+            # is exactly what the destination filename promises.
+            prepared = self._prepare_indexed_vcf(
+                snapshot, content_hint=content_key, content_addressed=True,
+                display_name=source.name,
+            )
         compressed = prepared.path.name.lower().endswith((".gz", ".bgz"))
         destination = destination_directory / (
             f"{content_key}.vcf.gz" if compressed else f"{content_key}.vcf"
@@ -2589,7 +2675,19 @@ class CohortStore:
             temporary = destination.with_name(
                 f"{destination.name}.{uuid.uuid4().hex}.partial"
             )
-            shutil.copy2(prepared.path, temporary)
+            try:
+                shutil.copy2(prepared.path, temporary)
+            except FileNotFoundError:
+                # The shared content-addressed cache entry can vanish under
+                # us (another importer of identical content rebuilding it).
+                # The snapshot holds the same verified bytes whenever no
+                # re-encoding happened — fall back to it.
+                if snapshot.is_file() and (
+                    snapshot.name.lower().endswith((".gz", ".bgz")) == compressed
+                ):
+                    shutil.copy2(snapshot, temporary)
+                else:
+                    raise
             os.replace(temporary, destination)
 
         index: Path | None = None
@@ -2607,6 +2705,36 @@ class CohortStore:
                     index = self.hts_backend.create_index(destination)
                 except RuntimeError:
                     index = None
+            if index is None and prepared.path == snapshot and snapshot.is_file():
+                # The direct-publish shortcut met an unsorted BGZF: route
+                # it through the prepare cache after all (whose internal
+                # fallback re-sorts), and rebuild the destination from the
+                # sorted result so it does not stay unindexed.
+                sorted_prepared = self._prepare_indexed_vcf(
+                    snapshot, content_hint=content_key,
+                    content_addressed=True, display_name=source.name,
+                )
+                if (
+                    sorted_prepared.path != snapshot
+                    and sorted_prepared.path.is_file()
+                ):
+                    temporary = destination.with_name(
+                        f"{destination.name}.{uuid.uuid4().hex}.partial"
+                    )
+                    shutil.copy2(sorted_prepared.path, temporary)
+                    os.replace(temporary, destination)
+                    prepared = sorted_prepared
+                    if prepared.index_path and prepared.index_path.is_file():
+                        suffix = (
+                            ".csi" if prepared.index_path.name.endswith(".csi")
+                            else ".tbi"
+                        )
+                        index = Path(f"{destination}{suffix}")
+                        temporary_index = Path(
+                            f"{index}.{uuid.uuid4().hex}.partial"
+                        )
+                        shutil.copy2(prepared.index_path, temporary_index)
+                        os.replace(temporary_index, index)
 
         warning = prepared.warning
         if compressed and index is None:
@@ -3015,31 +3143,50 @@ class CohortStore:
             )
             if (
                 existing and not force
+                # A row with NO content identity at all cannot honestly be
+                # called "unchanged": size+mtime alone is forgeable, and
+                # certifying current bytes onto rows indexed from unknown
+                # content would present a trust-on-first-use hash as a
+                # verified one. Such rows reindex once and gain identity
+                # from the reindex itself — self-extinguishing.
+                and (existing_probe or existing_sha)
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
-                # Legacy rows carry no probe; they keep the size+mtime rule
-                # until their next real import backfills one.
                 and (not existing_probe or existing_probe == content_probe)
                 # Files small enough to hash completely must ALSO match on
                 # the full digest — the probe's interior blind windows are
                 # a documented tradeoff for multi-GB genomes, not for exome
                 # VCFs where a full read costs milliseconds.
                 and (not existing_sha or not content_sha or existing_sha == content_sha)
+                # At least one comparison must have actually RUN: a row
+                # whose only identity field cannot be computed right now
+                # (transient read failure) would otherwise pass on
+                # size+mtime alone.
+                and ((existing_probe and content_probe)
+                     or (existing_sha and content_sha))
                 and existing["import_profile"] == import_profile
                 and existing["analysis_scope"] == analysis_scope
                 and existing["prefilter_options"] == prefilter_options_json
             ):
-                # Backfill identity fields legacy rows never gained: without
-                # this an old row keeps passing on size+mtime alone forever,
-                # and the blind window this hash closes stays open for it.
-                # The values are already computed — the write costs nothing.
+                # Backfill the full hash onto probe-era rows: the probe
+                # just matched, so the bytes are the ones the row indexed
+                # (to probe resolution), and the hash closes the remaining
+                # blind window from here on. Rows with NO identity never
+                # reach this branch — they reindex instead, so a
+                # trust-on-first-use hash is never presented as verified.
                 if (content_sha and not existing_sha) or (
                     content_probe and not existing_probe
                 ):
+                    # Monotone: a freshly computed empty value (read
+                    # failure) must never erase stored identity.
                     connection.execute(
-                        "UPDATE cohort_files SET content_probe=?, "
-                        "content_sha256=? WHERE id=?",
-                        (content_probe, content_sha, existing["id"]),
+                        "UPDATE cohort_files SET "
+                        "content_probe=CASE WHEN ?!='' THEN ? "
+                        "ELSE content_probe END, "
+                        "content_sha256=CASE WHEN ?!='' THEN ? "
+                        "ELSE content_sha256 END WHERE id=?",
+                        (content_probe, content_probe,
+                         content_sha, content_sha, existing["id"]),
                     )
                 result = dict(existing)
                 try:
@@ -3057,7 +3204,7 @@ class CohortStore:
                     })
                 return result
 
-        prepared = self._prepare_indexed_vcf(path, progress)
+        prepared = self._prepare_indexed_vcf(path, progress, full_sha=content_sha)
         header = read_vcf_header(prepared.path)
         if progress:
             progress({
