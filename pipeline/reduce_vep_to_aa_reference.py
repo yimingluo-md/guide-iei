@@ -28,7 +28,7 @@ def _open_w(path):
 def reduce_tab(in_path: str, out_path: str) -> int:
     header = None
     skipped_before_header = 0
-    pairs: set[tuple[str, str]] = set()
+    pairs: set[tuple[str, str, str]] = set()
     with _open_r(in_path) as fh:
         for line in fh:
             if line.startswith("##"):
@@ -46,7 +46,9 @@ def reduce_tab(in_path: str, out_path: str) -> int:
             pos = row.get("Protein_position", "-")
             sym = row.get("SYMBOL", "")
             if "missense_variant" in cons and pos and pos != "-" and sym and sym != "-":
-                pairs.add((sym, pos))
+                amino = row.get("Amino_acids", "")
+                alt_aa = amino.split("/")[-1].strip() if "/" in amino else "-"
+                pairs.add((sym, pos, alt_aa or "-"))
     if header is None and skipped_before_header:
         # Data rows with no VEP tab header (--no_headers output, or a header
         # consumed upstream) previously produced a silent empty reference
@@ -56,9 +58,17 @@ def reduce_tab(in_path: str, out_path: str) -> int:
             f"{skipped_before_header} data row(s) were present; refusing to "
             "write an empty aa-match reference"
         )
+    if header is not None and not pairs:
+        # A headered file with zero pathogenic missense rows is a truncated
+        # or wrong input, not a real ClinVar release: writing (and stamping)
+        # an empty catalog would silently flag 0 for every record.
+        raise ValueError(
+            f"no pathogenic missense rows found in {in_path}; refusing to "
+            "write an empty aa-match reference"
+        )
     with _open_w(out_path) as out:
-        for sym, pos in sorted(pairs):
-            out.write(f"{sym}\t{pos}\n")
+        for sym, pos, alt_aa in sorted(pairs):
+            out.write(f"{sym}\t{pos}\t{alt_aa}\n")
     return len(pairs)
 
 

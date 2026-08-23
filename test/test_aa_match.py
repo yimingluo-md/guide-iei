@@ -13,6 +13,16 @@ CSQ_FORMAT = ("Allele|Consequence|SYMBOL|Gene|Feature|BIOTYPE|"
               "Protein_position|Amino_acids|SIFT|CADD_PHRED")
 
 
+def _ref(*residues, changes=()):
+    ref = aam.Reference()
+    for sym, pos in residues:
+        ref.residues.add((sym, pos))
+    for sym, pos, alt_aa in changes:
+        ref.residues.add((sym, pos))
+        ref.changes.add((sym, pos, alt_aa))
+    return ref
+
+
 def _csq(cons, symbol, protpos, allele="A"):
     # positional per CSQ_FORMAT
     vals = [allele, cons, symbol, "ENSG0", "ENST0", "protein_coding",
@@ -55,7 +65,7 @@ def test_parse_csq_format():
 
 def test_match_and_nonmatch(tmp_path):
     # reference: BRCA1 residue 100 is a known pathogenic missense
-    ref = {("BRCA1", "100")}
+    ref = _ref(("BRCA1", "100"))
     records = [
         _csq("missense_variant", "BRCA1", "100"),   # -> match
         _csq("missense_variant", "BRCA1", "250"),   # residue not in ref -> 0
@@ -84,18 +94,19 @@ def test_match_and_nonmatch(tmp_path):
 
 
 def test_header_injected(tmp_path):
-    ref = {("BRCA1", "100")}
+    ref = _ref(("BRCA1", "100"))
     vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
     _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
     aam.annotate(vin, vout, ref, clinvar_release="20260218")
     text = open(vout).read()
-    assert '##INFO=<ID=ClinVar_path_aa_match,Number=1,Type=Integer' in text
+    assert '##INFO=<ID=ClinVar_path_aa_match,Number=A,Type=Integer' in text
+    assert '##INFO=<ID=ClinVar_path_aa_change_match,Number=A,Type=Integer' in text
     assert "20260218" in text  # release stamped in description
 
 
 def test_multi_transcript_any_match(tmp_path):
     """A variant with several CSQ transcript entries matches if ANY is a hit."""
-    ref = {("BRCA1", "100")}
+    ref = _ref(("BRCA1", "100"))
     multi = ",".join([
         _csq("intron_variant", "BRCA1", "-"),
         _csq("missense_variant", "BRCA1", "100"),  # this one hits
@@ -109,7 +120,7 @@ def test_multi_transcript_any_match(tmp_path):
 def test_protein_position_range_form(tmp_path):
     """VEP sometimes emits Protein_position as e.g. '100' — reference must use
     the same string form the sample VCF carries (exact-string match)."""
-    ref = {("BRCA1", "100")}
+    ref = _ref(("BRCA1", "100"))
     vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
     _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
     stats = aam.annotate(vin, vout, ref)
@@ -117,7 +128,7 @@ def test_protein_position_range_form(tmp_path):
 
 
 def test_gzip_roundtrip(tmp_path):
-    ref = {("BRCA1", "100")}
+    ref = _ref(("BRCA1", "100"))
     vin = str(tmp_path / "in.vcf.gz"); vout = str(tmp_path / "out.vcf.gz")
     _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
     aam.annotate(vin, vout, ref)
@@ -130,7 +141,7 @@ def test_empty_reference_all_zero(tmp_path):
     """No reference -> every record flagged 0, run still valid."""
     vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
     _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
-    stats = aam.annotate(vin, vout, set())
+    stats = aam.annotate(vin, vout, aam.Reference())
     assert stats["matched"] == 0
     assert "ClinVar_path_aa_match=0" in open(vout).read()
 
@@ -187,7 +198,7 @@ def test_short_record_is_padded_not_crashed(tmp_path):
                    "--reference", ref_path, "--clinvar-release", "TEST"])
     assert rc == 0
     record = [l for l in open(out) if not l.startswith("#")][0].rstrip("\n")
-    assert record.split("\t")[7] == "ClinVar_path_aa_match=0"
+    assert record.split("\t")[7] == "ClinVar_path_aa_match=0;ClinVar_path_aa_change_match=0"
 
 
 def test_reduce_gz_output_is_real_gzip(tmp_path):
@@ -202,7 +213,7 @@ def test_reduce_gz_output_is_real_gzip(tmp_path):
     with open(out, "rb") as fh:
         assert fh.read(2) == b"\x1f\x8b"
     with gzip.open(out, "rt") as fh:
-        assert fh.read() == "BRCA1\t100\n"
+        assert fh.read() == "BRCA1\t100\t-\n"
 
 
 def test_reducer(tmp_path):
@@ -219,11 +230,78 @@ def test_reducer(tmp_path):
     n = red.reduce_tab(tab, out)
     lines = [l.strip() for l in open(out)]
     assert n == 2, lines
-    assert "BRCA1\t100" in lines
-    assert "TP53\t250" in lines
+    assert "BRCA1\t100\t-" in lines
+    assert "TP53\t250\t-" in lines
     # round-trips into the matcher's loader
     ref = aam.load_reference(out)
-    assert ("BRCA1", "100") in ref and ("TP53", "250") in ref
+    assert ("BRCA1", "100") in ref.residues and ("TP53", "250") in ref.residues
+
+
+
+def test_change_match_is_separate_from_residue_match(tmp_path):
+    """Same residue, different substitution -> residue flag only (PM5-style);
+    same amino-acid change -> both flags (PS1-style)."""
+    ref = _ref(changes=[("BRCA1", "100", "H")])
+    # _csq writes Amino_acids R/H, so BRCA1:100 here IS the change R->H.
+    same_change = _csq("missense_variant", "BRCA1", "100")
+    different_change = same_change.replace("R/H", "R/W")
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([same_change, different_change]))
+    stats = aam.annotate(vin, vout, ref)
+    assert stats["matched"] == 2
+    assert stats["change_matched"] == 1
+    flags = []
+    for line in open(vout):
+        if line.startswith("#"):
+            continue
+        kv = dict(x.split("=", 1) for x in line.split("\t")[7].split(";") if "=" in x)
+        flags.append((kv["ClinVar_path_aa_match"], kv["ClinVar_path_aa_change_match"]))
+    assert flags == [("1", "1"), ("1", "0")], flags
+
+
+def test_multiallelic_match_stays_on_its_own_alt(tmp_path):
+    """A match belonging to ALT 2 must not be copied to ALT 1's flags."""
+    fmt = "Allele|ALLELE_NUM|Consequence|SYMBOL|Protein_position|Amino_acids"
+    csq = ",".join([
+        "A|1|synonymous_variant|BRCA1|100|R",
+        "G|2|missense_variant|BRCA1|100|R/H",
+    ])
+    vcf = (
+        "##fileformat=VCFv4.2\n"
+        f'##INFO=<ID=CSQ,Number=.,Type=String,Description="... Format: {fmt}">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        f"1\t1000\t.\tC\tA,G\t.\tPASS\tCSQ={csq}\n"
+    )
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, vcf)
+    aam.annotate(vin, vout, _ref(changes=[("BRCA1", "100", "H")]))
+    record = [l for l in open(vout) if not l.startswith("#")][0].rstrip("\n")
+    kv = dict(x.split("=", 1) for x in record.split("\t")[7].split(";") if "=" in x)
+    assert kv["ClinVar_path_aa_match"] == "0,1", kv
+    assert kv["ClinVar_path_aa_change_match"] == "0,1", kv
+
+
+def test_headered_zero_missense_rows_refused(tmp_path):
+    """A headered VEP tab with no pathogenic missense rows is a truncated or
+    wrong input; writing (and stamping) an empty catalog is refused."""
+    tab = str(tmp_path / "empty.tsv")
+    with open(tab, "w") as fh:
+        fh.write("#Uploaded_variation\tSYMBOL\tProtein_position\tConsequence\n")
+        fh.write("v1\tBRCA1\t100\tsynonymous_variant\n")
+    try:
+        red.reduce_tab(tab, str(tmp_path / "ref.tsv"))
+        raise AssertionError("empty catalog must be refused")
+    except ValueError as exc:
+        assert "empty aa-match reference" in str(exc)
+
+
+def test_legacy_two_column_reference_loads_residue_only(tmp_path):
+    path = str(tmp_path / "legacy.tsv")
+    with open(path, "w") as fh:
+        fh.write("BRCA1\t100\n")
+    ref = aam.load_reference(path)
+    assert ("BRCA1", "100") in ref.residues
+    assert not ref.changes
 
 
 if __name__ == "__main__":

@@ -102,6 +102,36 @@ class ClinGenErepoTests(unittest.TestCase):
             ][0].split("\t")[7]
             self.assertEqual(first_info, info)
 
+            # A retracted (or removed) assertion must not survive
+            # reannotation: stale ClinGen keys are stripped even when the
+            # new database has no match for the record.
+            stale_input = root / "stale-in.vcf"
+            stale_input.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                "1\t999\t.\tC\tT\t.\tPASS\t"
+                "DP=12;ClinGen_ERepo=T|old|assertion;ClinGen_ERepo_count=1\n"
+            )
+            stale_output = root / "stale-out.vcf"
+            argv = sys.argv
+            sys.argv = [
+                "clingen_erepo_annotate",
+                "--input", str(stale_input),
+                "--output", str(stale_output),
+                "--database", str(database),
+            ]
+            try:
+                self.assertEqual(annotate_main(), 0)
+            finally:
+                sys.argv = argv
+            stale_record = [
+                line for line in stale_output.read_text().splitlines()
+                if not line.startswith("#")
+            ][0]
+            stale_info = stale_record.split("\t")[7]
+            self.assertNotIn("ClinGen_ERepo", stale_info)
+            self.assertIn("DP=12", stale_info)
+
 
 if __name__ == "__main__":
     unittest.main()

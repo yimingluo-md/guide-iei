@@ -212,6 +212,7 @@ export type VariantRow = {
   clinvarReviewStatus?: string;
   clinvarDisease?: string;
   clinvarAaMatch?: boolean;
+  clinvarAaChangeMatch?: boolean;
   clingenErepo?: ClinGenErepoCompact[];
   haplotypeFrameStatus?: "FRAME_RESTORED_CONFIRMED" | "FRAME_RESTORATION_PARTIAL_CONFIRMED" | "FRAME_RESTORING_POSSIBLE_UNPHASED" | "";
   haplotypeFramePartners?: string[];
@@ -1538,6 +1539,7 @@ export async function parseVcfFiles(
               clinvarReviewStatus: first(combined, ["ClinVar_CLNREVSTAT", "CLNREVSTAT"]),
               clinvarDisease: first(combined, ["ClinVar_CLNDN", "CLNDN"]),
               clinvarAaMatch: truthy(first(combined, ["ClinVar_path_aa_match"])),
+              clinvarAaChangeMatch: truthy(first(combined, ["ClinVar_path_aa_change_match"])),
               clingenErepo: clinGenErepoAssertions(info.ClinGen_ERepo, alt),
               haplotypeFrameStatus: haplotypeFrame.status,
               haplotypeFramePartners: haplotypeFrame.partners,

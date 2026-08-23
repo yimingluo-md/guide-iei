@@ -308,12 +308,16 @@ if [[ "$DRY" != "1" ]] \
         NEED_BUILD=0
         log "aa-match reference up to date (release $CLINVAR_RELEASE), skip rebuild."
     fi
+    AA_MATCH_RELEASE="$CLINVAR_RELEASE"
     if [[ "$NEED_BUILD" == "1" ]]; then
         log "=== building ClinVar aa-match reference ==="
         if bash "${HERE}/build_clinvar_aa_reference.sh" "$CONFIG" "$CLINVAR_VCF"; then
             echo "$CLINVAR_RELEASE" > "$STAMP"
         else
-            warn "aa-match reference build failed; matcher will flag 0 for all records."
+            # The matcher will run against the previous catalog; its output
+            # must be labeled with THAT release, not the current one.
+            AA_MATCH_RELEASE="$(cat "$STAMP" 2>/dev/null || echo unknown)"
+            warn "aa-match reference rebuild failed; using the previous catalog (release ${AA_MATCH_RELEASE}) and labeling the evidence accordingly."
         fi
     fi
 fi
@@ -592,7 +596,7 @@ if [[ "$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)" != "false
         python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
             --config "$CONFIG" --input "$OUTPUT" --output "$MATCH_OUTPUT" \
             --reference "$AA_REF" \
-            --clinvar-release "$CLINVAR_RELEASE" || die "post-processing failed"
+            --clinvar-release "${AA_MATCH_RELEASE:-$CLINVAR_RELEASE}" || die "post-processing failed"
     else
         # No freshly built reference: the config-resolved one may still load;
         # if it too is empty, proceeding all-zero is this branch's explicit

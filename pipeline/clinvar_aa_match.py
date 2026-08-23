@@ -19,15 +19,26 @@ Does the same match against VCF output:
     CSQ (transcript) entry,
   * looks the (SYMBOL, Protein_position) pair up in a reference catalog of
     pathogenic-missense residues (built by build_clinvar_aa_reference.sh),
-  * writes a new INFO field ``ClinVar_path_aa_match`` (0/1) on every record,
-    and a matching ``##INFO`` header line.
+  * writes TWO deliberately separate INFO fields, each per-ALT (Number=A):
+
+      - ``ClinVar_path_aa_match``        — 1 when the ALT is a missense at the
+        SAME RESIDUE as a reported pathogenic/likely-pathogenic missense,
+        regardless of which substitution (the reasoning clinicians apply as
+        PM5). Residue-level matching is intentional.
+      - ``ClinVar_path_aa_change_match`` — 1 when the ALT produces the SAME
+        AMINO-ACID CHANGE as a reported P/LP variant, through any nucleotide
+        change (the reasoning clinicians apply as PS1).
+
+    Values are comma-separated per ALT allele; on multiallelic records a
+    match belonging to one ALT is never copied to its siblings (CSQ entries
+    are attributed via ALLELE_NUM when the annotation carries it).
 
 Zygosity / sample genotype columns are passed through untouched — this only
 appends to INFO, so the annotated VCF still preserves GT.
 
-The reference catalog is a 2-column TSV: ``SYMBOL<TAB>protein_position``
-(one residue per line; positions in the same string format VEP emits, so both
-sides are directly comparable).
+The reference catalog is a TSV of ``SYMBOL<TAB>protein_position<TAB>alt_aa``
+(one row per reported change; ``alt_aa`` may be ``-`` when unknown). Legacy
+2-column files load as residue-only: the change-level flag then stays 0.
 
 Usage:
     clinvar_aa_match.py --input sample.vep.vcf.gz --output sample.aamatch.vcf.gz \\
@@ -75,9 +86,20 @@ def parse_csq_format(header_lines: list[str]) -> list[str] | None:
 # --------------------------------------------------------------------------- #
 # reference catalog
 # --------------------------------------------------------------------------- #
-def load_reference(path: str) -> set[tuple[str, str]]:
-    """Load the (SYMBOL, protein_position) catalog of pathogenic-missense residues."""
-    ref: set[tuple[str, str]] = set()
+class Reference:
+    """Catalog of reported pathogenic missense: residues and exact changes."""
+
+    def __init__(self):
+        self.residues: set[tuple[str, str]] = set()
+        self.changes: set[tuple[str, str, str]] = set()
+
+    def __len__(self):
+        return len(self.residues)
+
+
+def load_reference(path: str) -> Reference:
+    """Load the pathogenic-missense catalog (residues + exact changes)."""
+    ref = Reference()
     if not path or not os.path.exists(path):
         return ref
     with _open_r(path) as fh:
@@ -89,32 +111,53 @@ def load_reference(path: str) -> set[tuple[str, str]]:
             if len(parts) < 2:
                 continue
             sym, pos = parts[0].strip(), parts[1].strip()
-            if sym and pos and pos != "-":
-                ref.add((sym, pos))
+            if not (sym and pos and pos != "-"):
+                continue
+            ref.residues.add((sym, pos))
+            alt_aa = parts[2].strip() if len(parts) > 2 else ""
+            if alt_aa and alt_aa != "-":
+                ref.changes.add((sym, pos, alt_aa))
     return ref
 
 
 # --------------------------------------------------------------------------- #
 # core: does a variant's CSQ collide with a known pathogenic residue?
 # --------------------------------------------------------------------------- #
-def variant_matches(info_csq: str, fields: list[str], ref: set[tuple[str, str]],
-                    idx_sym: int, idx_pos: int, idx_csq: int) -> bool:
-    """True if ANY transcript CSQ of this variant is a missense at a residue
-    present in the pathogenic reference catalog."""
+def match_alleles(info_csq: str, fields: list[str], ref: Reference,
+                  n_alts: int, idx_sym: int, idx_pos: int, idx_csq: int,
+                  idx_allele_num: int, idx_aa: int) -> tuple[list[int], list[int]]:
+    """Per-ALT residue and exact-change matches for one record.
+
+    CSQ entries are attributed to their ALT via ALLELE_NUM; when the
+    annotation lacks ALLELE_NUM, an entry counts toward every ALT (the
+    legacy record-level behavior, now the explicit fallback)."""
+    residue_flags = [0] * n_alts
+    change_flags = [0] * n_alts
     for entry in info_csq.split(","):
         vals = entry.split("|")
         if max(idx_sym, idx_pos, idx_csq) >= len(vals):
             continue
-        consequence = vals[idx_csq]
-        if "missense_variant" not in consequence:
+        if "missense_variant" not in vals[idx_csq]:
             continue
         pos = vals[idx_pos]
         if not pos or pos == "-":
             continue
         sym = vals[idx_sym]
-        if (sym, pos) in ref:
-            return True
-    return False
+        if (sym, pos) not in ref.residues:
+            continue
+        targets = range(n_alts)
+        if idx_allele_num >= 0 and idx_allele_num < len(vals):
+            number = vals[idx_allele_num].strip()
+            if number.isdigit() and 1 <= int(number) <= n_alts:
+                targets = [int(number) - 1]
+        alt_aa = ""
+        if idx_aa >= 0 and idx_aa < len(vals) and "/" in vals[idx_aa]:
+            alt_aa = vals[idx_aa].split("/")[-1].strip()
+        for target in targets:
+            residue_flags[target] = 1
+            if alt_aa and (sym, pos, alt_aa) in ref.changes:
+                change_flags[target] = 1
+    return residue_flags, change_flags
 
 
 def _extract_info_csq(info_field: str) -> str | None:
@@ -127,17 +170,19 @@ def _extract_info_csq(info_field: str) -> str | None:
 # --------------------------------------------------------------------------- #
 # driver
 # --------------------------------------------------------------------------- #
-def annotate(in_path: str, out_path: str, ref: set[tuple[str, str]],
+def annotate(in_path: str, out_path: str, ref: Reference,
              info_key: str = "ClinVar_path_aa_match",
              clinvar_release: str = "NA") -> dict:
-    """Stream the VCF, add the INFO flag, return summary counts."""
+    """Stream the VCF, add both INFO flags, return summary counts."""
     header: list[str] = []
-    stats = {"records": 0, "matched": 0, "missense": 0,
+    change_key = "ClinVar_path_aa_change_match" \
+        if info_key == "ClinVar_path_aa_match" else f"{info_key}_change"
+    stats = {"records": 0, "matched": 0, "change_matched": 0, "missense": 0,
              "csq_present": False, "ref_size": len(ref)}
 
     with _open_r(in_path) as fin, _open_w(out_path) as fout:
         fields = None
-        idx_sym = idx_pos = idx_csq = -1
+        idx_sym = idx_pos = idx_csq = idx_allele_num = idx_aa = -1
         wrote_header = False
 
         for line in fin:
@@ -155,15 +200,26 @@ def annotate(in_path: str, out_path: str, ref: set[tuple[str, str]],
                     idx_sym = _fi("SYMBOL")
                     idx_pos = _fi("Protein_position")
                     idx_csq = _fi("Consequence")
-                new_info = (
-                    f'##INFO=<ID={info_key},Number=1,Type=Integer,'
-                    f'Description="1 if variant shares a residue (SYMBOL+Protein_position) '
-                    f'with a pathogenic/likely-pathogenic missense ClinVar variant '
-                    f'(ClinVar release {clinvar_release}); else 0">'
+                    idx_allele_num = _fi("ALLELE_NUM")
+                    idx_aa = _fi("Amino_acids")
+                residue_info = (
+                    f'##INFO=<ID={info_key},Number=A,Type=Integer,'
+                    f'Description="Per ALT: 1 when this allele is a missense at the same '
+                    f'protein residue (SYMBOL+Protein_position, any substitution) as a '
+                    f'pathogenic/likely-pathogenic missense ClinVar variant — PM5-style '
+                    f'residue-level evidence (ClinVar release {clinvar_release}); else 0">'
+                )
+                change_info = (
+                    f'##INFO=<ID={change_key},Number=A,Type=Integer,'
+                    f'Description="Per ALT: 1 when this allele produces the same amino-acid '
+                    f'change as a pathogenic/likely-pathogenic ClinVar variant through any '
+                    f'nucleotide change — PS1-style exact-change evidence (ClinVar release '
+                    f'{clinvar_release}); else 0">'
                 )
                 for h in header:
                     fout.write(h + "\n")
-                fout.write(new_info + "\n")
+                fout.write(residue_info + "\n")
+                fout.write(change_info + "\n")
                 fout.write(line)  # the #CHROM line
                 wrote_header = True
                 usable = fields is not None and idx_sym >= 0 and idx_pos >= 0 and idx_csq >= 0
@@ -187,20 +243,30 @@ def annotate(in_path: str, out_path: str, ref: set[tuple[str, str]],
             if len(cols) < 8:
                 cols += ["."] * (8 - len(cols))
             info = cols[7]
-            flag = 0
+            n_alts = max(1, len(cols[4].split(","))) if len(cols) > 4 else 1
+            residue_flags = [0] * n_alts
+            change_flags = [0] * n_alts
             if fields and idx_sym >= 0 and idx_pos >= 0 and idx_csq >= 0 and ref:
                 csq = _extract_info_csq(info)
                 if csq:
                     if "missense_variant" in csq:
                         stats["missense"] += 1
-                    if variant_matches(csq, fields, ref, idx_sym, idx_pos, idx_csq):
-                        flag = 1
+                    residue_flags, change_flags = match_alleles(
+                        csq, fields, ref, n_alts,
+                        idx_sym, idx_pos, idx_csq, idx_allele_num, idx_aa,
+                    )
+                    if any(residue_flags):
                         stats["matched"] += 1
-            # append INFO key
+                    if any(change_flags):
+                        stats["change_matched"] += 1
+            keys = (
+                f"{info_key}={','.join(map(str, residue_flags))};"
+                f"{change_key}={','.join(map(str, change_flags))}"
+            )
             if info in (".", ""):
-                cols[7] = f"{info_key}={flag}"
+                cols[7] = keys
             else:
-                cols[7] = f"{info};{info_key}={flag}"
+                cols[7] = f"{info};{keys}"
             fout.write("\t".join(cols) + "\n")
 
     return stats
@@ -264,7 +330,8 @@ def main(argv=None) -> int:
     stats = annotate(args.input, args.output, ref,
                      info_key=info_key, clinvar_release=args.clinvar_release)
     print(f"[aa_match] ref_residues={stats['ref_size']} records={stats['records']} "
-          f"missense={stats['missense']} matched={stats['matched']} "
+          f"missense={stats['missense']} residue_matched={stats['matched']} "
+          f"change_matched={stats['change_matched']} "
           f"csq_usable={stats.get('csq_usable')}", file=sys.stderr)
     return 0
 

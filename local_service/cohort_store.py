@@ -363,7 +363,10 @@ def variant_key(chrom: str, pos: int, ref: str, alt: str) -> str:
 
 
 def decode(value: str | None) -> str:
-    return unquote((value or "").replace("+", " "))
+    # VEP percent-encodes CSQ special characters but a literal "+" is data —
+    # splice HGVS like c.300+1G>C. Form-decoding "+" to a space corrupted
+    # every intronic coordinate stored in the cohort database.
+    return unquote(value or "")
 
 
 def parse_number(value: str | None) -> float | None:

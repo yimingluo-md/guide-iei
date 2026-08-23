@@ -273,10 +273,23 @@ applies to whole-genome analysis only.
 
 - **ClinVar** entries are **reports**, not established facts: submitters
   differ in rigor, and classifications age. The annotation is refreshed at
-  every run, and the `ClinVar_path_aa_match` flag additionally marks
-  variants producing the **same amino-acid change** as a reported
-  pathogenic or likely-pathogenic variant through a different nucleotide
-  change.
+  every run. Two deliberately **separate** protein-level flags accompany
+  it, each computed per ALT allele so multiallelic records never share a
+  match:
+  - `ClinVar_path_aa_change_match` — this allele produces the **same
+    amino-acid change** as a reported pathogenic/likely-pathogenic
+    variant, through any nucleotide change (the reasoning clinicians
+    apply as **PS1**).
+  - `ClinVar_path_aa_match` — this allele is a missense at the **same
+    protein residue** as a reported P/LP missense, regardless of which
+    substitution (the reasoning clinicians apply as **PM5**).
+    Residue-level matching is intentional: a different change at a known
+    pathogenic residue is weaker evidence than the same change, which is
+    exactly why the two signals are kept apart rather than merged.
+
+  Both are matching aids computed against the release named in the VCF
+  header — as everywhere, the applicable ACMG strength is the reviewer's
+  judgment, not the software's.
 - **ClinGen** contributes two expert-panel layers: allele-level assertions
   from the Evidence Repository, with disease- and inheritance-specific
   detail, and gene-level validity and dosage curation. One dosage caution

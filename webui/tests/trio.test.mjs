@@ -330,3 +330,45 @@ test("mitochondrial variant: father is not a transmitting parent", () => {
   }), trio);
   assert.equal(inherited.status, "inherited");
 });
+
+test("low-quality parental calls cannot claim inherited or confirmed trans", () => {
+  const weakParent = (gt) => evidence(gt, 1, 1, gt === "0/0" ? 1 : 0, gt === "0/0" ? 0 : 1);
+  const weakInherited = assessDeNovo(row({
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: weakParent("0/1"),
+      FATHER: evidence("0/0", 30, 99, 30, 0),
+    },
+  }), trio);
+  assert.equal(weakInherited.status, "possible");
+  assert.match(weakInherited.reasons[0], /below the parental quality thresholds/);
+
+  const solidInherited = assessDeNovo(row({
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: evidence("0/1", 30, 99, 15, 15),
+      FATHER: evidence("0/0", 30, 99, 30, 0),
+    },
+  }), trio);
+  assert.equal(solidInherited.status, "inherited");
+
+  const maternalWeak = row({
+    key: "m1", pos: 100,
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: weakParent("0/1"),
+      FATHER: weakParent("0/0"),
+    },
+  });
+  const paternalWeak = row({
+    key: "p1", pos: 200,
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: weakParent("0/0"),
+      FATHER: weakParent("0/1"),
+    },
+  });
+  const pairs = compoundHetPairs([maternalWeak, paternalWeak], trio);
+  assert.equal(pairs.length, 1);
+  assert.notEqual(pairs[0].phase, "confirmed_trans_inheritance");
+});

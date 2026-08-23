@@ -687,6 +687,22 @@ class CohortStoreTests(unittest.TestCase):
         self.assertTrue(refreshed["cache_hit"])
         self.assertEqual(backend.sort_calls, 1)
 
+    def test_splice_hgvs_plus_coordinates_survive_import(self):
+        """VEP percent-encoding never uses + for space: form-decoding it
+        corrupted every intronic HGVS (c.300+1G>C became "c.300 1G>C")."""
+        source = self.root / "splice.vcf"
+        write_vcf(source)
+        store = CohortStore(
+            self.root / "splice.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        store.import_vcf(source)
+        rows = store.query({"mode": "variant", "query": "1:300:G:C"})["rows"]
+        self.assertTrue(rows)
+        self.assertEqual(rows[0]["hgvsc"], "c.300+1G>C")
+
     def test_truncated_sample_rows_are_refused_not_silently_absorbed(self):
         source = self.root / "truncated.vcf"
         write_vcf(source)

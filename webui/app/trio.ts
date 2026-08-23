@@ -270,10 +270,24 @@ export function assessDeNovo(
         : [["mother", mother], ["father", father]];
 
   const carrierParents = relevantParents
-    .filter(([, evidence]) => evidence?.carrier)
-    .map(([label]) => label);
+    .filter(([, evidence]) => evidence?.carrier);
   if (carrierParents.length) {
-    return { ...base, status: "inherited", reasons: [`ALT allele is present in the ${carrierParents.join(" and ")}.`] };
+    // "Inherited" is a positive claim about the parental call, so the call
+    // must meet the parental quality thresholds; a DP=1 flicker of ALT
+    // evidence downgrades the candidate to "possible" instead of quietly
+    // suppressing it as inherited.
+    const supported = carrierParents
+      .filter(([, evidence]) => adequate(evidence, thresholds.parentMinDp, thresholds.minGq))
+      .map(([label]) => label);
+    if (supported.length) {
+      return { ...base, status: "inherited", reasons: [`ALT allele is present in the ${supported.join(" and ")}.`] };
+    }
+    const labels = carrierParents.map(([label]) => label);
+    return {
+      ...base,
+      status: "possible",
+      reasons: [`ALT evidence in the ${labels.join(" and ")} is below the parental quality thresholds; inheritance cannot be established from this callset.`],
+    };
   }
   if (
     !hemiContext
@@ -360,9 +374,18 @@ function originFor(row: VariantRow, trio: TrioDefinition): CompoundOrigin {
   const evidence = row.sampleGenotypes ?? {};
   const mother = evidence[trio.mother] ?? null;
   const father = evidence[trio.father] ?? null;
+  // A parental origin feeds "confirmed trans by inheritance", so both
+  // parental genotypes backing it must meet the quality thresholds —
+  // opposing DP=1/GQ=1 calls must not mint a confirmed compound het.
+  const solid = (parent: GenotypeEvidence | null) =>
+    adequate(parent, DEFAULT_TRIO_THRESHOLDS.parentMinDp, DEFAULT_TRIO_THRESHOLDS.minGq);
   if (mother?.carrier && father?.carrier) return "both";
-  if (mother?.carrier && isHomRef(father)) return "maternal";
-  if (father?.carrier && isHomRef(mother)) return "paternal";
+  if (mother?.carrier && isHomRef(father)) {
+    return solid(mother) && solid(father) ? "maternal" : "unknown";
+  }
+  if (father?.carrier && isHomRef(mother)) {
+    return solid(father) && solid(mother) ? "paternal" : "unknown";
+  }
   const deNovo = assessDeNovo(row, trio);
   // "possible" covers the missing-parental-genotype case: converting "we do
   // not know the parental genotype" into "this arose de novo" promoted

@@ -358,22 +358,27 @@ description, so every annotated VCF records exactly which ClinVar it used.
 
 ## ClinVar amino-acid-match post-processing
 
-Reproduces the awk step from `vep_hg38.sh`. A residue-level catalog of
-pathogenic / likely-pathogenic **missense** ClinVar variants
-(`SYMBOL` + `Protein_position`) is built by `build_clinvar_aa_reference.sh`
-(filter ClinVar → VEP-annotate the subset → reduce to 2 columns). Each variant
-in your annotated VCF then gets `INFO/ClinVar_path_aa_match = 1` if any of its
-missense transcript consequences sits on a residue in that catalog, else `0`.
-Because both sides read `Protein_position` from the same VEP field, the match
-is an exact string comparison — identical semantics to the original tab-based
-step, but applied to VCF (so sample genotype / zygosity is preserved).
+After annotation, `pipeline/clinvar_aa_match.py` writes two separate
+per-ALT (`Number=A`) INFO flags from a catalog of reported
+pathogenic/likely-pathogenic missense changes
+(`SYMBOL<TAB>Protein_position<TAB>alt_aa`, built per ClinVar release by
+`build_clinvar_aa_reference.sh` → `reduce_vep_to_aa_reference.py`):
 
-The review UI also exposes ClinVar conflicts separately. “ClinVar conflict
-with ≥1 P / LP” requires both an aggregate conflicting classification in
-`CLNSIG` and an explicit `Pathogenic` or `Likely_pathogenic` submission in
-`CLNSIGCONF`; a generic conflict label alone is not sufficient.
+- `ClinVar_path_aa_change_match` — the allele produces the **same
+  amino-acid change** as a reported P/LP variant through any nucleotide
+  change (PS1-style evidence).
+- `ClinVar_path_aa_match` — the allele is a missense at the **same
+  residue** as a reported P/LP missense, any substitution (PM5-style
+  evidence; residue-level matching is intentional).
 
----
+CSQ entries are attributed to their ALT via `ALLELE_NUM`, so a match on
+one ALT of a multiallelic record is never copied to its siblings. Both
+header descriptions carry the ClinVar release the catalog was built from;
+when a catalog rebuild fails, the run proceeds on the previous catalog
+and labels the evidence with **that** release, never the current one. A
+headered build input with zero pathogenic missense rows is refused rather
+than stamped as a valid empty catalog. Legacy two-column catalogs load as
+residue-only (the change-level flag stays 0).
 
 ## Frameshift PTC-based LOFTEE 50-bp rule
 

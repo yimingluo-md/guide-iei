@@ -351,7 +351,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                         if term
                     )
                 clinvar_significance.update(terms)
-            if info.get("ClinVar_path_aa_match") == "1":
+            if "1" in (info.get("ClinVar_path_aa_match") or "").split(","):
                 counters["clinvar_pathogenic_aa_match_records"] += 1
             if present(info.get("ClinGen_ERepo")):
                 counters["clingen_erepo_match_records"] += 1
