@@ -13,7 +13,7 @@ line of evidence depends on the gene, the inheritance model, and the
 patient. This chapter supplies the meaning of each block; the weighing
 belongs to the reviewer.
 
-*[Screenshot: variant detail view with evidence sections]*
+![Evidence sections of a variant page: predictors, call quality, ClinVar, ClinGen, and the transcript block](../assets/img/variant-evidence-sections.png)
 
 ## Population frequency
 

@@ -15,7 +15,7 @@ All of this is done inside the application, at **Run VEP first → Set up
 annotation datasets**. Each dataset is presented as a card describing in
 plain language what it contributes; this chapter is a tour of those cards.
 
-*[Screenshot: Set up annotation datasets screen with dataset cards]*
+![The dataset setup screen: engine and reference status, one-click download tiles for the exome and WGS profiles, and the registration-gated dbNSFP and PromoterAI cards](../assets/img/dataset-cards.png)
 
 ## Plan disk space first
 
@@ -74,7 +74,7 @@ each user registers once:
    application verifies the checksum, validates the format, and installs
    the file; no rebuild is needed.
 
-*[Screenshot: dbNSFP card with guided source-folder selection]*
+![The dbNSFP card: choose the downloaded folder and the workstation validates and installs it; the PromoterAI card follows the same pattern](../assets/img/dataset-dbnsfp-card.png)
 
 ## Step 3 — PromoterAI: recommended for whole-genome work
 

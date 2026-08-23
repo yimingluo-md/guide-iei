@@ -10,9 +10,6 @@ This chapter follows a single exome from VCF to a reviewed list of
 candidate variants. The first pass takes 20–30 minutes at the screen; the
 annotation run itself usually completes in minutes for an exome.
 
-> Screenshots are being added to this chapter. Every screen described below
-> corresponds to what appears in the application.
-
 ## Prerequisites
 
 1. **GUIDE-IEI installed** and the workbench running
@@ -42,7 +39,7 @@ routes:
 
 Drag the `.vcf`/`.vcf.gz` file onto the drop zone, or click to browse.
 
-*[Screenshot: Import screen, file dropped, "Run VEP first" selected]*
+![The import screen with the Exome scope and Run VEP first route selected](../assets/img/import-run-vep-first.png)
 
 ## Step 2 — Confirm readiness and settings
 
@@ -64,7 +61,7 @@ annotation datasets**.
 - **Coding + splice regions**: on. Annotation is restricted to coding exons
   and canonical splice sites.
 
-*[Screenshot: parameters screen with dataset readiness list]*
+![Check annotation settings: the selected file, exome-region options, worker count, and the dataset readiness list](../assets/img/annotation-settings.png)
 
 Start the run.
 
@@ -81,7 +78,6 @@ annotated VCF itself, and an **annotation-QC certificate** summarizing how
 completely each source annotated the data
 ([Quality control](10-quality-control.md)).
 
-*[Screenshot: run progress with stage list]*
 
 ## Step 4 — Open the review
 
@@ -112,7 +108,7 @@ The workspace has three areas:
   records, the gene's constraint and IUIS context, and the sample's
   genotype evidence.
 
-*[Screenshot: review workspace with a variant selected]*
+![A variant open in the review workspace: header with gene, protein change, and population frequency; predictor and evidence sections below](../assets/img/review-workspace-selected.png)
 
 ## Step 6 — Filter to a shortlist
 
@@ -132,7 +128,7 @@ manageable review set. A markedly different figure — single digits, or
 tens of thousands — is grounds to stop and consult
 [Quality control](10-quality-control.md) before interpreting anything.
 
-*[Screenshot: filter panel with popmax and IMPACT set]*
+![The prioritized variant list with the filter rail: gene sets, IMPACT tiers, the popmax slider, and clinical-evidence filters](../assets/img/review-variant-list.png)
 
 ## Step 7 — Read the evidence
 

@@ -45,7 +45,27 @@ bash scripts/start_workbench.sh
 Then open **`http://127.0.0.1:3000`** in a browser — a local address: the
 workbench runs on your machine and uses the browser as its display.
 
-*[Screenshot: terminal after setup_environment.sh --install completes, "Environment ready" summary]*
+```text
+== IEI pipeline environment check — macOS (arm64)
+
+[ OK ] core tools (git, tar, curl/wget, awk, sed, sort, gzip)
+[ OK ] python3 3.9.12 (>= 3.8)
+[ OK ] PyYAML importable (config parser dependency)
+[ OK ] node v26.7.0 (>= 22.13)
+[ OK ] webui/node_modules present
+[ OK ] native bcftools/tabix/bgzip found — htslib I/O runs without container overhead
+[WARN] disk: only 38 GiB free — the exome reference set alone needs ~40 GiB
+       (the Storage page can place datasets on another drive)
+[ OK ] pipeline smoke test passed (test/test_dry_run.sh)
+
+== Summary: 7 ok, 1 warning(s), 0 to fix
+Environment ready. Next steps:
+  bash scripts/start_workbench.sh            # launch the review workbench
+```
+
+A `WARN` line, like the disk-space warning above, is advice rather than a
+failure — the summary still ends `Environment ready` when nothing needs
+fixing.
 
 ## What the second command does
 

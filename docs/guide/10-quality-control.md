@@ -31,7 +31,7 @@ anything about pathogenicity. Typical causes, in order: a dataset not
 installed, a dataset installed after the run (re-run to pick it up), or an
 input whose variants fall outside a source's scope.
 
-*[Screenshot: annotation-QC certificate HTML]*
+![An annotation completeness certificate: per-source coverage against each source's own denominator, with explicit SKIPPED states for uninstalled optional sources](../assets/img/qc-certificate.png)
 
 ## The regression panel
 
