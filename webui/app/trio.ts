@@ -59,7 +59,8 @@ export type CompoundPhase =
   | "confirmed_trans_phasing"
   | "possible_trans"
   | "phase_unknown"
-  | "cis";
+  | "cis"
+  | "excluded_hemizygous";
 
 export type CompoundHetPair = {
   key: string;
@@ -176,27 +177,30 @@ function normalizedTrioContig(chrom: string) {
   return trimmed === "M" ? "MT" : trimmed;
 }
 
+function isNonParX(row: VariantRow) {
+  return normalizedTrioContig(row.chrom) === "X"
+    && row.pos > GRCH38_PAR1_END
+    && row.pos < GRCH38_PAR2_START;
+}
+
 /**
- * A male proband is hemizygous for non-PAR X (transmitting parent: mother)
- * and for Y (transmitting parent: father). Applying the autosomal diploid
+ * Sites with a single informative transmitting parent. A male proband is
+ * hemizygous for non-PAR X (transmitting parent: mother) and for Y
+ * (transmitting parent: father); mitochondrial variants are maternally
+ * transmitted for probands of any sex. Applying the autosomal diploid
  * model there misclassifies the most common IEI presentation: an X-linked
  * de novo written as 1/1 hits the "hom-alt child" conflict branch, and a
  * true haploid 1 fails the heterozygous allele-balance gate at AB ~1.0.
  */
-function hemizygousContextFor(
+function uniparentalContextFor(
   row: VariantRow,
   trio: TrioDefinition,
-): "x" | "y" | null {
-  if (trio.probandSex !== "male") return null;
+): "x" | "y" | "mt" | null {
   const contig = normalizedTrioContig(row.chrom);
+  if (contig === "MT") return "mt";
+  if (trio.probandSex !== "male") return null;
   if (contig === "Y") return "y";
-  if (
-    contig === "X"
-    && row.pos > GRCH38_PAR1_END
-    && row.pos < GRCH38_PAR2_START
-  ) {
-    return "x";
-  }
+  if (isNonParX(row)) return "x";
   return null;
 }
 
@@ -257,9 +261,9 @@ export function assessDeNovo(
   // informative: a male proband's X comes from the mother, his Y from the
   // father. The other parent's carrier state neither establishes
   // inheritance nor gates the de novo call.
-  const hemiContext = hemizygousContextFor(row, trio);
+  const hemiContext = uniparentalContextFor(row, trio);
   const relevantParents: Array<["mother" | "father", GenotypeEvidence | null]> =
-    hemiContext === "x"
+    hemiContext === "x" || hemiContext === "mt"
       ? [["mother", mother]]
       : hemiContext === "y"
         ? [["father", father]]
@@ -339,9 +343,11 @@ export function assessDeNovo(
     ...base,
     status: "high_confidence",
     reasons: [
-      hemiContext
-        ? "Proband hemizygous ALT with a well-supported homozygous-reference transmitting parent in the loaded callset."
-        : "Proband ALT and two well-supported homozygous-reference parental genotypes are present in the loaded callset.",
+      hemiContext === "mt"
+        ? "Proband mitochondrial ALT with a well-supported reference call in the mother, the sole transmitting parent, in the loaded callset."
+        : hemiContext
+          ? "Proband hemizygous ALT with a well-supported homozygous-reference transmitting parent in the loaded callset."
+          : "Proband ALT and two well-supported homozygous-reference parental genotypes are present in the loaded callset.",
     ],
   };
 }
@@ -397,6 +403,18 @@ export function compoundHetPairs(rows: VariantRow[], trio: TrioDefinition): Comp
         const secondOrigin = originFor(second, trio);
         let phase: CompoundPhase = "phase_unknown";
         let reason = "Both variants qualify, but inheritance and phase do not establish trans configuration.";
+        if (trio.probandSex === "male" && (isNonParX(first) || isNonParX(second))) {
+          // One X haplotype: two alternate alleles cannot be in trans, and a
+          // heterozygous-appearing call here points to a genotyping artifact
+          // or an overlapping CNV rather than a compound heterozygote.
+          pairs.push({
+            key: `${trio.familyId}:${trio.proband}:${gene}:${variantIdentity(first)}:${variantIdentity(second)}`,
+            gene, first, second, firstOrigin, secondOrigin,
+            phase: "excluded_hemizygous",
+            reason: "A male proband is hemizygous for non-pseudoautosomal X: a compound heterozygote is not possible, and heterozygous-appearing calls here suggest artifact or an overlapping CNV.",
+          });
+          continue;
+        }
         const firstChild = first.sampleGenotypes?.[trio.proband];
         const secondChild = second.sampleGenotypes?.[trio.proband];
 

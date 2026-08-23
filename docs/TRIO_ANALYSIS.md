@@ -82,6 +82,26 @@ Defaults are screening values, not clinical rules:
 Every variant detail page shows the unmodified GT, DP, GQ, REF/ALT depths,
 allele balance, and phase set for all three samples.
 
+### Uniparental contexts: X, Y, and mitochondria
+
+Regions with a single informative transmitting parent are modeled
+explicitly rather than forced through the autosomal diploid logic:
+
+- **Non-PAR X, male proband** — hemizygous; only the mother's genotype
+  gates the de novo call. A `1/1` (diploid-caller style) or haploid `1`
+  is the expected shape, not a Mendelian conflict, and the heterozygous
+  allele-balance upper bound is waived (a true hemizygous call sits near
+  AB 1.0). GRCh38 PAR1/PAR2 boundaries are respected; inside the PARs the
+  diploid model applies.
+- **Y, male proband** — only the father's genotype is informative.
+- **Mitochondria, any proband** — maternal transmission only; a paternal
+  ALT call never marks the variant inherited. Heteroplasmy makes allele
+  balance continuous, so the diploid upper bound is likewise waived; the
+  lower artifact bound still applies as a screen and is adjustable.
+
+Proband sex comes from the PED file or the manual mapping panel; when it
+is unknown, the conservative diploid model is used throughout.
+
 ## Compound heterozygotes
 
 The analysis first applies the active variant filters independently to both
@@ -97,6 +117,10 @@ classifies each pair as:
 - **Phase unknown** — both variants qualify but origin/phase is insufficient.
 - **Cis / excluded** — both occur on the same phased haplotype or were
   transmitted by the same parent.
+- **Excluded, hemizygous region** — the pair lies on non-PAR X in a male
+  proband, where a single haplotype makes a compound heterozygote
+  impossible; heterozygous-appearing calls there suggest genotyping
+  artifact or an overlapping CNV rather than two alleles in trans.
 
 This is candidate discovery, not proof of molecular diagnosis. Review read
 evidence, transcript compatibility, gene-disease mechanism, sample identity,
@@ -108,5 +132,6 @@ and orthogonal confirmation before clinical use.
 - The workbench does not joint-genotype separate gVCFs.
 - BAM/CRAM read review, kinship verification, and read-backed phasing are not
   yet integrated.
-- Sex-chromosome-specific inheritance models and larger pedigrees will require
-  a later pedigree-analysis extension.
+- X-inactivation reasoning, sex-aware models beyond the hemizygous and
+  mitochondrial contexts above, and larger pedigrees will require a later
+  pedigree-analysis extension.

@@ -283,3 +283,50 @@ test("parents that exist nowhere produce a warning, not a silent empty trio", ()
     result.warnings.join(" | "),
   );
 });
+
+test("male proband non-PAR X pair is excluded as hemizygous, PAR pair is not", () => {
+  const xRow = (pos, key) => row({
+    chrom: "chrX", pos, key, gene: "BTK",
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 90, 15, 15),
+      MOTHER: evidence("0/1", 30, 90, 15, 15),
+      FATHER: evidence("0/0", 30, 90, 30, 0),
+    },
+  });
+  const nonPar = compoundHetPairs(
+    [xRow(101_000_000, "x1"), xRow(101_000_500, "x2")], maleTrio,
+  );
+  assert.equal(nonPar.length, 1);
+  assert.equal(nonPar[0].phase, "excluded_hemizygous");
+  const par = compoundHetPairs(
+    [xRow(1_000_000, "p1"), xRow(1_000_500, "p2")], maleTrio,
+  );
+  assert.equal(par[0].phase !== "excluded_hemizygous", true);
+  const female = compoundHetPairs(
+    [xRow(101_000_000, "x1"), xRow(101_000_500, "x2")], trio,
+  );
+  assert.equal(female[0].phase !== "excluded_hemizygous", true);
+});
+
+test("mitochondrial variant: father is not a transmitting parent", () => {
+  const mtRow = row({
+    chrom: "chrM", pos: 3243, key: "mt1", alleleBalance: 0.96,
+    sampleGenotypes: {
+      CHILD: evidence("1/1", 500, 99, 20, 480),
+      MOTHER: evidence("0/0", 500, 99, 500, 0),
+      FATHER: evidence("1/1", 500, 99, 10, 490),
+    },
+  });
+  const result = assessDeNovo(mtRow, trio);
+  assert.equal(result.status, "high_confidence");
+  assert.match(result.reasons[0], /mitochondrial/);
+  const inherited = assessDeNovo(row({
+    chrom: "chrM", pos: 3243, key: "mt1", alleleBalance: 0.96,
+    sampleGenotypes: {
+      CHILD: evidence("1/1", 500, 99, 20, 480),
+      MOTHER: evidence("0/1", 500, 99, 400, 100),
+      FATHER: evidence("0/0", 500, 99, 500, 0),
+    },
+  }), trio);
+  assert.equal(inherited.status, "inherited");
+});

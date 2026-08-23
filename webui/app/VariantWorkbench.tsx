@@ -912,7 +912,7 @@ export default function VariantWorkbench() {
     [screenFilteredRows, trio],
   );
   const trioCandidatePairs = useMemo(
-    () => trioPairs.filter((pair) => pair.phase !== "cis"),
+    () => trioPairs.filter((pair) => pair.phase !== "cis" && pair.phase !== "excluded_hemizygous"),
     [trioPairs],
   );
   const trioCompoundVariantKeys = useMemo(
@@ -1712,6 +1712,7 @@ function compoundPhaseLabel(phase: CompoundHetPair["phase"]) {
     confirmed_trans_phasing: "Confirmed trans · phasing",
     possible_trans: "Possible trans",
     phase_unknown: "Phase unknown",
+    excluded_hemizygous: "Excluded · hemizygous region",
     cis: "Cis · excluded",
   }[phase];
 }
@@ -1789,7 +1790,7 @@ function FamilyPanel({
     const order: DeNovoStatus[] = ["high_confidence", "possible_parental_mosaicism", "possible", "mendelian_conflict", "likely_artifact", "inherited", "not_proband"];
     return order.indexOf(a.assessment.status) - order.indexOf(b.assessment.status);
   });
-  const candidatePairs = pairs.filter((pair) => pair.phase !== "cis");
+  const candidatePairs = pairs.filter((pair) => pair.phase !== "cis" && pair.phase !== "excluded_hemizygous");
   const shownPairs = includeCis ? pairs : candidatePairs;
   const completeEvidence = trio ? new Set(rows
     .filter((row) => row.sample === trio.proband)
@@ -1843,7 +1844,7 @@ function FamilyPanel({
         <div className="family-results-head"><div><p className="eyebrow">Proband: {trio.proband}</p><h2>De novo review</h2></div><Check label="Include artifacts and conflicts" checked={includeReview} onChange={setIncludeReview}/></div>
         {deNovoRows.length ? <div className="family-candidate-list">{deNovoRows.map(({ row, assessment }) => <button className="family-candidate-row" key={`${variantIdentity(row)}:${row.gene}`} onClick={() => onSelect(row)}><div><span className={`family-status ${assessment.status}`}>{deNovoLabel(assessment.status)}</span><strong>{row.gene}</strong><span>{row.hgvsP || row.hgvsC || cleanLabel(row.consequence)}</span></div><div className="family-locus"><VariantIdentifier row={row}/><span>popmax {compactNumber(row.gnomadPopmax)} · {row.impact}</span></div><TrioGenotypeSummary assessment={assessment}/><p>{assessment.reasons[0]}</p></button>)}</div> : <div className="empty-state compact"><span className="empty-icon"><Icon name="dna"/></span><h2>No de novo candidates</h2><p>Current variant and genotype thresholds produced no candidates.</p></div>}
       </section> : <section className="family-results">
-        <div className="family-results-head"><div><p className="eyebrow">Both variants pass active filters</p><h2>Compound-heterozygous pairs</h2></div><Check label="Show cis pairs" checked={includeCis} onChange={setIncludeCis}/></div>
+        <div className="family-results-head"><div><p className="eyebrow">Both variants pass active filters</p><h2>Compound-heterozygous pairs</h2></div><Check label="Show cis and excluded pairs" checked={includeCis} onChange={setIncludeCis}/></div>
         {shownPairs.length ? <div className="compound-pair-list">{shownPairs.map((pair) => <article className={`compound-pair ${pair.phase}`} key={pair.key}><header><div><span className={`family-status ${pair.phase}`}>{compoundPhaseLabel(pair.phase)}</span><h3>{pair.gene}</h3></div><p>{pair.reason}</p></header><div className="compound-variants"><button onClick={() => onSelect(pair.first)}><strong>{pair.first.hgvsP || pair.first.hgvsC || variantIdentity(pair.first)}</strong><VariantIdentifier row={pair.first}/><small>{originLabel(pair.firstOrigin)} · {pair.first.impact} · popmax {compactNumber(pair.first.gnomadPopmax)}</small></button><span className="compound-link">+</span><button onClick={() => onSelect(pair.second)}><strong>{pair.second.hgvsP || pair.second.hgvsC || variantIdentity(pair.second)}</strong><VariantIdentifier row={pair.second}/><small>{originLabel(pair.secondOrigin)} · {pair.second.impact} · popmax {compactNumber(pair.second.gnomadPopmax)}</small></button></div></article>)}</div> : <div className="empty-state compact"><span className="empty-icon"><Icon name="dna"/></span><h2>No qualifying pairs</h2><p>Each member of a pair must independently pass the currently active variant filters.</p></div>}
       </section>}
       <div className="interpretation-banner"><strong>Candidate discovery only</strong><span>Family analysis does not confirm biological parentage, replace read review, or assign ACMG/AMP evidence codes.</span></div>
