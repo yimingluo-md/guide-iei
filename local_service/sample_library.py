@@ -468,6 +468,28 @@ class SampleLibrary:
                        WHERE id=?""",
                     (profile_label, settings_hash, _json(settings), cohort_result.get("id")),
                 )
+                # cohort_files holds ONE profile per indexed file. Importing
+                # the same content under a new profile replaces that row, so
+                # sibling datasets imported under other profiles now point at
+                # a dangling cohort entry while showing "ready" — surface
+                # them as needing repair instead, and say why.
+                # Siblings imported under other profiles now point at a
+                # cohort row carrying THIS profile; the coherence-derived
+                # status marks them needs-repair automatically — count them
+                # so the takeover is named, not silent.
+                displaced = connection.execute(
+                    """SELECT COUNT(*) FROM library_datasets
+                       WHERE managed_checksum=? AND settings_hash != ?
+                         AND cohort_file_id IS NOT NULL""",
+                    (review_checksum, settings_hash),
+                ).fetchone()[0]
+                if displaced:
+                    warnings.append(
+                        f"This file's Cohort Search index now reflects the profile "
+                        f"'{profile_label}'; {displaced} sibling dataset(s) imported "
+                        "under other profiles were marked for repair — repairing one "
+                        "re-indexes the file under that dataset's profile."
+                    )
           except Exception as exc:  # noqa: BLE001 — the library import stands
             # The library rows are already committed and remain fully usable;
             # a cohort-indexing failure must not present as a failed import
@@ -517,6 +539,7 @@ class SampleLibrary:
                          SELECT 1 FROM cohort_files cf
                          JOIN cohort_samples cs ON cs.file_id=cf.id
                          WHERE cf.id=d.cohort_file_id AND cs.name=d.vcf_sample_name
+                           AND cf.profile_hash=d.settings_hash
                        ) AS cohort_index_present
                 FROM library_datasets d JOIN library_samples s ON s.id=d.sample_id
                 {condition}
@@ -533,6 +556,7 @@ class SampleLibrary:
                             SELECT 1 FROM cohort_files cf
                             JOIN cohort_samples cs ON cs.file_id=cf.id
                             WHERE cf.id=d.cohort_file_id AND cs.name=d.vcf_sample_name
+                              AND cf.profile_hash=d.settings_hash
                           ) AS cohort_index_present
                    FROM library_datasets d JOIN library_samples s ON s.id=d.sample_id
                    WHERE d.id=?""", (dataset_id,),
@@ -598,6 +622,7 @@ class SampleLibrary:
         if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
             return projected
         partial = projected.with_name(projected.name + f".{uuid.uuid4().hex}.partial.vcf.gz")
+        staged = projected.with_name(projected.name + f".{uuid.uuid4().hex}.staged.vcf.gz")
         try:
             subset = backend.run(
                 "bcftools",
@@ -607,16 +632,21 @@ class SampleLibrary:
                 raise RuntimeError(
                     f"sample projection failed for {sample}: {subset.stderr.strip()[:400]}"
                 )
+            # Stage, then publish atomically: writing the final path directly
+            # let two concurrent projections interleave bytes, and a failed
+            # write left a partial file the cache check then trusted.
             carriers = backend.run(
                 "bcftools",
-                ["view", "-i", 'GT[0]="alt"', "-O", "z", "-o", str(projected), str(partial)],
+                ["view", "-i", 'GT[0]="alt"', "-O", "z", "-o", str(staged), str(partial)],
             )
             if carriers.returncode != 0:
                 raise RuntimeError(
                     f"carrier filtering failed for {sample}: {carriers.stderr.strip()[:400]}"
                 )
+            os.replace(staged, projected)
         finally:
             partial.unlink(missing_ok=True)
+            staged.unlink(missing_ok=True)
         return projected
 
     def review_file_combined(self, dataset_ids: list[str]) -> Path:
@@ -668,6 +698,7 @@ class SampleLibrary:
         if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
             return projected
         partial = projected.with_name(projected.name + f".{uuid.uuid4().hex}.partial.vcf.gz")
+        staged = projected.with_name(projected.name + f".{uuid.uuid4().hex}.staged.vcf.gz")
         try:
             subset = backend.run(
                 "bcftools",
@@ -679,14 +710,16 @@ class SampleLibrary:
                 )
             carriers = backend.run(
                 "bcftools",
-                ["view", "-i", 'GT[*]="alt"', "-O", "z", "-o", str(projected), str(partial)],
+                ["view", "-i", 'GT[*]="alt"', "-O", "z", "-o", str(staged), str(partial)],
             )
             if carriers.returncode != 0:
                 raise RuntimeError(
                     f"carrier filtering failed: {carriers.stderr.strip()[:400]}"
                 )
+            os.replace(staged, projected)
         finally:
             partial.unlink(missing_ok=True)
+            staged.unlink(missing_ok=True)
         return projected
 
     def map_identity(self, dataset_id: str, payload: dict) -> dict:
@@ -900,13 +933,26 @@ class SampleLibrary:
                 )
             else:
                 # Re-importing the managed VCF indexes every co-resident
-                # sample, so cohort linkage is repaired for all datasets
-                # sharing the file...
+                # sample, so cohort LINKAGE is repaired for all datasets
+                # sharing the file. index_scope, however, is stamped only on
+                # same-profile rows: writing this dataset's scope onto a
+                # divergent sibling poisoned that sibling's own later repair
+                # (a full-index dataset silently repaired as compact).
+                # Whether a relinked sibling shows "ready" is decided by the
+                # coherence-derived status — a divergent profile surfaces as
+                # needs-repair even though its sample is in the index.
                 connection.execute(
                     """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
-                           index_scope=?,updated_at=? WHERE managed_path=?""",
-                    (result.get("id"), index_scope, utc_now(),
+                           updated_at=? WHERE managed_path=?""",
+                    (result.get("id"), utc_now(),
                      self._stored_state_path(record["managed_path"])),
+                )
+                connection.execute(
+                    """UPDATE library_datasets SET index_scope=?,updated_at=?
+                           WHERE managed_path=? AND settings_hash=?""",
+                    (index_scope, utc_now(),
+                     self._stored_state_path(record["managed_path"]),
+                     record["settings_hash"]),
                 )
                 # ...but profile identity stays per-dataset: a sibling may
                 # have diverged (capture kit / target BED), and this record's
@@ -1146,10 +1192,17 @@ class SampleLibrary:
         for root in (self.root, self.cohort.staging_dir):
             if not root.exists():
                 continue
-            for path in root.rglob("*.partial"):
-                if path.is_file():
-                    path.unlink()
-                    removed.append(str(path))
+            # Projection staging uses <name>.<uuid>.partial.vcf.gz and
+            # .staged.vcf.gz suffixes; the bare "*.partial" glob matched
+            # neither, so hard-killed builds accumulated forever.
+            for pattern in (
+                "*.partial", "*.partial.vcf.gz", "*.staged.vcf.gz",
+                "*.building.vcf.gz",
+            ):
+                for path in root.rglob(pattern):
+                    if path.is_file():
+                        path.unlink()
+                        removed.append(str(path))
         return removed
 
     def compact_database(self) -> dict:
@@ -1186,6 +1239,13 @@ class SampleLibrary:
             if not result["include_in_cohort"]:
                 result["cohort_index_status"] = "not_included"
             elif index_present:
+                # "Ready" asserts COHERENCE, not mere linkage: the linked
+                # cohort row must carry this dataset's own profile. A file
+                # re-indexed under a different profile (takeover, repair of
+                # a divergent sibling, a metadata edit changing this
+                # dataset's profile) surfaces as needs-repair everywhere,
+                # instead of a "ready" whose profile-filtered queries
+                # silently return nothing.
                 result["cohort_index_status"] = "ready"
             else:
                 result["cohort_index_status"] = "needs_repair"

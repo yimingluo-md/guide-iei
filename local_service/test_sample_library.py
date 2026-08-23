@@ -205,6 +205,67 @@ class SampleLibraryTests(unittest.TestCase):
         record = self.library.get(result["datasets"][0]["id"])
         self.assertEqual(record["cohort_index_status"], "needs_repair")
 
+    def test_failed_projection_never_publishes_a_partial_final_file(self):
+        """A failed second-stage write must leave NO file at the final cache
+        path — a partial final was previously trusted as a valid cache."""
+        from local_service.cohort_store import HtsBackend
+        backend = HtsBackend.discover()
+        if backend is None or not backend.native_tools.get("bcftools"):
+            self.skipTest("native bcftools is required for sample projections")
+        result = self.library.import_vcf(self.vcf, self.payload(include=False))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+
+        class FailSecondStage:
+            def __init__(self, inner):
+                self.inner = inner
+                self.native_tools = inner.native_tools
+                self.calls = 0
+
+            def run(self, tool, args):
+                self.calls += 1
+                if self.calls == 2:
+                    class R:
+                        returncode = 1
+                        stderr = "synthetic carrier-stage failure"
+                    return R()
+                return self.inner.run(tool, args)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        self.cohort.hts_backend = FailSecondStage(backend)
+        try:
+            with self.assertRaisesRegex(RuntimeError, "carrier filtering failed"):
+                self.library.review_file(by_sample["P1"]["id"])
+        finally:
+            self.cohort.hts_backend = backend
+        projected = [
+            path for path in (self.state / "sample-library" / "files").glob("*.review.vcf.gz")
+        ] if (self.state / "sample-library" / "files").is_dir() else []
+        leftovers = [p for p in projected if ".staged." in p.name or ".partial." in p.name]
+        self.assertEqual(leftovers, [])
+        good = self.library.review_file(by_sample["P1"]["id"])
+        self.assertTrue(good.is_file())
+
+    def test_profile_takeover_marks_displaced_siblings_for_repair(self):
+        """Reimporting the same file under a new profile replaces the single
+        file-level cohort entry; the displaced datasets must surface as
+        needing repair with the reason, not stay 'ready' over a dangling
+        index."""
+        first = self.library.import_vcf(self.vcf, self.payload(include=True))
+        second_payload = self.payload(include=True)
+        second_payload["qc_settings"] = {"minDp": 25, "minGq": 40}
+        second = self.library.import_vcf(self.vcf, second_payload)
+        self.assertNotEqual(
+            {d["id"] for d in first["datasets"]},
+            {d["id"] for d in second["datasets"]},
+        )
+        displaced = self.library.get(first["datasets"][0]["id"])
+        self.assertEqual(displaced["cohort_index_status"], "needs_repair")
+        self.assertTrue(any("marked for repair" in w for w in second["warnings"]))
+        current = self.library.get(second["datasets"][0]["id"])
+        self.assertEqual(current["cohort_index_status"], "ready")
+
     def test_bulk_apply_reports_per_item_outcomes(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=False))
         ids = [d["id"] for d in result["datasets"]]
@@ -320,8 +381,12 @@ class SampleLibraryTests(unittest.TestCase):
         sibling_after = self.library.get(second["id"])
         self.assertEqual(sibling_after["settings_hash"], sibling_before["settings_hash"])
         self.assertEqual(sibling_after["profile_label"], sibling_before["profile_label"])
-        # Linkage repair still reaches the sibling.
-        self.assertEqual(sibling_after["cohort_index_status"], "ready")
+        # Linkage repair still reaches the sibling, but "ready" now asserts
+        # profile COHERENCE with the indexed file — the diverged sibling is
+        # honestly shown as needing its own re-index, not silently ready
+        # under someone else's profile.
+        self.assertIsNotNone(sibling_after["cohort_file_id"])
+        self.assertEqual(sibling_after["cohort_index_status"], "needs_repair")
 
     def test_full_wgs_reindex_does_not_repoint_sibling_linkage(self):
         # The full index holds only this dataset's re-imported source; a

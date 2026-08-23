@@ -87,18 +87,34 @@ def parse_csq_format(header_lines: list[str]) -> list[str] | None:
 # reference catalog
 # --------------------------------------------------------------------------- #
 class Reference:
-    """Catalog of reported pathogenic missense: residues and exact changes."""
+    """Catalog of reported pathogenic missense: residues and exact changes.
+
+    ``residue_refs`` maps (SYMBOL, position) to the set of reference amino
+    acids the catalog knows there ("-" when unknown). A patient entry whose
+    OWN reference residue differs is a different isoform numbering, not the
+    same residue — matching it would claim PM5/PS1 evidence for an
+    incompatible transcript.
+    """
 
     def __init__(self):
-        self.residues: set[tuple[str, str]] = set()
-        self.changes: set[tuple[str, str, str]] = set()
+        self.residue_refs: dict[tuple[str, str], set[str]] = {}
+        self.changes: set[tuple[str, str, str, str]] = set()
+
+    def add_residue(self, sym: str, pos: str, ref_aa: str) -> None:
+        self.residue_refs.setdefault((sym, pos), set()).add(ref_aa or "-")
 
     def __len__(self):
-        return len(self.residues)
+        return len(self.residue_refs)
 
 
 def load_reference(path: str) -> Reference:
-    """Load the pathogenic-missense catalog (residues + exact changes)."""
+    """Load the pathogenic-missense catalog (residues + exact changes).
+
+    Formats accepted: 4 columns (SYMBOL, pos, ref_aa, alt_aa — current),
+    3 columns (SYMBOL, pos, alt_aa — transitional), 2 columns (residue
+    only — legacy). Missing residue fields load as "-" (unknown, matches
+    anything) so older catalogs keep working until their next rebuild.
+    """
     ref = Reference()
     if not path or not os.path.exists(path):
         return ref
@@ -107,16 +123,24 @@ def load_reference(path: str) -> Reference:
             line = line.rstrip("\n")
             if not line or line.startswith("#"):
                 continue
-            parts = line.split("\t")
+            parts = [part.strip() for part in line.split("\t")]
             if len(parts) < 2:
                 continue
-            sym, pos = parts[0].strip(), parts[1].strip()
+            sym, pos = parts[0], parts[1]
             if not (sym and pos and pos != "-"):
                 continue
-            ref.residues.add((sym, pos))
-            alt_aa = parts[2].strip() if len(parts) > 2 else ""
-            if alt_aa and alt_aa != "-":
-                ref.changes.add((sym, pos, alt_aa))
+            if len(parts) >= 4:
+                ref_aa, alt_aa = parts[2] or "-", parts[3] or "-"
+            else:
+                # 2- and 3-column catalogs predate the reference-residue
+                # column. Without a reference residue the exact-change claim
+                # cannot be guarded against incompatible isoforms, so such
+                # rows contribute residue-level (PM5-style) evidence only;
+                # the change flag stays 0 until the catalog rebuilds.
+                ref_aa, alt_aa = "-", "-"
+            ref.add_residue(sym, pos, ref_aa)
+            if alt_aa != "-":
+                ref.changes.add((sym, pos, ref_aa, alt_aa))
     return ref
 
 
@@ -143,19 +167,31 @@ def match_alleles(info_csq: str, fields: list[str], ref: Reference,
         if not pos or pos == "-":
             continue
         sym = vals[idx_sym]
-        if (sym, pos) not in ref.residues:
+        catalog_refs = ref.residue_refs.get((sym, pos))
+        if not catalog_refs:
+            continue
+        patient_ref = patient_alt = ""
+        if idx_aa >= 0 and idx_aa < len(vals) and "/" in vals[idx_aa]:
+            patient_ref, _, patient_alt = vals[idx_aa].partition("/")
+            patient_ref, patient_alt = patient_ref.strip(), patient_alt.strip()
+        # Same residue requires the same reference amino acid where both
+        # sides know it; a differing reference means a different isoform
+        # numbering, and flagging it would claim evidence for an
+        # incompatible transcript. "-" (unknown) on either side matches.
+        if patient_ref and not ({patient_ref, "-"} & catalog_refs):
             continue
         targets = range(n_alts)
         if idx_allele_num >= 0 and idx_allele_num < len(vals):
             number = vals[idx_allele_num].strip()
             if number.isdigit() and 1 <= int(number) <= n_alts:
                 targets = [int(number) - 1]
-        alt_aa = ""
-        if idx_aa >= 0 and idx_aa < len(vals) and "/" in vals[idx_aa]:
-            alt_aa = vals[idx_aa].split("/")[-1].strip()
+        change_hit = bool(patient_alt) and (
+            (sym, pos, patient_ref or "-", patient_alt) in ref.changes
+            or (sym, pos, "-", patient_alt) in ref.changes
+        )
         for target in targets:
             residue_flags[target] = 1
-            if alt_aa and (sym, pos, alt_aa) in ref.changes:
+            if change_hit:
                 change_flags[target] = 1
     return residue_flags, change_flags
 

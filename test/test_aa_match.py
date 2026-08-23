@@ -15,11 +15,18 @@ CSQ_FORMAT = ("Allele|Consequence|SYMBOL|Gene|Feature|BIOTYPE|"
 
 def _ref(*residues, changes=()):
     ref = aam.Reference()
-    for sym, pos in residues:
-        ref.residues.add((sym, pos))
-    for sym, pos, alt_aa in changes:
-        ref.residues.add((sym, pos))
-        ref.changes.add((sym, pos, alt_aa))
+    for entry in residues:
+        sym, pos = entry[0], entry[1]
+        ref_aa = entry[2] if len(entry) > 2 else "-"
+        ref.add_residue(sym, pos, ref_aa)
+    for entry in changes:
+        if len(entry) == 4:
+            sym, pos, ref_aa, alt_aa = entry
+        else:
+            sym, pos, alt_aa = entry
+            ref_aa = "-"
+        ref.add_residue(sym, pos, ref_aa)
+        ref.changes.add((sym, pos, ref_aa, alt_aa))
     return ref
 
 
@@ -213,7 +220,7 @@ def test_reduce_gz_output_is_real_gzip(tmp_path):
     with open(out, "rb") as fh:
         assert fh.read(2) == b"\x1f\x8b"
     with gzip.open(out, "rt") as fh:
-        assert fh.read() == "BRCA1\t100\t-\n"
+        assert fh.read() == "BRCA1\t100\t-\t-\n"
 
 
 def test_reducer(tmp_path):
@@ -230,11 +237,11 @@ def test_reducer(tmp_path):
     n = red.reduce_tab(tab, out)
     lines = [l.strip() for l in open(out)]
     assert n == 2, lines
-    assert "BRCA1\t100\t-" in lines
-    assert "TP53\t250\t-" in lines
+    assert "BRCA1\t100\t-\t-" in lines
+    assert "TP53\t250\t-\t-" in lines
     # round-trips into the matcher's loader
     ref = aam.load_reference(out)
-    assert ("BRCA1", "100") in ref.residues and ("TP53", "250") in ref.residues
+    assert ("BRCA1", "100") in ref.residue_refs and ("TP53", "250") in ref.residue_refs
 
 
 
@@ -300,7 +307,7 @@ def test_legacy_two_column_reference_loads_residue_only(tmp_path):
     with open(path, "w") as fh:
         fh.write("BRCA1\t100\n")
     ref = aam.load_reference(path)
-    assert ("BRCA1", "100") in ref.residues
+    assert ("BRCA1", "100") in ref.residue_refs
     assert not ref.changes
 
 
@@ -323,6 +330,38 @@ def test_second_pass_is_idempotent(tmp_path):
     assert info.count("ClinVar_path_aa_match=") == 1
     assert info.count("ClinVar_path_aa_change_match=") == 1
     assert open(first).read() == text
+
+
+def test_incompatible_reference_residue_matches_nothing(tmp_path):
+    """A transcript whose reference amino acid at the position differs is a
+    different isoform numbering: neither PS1- nor PM5-style evidence may
+    fire on it."""
+    # Catalog knows R100H on this gene; _csq writes Amino_acids R/H.
+    ref = _ref(changes=[("BRCA1", "100", "R", "H")])
+    matching = _csq("missense_variant", "BRCA1", "100")          # R/H
+    wrong_ref = matching.replace("R/H", "G/H")                    # G100H
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([matching, wrong_ref]))
+    stats = aam.annotate(vin, vout, ref)
+    flags = []
+    for line in open(vout):
+        if line.startswith("#"):
+            continue
+        kv = dict(x.split("=", 1) for x in line.rstrip("\n").split("\t")[7].split(";") if "=" in x)
+        flags.append((kv["ClinVar_path_aa_match"], kv["ClinVar_path_aa_change_match"]))
+    assert flags == [("1", "1"), ("0", "0")], flags
+    assert stats["matched"] == 1 and stats["change_matched"] == 1
+
+
+def test_builder_script_requests_the_amino_acids_field():
+    """The change-level flag was silently dead in production because the
+    catalog builder never asked VEP for Amino_acids."""
+    script = os.path.join(os.path.dirname(__file__), "..", "scripts",
+                          "build_clinvar_aa_reference.sh")
+    text = open(script).read()
+    fields_lines = [l for l in text.splitlines() if "--fields" in l]
+    assert fields_lines, "builder no longer sets --fields?"
+    assert all("Amino_acids" in l for l in fields_lines), fields_lines
 
 if __name__ == "__main__":
     import tempfile, pathlib, inspect

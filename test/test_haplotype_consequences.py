@@ -418,5 +418,31 @@ class IntegrationTests(unittest.TestCase):
             self.assertEqual(counts["non_restoring_haplotypes"], 1)
 
 
+
+class StaleEvidenceTests(unittest.TestCase):
+    def test_reannotation_with_no_events_removes_stale_confirmed_evidence(self):
+        """A record whose frame-restoration events disappeared on
+        recomputation must lose its old FRAME_RESTORED_CONFIRMED value."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            stale = root / "stale.vcf"
+            stale.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                "1\t100\t.\tA\tAG\t50\tPASS\t"
+                "DP=30;IEI_HAPLOTYPE_FRAME=old%7Cevidence|S1|T1|"
+                "FRAME_RESTORED_CONFIRMED|p1|prot\n"
+            )
+            output = root / "out.vcf"
+            matched = annotate_vcf(stale, output, {})
+            self.assertEqual(matched, set())
+            record = [
+                line for line in output.read_text().splitlines()
+                if not line.startswith("#")
+            ][0]
+            info = record.split("\t")[7]
+            self.assertNotIn("IEI_HAPLOTYPE_FRAME", info)
+            self.assertIn("DP=30", info)
+
 if __name__ == "__main__":
     unittest.main()

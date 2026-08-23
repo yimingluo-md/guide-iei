@@ -341,7 +341,12 @@ if [[ "$DRY" != "1" ]] \
     AA_REF="${DEST_DIR}/clinvar_aa_reference.tsv"
     STAMP="${DEST_DIR}/.aa_reference.release"
     NEED_BUILD=1
-    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$CLINVAR_RELEASE" ]]; then
+    # The stamp carries a format tag: catalogs built before the
+    # reference-residue columns existed must rebuild once even though the
+    # ClinVar release is unchanged — otherwise the PS1-level change flag
+    # stays silently dead until the next release.
+    AA_REF_FORMAT="aa4"
+    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$CLINVAR_RELEASE $AA_REF_FORMAT" ]]; then
         NEED_BUILD=0
         log "aa-match reference up to date (release $CLINVAR_RELEASE), skip rebuild."
     fi
@@ -349,7 +354,7 @@ if [[ "$DRY" != "1" ]] \
     if [[ "$NEED_BUILD" == "1" ]]; then
         log "=== building ClinVar aa-match reference ==="
         if bash "${HERE}/build_clinvar_aa_reference.sh" "$CONFIG" "$CLINVAR_VCF"; then
-            echo "$CLINVAR_RELEASE" > "$STAMP"
+            echo "$CLINVAR_RELEASE $AA_REF_FORMAT" > "$STAMP"
         else
             # The matcher will run against the previous catalog; its output
             # must be labeled with THAT release, not the current one.

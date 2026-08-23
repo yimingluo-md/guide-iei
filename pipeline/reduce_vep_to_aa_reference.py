@@ -28,7 +28,7 @@ def _open_w(path):
 def reduce_tab(in_path: str, out_path: str) -> int:
     header = None
     skipped_before_header = 0
-    pairs: set[tuple[str, str, str]] = set()
+    pairs: set[tuple[str, str, str, str]] = set()
     with _open_r(in_path) as fh:
         for line in fh:
             if line.startswith("##"):
@@ -47,8 +47,13 @@ def reduce_tab(in_path: str, out_path: str) -> int:
             sym = row.get("SYMBOL", "")
             if "missense_variant" in cons and pos and pos != "-" and sym and sym != "-":
                 amino = row.get("Amino_acids", "")
-                alt_aa = amino.split("/")[-1].strip() if "/" in amino else "-"
-                pairs.add((sym, pos, alt_aa or "-"))
+                if "/" in amino:
+                    ref_aa, _, alt_aa = amino.partition("/")
+                    ref_aa = ref_aa.strip() or "-"
+                    alt_aa = alt_aa.strip() or "-"
+                else:
+                    ref_aa = alt_aa = "-"
+                pairs.add((sym, pos, ref_aa, alt_aa))
     if header is None and skipped_before_header:
         # Data rows with no VEP tab header (--no_headers output, or a header
         # consumed upstream) previously produced a silent empty reference
@@ -67,8 +72,8 @@ def reduce_tab(in_path: str, out_path: str) -> int:
             "write an empty aa-match reference"
         )
     with _open_w(out_path) as out:
-        for sym, pos, alt_aa in sorted(pairs):
-            out.write(f"{sym}\t{pos}\t{alt_aa}\n")
+        for sym, pos, ref_aa, alt_aa in sorted(pairs):
+            out.write(f"{sym}\t{pos}\t{ref_aa}\t{alt_aa}\n")
     return len(pairs)
 
 

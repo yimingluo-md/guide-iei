@@ -93,7 +93,7 @@ if [[ "$NVAR" -gt 0 ]]; then
     VEP_INNER="vep -i /w/$(basename "$SUBSET_GZ") -o /w/$(basename "$VEPOUT") \
         --offline --cache --dir_cache /cache --species homo_sapiens --assembly ${ASSEMBLY} \
         --pick --symbol --tab --force_overwrite --no_stats \
-        --fields Uploaded_variation,SYMBOL,Protein_position,Consequence"
+        --fields Uploaded_variation,SYMBOL,Protein_position,Consequence,Amino_acids"
 
     case "$RUNTIME" in
         docker|podman)

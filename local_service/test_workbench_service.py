@@ -905,6 +905,21 @@ class AnnotationJobServiceTests(unittest.TestCase):
 
             self.assertEqual(post({"Origin": "https://evil.example"}), 403)
             self.assertEqual(post({"Host": "evil.example"}), 403)
+
+            # DNS rebinding makes an attacker's page same-origin, so GETs on
+            # PHI-bearing endpoints must enforce the same Host check.
+            def get(headers, route="/api/sample-library"):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}{route}", headers=headers,
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        return response.status
+                except urllib.error.HTTPError as error:
+                    return error.code
+
+            self.assertEqual(get({"Host": "evil.example"}), 403)
+            self.assertEqual(get({}), 200)
             # A legitimate loopback origin (any port) is not rejected by the
             # guard — the request proceeds into normal validation.
             self.assertNotEqual(post({"Origin": "http://127.0.0.1:3999"}), 403)
@@ -926,6 +941,18 @@ class AnnotationJobServiceTests(unittest.TestCase):
             connection.execute(
                 "UPDATE bulk_jobs SET status='completed' WHERE id='busy'")
         self.service._ensure_storage_idle()
+
+    def test_bulk_intake_refuses_to_start_during_migration_reservation(self):
+        source = Path(self.temp.name) / "reserved.vcf.gz"
+        source.write_bytes(b"placeholder")
+        self.service._migration_reserved = True
+        try:
+            with self.assertRaisesRegex(ValueError, "storage migration"):
+                self.service.start_bulk_intake({
+                    "paths": [str(source)], "analysis_scope": "exome",
+                })
+        finally:
+            self.service._migration_reserved = False
 
     def test_bulk_intake_resume_resets_interrupted_items(self):
         source = Path(self.temp.name) / "resume.vcf.gz"

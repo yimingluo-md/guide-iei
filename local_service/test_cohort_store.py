@@ -720,6 +720,22 @@ class CohortStoreTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "truncated"):
             store.import_vcf(source)
+        # A row truncated to the nine fixed columns (no genotypes at all)
+        # previously slipped past as an ignorable line.
+        write_vcf(source)
+        lines = source.read_text().splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith("1\t200\t"):
+                lines[index] = "\t".join(line.split("\t")[:9])
+        source.write_text("\n".join(lines) + "\n")
+        store_nine = CohortStore(
+            self.root / "truncated9.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            store_nine.import_vcf(source)
 
     def test_content_probe_defeats_same_size_same_mtime_swaps(self):
         source = self.root / "probe.vcf"
@@ -747,6 +763,74 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(
             len(store.query({"mode": "variant", "query": "1:100:A:G"})["rows"]), 0,
         )
+
+    def test_prepared_cache_observes_content_probe_with_native_backend(self):
+        """The working-copy cache below the import gate must also see the
+        probe: with a real backend it served STALE prepared bytes to the
+        re-import the identity gate correctly triggered."""
+        from local_service.cohort_store import HtsBackend
+        backend = HtsBackend.discover()
+        if backend is None or not backend.native_tools.get("bcftools"):
+            self.skipTest("native bcftools is required for the prepare cache")
+        source = self.root / "probe-native.vcf"
+        write_vcf(source)
+        store = CohortStore(
+            self.root / "probe-native.sqlite3",
+            enable_auto_index=True,
+            hts_backend=backend,
+            index_readers=2,
+        )
+        store.import_vcf(source)
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:100:A:G"})["rows"]), 1,
+        )
+        stat = source.stat()
+        source.write_text(source.read_text().replace("1\t100\t", "1\t101\t"))
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        store.import_vcf(source)
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:101:A:G"})["rows"]), 1,
+        )
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:100:A:G"})["rows"]), 0,
+        )
+
+    def test_content_probe_sees_interior_changes(self):
+        """Head+tail probing left a blind window: a >128KiB file changed
+        only in the middle probed identically."""
+        from local_service.cohort_store import _content_probe
+        big = self.root / "big.bin"
+        payload = bytearray(b"x" * 400_000)
+        big.write_bytes(payload)
+        before = _content_probe(big)
+        payload[200_000:200_010] = b"CHANGED HERE"[:10]
+        big.write_bytes(payload)
+        self.assertNotEqual(before, _content_probe(big))
+
+    def test_poisoned_managed_destination_is_repaired_on_reimport(self):
+        """A managed copy filed under a checksum whose bytes do not match the
+        prepared representation (the pre-fix stale-cache artifact) must be
+        rebuilt, not trusted forever."""
+        source = self.root / "poison.vcf"
+        write_vcf(source)
+        store = CohortStore(
+            self.root / "poison.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        managed_dir = self.root / "managed"
+        import hashlib as _hashlib
+        content_key = _hashlib.sha256(source.read_bytes()).hexdigest()
+        # Plant poison: wrong bytes already sitting at the destination.
+        managed_dir.mkdir()
+        poisoned = managed_dir / f"{content_key}.vcf.gz"
+        poisoned.write_bytes(b"stale poisoned bytes")
+        managed_path, _, _ = store.prepare_managed_vcf(
+            source, managed_dir, content_key
+        )
+        self.assertEqual(Path(managed_path), poisoned)
+        self.assertNotEqual(poisoned.read_bytes(), b"stale poisoned bytes")
 
     def test_cohort_review_fetches_complete_exact_record_with_tabix(self):
         source = self.root / "review-source.vcf"

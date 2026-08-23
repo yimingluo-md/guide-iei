@@ -110,7 +110,15 @@ def parse_candidate_genotypes(
                 continue
             columns = line.split("\t")
             if len(columns) < 10:
-                continue
+                # A truncated genotype row silently erased that variant's
+                # phase state — and with stale-evidence stripping, a corrupt
+                # source could then REMOVE previously confirmed
+                # frame-restoration evidence. Corrupt input fails loudly.
+                position = ":".join(columns[:2]) if len(columns) >= 2 else "?"
+                raise ValueError(
+                    f"genotype source record {position} is truncated "
+                    f"({len(columns)} column(s)); re-export the VCF"
+                )
             chrom, pos, record_id, ref, alt = (
                 columns[0],
                 columns[1],
@@ -366,16 +374,18 @@ def annotate_vcf(
                             encode(event["partners"]),
                             encode(event["protein"]),
                         ]))
+            # Strip a previous pass's value UNCONDITIONALLY: a record whose
+            # frame-restoration events disappeared on recomputation must not
+            # keep its old confirmed evidence.
+            retained = [
+                item for item in columns[7].split(";")
+                if item not in ("", ".")
+                and not item.startswith(f"{INFO_KEY}=")
+            ]
             if per_record:
                 value = ",".join(sorted(set(per_record)))
-                # Strip a previous pass's value so re-running replaces it.
-                retained = [
-                    item for item in columns[7].split(";")
-                    if item not in ("", ".")
-                    and not item.startswith(f"{INFO_KEY}=")
-                ]
-                columns[7] = ";".join(retained + [f"{INFO_KEY}={value}"]) \
-                    if retained else f"{INFO_KEY}={value}"
+                retained.append(f"{INFO_KEY}={value}")
+            columns[7] = ";".join(retained) if retained else "."
             target.write("\t".join(columns) + "\n")
     return matched
 

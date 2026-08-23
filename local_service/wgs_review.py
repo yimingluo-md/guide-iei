@@ -8,6 +8,7 @@ import hashlib
 import json
 import multiprocessing
 import os
+import uuid
 import re
 import tempfile
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
@@ -851,7 +852,14 @@ class WgsReviewStore:
                     "message": "Sorting and BGZF-compressing retained variants…",
                     "reader_count": reader_count,
                 })
-            backend.sort_bgzip(merged, output)
+            # Stage, then publish atomically: two same-fingerprint prefilter
+            # runs writing the shared cache path directly could interleave
+            # and the survivor's index turned the mix into a trusted cache.
+            staged_output = output.with_name(
+                f".{output.name}.{uuid.uuid4().hex}.staging.vcf.gz"
+            )
+            backend.sort_bgzip(merged, staged_output)
+            os.replace(staged_output, output)
             if progress:
                 progress({
                     "phase": "indexing_output",

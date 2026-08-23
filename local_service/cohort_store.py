@@ -337,12 +337,27 @@ def utc_now() -> str:
 
 
 def _content_probe(path: Path, block: int = 65536) -> str:
+    """Cheap content fingerprint: head, tail, and interior stripes.
+
+    Head+tail alone left a large blind window (a >128KiB file changed only
+    in the middle probed identically); six evenly spaced interior stripes
+    shrink that window for ~512KiB of I/O regardless of file size. Not a
+    substitute for the full sha256 used where one is already computed — a
+    defense for the paths that cannot afford one.
+    """
     try:
         size = path.stat().st_size
         digest = hashlib.sha256()
         digest.update(str(size).encode())
         with path.open("rb") as handle:
             digest.update(handle.read(block))
+            if size > 2 * block:
+                interior = size - 2 * block
+                stripes = 6
+                for stripe in range(1, stripes + 1):
+                    offset = block + (interior * stripe) // (stripes + 1)
+                    handle.seek(offset)
+                    digest.update(handle.read(min(block, max(0, size - offset))))
             if size > block:
                 handle.seek(max(block, size - block))
                 digest.update(handle.read(block))
@@ -783,7 +798,15 @@ def _stage_vcf_records(
             records_processed += 1
             columns = line.rstrip("\r\n").split("\t")
             if len(columns) < 10:
-                continue
+                # A data row truncated at or before the FORMAT column in a
+                # with-samples VCF is a corrupt file, not an ignorable line:
+                # skipping it silently omitted the variant.
+                position = ":".join(columns[:2]) if len(columns) >= 2 else "?"
+                raise ValueError(
+                    f"record {position} has {len(columns)} column(s) but the "
+                    f"header declares {len(header.samples)} sample(s) — the "
+                    "file looks truncated; re-export it and import again"
+                )
             (
                 chrom_raw, pos_raw, rsid, ref, alt_raw, qual_raw,
                 filter_value, raw_info, format_value,
@@ -2023,7 +2046,14 @@ class CohortStore:
                         records_processed += 1
                         columns = line.rstrip("\n").split("\t")
                         if len(columns) < 10:
-                            continue
+                            position = ":".join(columns[:2]) if len(columns) >= 2 else "?"
+                            raise ValueError(
+                                f"record {position} has {len(columns)} "
+                                f"column(s) but the header declares "
+                                f"{len(sample_ids)} sample(s) — the file "
+                                "looks truncated; re-export it and import "
+                                "again"
+                            )
                         chrom_raw, pos_raw, rsid, ref, alt_raw, qual_raw, filter_value, raw_info, format_value = columns[:9]
                         if filter_value not in ("PASS", "."):
                             excluded_records += 1
@@ -2349,7 +2379,7 @@ class CohortStore:
 
     def _prepare_indexed_vcf(
         self, path: Path, progress: Callable[[dict], None] | None = None
-    ) -> PreparedVcf:
+    , content_hint: str | None = None) -> PreparedVcf:
         if not self.enable_auto_index:
             return PreparedVcf(path, path, None, False, False)
         if self.hts_backend is None:
@@ -2371,8 +2401,15 @@ class CohortStore:
                 return PreparedVcf(path, path, source_index, False, False)
 
         stat = path.stat()
+        # The working-copy cache must observe the same content probe as the
+        # import-identity gate: keying on size+mtime alone let a same-size,
+        # timestamp-restored content swap serve a STALE prepared VCF to a
+        # re-import the identity gate had correctly triggered — and the
+        # managed-copy step then filed those stale bytes under the new
+        # source checksum.
         fingerprint = hashlib.sha256(
-            f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}".encode()
+            f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
+            f"{_content_probe(path)}\0{content_hint or ''}".encode()
         ).hexdigest()[:20]
         cache_dir = self.prepared_dir / fingerprint
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -2401,7 +2438,10 @@ class CohortStore:
                 candidate.unlink()
         try:
             if is_bgzf(path):
-                shutil.copy2(path, prepared)
+                # Stage, then publish atomically: copying the final path
+                # directly let two same-fingerprint builders interleave.
+                shutil.copy2(path, temporary)
+                os.replace(temporary, prepared)
                 try:
                     index_path = self.hts_backend.create_index(prepared)
                 except RuntimeError:
@@ -2447,11 +2487,36 @@ class CohortStore:
         """
         source = source.resolve()
         destination_directory.mkdir(parents=True, exist_ok=True)
-        prepared = self._prepare_indexed_vcf(source)
+        # The caller's content_key IS the full source sha256: feed it into
+        # the prepare-cache fingerprint so the working-copy cache can never
+        # be weaker than the identity the managed copy is filed under (the
+        # probe's blind window allowed exactly that inversion).
+        prepared = self._prepare_indexed_vcf(source, content_hint=content_key)
         compressed = prepared.path.name.lower().endswith((".gz", ".bgz"))
         destination = destination_directory / (
             f"{content_key}.vcf.gz" if compressed else f"{content_key}.vcf"
         )
+        rebuild_destination = False
+        if destination.is_file() and prepared.path.is_file():
+            # A destination poisoned by the pre-fix cache (stale bytes filed
+            # under this key) must be repaired, not trusted forever. The
+            # prepared representation may legitimately differ from the raw
+            # source (re-encoding), so compare against the prepared bytes.
+            try:
+                if (
+                    destination.stat().st_size != prepared.path.stat().st_size
+                    or _content_probe(destination) != _content_probe(prepared.path)
+                ):
+                    rebuild_destination = True
+            except OSError:
+                rebuild_destination = True
+        if rebuild_destination:
+            for candidate in (
+                destination,
+                Path(f"{destination}.tbi"),
+                Path(f"{destination}.csi"),
+            ):
+                candidate.unlink(missing_ok=True)
         if not destination.is_file():
             # Unique partial name: two concurrent imports of identical content
             # share content_key, and with one deterministic partial the second
@@ -3514,6 +3579,13 @@ class CohortStore:
                     for line in self.hts_backend.iter_records(prepared_path, regions):
                         columns = line.rstrip("\r\n").split("\t")
                         if len(columns) < 9 + len(header.samples):
+                            if len(columns) >= 10:
+                                warnings.append(
+                                    f"{source_path.name}: source record "
+                                    f"at {':'.join(columns[:2])} is truncated "
+                                    "(missing sample columns) — its evidence "
+                                    "falls back to the compact index"
+                                )
                             continue
                         try:
                             record_pos = int(columns[1])
@@ -3681,7 +3753,16 @@ class CohortStore:
                     if line.startswith("#") or not line.strip():
                         continue
                     columns = line.rstrip("\r\n").split("\t")
-                    if len(columns) < 9 + len(header.samples) or columns[6] not in ("PASS", "."):
+                    if 10 <= len(columns) < 9 + len(header.samples):
+                        # The stored review VCF is corrupt (interrupted copy,
+                        # or an artifact of the pre-fix silent-skip import):
+                        # omitting the row would hide a carrier variant from
+                        # the clinician's review set.
+                        raise ValueError(
+                            f"stored review VCF looks truncated at "
+                            f"{':'.join(columns[:2])} — re-import this dataset"
+                        )
+                    if len(columns) < 10 or columns[6] not in ("PASS", "."):
                         continue
                     alternate_count = len(columns[4].split(","))
                     carries = False

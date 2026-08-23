@@ -127,6 +127,11 @@ DBNSFP_OPTIONAL_PREDICTORS = [
     {"id": "mutscore", "label": "MutScore", "category": "Protein model", "columns": ["MutScore_score"]},
     {"id": "popeve", "label": "popEVE", "category": "Protein model", "columns": ["popEVE_score", "popEVE_pred"]},
 ]
+_PRIVATE_DATABASES = (
+    "cohort.sqlite3", "workbench.sqlite3", "bulk-intake.sqlite3",
+    "spliceai-lookup-cache.sqlite3",
+)
+
 ANNOTATION_SOURCE_SETUP = {
     "dbnsfp": {
         "setup_mode": "manual",
@@ -1486,6 +1491,11 @@ class AnnotationJobService:
                 # if registry activation fails.
                 self._rewrite_temporary_paths(source, destination)
                 temporary_paths_rewritten = True
+            # The copy inherited the ambient umask (0755 dirs, 0644 files,
+            # fresh 0644 sqlite backups): tighten the destination before
+            # success — the window until the restart re-runs __init__
+            # hardening must not leave PHI world-readable at the new root.
+            self._harden_root(destination)
             self.storage_registry.set_root(kind, destination, storage_id=storage_id)
             root_switched = True
             with self._storage_lock:
@@ -1601,6 +1611,11 @@ class AnnotationJobService:
             result = destination_connection.execute("PRAGMA integrity_check").fetchone()[0]
             if result != "ok":
                 raise RuntimeError(f"SQLite integrity check failed for {source.name}: {result}")
+            if os.name == "posix":
+                try:
+                    os.chmod(destination, 0o600)
+                except OSError:
+                    pass
         finally:
             destination_connection.close()
             source_connection.close()
@@ -2174,6 +2189,25 @@ class AnnotationJobService:
     # not leave invisible orphan downloaders competing with the next
     # instance's jobs for the same output files.
     # ------------------------------------------------------------------
+    @staticmethod
+    def _harden_root(root: Path) -> None:
+        """Best-effort privacy for a PHI-bearing root and its databases."""
+        if os.name != "posix":
+            return
+        for directory in (root, root / "sample-library", root / "uploads"):
+            try:
+                if directory.is_dir():
+                    os.chmod(directory, 0o700)
+            except OSError:
+                pass
+        for name in _PRIVATE_DATABASES:
+            target = root / name
+            try:
+                if target.is_file():
+                    os.chmod(target, 0o600)
+            except OSError:
+                pass
+
     def _harden_private_permissions(self) -> None:
         """Keep patient-bearing state private to the owning user.
 
@@ -2186,16 +2220,25 @@ class AnnotationJobService:
         """
         if os.name != "posix":
             return
-        for directory in (self.state_dir, self.state_dir / "sample-library"):
+        for directory in (
+            self.state_dir,
+            self.state_dir / "sample-library",
+            # The workspace root holds upload staging — the first place a
+            # patient VCF lands — and may be a separately configured
+            # location outside the state root.
+            self.workspace_dir,
+            self.workspace_dir / "uploads",
+        ):
             try:
                 if directory.is_dir():
                     os.chmod(directory, 0o700)
             except OSError:
                 pass
-        for name in (
-            "cohort.sqlite3", "sample-library.sqlite3", "bulk-intake.sqlite3",
-            "jobs.sqlite3", "spliceai-lookup-cache.sqlite3",
-        ):
+        # The actual databases: the job store is workbench.sqlite3 and the
+        # sample library shares cohort.sqlite3 — the earlier list named two
+        # files that never exist, silently leaving workbench.sqlite3 at the
+        # umask default.
+        for name in _PRIVATE_DATABASES:
             target = self.state_dir / name
             try:
                 if target.is_file():
@@ -3428,6 +3471,13 @@ class AnnotationJobService:
                 handle.write(chunk)
                 remaining -= len(chunk)
         temporary.replace(destination)
+        if os.name == "posix":
+            try:
+                # Staged uploads carry patient variants; do not let the
+                # ambient umask leave them readable to other local users.
+                os.chmod(destination, 0o600)
+            except OSError:
+                pass
         return {
             "path": str(destination),
             "filename": destination.name,
@@ -4359,6 +4409,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
+        # DNS rebinding makes an attacker's page SAME-origin with this
+        # loopback service, so CORS never applies and unguarded GETs hand
+        # over PHI. The Host check severs that path; loopback browsers and
+        # local tools are unaffected.
+        if self._reject_cross_site():
+            return
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
@@ -4413,10 +4469,16 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json({"jobs": self.service.storage_migrations()})
         elif path.startswith("/api/sample-library/") and path.endswith("/file"):
             dataset_id = path.split("/")[3]
+            mutation_started = False
             try:
                 # Reviews open the dataset's own sample projection; a
                 # multi-sample managed source is never handed to the browser
-                # whole.
+                # whole. Building that projection WRITES cache files, so this
+                # GET must hold the storage-mutation reservation like its
+                # POST siblings — a migration snapshot walked mid-write
+                # either failed verification or silently lost the files.
+                self.service.begin_storage_mutation()
+                mutation_started = True
                 self._file(self.service.sample_library.review_file(dataset_id))
             except KeyError:
                 self._json({"error": "library dataset not found"}, HTTPStatus.NOT_FOUND)
@@ -4427,6 +4489,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     {"error": f"sample projection failed: {exc}"},
                     HTTPStatus.BAD_REQUEST,
                 )
+            finally:
+                if mutation_started:
+                    self.service.end_storage_mutation()
         elif path.startswith("/api/sample-library/") and path.endswith("/phenotype"):
             dataset_id = path.split("/")[3]
             phenotype = self.service.sample_library.phenotype(dataset_id)
@@ -4566,6 +4631,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 or path.startswith("/api/resource-downloads/")
                 or path.startswith("/api/resource-preparations/")
                 or path.startswith("/api/sample-library/")
+                or path == "/api/bulk-intake"
+                or path.startswith("/api/bulk-intake/")
+                or path == "/api/spliceai-lookup"
                 or (path.startswith("/api/jobs/") and path.endswith("/cancel"))
             )
             if storage_mutation and path != "/api/storage/migrate":

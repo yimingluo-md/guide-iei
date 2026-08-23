@@ -361,7 +361,7 @@ description, so every annotated VCF records exactly which ClinVar it used.
 After annotation, `pipeline/clinvar_aa_match.py` writes two separate
 per-ALT (`Number=A`) INFO flags from a catalog of reported
 pathogenic/likely-pathogenic missense changes
-(`SYMBOL<TAB>Protein_position<TAB>alt_aa`, built per ClinVar release by
+(`SYMBOL<TAB>Protein_position<TAB>ref_aa<TAB>alt_aa`, built per ClinVar release by
 `build_clinvar_aa_reference.sh` → `reduce_vep_to_aa_reference.py`):
 
 - `ClinVar_path_aa_change_match` — the allele produces the **same
@@ -377,8 +377,9 @@ header descriptions carry the ClinVar release the catalog was built from;
 when a catalog rebuild fails, the run proceeds on the previous catalog
 and labels the evidence with **that** release, never the current one. A
 headered build input with zero pathogenic missense rows is refused rather
-than stamped as a valid empty catalog. Legacy two-column catalogs load as
-residue-only (the change-level flag stays 0).
+than stamped as a valid empty catalog. Legacy two- and three-column catalogs load as
+residue-only (the change-level flag stays 0 until the catalog
+rebuilds, which the versioned release stamp forces once).
 
 ## Frameshift PTC-based LOFTEE 50-bp rule
 
