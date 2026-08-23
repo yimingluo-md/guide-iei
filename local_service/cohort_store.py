@@ -336,6 +336,21 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _content_probe(path: Path, block: int = 65536) -> str:
+    try:
+        size = path.stat().st_size
+        digest = hashlib.sha256()
+        digest.update(str(size).encode())
+        with path.open("rb") as handle:
+            digest.update(handle.read(block))
+            if size > block:
+                handle.seek(max(block, size - block))
+                digest.update(handle.read(block))
+        return digest.hexdigest()[:24]
+    except OSError:
+        return ""
+
+
 def normalize_chromosome(value: str) -> str:
     chrom = value.strip()
     if chrom.lower().startswith("chr"):
@@ -786,6 +801,17 @@ def _stage_vcf_records(
                 info.get("CSQ", ""), list(header.csq_fields)
             )
             sample_values = columns[9:]
+            if len(sample_values) < len(header.samples):
+                # A record with fewer sample columns than the header declares
+                # is a truncated or corrupt file. Substituting empty
+                # genotypes would import it "successfully" while silently
+                # erasing the missing samples' carrier status.
+                raise ValueError(
+                    f"record {chrom_raw}:{pos_raw} has {len(sample_values)} "
+                    f"sample column(s) but the header declares "
+                    f"{len(header.samples)} samples — the file looks "
+                    "truncated; re-export it and import again"
+                )
             qual = parse_number(qual_raw)
 
             for alt_index, alt in enumerate(alt_raw.split(",")):
@@ -793,8 +819,7 @@ def _stage_vcf_records(
                 for sample_index, sample_name in enumerate(header.samples):
                     genotype = parse_genotype(
                         format_value,
-                        sample_values[sample_index]
-                        if sample_index < len(sample_values) else "",
+                        sample_values[sample_index],
                         alt_index,
                     )
                     if genotype["carrier"]:
@@ -1205,6 +1230,7 @@ class CohortStore:
                 ("profile_label", "TEXT NOT NULL DEFAULT ''"),
                 ("profile_hash", "TEXT NOT NULL DEFAULT ''"),
                 ("profile_json", "TEXT NOT NULL DEFAULT '{}'"),
+                ("content_probe", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in file_columns:
                     connection.execute(
@@ -1880,14 +1906,20 @@ class CohortStore:
                 "VCF assembly is ambiguous; confirm it is GRCh38 to index it"
             )
         stat = path.stat()
+        content_probe = _content_probe(path)
         with self._session() as connection:
             existing = connection.execute(
                 "SELECT * FROM cohort_files WHERE path = ?", (str(path),)
             ).fetchone()
+            existing_probe = (
+                (existing["content_probe"] if "content_probe" in existing.keys() else "")
+                if existing else ""
+            )
             if (
                 existing and not force
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
+                and (not existing_probe or existing_probe == content_probe)
                 and existing["import_profile"] == import_profile
                 and existing["analysis_scope"] == analysis_scope
             ):
@@ -1912,9 +1944,10 @@ class CohortStore:
                 """
                 INSERT INTO cohort_files(
                   path, size_bytes, mtime_ns, imported_at, assembly,
-                  lifted_from_assembly, import_profile, analysis_scope
+                  lifted_from_assembly, import_profile, analysis_scope,
+                  content_probe
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(path), stat.st_size, stat.st_mtime_ns, utc_now(),
@@ -1922,6 +1955,7 @@ class CohortStore:
                     "GRCh37" if assembly["lifted_from_grch37"] else None,
                     import_profile,
                     analysis_scope,
+                    content_probe,
                 ),
             ).lastrowid
 
@@ -1997,6 +2031,14 @@ class CohortStore:
                         info = info_map(raw_info)
                         consequences = parse_csq_entries(info.get("CSQ", ""), csq_fields)
                         sample_values = columns[9:]
+                        if len(sample_values) < len(sample_ids):
+                            raise ValueError(
+                                f"record {chrom_raw}:{pos_raw} has "
+                                f"{len(sample_values)} sample column(s) but "
+                                f"the header declares {len(sample_ids)} "
+                                "samples — the file looks truncated; "
+                                "re-export it and import again"
+                            )
                         qual = parse_number(qual_raw)
 
                         for alt_index, alt in enumerate(alt_raw.split(",")):
@@ -2004,7 +2046,7 @@ class CohortStore:
                             for sample_index, sample_id in enumerate(sample_ids):
                                 genotype = parse_genotype(
                                     format_value,
-                                    sample_values[sample_index] if sample_index < len(sample_values) else "",
+                                    sample_values[sample_index],
                                     alt_index,
                                 )
                                 if genotype["carrier"]:
@@ -2551,6 +2593,7 @@ class CohortStore:
         analysis_scope: str,
         prefilter_options_json: str,
         prefilter_metadata: dict,
+        content_probe: str = "",
     ) -> tuple[int, int]:
         stat = source_path.stat()
         aliases = [f"stage_{index}" for index in range(len(stages))]
@@ -2581,8 +2624,9 @@ class CohortStore:
                   lifted_from_assembly, prepared_path, index_path,
                   import_mode, reader_count, preparation_warning,
                   import_profile, analysis_scope, prefilter_options,
-                  prefilter_records_scanned, prefilter_records_retained
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  prefilter_records_scanned, prefilter_records_retained,
+                  content_probe
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(source_path), stat.st_size, stat.st_mtime_ns, utc_now(),
@@ -2594,6 +2638,7 @@ class CohortStore:
                     import_profile, analysis_scope, prefilter_options_json,
                     int(prefilter_metadata.get("records_scanned", 0) or 0),
                     int(prefilter_metadata.get("records_retained", 0) or 0),
+                    content_probe,
                 ),
             ).lastrowid
             connection.executemany(
@@ -2822,14 +2867,22 @@ class CohortStore:
                 "VCF assembly is ambiguous; confirm it is GRCh38 to index it"
             )
         stat = source_path.stat()
+        content_probe = _content_probe(source_path)
         with self._session() as connection:
             existing = connection.execute(
                 "SELECT * FROM cohort_files WHERE path = ?", (str(source_path),)
             ).fetchone()
+            existing_probe = (
+                (existing["content_probe"] if "content_probe" in existing.keys() else "")
+                if existing else ""
+            )
             if (
                 existing and not force
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
+                # Legacy rows carry no probe; they keep the size+mtime rule
+                # until their next real import backfills one.
+                and (not existing_probe or existing_probe == content_probe)
                 and existing["import_profile"] == import_profile
                 and existing["analysis_scope"] == analysis_scope
                 and existing["prefilter_options"] == prefilter_options_json
@@ -2902,6 +2955,7 @@ class CohortStore:
                 analysis_scope=analysis_scope,
                 prefilter_options_json=prefilter_options_json,
                 prefilter_metadata=prefilter_metadata,
+                content_probe=content_probe,
             )
 
         pass_records = sum(stage["pass_records"] for stage in stages)

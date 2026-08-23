@@ -321,6 +321,21 @@ class SampleLibrary:
         managed_path, managed_index, preparation_warning = self.cohort.prepare_managed_vcf(
             path, self.files_dir, review_checksum
         )
+        # The checksum above and the managed copy are two independent reads
+        # of the source. If the file changed in between (still being copied
+        # from a sequencer share, concurrent write), the managed bytes would
+        # be stored under the wrong content key — so require stability and
+        # refuse the import otherwise, removing a copy made from the moving
+        # file unless identical content was already managed beforehand.
+        if _sha256(path) != review_checksum:
+            if not already_managed:
+                Path(managed_path).unlink(missing_ok=True)
+                if managed_index:
+                    Path(managed_index).unlink(missing_ok=True)
+            raise ValueError(
+                f"{path.name} changed while it was being imported — wait for "
+                "the file to finish copying, then import it again"
+            )
         managed_storage_path = self._stored_managed_path(managed_path)
         managed_storage_index = self._stored_managed_path(managed_index)
         managed_stat = managed_path.stat()
@@ -764,10 +779,22 @@ class SampleLibrary:
                     (_json(settings), settings_hash, profile_label, utc_now(), dataset_id),
                 )
                 if record.get("cohort_file_id"):
-                    connection.execute(
-                        "UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=? WHERE id=?",
-                        (profile_label, settings_hash, _json(settings), record["cohort_file_id"]),
-                    )
+                    # cohort_files carries ONE profile per indexed file. When
+                    # several datasets (samples) share this managed file,
+                    # rewriting it with THIS dataset's capture kit would
+                    # relabel the co-resident samples' cohort rows too — so
+                    # the file-level profile is only updated when this
+                    # dataset is the file's sole occupant.
+                    sharing = connection.execute(
+                        "SELECT COUNT(*) FROM library_datasets"
+                        " WHERE managed_checksum = ? AND id != ?",
+                        (record["managed_checksum"], dataset_id),
+                    ).fetchone()[0]
+                    if sharing == 0:
+                        connection.execute(
+                            "UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=? WHERE id=?",
+                            (profile_label, settings_hash, _json(settings), record["cohort_file_id"]),
+                        )
             record = self.get(dataset_id) or {}
         return record
 

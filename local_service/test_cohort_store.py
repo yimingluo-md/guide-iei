@@ -687,6 +687,51 @@ class CohortStoreTests(unittest.TestCase):
         self.assertTrue(refreshed["cache_hit"])
         self.assertEqual(backend.sort_calls, 1)
 
+    def test_truncated_sample_rows_are_refused_not_silently_absorbed(self):
+        source = self.root / "truncated.vcf"
+        write_vcf(source)
+        lines = source.read_text().splitlines()
+        # Drop the final sample column from one record: a truncated export.
+        for index, line in enumerate(lines):
+            if line.startswith("1\t200\t"):
+                lines[index] = line.rsplit("\t", 1)[0]
+        source.write_text("\n".join(lines) + "\n")
+        store = CohortStore(
+            self.root / "truncated.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        with self.assertRaisesRegex(ValueError, "truncated"):
+            store.import_vcf(source)
+
+    def test_content_probe_defeats_same_size_same_mtime_swaps(self):
+        source = self.root / "probe.vcf"
+        write_vcf(source)
+        store = CohortStore(
+            self.root / "probe.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        store.import_vcf(source)
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:100:A:G"})["rows"]), 1,
+        )
+        stat = source.stat()
+        # Same byte length, different content (position 100 -> 101), and the
+        # original timestamps restored — the classic stale-cache defeat.
+        source.write_text(source.read_text().replace("1\t100\t", "1\t101\t"))
+        os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+        second = store.import_vcf(source)
+        self.assertNotEqual(second.get("status"), "unchanged")
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:101:A:G"})["rows"]), 1,
+        )
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:100:A:G"})["rows"]), 0,
+        )
+
     def test_cohort_review_fetches_complete_exact_record_with_tabix(self):
         source = self.root / "review-source.vcf"
         write_vcf(source)

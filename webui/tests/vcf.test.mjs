@@ -244,6 +244,73 @@ test("separately-called files aggregate: N carry, popmax at parse, drift warning
   assert.equal(family.rows[0].genotype, "0/1");
 });
 
+test("aggregation: a carrier-less first sighting cannot orphan the allele", async () => {
+  const fileFor = (name, sampleNames, records) => new File([
+    "##fileformat=VCFv4.2\n"
+    + "##reference=GRCh38\n"
+    + "##contig=<ID=1,length=248956422>\n"
+    + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">\n`
+    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sampleNames.join("\t") + "\n"
+    + records.join("\n") + "\n",
+  ], name);
+  const site = (gts) => `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t${gts.join("\t")}`;
+  const groupA = Array.from({ length: 9 }, (_, i) => `A${i + 1}`);
+  const groupB = Array.from({ length: 9 }, (_, i) => `B${i + 1}`);
+  // File A sees the site but nobody carries it; file B brings the carrier.
+  const fileA = fileFor("groupA.vcf", groupA, [site(groupA.map(() => "0/0:30:99:30,0"))]);
+  const fileB = fileFor("groupB.vcf", groupB, [site(groupB.map((_, i) => (i === 0 ? "0/1:30:99:15,15" : "0/0:30:99:30,0")))]);
+  const result = await parseVcfFiles([fileA, fileB], { aggregateMaxPopmax: 0.01 });
+  assert.equal(result.rows.length, 1);
+  assert.equal(result.rows[0].genotype, "1 carry");
+  assert.deepEqual(result.rows[0].carriers.map((c) => c.sample), ["B1"]);
+});
+
+test("half-called genotypes stay carriers in cohort mode and are QC-flagged everywhere", async () => {
+  const samples = Array.from({ length: 16 }, (_, i) => `S${i + 1}`);
+  const gts = samples.map((_, i) => (i === 0 ? "./1:30:99:15,15" : "0/0:30:99:30,0"));
+  const vcf = "##fileformat=VCFv4.2\n"
+    + "##reference=GRCh38\n"
+    + "##contig=<ID=1,length=248956422>\n"
+    + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">\n`
+    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n"
+    + `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t${gts.join("\t")}\n`;
+  const cohort = await parseVcfFiles([new File([vcf], "cohort.vcf")]);
+  assert.equal(cohort.rows.length, 1);
+  assert.deepEqual(cohort.rows[0].carriers.map((c) => c.sample), ["S1"]);
+
+  const single = await parseVcfFiles([new File([
+    vcf.replace("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t"),
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1")
+      .replace(`GT:DP:GQ:AD\t${gts.join("\t")}`, "GT:DP:GQ:AD\t./1:30:99:15,15"),
+  ], "single.vcf")]);
+  const failures = variantQcFailures(single.rows[0], STANDARD_VARIANT_QC);
+  assert.ok(failures.some((f) => f.includes("partially called")));
+});
+
+test("a cohort row passes QC when any carrier passes, fails only when all do", () => {
+  const evidence = (gq, alleleBalance) => ({
+    gt: "0/1", called: true, carrier: true, dp: 30, gq, adRef: 15, adAlt: 15,
+    alleleBalance, pl: null, phased: false, phaseSet: "", phaseHaplotype: null,
+    genotypeClass: "heterozygous", genotypeFilter: "",
+  });
+  // Representative (highest GQ) fails allele balance; the other carrier passes.
+  const row = {
+    genotype: "2/16 carry", dp: 30, gq: 99, adRef: 28, adAlt: 2,
+    alleleBalance: 0.06, qual: 99, genotypeClass: "heterozygous",
+    carriers: [
+      { sample: "S1", evidence: evidence(99, 0.06) },
+      { sample: "S2", evidence: evidence(60, 0.5) },
+    ],
+  };
+  assert.deepEqual(variantQcFailures(row, STANDARD_VARIANT_QC), []);
+  const allFail = { ...row, carriers: [
+    { sample: "S1", evidence: evidence(99, 0.06) },
+    { sample: "S2", evidence: evidence(60, 0.04) },
+  ] };
+  const failures = variantQcFailures(allFail, STANDARD_VARIANT_QC);
+  assert.ok(failures.some((f) => f.includes("no carrier passes QC (2 carriers)")));
+});
+
 test("one-row-per-variant collapse prefers MANE Select and keeps the rest as a chip", () => {
   const base = { sample: "P1", chrom: "19", pos: 1620980, ref: "G", alt: "A", picked: true, impact: "HIGH" };
   const maneSelect = { ...base, key: "a", gene: "TCF3", transcript: "ENST00000262965", mane: true, maneSelect: true };

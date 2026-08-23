@@ -14,6 +14,7 @@ export type GenotypeEvidence = {
   phaseSet: string;
   phaseHaplotype: 0 | 1 | null;
   genotypeClass: "heterozygous" | "homozygous_alt" | "hemizygous" | "other";
+  partialCall?: boolean;
   genotypeFilter: string;
   rawFields?: Record<string, string>;
 };
@@ -307,23 +308,45 @@ function qcAbove(
   else if (value > cutoff) failures.push(`${label} ${value} > ${cutoff}`);
 }
 
-export function variantQcFailures(
+type GenotypeQcView = {
+  dp: number | null | undefined;
+  gq: number | null | undefined;
+  adRef: number | null | undefined;
+  adAlt: number | null | undefined;
+  alleleBalance: number | null | undefined;
+  genotype: string;
+  genotypeClass?: GenotypeEvidence["genotypeClass"];
+  genotypeFilter?: string;
+};
+
+function genotypeQcFailures(
+  view: GenotypeQcView,
   row: VariantRow,
   settings: VariantQcSettings,
 ) {
   const failures: string[] = [];
-  qcBelow(failures, "DP", row.dp, settings.minDp);
-  qcBelow(failures, "GQ", row.gq, settings.minGq);
-  qcBelow(failures, "alternate depth", row.adAlt, settings.minAltDepth);
-  qcAbove(failures, "DP", row.dp, settings.maxDp);
+  qcBelow(failures, "DP", view.dp, settings.minDp);
+  qcBelow(failures, "GQ", view.gq, settings.minGq);
+  qcBelow(failures, "alternate depth", view.adAlt, settings.minAltDepth);
+  qcAbove(failures, "DP", view.dp, settings.maxDp);
 
-  const fallbackTokens = row.genotype.split(/[|/]/);
+  const fallbackTokens = view.genotype.split(/[|/]/);
+  const numericTokens = fallbackTokens.filter((allele) => /^\d+$/.test(allele));
   const fallbackFullyCalled = fallbackTokens.length > 0
-    && fallbackTokens.every((allele) => /^\d+$/.test(allele));
+    && numericTokens.length === fallbackTokens.length;
+  // A half-call such as ./1 carries the ALT but was never fully genotyped;
+  // that must be visible as a QC condition, not silently shown as a clean
+  // carrier in one view and dropped in another.
+  if (
+    !fallbackFullyCalled
+    && numericTokens.some((allele) => Number(allele) > 0)
+  ) {
+    failures.push(`genotype partially called (${view.genotype})`);
+  }
   // Uncalled (./.), partially called, and reference-only (0, 0/0) genotypes
   // must not be routed into allele-balance QC computed for a call that was
   // never made.
-  const genotypeClass = row.genotypeClass
+  const genotypeClass = view.genotypeClass
     ?? (!fallbackFullyCalled || fallbackTokens.every((allele) => allele === "0")
       ? "other"
       : fallbackTokens.length === 1
@@ -332,9 +355,9 @@ export function variantQcFailures(
           ? "homozygous_alt"
           : "heterozygous");
   if (genotypeClass === "heterozygous") {
-    qcBelow(failures, "reference depth", row.adRef, settings.minHetRefDepth);
-    qcBelow(failures, "allele balance", row.alleleBalance, settings.hetAbMin);
-    qcAbove(failures, "allele balance", row.alleleBalance, settings.hetAbMax);
+    qcBelow(failures, "reference depth", view.adRef, settings.minHetRefDepth);
+    qcBelow(failures, "allele balance", view.alleleBalance, settings.hetAbMin);
+    qcAbove(failures, "allele balance", view.alleleBalance, settings.hetAbMax);
   } else if (
     genotypeClass === "homozygous_alt"
     || genotypeClass === "hemizygous"
@@ -342,11 +365,11 @@ export function variantQcFailures(
     qcBelow(
       failures,
       "alternate allele balance",
-      row.alleleBalance,
+      view.alleleBalance,
       settings.homAltAbMin,
     );
   }
-  const genotypeFilter = (row.genotypeFilter ?? "").trim();
+  const genotypeFilter = (view.genotypeFilter ?? "").trim();
   if (
     settings.genotypeFtMode === "exclude_explicit"
     && genotypeFilter
@@ -383,6 +406,36 @@ export function variantQcFailures(
     settings.minBaseQRankSum,
   );
   return failures;
+}
+
+export function variantQcFailures(
+  row: VariantRow,
+  settings: VariantQcSettings,
+) {
+  const own = genotypeQcFailures({
+    dp: row.dp, gq: row.gq, adRef: row.adRef, adAlt: row.adAlt,
+    alleleBalance: row.alleleBalance, genotype: row.genotype,
+    genotypeClass: row.genotypeClass, genotypeFilter: row.genotypeFilter,
+  }, row, settings);
+  // A cohort row's flattened evidence fields belong to one representative
+  // carrier. QC on the representative alone hid variants whose other
+  // carriers pass, and blessed rows whose other carriers fail: the row
+  // passes when ANY carrier passes, and fails only when every carrier does.
+  if (!row.carriers || row.carriers.length === 0) return own;
+  for (const carrier of row.carriers) {
+    const evidence = carrier.evidence;
+    const failures = genotypeQcFailures({
+      dp: evidence.dp, gq: evidence.gq, adRef: evidence.adRef,
+      adAlt: evidence.adAlt, alleleBalance: evidence.alleleBalance,
+      genotype: evidence.gt, genotypeClass: evidence.genotypeClass,
+      genotypeFilter: evidence.genotypeFilter,
+    }, row, settings);
+    if (failures.length === 0) return [];
+  }
+  return [
+    `no carrier passes QC (${row.carriers.length} carrier${row.carriers.length === 1 ? "" : "s"})`,
+    ...own,
+  ];
 }
 
 export function isHeterozygousGenotype(genotype: string) {
@@ -674,8 +727,10 @@ function parseGenotype(
   const called = alleleTokens.length > 0 && numericTokens.length === alleleTokens.length;
   // A half-call such as ./1 demonstrably carries the ALT even though the
   // second allele is unresolved; carrier must come from the present numeric
-  // tokens, with `called` retained separately to drive QC downgrades.
+  // tokens. `partialCall` marks these so cohort mode keeps them as carriers
+  // and QC flags them explicitly in every view.
   const carrier = numericTokens.some((allele) => Number(allele) === alleleNumber);
+  const partialCall = carrier && !called && numericTokens.length > 0;
   const altCopies = numericTokens.filter((allele) => Number(allele) === alleleNumber).length;
   const genotypeClass: GenotypeEvidence["genotypeClass"] = (
     !called
@@ -725,6 +780,7 @@ function parseGenotype(
     phaseSet: fields.PS || fields.PID || "",
     phaseHaplotype,
     genotypeClass,
+    partialCall,
     genotypeFilter: fields.FT || "",
     rawFields: retainRawFields ? populatedFields(fields) : undefined,
   };
@@ -993,7 +1049,7 @@ export async function parseVcfFiles(
   const headerSampleCounts = await Promise.all(files.map((file) => vcfSampleCount(file)));
   const totalHeaderSamples = headerSampleCounts.reduce((sum, count) => sum + count, 0);
   const aggregatedCohort = files.length > 1 && totalHeaderSamples >= COHORT_SAMPLE_GUARD;
-  const aggregatedVariants = new Map<string, { carriers: CohortCarrier[] } | { dropped: true }>();
+  const aggregatedVariants = new Map<string, { carriers: CohortCarrier[]; rowEmitted: boolean } | { dropped: true }>();
   const clinvarReleaseByFile = new Map<string, string>();
   const carrierEntryCap = options.carrierEntryCap ?? 3_000_000;
   const rowCap = options.rowCap ?? REVIEW_ROW_CAP;
@@ -1210,7 +1266,11 @@ export async function parseVcfFiles(
         const cohortCarriers = cohortMode
           ? fallbackSamples
               .map((sampleName) => ({ sample: sampleName, evidence: sampleGenotypes[sampleName] }))
-              .filter((entry) => entry.evidence.carrier && entry.evidence.called)
+              // A half-call (./1) is a demonstrated carrier and must not
+              // vanish in cohort mode; only the no-genotype-data stub
+              // (called false, no numeric allele) is excluded.
+              .filter((entry) => entry.evidence.carrier
+                && (entry.evidence.called || entry.evidence.partialCall))
           : null;
         if (cohortCarriers) {
           cohortCarrierEntries += cohortCarriers.length;
@@ -1246,35 +1306,47 @@ export async function parseVcfFiles(
         // shared array those rows reference. The popmax decision is made
         // once per variant, at parse time, so the union of many exomes
         // stays bounded (an unavailable popmax always retains the variant).
+        let effectiveCarriers = cohortCarriers;
         if (aggregatedCohort && cohortCarriers) {
           const existing = aggregatedVariants.get(variantEvidenceKey);
           if (existing) {
-            if (!("dropped" in existing)) existing.carriers.push(...cohortCarriers);
-            return;
-          }
-          const popmaxThreshold = options.aggregateMaxPopmax ?? null;
-          if (popmaxThreshold !== null) {
-            const probe = { ...alleleIndexedInfo(info, altIndex, alts.length), ...(consequences[0] ?? {}) };
-            const variantPopmax = maximum(probe, [
-              "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax", "gnomAD_popmax_AF",
-              "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
-            ]);
-            if (variantPopmax !== null && variantPopmax > popmaxThreshold) {
-              aggregatedVariants.set(variantEvidenceKey, { dropped: true });
-              return;
+            if ("dropped" in existing) return;
+            existing.carriers.push(...cohortCarriers);
+            // A variant first seen in a file where nobody carries it has no
+            // row yet; the first occurrence that brings carriers emits it,
+            // over the shared array — otherwise later files' carriers pile
+            // into an orphaned list and the allele silently disappears.
+            if (existing.rowEmitted || existing.carriers.length === 0) return;
+            existing.rowEmitted = true;
+            effectiveCarriers = existing.carriers;
+          } else {
+            const popmaxThreshold = options.aggregateMaxPopmax ?? null;
+            if (popmaxThreshold !== null) {
+              const probe = { ...alleleIndexedInfo(info, altIndex, alts.length), ...(consequences[0] ?? {}) };
+              const variantPopmax = maximum(probe, [
+                "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax", "gnomAD_popmax_AF",
+                "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
+              ]);
+              if (variantPopmax !== null && variantPopmax > popmaxThreshold) {
+                aggregatedVariants.set(variantEvidenceKey, { dropped: true });
+                return;
+              }
             }
+            aggregatedVariants.set(variantEvidenceKey, {
+              carriers: cohortCarriers,
+              rowEmitted: cohortCarriers.length > 0,
+            });
           }
-          aggregatedVariants.set(variantEvidenceKey, { carriers: cohortCarriers });
         }
         // Cohort mode emits ONE row set per variant (sample = the cohort),
         // carrying the compact carrier list; the representative genotype
         // fields come from the best-supported carrier. Per-sample mode is
         // unchanged: one row set per carrying sample.
-        const carrierEvidenceMap = cohortCarriers
-          ? Object.fromEntries(cohortCarriers.map((entry) => [entry.sample, entry.evidence]))
+        const carrierEvidenceMap = effectiveCarriers
+          ? Object.fromEntries(effectiveCarriers.map((entry) => [entry.sample, entry.evidence]))
           : null;
-        const cohortRepresentative = cohortCarriers && cohortCarriers.length
-          ? cohortCarriers.reduce((best, entry) =>
+        const cohortRepresentative = effectiveCarriers && effectiveCarriers.length
+          ? effectiveCarriers.reduce((best, entry) =>
               (entry.evidence.gq ?? -1) > (best.evidence.gq ?? -1) ? entry : best)
           : null;
         const rowSamples = cohortMode
@@ -1487,7 +1559,7 @@ export async function parseVcfFiles(
               pLi: maximum(combined, ["pLI", "gnomAD_pLI", "ExAC_pLI"]),
               loeuf: maximum(combined, ["LOEUF", "loeuf", "oe_lof_upper", "gnomAD_LOEUF"]),
               missenseZ: maximum(combined, ["mis_z", "missense_z", "gnomAD_mis_z"]),
-              carriers: cohortCarriers ?? undefined,
+              carriers: effectiveCarriers ?? undefined,
               cohortSampleCount: jointCohortFile ? samples.length : undefined,
               genotype: !cohortMode
                 ? genotype.gt

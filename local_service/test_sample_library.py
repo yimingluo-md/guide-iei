@@ -130,6 +130,46 @@ class SampleLibraryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one dataset"):
             self.library.review_file_combined([])
 
+    def test_metadata_edit_never_relabels_the_co_resident_sample(self):
+        """cohort_files carries one profile per indexed file; editing P1's
+        capture kit must not rewrite the profile P2's cohort rows filter
+        under."""
+        import sqlite3
+        result = self.library.import_vcf(self.vcf, self.payload(include=True))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+        with sqlite3.connect(self.database) as connection:
+            before = connection.execute(
+                "SELECT profile_label FROM cohort_files"
+            ).fetchall()
+        self.library.update_metadata(
+            by_sample["P1"]["id"], {"capture_kit": "NewKit v9"}
+        )
+        record = self.library.get(by_sample["P1"]["id"])
+        self.assertIn("NewKit v9", record["capture_kit"])
+        with sqlite3.connect(self.database) as connection:
+            after = connection.execute(
+                "SELECT profile_label FROM cohort_files"
+            ).fetchall()
+        self.assertEqual(before, after)
+
+    def test_import_refuses_a_source_that_changes_mid_import(self):
+        """The checksum and the managed copy are two reads of the source; a
+        file still being written must fail the import loudly instead of
+        being stored under the wrong content key."""
+        original_prepare = self.cohort.prepare_managed_vcf
+
+        def mutating_prepare(source, destination_directory, content_key):
+            source.write_text(source.read_text() + "##mutated=1\n")
+            return original_prepare(source, destination_directory, content_key)
+
+        self.cohort.prepare_managed_vcf = mutating_prepare
+        try:
+            with self.assertRaisesRegex(ValueError, "changed while"):
+                self.library.import_vcf(self.vcf, self.payload(include=False))
+        finally:
+            self.cohort.prepare_managed_vcf = original_prepare
+        self.assertEqual(self.library.list(), [])
+
     def test_bulk_apply_reports_per_item_outcomes(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=False))
         ids = [d["id"] for d in result["datasets"]]

@@ -650,6 +650,7 @@ class WgsReviewStore:
             })
 
         stat = source.stat()
+        from local_service.cohort_store import _content_probe
         fingerprint_value = {
             # v5: worker interval slicing normalizes contig names — v4 review
             # caches built from chr-prefixed VCFs under-retained coding and
@@ -658,6 +659,10 @@ class WgsReviewStore:
             "source": str(source),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
+            # First/last-block digest: defeats same-size content swaps with
+            # restored timestamps without re-reading a multi-GB genome.
+            # Existing caches rebuild once when this field first appears.
+            "content_probe": _content_probe(source),
             "filters": asdict(options),
             "exome_bed": (
                 [
