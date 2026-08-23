@@ -764,6 +764,43 @@ class CohortStoreTests(unittest.TestCase):
             len(store.query({"mode": "variant", "query": "1:100:A:G"})["rows"]), 0,
         )
 
+    def test_full_hash_closes_the_probe_blind_window(self):
+        """The stripe probe samples 512KiB regardless of file size, leaving
+        interior blind windows. For files small enough to hash completely,
+        the unchanged gate must ALSO bind the full digest — a probe-blind
+        edit with restored timestamps previously returned "unchanged" and
+        served the stale variant."""
+        from local_service import cohort_store as module
+        source = self.root / "blind.vcf"
+        write_vcf(source)
+        # Align the mtime to a microsecond boundary BEFORE the first import:
+        # APFS truncates os.utime to microseconds, so an unaligned original
+        # mtime cannot be restored exactly and the size+mtime gate alone
+        # would force the re-import — the test would pass without ever
+        # exercising the sha gate it exists for.
+        aligned = source.stat().st_mtime_ns // 1000 * 1000
+        os.utime(source, ns=(aligned, aligned))
+        store = CohortStore(
+            self.root / "blind.sqlite3",
+            enable_auto_index=True,
+            hts_backend=FakeHtsBackend(),
+            index_readers=2,
+        )
+        real_probe = module._content_probe
+        module._content_probe = lambda path, block=65536: "blind-probe"
+        try:
+            store.import_vcf(source)
+            stat = source.stat()
+            source.write_text(source.read_text().replace("1\t100\t", "1\t101\t"))
+            os.utime(source, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+            second = store.import_vcf(source)
+        finally:
+            module._content_probe = real_probe
+        self.assertNotEqual(second.get("status"), "unchanged")
+        self.assertEqual(
+            len(store.query({"mode": "variant", "query": "1:101:A:G"})["rows"]), 1,
+        )
+
     def test_prepared_cache_observes_content_probe_with_native_backend(self):
         """The working-copy cache below the import gate must also see the
         probe: with a real backend it served STALE prepared bytes to the

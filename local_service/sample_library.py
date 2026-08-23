@@ -11,6 +11,7 @@ import json
 import os
 import sqlite3
 import uuid
+import zlib
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -336,6 +337,29 @@ class SampleLibrary:
                 f"{path.name} changed while it was being imported — wait for "
                 "the file to finish copying, then import it again"
             )
+        # The sample names were read BEFORE the first checksum, outside the
+        # stability window the guard above covers: a swap in that gap passes
+        # both checksum reads while the dataset rows would carry the old
+        # names over the new content — permanently, since managed_checksum
+        # then vouches for the wrong-named file. Bind the names to the exact
+        # bytes the datasets will reference by re-reading them from the
+        # managed copy.
+        try:
+            managed_header = read_vcf_header(Path(managed_path))
+        except (OSError, EOFError, ValueError, zlib.error):
+            # A managed copy that cannot even parse is the same refusal —
+            # an unparseable swap must not escape as a raw error that skips
+            # the cleanup below.
+            managed_header = None
+        if managed_header is None or managed_header.samples != header.samples:
+            if not already_managed:
+                Path(managed_path).unlink(missing_ok=True)
+                if managed_index:
+                    Path(managed_index).unlink(missing_ok=True)
+            raise ValueError(
+                f"{path.name} changed while it was being imported — wait for "
+                "the file to finish copying, then import it again"
+            )
         managed_storage_path = self._stored_managed_path(managed_path)
         managed_storage_index = self._stored_managed_path(managed_index)
         managed_stat = managed_path.stat()
@@ -597,6 +621,48 @@ class SampleLibrary:
             raise FileNotFoundError(f"managed review VCF is missing: {path}")
         return path
 
+    # bcftools -Oz output is BGZF, which always ends in this fixed
+    # 28-byte empty-block EOF marker; its absence means truncation.
+    _BGZF_EOF = bytes.fromhex(
+        "1f8b08040000000000ff0600424302001b0003000000000000000000"
+    )
+
+    @staticmethod
+    def _cached_projection_valid(
+        projected: Path, source: Path,
+        expected_samples: tuple[str, ...] | None = None,
+    ) -> bool:
+        """A projection cache hit must prove it is a readable VCF.
+
+        Freshness (mtime) alone trusted whatever bytes sat at the cache
+        path — any overwrite advances the mtime, so corruption from an
+        out-of-band writer or bit rot was served verbatim. Three cheap
+        proofs turn a damaged cache into a silent rebuild instead of a
+        broken review: the header parses, its samples are the expected
+        ones (a valid VCF for the WRONG samples is the worst corruption),
+        and the BGZF end-of-file marker is present — the header check only
+        covers the first compressed block, while truncation removes the
+        tail. A missing SOURCE is a caller-level error and surfaces from
+        here rather than masquerading as a cache miss.
+        """
+        source_mtime = source.stat().st_mtime
+        try:
+            if not (
+                projected.is_file()
+                and projected.stat().st_mtime >= source_mtime
+            ):
+                return False
+            header = read_vcf_header(projected)
+            if expected_samples is not None and header.samples != expected_samples:
+                return False
+            with projected.open("rb") as handle:
+                handle.seek(-len(SampleLibrary._BGZF_EOF), os.SEEK_END)
+                if handle.read() != SampleLibrary._BGZF_EOF:
+                    return False
+            return True
+        except (OSError, EOFError, ValueError, zlib.error):
+            return False
+
     def review_file(self, dataset_id: str) -> Path:
         """Path a review should open for this dataset.
 
@@ -619,6 +685,16 @@ class SampleLibrary:
             return source
         header = read_vcf_header(source)
         if len(header.samples) <= 1:
+            # A single-sample managed file is served whole — so its one
+            # sample must actually BE this dataset's sample. Any identity
+            # drift between the library rows and the stored bytes surfaces
+            # loudly here instead of silently serving another patient.
+            if header.samples and header.samples[0] != sample:
+                raise ValueError(
+                    f"the managed review VCF carries sample "
+                    f"{header.samples[0]!r} but the library records "
+                    f"{sample!r} for this dataset — re-import the file"
+                )
             return source
         if sample not in header.samples:
             raise ValueError(
@@ -644,7 +720,7 @@ class SampleLibrary:
             self.files_dir
             / f"{checksum}.{safe_sample}.{sample_digest}.review.vcf.gz"
         )
-        if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
+        if self._cached_projection_valid(projected, source, (sample,)):
             return projected
         partial = projected.with_name(projected.name + f".{uuid.uuid4().hex}.partial.vcf.gz")
         staged = projected.with_name(projected.name + f".{uuid.uuid4().hex}.staged.vcf.gz")
@@ -720,7 +796,7 @@ class SampleLibrary:
         selection_id = hashlib.sha256("\n".join(ordered).encode("utf-8")).hexdigest()[:16]
         checksum = checksums.pop() or source.stem
         projected = self.files_dir / f"{checksum}.subset-{selection_id}.review.vcf.gz"
-        if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
+        if self._cached_projection_valid(projected, source, tuple(ordered)):
             return projected
         partial = projected.with_name(projected.name + f".{uuid.uuid4().hex}.partial.vcf.gz")
         staged = projected.with_name(projected.name + f".{uuid.uuid4().hex}.staged.vcf.gz")

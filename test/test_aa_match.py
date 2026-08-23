@@ -26,7 +26,7 @@ def _ref(*residues, changes=()):
             sym, pos, alt_aa = entry
             ref_aa = "-"
         ref.add_residue(sym, pos, ref_aa)
-        ref.changes.add((sym, pos, ref_aa, alt_aa))
+        ref.changes.add((sym, pos, ref_aa, alt_aa, "-"))
     return ref
 
 
@@ -220,7 +220,7 @@ def test_reduce_gz_output_is_real_gzip(tmp_path):
     with open(out, "rb") as fh:
         assert fh.read(2) == b"\x1f\x8b"
     with gzip.open(out, "rt") as fh:
-        assert fh.read() == "BRCA1\t100\t-\t-\n"
+        assert fh.read() == "BRCA1\t100\t-\t-\t-\n"
 
 
 def test_reducer(tmp_path):
@@ -237,11 +237,11 @@ def test_reducer(tmp_path):
     n = red.reduce_tab(tab, out)
     lines = [l.strip() for l in open(out)]
     assert n == 2, lines
-    assert "BRCA1\t100\t-\t-" in lines
-    assert "TP53\t250\t-\t-" in lines
+    assert "BRCA1\t100\t-\t-\t-" in lines
+    assert "TP53\t250\t-\t-\t-" in lines
     # round-trips into the matcher's loader
     ref = aam.load_reference(out)
-    assert ("BRCA1", "100") in ref.residue_refs and ("TP53", "250") in ref.residue_refs
+    assert ("BRCA1", "100") in ref.residues and ("TP53", "250") in ref.residues
 
 
 
@@ -307,7 +307,7 @@ def test_legacy_two_column_reference_loads_residue_only(tmp_path):
     with open(path, "w") as fh:
         fh.write("BRCA1\t100\n")
     ref = aam.load_reference(path)
-    assert ("BRCA1", "100") in ref.residue_refs
+    assert ("BRCA1", "100") in ref.residues
     assert not ref.changes
 
 
@@ -362,6 +362,131 @@ def test_builder_script_requests_the_amino_acids_field():
     fields_lines = [l for l in text.splitlines() if "--fields" in l]
     assert fields_lines, "builder no longer sets --fields?"
     assert all("Amino_acids" in l for l in fields_lines), fields_lines
+    assert all("Feature" in l for l in fields_lines), fields_lines
+
+
+def test_transcript_gate_blocks_other_isoform_numbering(tmp_path):
+    """A patient CSQ entry from a DIFFERENT transcript is a different
+    coordinate system: position 100 there is not the catalog's residue 100
+    even when the reference amino acid coincides."""
+    ref = aam.Reference()
+    ref.add_residue("STAT3", "100", "R", "ENST1")
+    ref.changes.add(("STAT3", "100", "R", "H", "ENST1"))
+    # _csq writes Feature=ENST0 — an isoform the catalog was NOT numbered
+    # against, whose residue 100 coincidentally also reads R/H.
+    other_isoform = _csq("missense_variant", "STAT3", "100")
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([other_isoform]))
+    stats = aam.annotate(vin, vout, ref)
+    assert stats["matched"] == 0 and stats["change_matched"] == 0
+    # The SAME entry from the catalog's own transcript matches.
+    picked = other_isoform.replace("ENST0", "ENST1")
+    _write(vin, _vcf([picked]))
+    stats = aam.annotate(vin, vout, ref)
+    assert stats["matched"] == 1 and stats["change_matched"] == 1
+
+
+def test_transcript_gate_strips_versions(tmp_path):
+    """ENST versions bump with cache releases; identity is the unversioned
+    accession on both sides."""
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text("STAT3\t100\tR\tH\tENST0.5\n")
+    loaded = aam.load_reference(str(catalog))
+    assert set(loaded.residues[("STAT3", "100")]) == {"ENST0"}
+    assert loaded.transcript_aware
+    versioned = _csq("missense_variant", "STAT3", "100").replace(
+        "ENST0", "ENST0.8"
+    )
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([versioned]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 1 and stats["change_matched"] == 1
+
+
+def test_legacy_catalog_without_transcript_keeps_matching(tmp_path):
+    """4-column catalogs predate the transcript column: they keep the
+    residue-guard behavior instead of matching nothing."""
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text("STAT3\t100\tR\tH\n")
+    loaded = aam.load_reference(str(catalog))
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([_csq("missense_variant", "STAT3", "100")]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 1 and stats["change_matched"] == 1
+
+
+def test_change_evidence_never_crosses_transcripts_at_shared_keys(tmp_path):
+    """Two catalog rows at one (SYMBOL,pos) from different picked
+    transcripts must stay separate: a change recorded on ENSTB's numbering
+    is not PS1-style evidence for a patient entry on ENSTA."""
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(
+        "GENE\t100\tR\tH\tENSTA\n"
+        "GENE\t100\tR\tW\tENSTB\n"
+    )
+    loaded = aam.load_reference(str(catalog))
+    # Patient entry on ENSTA producing R/W — the change known only on ENSTB.
+    entry = _csq("missense_variant", "GENE", "100").replace(
+        "ENST0", "ENSTA").replace("R/H", "R/W")
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([entry]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 1        # same residue on ENSTA: PM5-style OK
+    assert stats["change_matched"] == 0  # R100W belongs to ENSTB's numbering
+    # The same change on its own transcript fires.
+    entry_b = entry.replace("ENSTA", "ENSTB")
+    _write(vin, _vcf([entry_b]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 1 and stats["change_matched"] == 1
+
+
+def test_stray_legacy_row_does_not_reopen_the_gate(tmp_path):
+    """Transcript-awareness is a property of the FILE: one hand-appended
+    4-column row must not reopen cross-transcript matching at its key."""
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(
+        "GENE\t100\tR\tH\tENSTA\n"
+        "GENE\t100\tR\tH\n"
+    )
+    loaded = aam.load_reference(str(catalog))
+    assert loaded.transcript_aware
+    # Patient entry from ENSTC — a transcript the catalog never numbered.
+    entry = _csq("missense_variant", "GENE", "100").replace("ENST0", "ENSTC")
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([entry]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 0 and stats["change_matched"] == 0
+    assert stats["tx_gate_blocked"] == 1
+
+
+def test_unknown_patient_transcript_spellings_are_symmetric(tmp_path):
+    """Feature '' and Feature '-' both mean unknown: both fall back to the
+    residue guard instead of one hard-blocking."""
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text("GENE\t100\tR\tH\tENSTA\n")
+    loaded = aam.load_reference(str(catalog))
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    for unknown in ("", "-"):
+        entry = _csq("missense_variant", "GENE", "100").replace(
+            "|ENST0|", f"|{unknown}|")
+        _write(vin, _vcf([entry]))
+        stats = aam.annotate(vin, vout, loaded)
+        assert stats["matched"] == 1, unknown
+        assert stats["change_matched"] == 1, unknown
+
+
+def test_reducer_emits_the_transcript_column(tmp_path):
+    """The catalog must record WHICH transcript numbered each position,
+    version-stripped."""
+    tab = tmp_path / "vep.tsv"
+    tab.write_text(
+        "#Uploaded_variation\tSYMBOL\tProtein_position\tConsequence"
+        "\tAmino_acids\tFeature\n"
+        "v1\tSTAT3\t100\tmissense_variant\tR/H\tENST00000264657.10\n"
+    )
+    out = tmp_path / "catalog.tsv"
+    assert red.reduce_tab(str(tab), str(out)) == 1
+    assert out.read_text() == "STAT3\t100\tR\tH\tENST00000264657\n"
 
 if __name__ == "__main__":
     import tempfile, pathlib, inspect

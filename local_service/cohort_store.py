@@ -366,6 +366,29 @@ def _content_probe(path: Path, block: int = 65536) -> str:
         return ""
 
 
+_FULL_HASH_LIMIT = 1 << 30  # 1 GiB
+
+
+def _full_content_sha256(path: Path, limit: int = _FULL_HASH_LIMIT) -> str:
+    """Complete sha256 for files small enough to hash in negligible time.
+
+    The stripe probe leaves interior blind windows by design; for exome-
+    scale files a full hash costs milliseconds and closes them entirely.
+    Files above the limit return "" and stay on the probe-only rule — the
+    multi-GB case the probe's docstring exists for.
+    """
+    try:
+        if path.stat().st_size > limit:
+            return ""
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            while block := handle.read(4 * 1024 * 1024):
+                digest.update(block)
+        return digest.hexdigest()
+    except OSError:
+        return ""
+
+
 def normalize_chromosome(value: str) -> str:
     chrom = value.strip()
     if chrom.lower().startswith("chr"):
@@ -1257,6 +1280,7 @@ class CohortStore:
                 ("profile_hash", "TEXT NOT NULL DEFAULT ''"),
                 ("profile_json", "TEXT NOT NULL DEFAULT '{}'"),
                 ("content_probe", "TEXT NOT NULL DEFAULT ''"),
+                ("content_sha256", "TEXT NOT NULL DEFAULT ''"),
             ):
                 if column not in file_columns:
                     connection.execute(
@@ -1933,6 +1957,7 @@ class CohortStore:
             )
         stat = path.stat()
         content_probe = _content_probe(path)
+        content_sha = _full_content_sha256(path)
         with self._session() as connection:
             existing = connection.execute(
                 "SELECT * FROM cohort_files WHERE path = ?", (str(path),)
@@ -1941,14 +1966,29 @@ class CohortStore:
                 (existing["content_probe"] if "content_probe" in existing.keys() else "")
                 if existing else ""
             )
+            existing_sha = (
+                (existing["content_sha256"] if "content_sha256" in existing.keys() else "")
+                if existing else ""
+            )
             if (
                 existing and not force
                 and existing["size_bytes"] == stat.st_size
                 and existing["mtime_ns"] == stat.st_mtime_ns
                 and (not existing_probe or existing_probe == content_probe)
+                and (not existing_sha or not content_sha or existing_sha == content_sha)
                 and existing["import_profile"] == import_profile
                 and existing["analysis_scope"] == analysis_scope
             ):
+                # Backfill identity fields legacy rows never gained (same
+                # rationale as the main gate).
+                if (content_sha and not existing_sha) or (
+                    content_probe and not existing_probe
+                ):
+                    connection.execute(
+                        "UPDATE cohort_files SET content_probe=?, "
+                        "content_sha256=? WHERE id=?",
+                        (content_probe, content_sha, existing["id"]),
+                    )
                 result = dict(existing)
                 try:
                     result["prefilter_options"] = json.loads(
@@ -1971,9 +2011,9 @@ class CohortStore:
                 INSERT INTO cohort_files(
                   path, size_bytes, mtime_ns, imported_at, assembly,
                   lifted_from_assembly, import_profile, analysis_scope,
-                  content_probe
+                  content_probe, content_sha256
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(path), stat.st_size, stat.st_mtime_ns, utc_now(),
@@ -1981,7 +2021,7 @@ class CohortStore:
                     "GRCh37" if assembly["lifted_from_grch37"] else None,
                     import_profile,
                     analysis_scope,
-                    content_probe,
+                    content_probe, content_sha,
                 ),
             ).lastrowid
 
@@ -2407,9 +2447,15 @@ class CohortStore:
         # re-import the identity gate had correctly triggered — and the
         # managed-copy step then filed those stale bytes under the new
         # source checksum.
+        # The full digest (for files small enough to hash) binds the cache
+        # entry to the bytes themselves: with the probe alone, a probe-blind
+        # edit re-imported after the identity gate correctly fired still
+        # read THIS stale working copy — and the import then stamped its row
+        # with the new file's hash, laundering stale data as verified.
         fingerprint = hashlib.sha256(
             f"{path}\0{stat.st_size}\0{stat.st_mtime_ns}\0"
-            f"{_content_probe(path)}\0{content_hint or ''}".encode()
+            f"{_content_probe(path)}\0{_full_content_sha256(path)}\0"
+            f"{content_hint or ''}".encode()
         ).hexdigest()[:20]
         cache_dir = self.prepared_dir / fingerprint
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -2492,6 +2538,23 @@ class CohortStore:
         # be weaker than the identity the managed copy is filed under (the
         # probe's blind window allowed exactly that inversion).
         prepared = self._prepare_indexed_vcf(source, content_hint=content_key)
+        # The destination is filed UNDER content_key. Before an existing
+        # destination is repaired — or a new one published — from these
+        # prepared bytes, prove the bytes descend from content the key
+        # actually hashes: a source swapped between the caller's checksum
+        # and this preparation previously CLOBBERED the committed managed
+        # copy even though the import itself was then refused. A byte-copy
+        # preparation must hash to the key itself; a re-encoded preparation
+        # is accepted only while the source still hashes to the key.
+        prepared_sha = _full_content_sha256(prepared.path)
+        if prepared_sha and prepared_sha != content_key:
+            source_sha = _full_content_sha256(source)
+            if source_sha and source_sha != content_key:
+                raise ValueError(
+                    f"{source.name} changed while it was being imported — "
+                    "wait for the file to finish copying, then import it "
+                    "again"
+                )
         compressed = prepared.path.name.lower().endswith((".gz", ".bgz"))
         destination = destination_directory / (
             f"{content_key}.vcf.gz" if compressed else f"{content_key}.vcf"
@@ -2662,6 +2725,7 @@ class CohortStore:
         prefilter_options_json: str,
         prefilter_metadata: dict,
         content_probe: str = "",
+        content_sha256: str = "",
     ) -> tuple[int, int]:
         stat = source_path.stat()
         aliases = [f"stage_{index}" for index in range(len(stages))]
@@ -2693,8 +2757,8 @@ class CohortStore:
                   import_mode, reader_count, preparation_warning,
                   import_profile, analysis_scope, prefilter_options,
                   prefilter_records_scanned, prefilter_records_retained,
-                  content_probe
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  content_probe, content_sha256
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     str(source_path), stat.st_size, stat.st_mtime_ns, utc_now(),
@@ -2706,7 +2770,7 @@ class CohortStore:
                     import_profile, analysis_scope, prefilter_options_json,
                     int(prefilter_metadata.get("records_scanned", 0) or 0),
                     int(prefilter_metadata.get("records_retained", 0) or 0),
-                    content_probe,
+                    content_probe, content_sha256,
                 ),
             ).lastrowid
             connection.executemany(
@@ -2936,12 +3000,17 @@ class CohortStore:
             )
         stat = source_path.stat()
         content_probe = _content_probe(source_path)
+        content_sha = _full_content_sha256(source_path)
         with self._session() as connection:
             existing = connection.execute(
                 "SELECT * FROM cohort_files WHERE path = ?", (str(source_path),)
             ).fetchone()
             existing_probe = (
                 (existing["content_probe"] if "content_probe" in existing.keys() else "")
+                if existing else ""
+            )
+            existing_sha = (
+                (existing["content_sha256"] if "content_sha256" in existing.keys() else "")
                 if existing else ""
             )
             if (
@@ -2951,10 +3020,27 @@ class CohortStore:
                 # Legacy rows carry no probe; they keep the size+mtime rule
                 # until their next real import backfills one.
                 and (not existing_probe or existing_probe == content_probe)
+                # Files small enough to hash completely must ALSO match on
+                # the full digest — the probe's interior blind windows are
+                # a documented tradeoff for multi-GB genomes, not for exome
+                # VCFs where a full read costs milliseconds.
+                and (not existing_sha or not content_sha or existing_sha == content_sha)
                 and existing["import_profile"] == import_profile
                 and existing["analysis_scope"] == analysis_scope
                 and existing["prefilter_options"] == prefilter_options_json
             ):
+                # Backfill identity fields legacy rows never gained: without
+                # this an old row keeps passing on size+mtime alone forever,
+                # and the blind window this hash closes stays open for it.
+                # The values are already computed — the write costs nothing.
+                if (content_sha and not existing_sha) or (
+                    content_probe and not existing_probe
+                ):
+                    connection.execute(
+                        "UPDATE cohort_files SET content_probe=?, "
+                        "content_sha256=? WHERE id=?",
+                        (content_probe, content_sha, existing["id"]),
+                    )
                 result = dict(existing)
                 try:
                     result["prefilter_options"] = json.loads(
@@ -3024,6 +3110,7 @@ class CohortStore:
                 prefilter_options_json=prefilter_options_json,
                 prefilter_metadata=prefilter_metadata,
                 content_probe=content_probe,
+                content_sha256=content_sha,
             )
 
         pass_records = sum(stage["pass_records"] for stage in stages)

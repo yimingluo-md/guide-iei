@@ -346,16 +346,25 @@ if [[ "$DRY" != "1" ]] \
     STAMP="${DEST_DIR}/.aa_reference.release"
     NEED_BUILD=1
     # The stamp carries a format tag: catalogs built before the
-    # reference-residue columns existed must rebuild once even though the
-    # ClinVar release is unchanged — otherwise the PS1-level change flag
-    # stays silently dead until the next release.
-    AA_REF_FORMAT="aa4"
+    # reference-residue (aa4) or transcript (aa5) columns existed must
+    # rebuild once even though the ClinVar release is unchanged — otherwise
+    # the newer matching guards stay silently inactive until the next
+    # release.
+    AA_REF_FORMAT="aa5"
     # Bind the stamp to the ClinVar CONTENT, not just its release string: a
     # replaced or damaged ClinVar VCF under an unchanged release name must
     # trigger a rebuild (the same rule the ClinGen updater applies).
     CLINVAR_SHA="$(shasum -a 256 "$CLINVAR_VCF" 2>/dev/null | cut -d' ' -f1)"
     CLINVAR_SHA="${CLINVAR_SHA:-unknown}"
-    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA" ]]; then
+    # ...and to the VEP cache the catalog's transcript column was picked
+    # from: upgrading the cache without rebuilding the catalog would let
+    # the transcript gate silently zero every match against retired
+    # accessions. The versioned cache directory name identifies the cache.
+    AA_VEP_CACHE_DIR="$(yaml_get "$CONFIG" reference.vep_cache_dir)"
+    [[ "$AA_VEP_CACHE_DIR" = /* ]] || AA_VEP_CACHE_DIR="${ROOT}/${AA_VEP_CACHE_DIR}"
+    VEP_CACHE_TAG="$(ls "${AA_VEP_CACHE_DIR}/homo_sapiens" 2>/dev/null | sort | tail -1)"
+    VEP_CACHE_TAG="${VEP_CACHE_TAG:-unknown}"
+    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA $VEP_CACHE_TAG" ]]; then
         NEED_BUILD=0
         log "aa-match reference up to date (release $CLINVAR_RELEASE), skip rebuild."
     fi
@@ -363,7 +372,7 @@ if [[ "$DRY" != "1" ]] \
     if [[ "$NEED_BUILD" == "1" ]]; then
         log "=== building ClinVar aa-match reference ==="
         if bash "${HERE}/build_clinvar_aa_reference.sh" "$CONFIG" "$CLINVAR_VCF"; then
-            echo "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA" > "$STAMP"
+            echo "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA $VEP_CACHE_TAG" > "$STAMP"
         else
             # The matcher will run against the previous catalog; its output
             # must be labeled with THAT release, not the current one.

@@ -36,9 +36,15 @@ Does the same match against VCF output:
 Zygosity / sample genotype columns are passed through untouched — this only
 appends to INFO, so the annotated VCF still preserves GT.
 
-The reference catalog is a TSV of ``SYMBOL<TAB>protein_position<TAB>alt_aa``
-(one row per reported change; ``alt_aa`` may be ``-`` when unknown). Legacy
-2-column files load as residue-only: the change-level flag then stays 0.
+The reference catalog is a TSV of
+``SYMBOL<TAB>protein_position<TAB>ref_aa<TAB>alt_aa<TAB>transcript`` (one row
+per reported change; ``-`` marks unknown fields). The transcript column
+records which transcript's numbering the position uses; matching requires
+the patient CSQ entry to come from that same transcript (version-stripped),
+because a position number is only meaningful within one transcript. Legacy
+2-/3-column files load as residue-only (the change-level flag stays 0) and
+4-column files match without the transcript gate, both guarded by the
+reference-residue check until their next rebuild.
 
 Usage:
     clinvar_aa_match.py --input sample.vep.vcf.gz --output sample.aamatch.vcf.gz \\
@@ -89,31 +95,51 @@ def parse_csq_format(header_lines: list[str]) -> list[str] | None:
 class Reference:
     """Catalog of reported pathogenic missense: residues and exact changes.
 
-    ``residue_refs`` maps (SYMBOL, position) to the set of reference amino
-    acids the catalog knows there ("-" when unknown). A patient entry whose
-    OWN reference residue differs is a different isoform numbering, not the
-    same residue — matching it would claim PM5/PS1 evidence for an
-    incompatible transcript.
+    ``residues`` maps (SYMBOL, position) to {transcript: {ref_aa, ...}} —
+    the reference amino acids the catalog knows at that position, PER
+    TRANSCRIPT. Protein positions are only meaningful within one
+    transcript's numbering, so both structures carry the version-stripped
+    transcript VEP --pick chose at build time; a patient entry matches
+    only against rows numbered on its own transcript. A patient entry
+    whose OWN reference residue differs from those rows is a different
+    isoform numbering and never matches.
+
+    ``transcript_aware`` is a property of the loaded FILE: catalogs that
+    predate the transcript column (rows loaded under "-") fall back to
+    the reference-residue guard alone, but a transcript-aware catalog
+    never lets a stray "-" row reopen cross-transcript matching.
+
+    ``changes`` holds (SYMBOL, position, ref_aa, alt_aa, transcript) —
+    transcript-keyed for the same reason: an exact change recorded on one
+    isoform's numbering is not evidence on another's.
     """
 
     def __init__(self):
-        self.residue_refs: dict[tuple[str, str], set[str]] = {}
-        self.changes: set[tuple[str, str, str, str]] = set()
+        self.residues: dict[tuple[str, str], dict[str, set[str]]] = {}
+        self.changes: set[tuple[str, str, str, str, str]] = set()
+        self.transcript_aware = False
 
-    def add_residue(self, sym: str, pos: str, ref_aa: str) -> None:
-        self.residue_refs.setdefault((sym, pos), set()).add(ref_aa or "-")
+    def add_residue(self, sym: str, pos: str, ref_aa: str,
+                    transcript: str = "-") -> None:
+        transcript = transcript or "-"
+        self.residues.setdefault((sym, pos), {}).setdefault(
+            transcript, set()
+        ).add(ref_aa or "-")
+        if transcript != "-":
+            self.transcript_aware = True
 
     def __len__(self):
-        return len(self.residue_refs)
+        return len(self.residues)
 
 
 def load_reference(path: str) -> Reference:
     """Load the pathogenic-missense catalog (residues + exact changes).
 
-    Formats accepted: 4 columns (SYMBOL, pos, ref_aa, alt_aa — current),
-    3 columns (SYMBOL, pos, alt_aa — transitional), 2 columns (residue
-    only — legacy). Missing residue fields load as "-" (unknown, matches
-    anything) so older catalogs keep working until their next rebuild.
+    Formats accepted: 5 columns (SYMBOL, pos, ref_aa, alt_aa, transcript —
+    current), 4 columns (no transcript), 3 columns (SYMBOL, pos, alt_aa —
+    transitional), 2 columns (residue only — legacy). Missing residue and
+    transcript fields load as "-" (unknown, matches anything) so older
+    catalogs keep working until their next rebuild.
     """
     ref = Reference()
     if not path or not os.path.exists(path):
@@ -138,9 +164,12 @@ def load_reference(path: str) -> Reference:
                 # rows contribute residue-level (PM5-style) evidence only;
                 # the change flag stays 0 until the catalog rebuilds.
                 ref_aa, alt_aa = "-", "-"
-            ref.add_residue(sym, pos, ref_aa)
+            transcript = parts[4] if len(parts) >= 5 and parts[4] else "-"
+            if transcript != "-":
+                transcript = transcript.split(".")[0]
+            ref.add_residue(sym, pos, ref_aa, transcript)
             if alt_aa != "-":
-                ref.changes.add((sym, pos, ref_aa, alt_aa))
+                ref.changes.add((sym, pos, ref_aa, alt_aa, transcript))
     return ref
 
 
@@ -149,14 +178,19 @@ def load_reference(path: str) -> Reference:
 # --------------------------------------------------------------------------- #
 def match_alleles(info_csq: str, fields: list[str], ref: Reference,
                   n_alts: int, idx_sym: int, idx_pos: int, idx_csq: int,
-                  idx_allele_num: int, idx_aa: int) -> tuple[list[int], list[int]]:
+                  idx_allele_num: int, idx_aa: int,
+                  idx_feature: int = -1) -> tuple[list[int], list[int], int]:
     """Per-ALT residue and exact-change matches for one record.
 
     CSQ entries are attributed to their ALT via ALLELE_NUM; when the
     annotation lacks ALLELE_NUM, an entry counts toward every ALT (the
-    legacy record-level behavior, now the explicit fallback)."""
+    legacy record-level behavior, now the explicit fallback). The third
+    return value counts entries at catalog residues that were skipped by
+    the transcript gate — a nonzero count with zero matches is the
+    signature of a catalog built against a different VEP cache."""
     residue_flags = [0] * n_alts
     change_flags = [0] * n_alts
+    tx_blocked = 0
     for entry in info_csq.split(","):
         vals = entry.split("|")
         if max(idx_sym, idx_pos, idx_csq) >= len(vals):
@@ -167,9 +201,32 @@ def match_alleles(info_csq: str, fields: list[str], ref: Reference,
         if not pos or pos == "-":
             continue
         sym = vals[idx_sym]
-        catalog_refs = ref.residue_refs.get((sym, pos))
-        if not catalog_refs:
+        rows = ref.residues.get((sym, pos))
+        if not rows:
             continue
+        # The catalog's position was numbered against the transcript VEP
+        # --pick chose at build time — recorded per row. A patient CSQ
+        # entry from another transcript is a different coordinate system:
+        # position 100 there is not the catalog's residue 100 even when
+        # the reference amino acid happens to coincide. Enforced whenever
+        # the catalog is transcript-aware and the patient entry names its
+        # transcript; both unknown spellings ("" and "-") fall back to the
+        # residue guard alone.
+        patient_tx = ""
+        if idx_feature >= 0 and idx_feature < len(vals):
+            patient_tx = vals[idx_feature].strip().split(".")[0]
+            if patient_tx == "-":
+                patient_tx = ""
+        if ref.transcript_aware and patient_tx:
+            row_refs = rows.get(patient_tx)
+            if row_refs is None:
+                tx_blocked += 1
+                continue
+            catalog_txs: tuple[str, ...] = (patient_tx,)
+            catalog_refs = row_refs
+        else:
+            catalog_txs = tuple(rows)
+            catalog_refs = set().union(*rows.values())
         patient_ref = patient_alt = ""
         if idx_aa >= 0 and idx_aa < len(vals) and "/" in vals[idx_aa]:
             patient_ref, _, patient_alt = vals[idx_aa].partition("/")
@@ -185,15 +242,19 @@ def match_alleles(info_csq: str, fields: list[str], ref: Reference,
             number = vals[idx_allele_num].strip()
             if number.isdigit() and 1 <= int(number) <= n_alts:
                 targets = [int(number) - 1]
-        change_hit = bool(patient_alt) and (
-            (sym, pos, patient_ref or "-", patient_alt) in ref.changes
-            or (sym, pos, "-", patient_alt) in ref.changes
+        # The exact-change lookup is keyed to the same transcript(s) the
+        # entry matched against: a change recorded on another isoform's
+        # numbering is not this residue's change.
+        change_hit = bool(patient_alt) and any(
+            (sym, pos, patient_ref or "-", patient_alt, tx) in ref.changes
+            or (sym, pos, "-", patient_alt, tx) in ref.changes
+            for tx in catalog_txs
         )
         for target in targets:
             residue_flags[target] = 1
             if change_hit:
                 change_flags[target] = 1
-    return residue_flags, change_flags
+    return residue_flags, change_flags, tx_blocked
 
 
 def _extract_info_csq(info_field: str) -> str | None:
@@ -214,11 +275,11 @@ def annotate(in_path: str, out_path: str, ref: Reference,
     change_key = "ClinVar_path_aa_change_match" \
         if info_key == "ClinVar_path_aa_match" else f"{info_key}_change"
     stats = {"records": 0, "matched": 0, "change_matched": 0, "missense": 0,
-             "csq_present": False, "ref_size": len(ref)}
+             "csq_present": False, "ref_size": len(ref), "tx_gate_blocked": 0}
 
     with _open_r(in_path) as fin, _open_w(out_path) as fout:
         fields = None
-        idx_sym = idx_pos = idx_csq = idx_allele_num = idx_aa = -1
+        idx_sym = idx_pos = idx_csq = idx_allele_num = idx_aa = idx_feature = -1
         wrote_header = False
 
         for line in fin:
@@ -238,19 +299,20 @@ def annotate(in_path: str, out_path: str, ref: Reference,
                     idx_csq = _fi("Consequence")
                     idx_allele_num = _fi("ALLELE_NUM")
                     idx_aa = _fi("Amino_acids")
+                    idx_feature = _fi("Feature")
                 residue_info = (
                     f'##INFO=<ID={info_key},Number=A,Type=Integer,'
                     f'Description="Per ALT: 1 when this allele is a missense at the same '
-                    f'protein residue (SYMBOL+Protein_position, any substitution) as a '
+                    f'protein residue (same transcript numbering, any substitution) as a '
                     f'pathogenic/likely-pathogenic missense ClinVar variant — PM5-style '
                     f'residue-level evidence (ClinVar release {clinvar_release}); else 0">'
                 )
                 change_info = (
                     f'##INFO=<ID={change_key},Number=A,Type=Integer,'
                     f'Description="Per ALT: 1 when this allele produces the same amino-acid '
-                    f'change as a pathogenic/likely-pathogenic ClinVar variant through any '
-                    f'nucleotide change — PS1-style exact-change evidence (ClinVar release '
-                    f'{clinvar_release}); else 0">'
+                    f'change (same transcript numbering) as a pathogenic/likely-pathogenic '
+                    f'ClinVar variant through any nucleotide change — PS1-style '
+                    f'exact-change evidence (ClinVar release {clinvar_release}); else 0">'
                 )
                 for h in header:
                     # Idempotency: a second pass over already-annotated
@@ -293,10 +355,12 @@ def annotate(in_path: str, out_path: str, ref: Reference,
                 if csq:
                     if "missense_variant" in csq:
                         stats["missense"] += 1
-                    residue_flags, change_flags = match_alleles(
+                    residue_flags, change_flags, tx_blocked = match_alleles(
                         csq, fields, ref, n_alts,
                         idx_sym, idx_pos, idx_csq, idx_allele_num, idx_aa,
+                        idx_feature,
                     )
+                    stats["tx_gate_blocked"] += tx_blocked
                     if any(residue_flags):
                         stats["matched"] += 1
                     if any(change_flags):
@@ -327,7 +391,8 @@ def main(argv=None) -> int:
     ap.add_argument("--input", required=True, help="VEP-annotated VCF (.vcf/.vcf.gz)")
     ap.add_argument("--output", required=True)
     ap.add_argument("--reference", default=None,
-                    help="pathogenic-missense residue TSV (SYMBOL<TAB>protein_position)")
+                    help="pathogenic-missense catalog TSV (SYMBOL, position, "
+                         "ref_aa, alt_aa, transcript)")
     ap.add_argument("--config", default=None,
                     help="config YAML (to locate the reference + info key if not given)")
     ap.add_argument("--info-key", default=None)
@@ -378,7 +443,22 @@ def main(argv=None) -> int:
     print(f"[aa_match] ref_residues={stats['ref_size']} records={stats['records']} "
           f"missense={stats['missense']} residue_matched={stats['matched']} "
           f"change_matched={stats['change_matched']} "
+          f"tx_gate_blocked={stats['tx_gate_blocked']} "
           f"csq_usable={stats.get('csq_usable')}", file=sys.stderr)
+    if stats["tx_gate_blocked"] and not stats["matched"]:
+        # Every candidate sat at a catalog residue but on a transcript the
+        # catalog was never numbered against, and nothing matched at all:
+        # the signature of a catalog built with a different VEP cache (or
+        # RefSeq vs Ensembl annotation), which would otherwise present as
+        # an unremarkable all-negative sample.
+        print(
+            f"WARN  aa-match: {stats['tx_gate_blocked']} annotation(s) at "
+            "catalog residues were skipped because their transcripts are "
+            "not in the catalog, and no record matched — the catalog and "
+            "this annotation may come from different VEP caches; rebuild "
+            "the aa-match reference.",
+            file=sys.stderr,
+        )
     return 0
 
 

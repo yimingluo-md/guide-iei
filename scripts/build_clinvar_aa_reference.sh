@@ -90,10 +90,13 @@ if [[ "$NVAR" -gt 0 ]]; then
 
     VEPOUT="${WORK}/clinvar_path_missense.vep.tsv"
     # Minimal VEP: cache offline, pick, symbol; tab output with SYMBOL + Protein_position.
+    # Feature records WHICH transcript --pick chose: protein position
+    # numbering is transcript-specific, so the matcher requires the patient
+    # CSQ entry to come from this same transcript before claiming a match.
     VEP_INNER="vep -i /w/$(basename "$SUBSET_GZ") -o /w/$(basename "$VEPOUT") \
         --offline --cache --dir_cache /cache --species homo_sapiens --assembly ${ASSEMBLY} \
         --pick --symbol --tab --force_overwrite --no_stats \
-        --fields Uploaded_variation,SYMBOL,Protein_position,Consequence,Amino_acids"
+        --fields Uploaded_variation,SYMBOL,Protein_position,Consequence,Amino_acids,Feature"
 
     case "$RUNTIME" in
         docker|podman)

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Reduce VEP --tab output of pathogenic-missense ClinVar to the aa-match catalog.
 
-Reads the VEP tab file (columns include SYMBOL, Protein_position, Consequence)
-and writes the 2-column reference TSV SYMBOL<TAB>Protein_position for rows whose
+Reads the VEP tab file (columns include SYMBOL, Protein_position, Consequence,
+Amino_acids, Feature) and writes the 5-column reference TSV
+SYMBOL<TAB>Protein_position<TAB>ref_aa<TAB>alt_aa<TAB>transcript for rows whose
 Consequence contains missense_variant and Protein_position != "-", de-duplicated.
 
 This is the reference-building half of the vep_hg38.sh awk step, made explicit
@@ -28,7 +29,7 @@ def _open_w(path):
 def reduce_tab(in_path: str, out_path: str) -> int:
     header = None
     skipped_before_header = 0
-    pairs: set[tuple[str, str, str, str]] = set()
+    pairs: set[tuple[str, str, str, str, str]] = set()
     with _open_r(in_path) as fh:
         for line in fh:
             if line.startswith("##"):
@@ -53,7 +54,14 @@ def reduce_tab(in_path: str, out_path: str) -> int:
                     alt_aa = alt_aa.strip() or "-"
                 else:
                     ref_aa = alt_aa = "-"
-                pairs.add((sym, pos, ref_aa, alt_aa))
+                # Protein positions only mean anything relative to a
+                # transcript; record which one --pick chose, version-stripped
+                # so a cache update that bumps ENST versions does not orphan
+                # the catalog.
+                transcript = (row.get("Feature", "") or "-").strip() or "-"
+                if transcript != "-":
+                    transcript = transcript.split(".")[0]
+                pairs.add((sym, pos, ref_aa, alt_aa, transcript))
     if header is None and skipped_before_header:
         # Data rows with no VEP tab header (--no_headers output, or a header
         # consumed upstream) previously produced a silent empty reference
@@ -72,8 +80,8 @@ def reduce_tab(in_path: str, out_path: str) -> int:
             "write an empty aa-match reference"
         )
     with _open_w(out_path) as out:
-        for sym, pos, ref_aa, alt_aa in sorted(pairs):
-            out.write(f"{sym}\t{pos}\t{ref_aa}\t{alt_aa}\n")
+        for sym, pos, ref_aa, alt_aa, transcript in sorted(pairs):
+            out.write(f"{sym}\t{pos}\t{ref_aa}\t{alt_aa}\t{transcript}\n")
     return len(pairs)
 
 

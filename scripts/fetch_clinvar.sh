@@ -49,14 +49,36 @@ URL="${URL_TMPL//\{ASSEMBLY\}/$ASSEMBLY}"
 log "ClinVar source: $URL"
 
 TMP_VCF="${DEST_DIR}/clinvar.download.vcf.gz"
+# NCBI publishes MD5 sidecars beside the weekly files; verifying against
+# them turns "same size" into "same content" — a run that crashed after a
+# complete download but before the mv below would otherwise leave a stale
+# temp file that a later same-size release could be mistaken for. When the
+# sidecar is unreachable (offline mirror), the download proceeds on the
+# size check alone, stated as such.
+fetch_upstream_md5() {
+    curl -fsSL --max-time 60 -H "Cache-Control: no-cache" "$1" 2>/dev/null | awk '{print tolower($1); exit}' || true
+}
+MD5_ARGS=()
+VCF_MD5="$(fetch_upstream_md5 "${URL}.md5")"
+if [[ "$VCF_MD5" =~ ^[0-9a-f]{32}$ ]]; then
+    MD5_ARGS=(--md5 "$VCF_MD5")
+    log "ClinVar VCF upstream MD5: $VCF_MD5"
+else
+    warn "no upstream MD5 available for the ClinVar VCF; only its size can be checked"
+fi
 # The completed temporary is moved to its dated filename below, so every new
 # invocation still checks the current weekly release. Interrupted range files
 # and their metadata remain resumable in place.
+# ${arr[@]+...} keeps the empty-array expansion legal under `set -u` on the
+# bash 3.2 that macOS ships.
 python3 "${HERE}/parallel_fetch.py" "$URL" "$TMP_VCF" \
-    --connections 4 --chunk-mib 64 \
+    --connections 4 --chunk-mib 64 ${MD5_ARGS[@]+"${MD5_ARGS[@]}"} \
     || die "ClinVar download failed"
+TBI_MD5_ARGS=()
+TBI_MD5="$(fetch_upstream_md5 "${URL}.tbi.md5")"
+[[ "$TBI_MD5" =~ ^[0-9a-f]{32}$ ]] && TBI_MD5_ARGS=(--md5 "$TBI_MD5")
 python3 "${HERE}/parallel_fetch.py" "${URL}.tbi" "${TMP_VCF}.tbi" \
-    --connections 1 --chunk-mib 4 \
+    --connections 1 --chunk-mib 4 ${TBI_MD5_ARGS[@]+"${TBI_MD5_ARGS[@]}"} \
     || warn "ClinVar tabix index download failed; a local index will be generated if required"
 
 # Extract the ClinVar release date from the VCF header

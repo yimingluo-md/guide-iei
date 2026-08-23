@@ -651,7 +651,8 @@ class WgsReviewStore:
             })
 
         stat = source.stat()
-        from local_service.cohort_store import _content_probe
+        from local_service.cohort_store import _content_probe, _full_content_sha256
+        source_sha = _full_content_sha256(source)
         fingerprint_value = {
             # v5: worker interval slicing normalizes contig names — v4 review
             # caches built from chr-prefixed VCFs under-retained coding and
@@ -664,6 +665,11 @@ class WgsReviewStore:
             # restored timestamps without re-reading a multi-GB genome.
             # Existing caches rebuild once when this field first appears.
             "content_probe": _content_probe(source),
+            # Files small enough to hash completely also bind the full
+            # digest, closing the probe's interior blind windows. The key is
+            # added only when a hash exists so multi-GB fingerprints (and
+            # their caches) are untouched.
+            **({"content_sha256": source_sha} if source_sha else {}),
             "filters": asdict(options),
             "exome_bed": (
                 [

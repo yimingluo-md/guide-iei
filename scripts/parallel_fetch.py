@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 
 
-def remote_metadata(url: str) -> tuple[int, str]:
+def remote_metadata(url: str) -> tuple[int, str, str]:
     # Some archives (notably ENCODE) redirect downloads to a signed object URL
     # whose signature is valid for GET but not HEAD.  A one-byte ranged GET
     # follows that redirect and reports both the object size and range support
@@ -41,7 +41,16 @@ def remote_metadata(url: str) -> tuple[int, str]:
         result.stdout,
         flags=re.IGNORECASE | re.MULTILINE,
     )
-    return int(ranges[-1]), etags[-1] if etags else ""
+    modified = re.findall(
+        r'^last-modified:\s*(.+?)\s*$',
+        result.stdout,
+        flags=re.IGNORECASE | re.MULTILINE,
+    )
+    return (
+        int(ranges[-1]),
+        etags[-1] if etags else "",
+        modified[-1] if modified else "",
+    )
 
 
 def bsd_sum(path: Path) -> tuple[int, int]:
@@ -133,33 +142,96 @@ def main() -> int:
     os.ftruncate(lock_descriptor, 0)
     os.write(lock_descriptor, f"{os.getpid()}\n".encode())
 
-    total, etag = remote_metadata(args.url)
+    total, etag, remote_modified = remote_metadata(args.url)
+    version_sidecar = Path(f"{output}.etag")
+
+    def stored_version() -> tuple[str, str]:
+        if not version_sidecar.is_file():
+            return "", ""
+        text = version_sidecar.read_text().strip()
+        try:
+            data = json.loads(text)
+        except ValueError:
+            return text, ""  # first-generation sidecar: bare ETag line
+        return str(data.get("etag") or ""), str(data.get("last_modified") or "")
+
+    def strip_weak(value: str) -> str:
+        return value[2:] if value.startswith("W/") else value
+
     if output.is_file() and output.stat().st_size == total:
-        if expected_sum and bsd_sum(output) != expected_sum:
-            raise RuntimeError(
-                f"existing file has the expected size but failed checksum: {output}"
+        refresh_reason = ""
+        if (expected_sum and bsd_sum(output) != expected_sum) or (
+            expected_md5 and md5(output) != expected_md5
+        ):
+            # A size-matching existing file that fails the caller's checksum
+            # is a stale same-size file (crashed earlier run, later release
+            # of identical size): re-download it. Hard-erroring here left
+            # the state permanently wedged; the strict failure remains for
+            # freshly downloaded bytes below.
+            refresh_reason = (
+                f"{output} matches the remote size but fails the expected "
+                "checksum — a stale same-size file; fetching the current one"
             )
-        if expected_md5 and md5(output) != expected_md5:
-            raise RuntimeError(
-                f"existing file has the expected size but failed MD5: {output}"
+        elif not (expected_sum or expected_md5):
+            stored_etag, stored_modified = stored_version()
+            modified_known = bool(stored_modified and remote_modified)
+            modified_changed = modified_known and stored_modified != remote_modified
+            etag_changed = bool(
+                stored_etag and etag
+                and strip_weak(stored_etag) != strip_weak(etag)
             )
-        if expected_sum or expected_md5:
-            print(
-                f"{display_progress(100):5.1f}%  verified {output} ({total} bytes)",
-                flush=True,
-            )
-        else:
-            # "Verified" is an integrity claim; without an upstream checksum
-            # only the size was compared.
-            print(
-                f"{display_progress(100):5.1f}%  {output} matches the remote "
-                f"size ({total} bytes); no upstream checksum available to "
-                "verify content",
-                flush=True,
-            )
-        os.close(lock_descriptor)
-        lock_path.unlink(missing_ok=True)
-        return 0
+            # Load-balanced mirrors rotate ETags per node for one unchanged
+            # file, so an AGREEING Last-Modified vetoes an ETag-only
+            # refresh (no redownload-forever loop); a changed Last-Modified
+            # refreshes even when the server sends no ETag at all.
+            if modified_changed:
+                refresh_reason = (
+                    f"{output} matches the remote size but the remote "
+                    "changed since it was downloaded (Last-Modified moved); "
+                    "fetching the current file"
+                )
+            elif etag_changed and not modified_known:
+                refresh_reason = (
+                    f"{output} matches the remote size but was downloaded "
+                    "under a different remote ETag; fetching the current file"
+                )
+        if not refresh_reason:
+            if expected_sum or expected_md5:
+                print(
+                    f"{display_progress(100):5.1f}%  verified {output} "
+                    f"({total} bytes)",
+                    flush=True,
+                )
+            else:
+                # "Verified" is an integrity claim; without an upstream
+                # checksum only the size was compared.
+                print(
+                    f"{display_progress(100):5.1f}%  {output} matches the "
+                    f"remote size ({total} bytes); no upstream checksum "
+                    "available to verify content",
+                    flush=True,
+                )
+            os.close(lock_descriptor)
+            lock_path.unlink(missing_ok=True)
+            return 0
+        print(refresh_reason, flush=True)
+        # The completed output is being replaced: resume state left by an
+        # interrupted earlier refresh of a DIFFERENT remote version is
+        # dead, and load_resume_state would otherwise hard-error on it
+        # forever. State matching the current metadata stays resumable.
+        state_file = Path(f"{output}.ranges.json")
+        if state_file.exists():
+            try:
+                prior = json.loads(state_file.read_text())
+            except ValueError:
+                prior = {}
+            if (
+                prior.get("url") != args.url
+                or prior.get("size") != total
+                or prior.get("etag") != etag
+            ):
+                state_file.unlink(missing_ok=True)
+                Path(f"{output}.parallel").unlink(missing_ok=True)
 
     partial = Path(f"{output}.parallel")
     state_path = Path(f"{output}.ranges.json")
@@ -292,6 +364,15 @@ def main() -> int:
                 f"expected {expected_md5}, received {actual_md5}"
             )
     partial.replace(output)
+    # Record which remote version these bytes are: checksum-less callers can
+    # then detect a changed remote on later runs instead of accepting any
+    # same-size file.
+    if etag or remote_modified:
+        version_sidecar.write_text(
+            json.dumps({"etag": etag, "last_modified": remote_modified}) + "\n"
+        )
+    else:
+        version_sidecar.unlink(missing_ok=True)
     state_path.unlink(missing_ok=True)
     os.close(lock_descriptor)
     lock_path.unlink(missing_ok=True)

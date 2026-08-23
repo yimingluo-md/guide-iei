@@ -361,8 +361,9 @@ description, so every annotated VCF records exactly which ClinVar it used.
 After annotation, `pipeline/clinvar_aa_match.py` writes two separate
 per-ALT (`Number=A`) INFO flags from a catalog of reported
 pathogenic/likely-pathogenic missense changes
-(`SYMBOL<TAB>Protein_position<TAB>ref_aa<TAB>alt_aa`, built per ClinVar release by
-`build_clinvar_aa_reference.sh` → `reduce_vep_to_aa_reference.py`):
+(`SYMBOL<TAB>Protein_position<TAB>ref_aa<TAB>alt_aa<TAB>transcript`, built
+per ClinVar release by `build_clinvar_aa_reference.sh` →
+`reduce_vep_to_aa_reference.py`):
 
 - `ClinVar_path_aa_change_match` — the allele produces the **same
   amino-acid change** as a reported P/LP variant through any nucleotide
@@ -371,15 +372,23 @@ pathogenic/likely-pathogenic missense changes
   residue** as a reported P/LP missense, any substitution (PM5-style
   evidence; residue-level matching is intentional).
 
-CSQ entries are attributed to their ALT via `ALLELE_NUM`, so a match on
-one ALT of a multiallelic record is never copied to its siblings. Both
-header descriptions carry the ClinVar release the catalog was built from;
-when a catalog rebuild fails, the run proceeds on the previous catalog
-and labels the evidence with **that** release, never the current one. A
-headered build input with zero pathogenic missense rows is refused rather
-than stamped as a valid empty catalog. Legacy two- and three-column catalogs load as
-residue-only (the change-level flag stays 0 until the catalog
-rebuilds, which the versioned release stamp forces once).
+A protein position is only meaningful relative to one transcript, so the
+catalog records which transcript numbered each position (the VEP `--pick`
+choice, version-stripped) and a match requires the patient's CSQ entry to
+come from that same transcript. A second guard requires the patient
+entry's own reference amino acid to agree with the catalog's — together
+these keep an isoform whose numbering merely happens to line up from
+claiming PS1/PM5-style evidence. CSQ entries are attributed to their ALT
+via `ALLELE_NUM`, so a match on one ALT of a multiallelic record is never
+copied to its siblings. Both header descriptions carry the ClinVar
+release the catalog was built from; when a catalog rebuild fails, the run
+proceeds on the previous catalog and labels the evidence with **that**
+release, never the current one. A headered build input with zero
+pathogenic missense rows is refused rather than stamped as a valid empty
+catalog. Legacy two- and three-column catalogs load as residue-only (the
+change-level flag stays 0), and four-column catalogs match without the
+transcript gate, until the catalog rebuilds — which the versioned release
+stamp forces once.
 
 ## Frameshift PTC-based LOFTEE 50-bp rule
 

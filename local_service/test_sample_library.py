@@ -170,6 +170,66 @@ class SampleLibraryTests(unittest.TestCase):
             self.cohort.prepare_managed_vcf = original_prepare
         self.assertEqual(self.library.list(), [])
 
+    def test_import_refuses_when_samples_change_between_header_and_checksum(self):
+        """The sample names are read before the first checksum; a swap in
+        that gap passed every checksum check while the dataset rows carried
+        the OLD names over the NEW content — silently serving one patient's
+        variants under another's name."""
+        from local_service import sample_library as module
+        swapped = self.state / "swapped-src.vcf"
+        write_vcf(swapped)
+        content = swapped.read_text().replace("P1", "Q1").replace("P2", "Q2")
+        real = module.read_vcf_header
+        state = {"swapped": False}
+
+        def swap_after_first_read(path):
+            header = real(path)
+            if not state["swapped"] and Path(path) == self.vcf.resolve():
+                state["swapped"] = True
+                self.vcf.write_text(content)
+            return header
+
+        module.read_vcf_header = swap_after_first_read
+        try:
+            with self.assertRaisesRegex(ValueError, "changed while"):
+                self.library.import_vcf(self.vcf, self.payload(include=False))
+        finally:
+            module.read_vcf_header = real
+        self.assertEqual(self.library.list(), [])
+
+    def test_corrupted_projection_cache_is_rebuilt_not_served(self):
+        """The projection cache trusted existence + mtime alone: any
+        overwrite advances the mtime, so garbage at the cache path was
+        served verbatim. A cache hit must prove it parses as a VCF."""
+        import gzip as _gzip
+        from local_service.cohort_store import HtsBackend, read_vcf_header
+        backend = HtsBackend.discover()
+        if backend is None or not backend.native_tools.get("bcftools"):
+            self.skipTest("native bcftools is required for sample projections")
+        self.cohort.hts_backend = backend
+        result = self.library.import_vcf(self.vcf, self.payload(include=False))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+        projected = self.library.review_file(by_sample["P1"]["id"])
+        self.assertTrue(projected.name.endswith(".review.vcf.gz"))
+        projected.write_bytes(b"NOT A VCF\n")
+        again = self.library.review_file(by_sample["P1"]["id"])
+        self.assertEqual(again, projected)
+        header = read_vcf_header(again)
+        self.assertEqual(header.samples, ("P1",))
+        # Truncation preserves a parseable first block: the header check
+        # alone served a 60%-truncated projection — the BGZF EOF-marker
+        # check must catch it.
+        intact = projected.read_bytes()
+        projected.write_bytes(intact[: max(64, int(len(intact) * 0.6))])
+        rebuilt = self.library.review_file(by_sample["P1"]["id"])
+        self.assertEqual(rebuilt.read_bytes()[-28:], intact[-28:])
+        # A valid VCF whose samples are WRONG for the cache key is the
+        # worst corruption; the validator must reject it too.
+        p2 = self.library.review_file(by_sample["P2"]["id"])
+        projected.write_bytes(p2.read_bytes())
+        served = self.library.review_file(by_sample["P1"]["id"])
+        self.assertEqual(read_vcf_header(served).samples, ("P1",))
+
     def test_dedup_refreshes_the_original_path_from_the_new_source(self):
         """Re-importing identical content from the file's new location must
         update original_path — full-WGS reindexing reads it."""

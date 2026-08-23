@@ -22,8 +22,9 @@ the workbench directly. A terminal route exists for those who prefer it
 - **No administrator rights are required on a Mac**, and nothing is
   installed system-wide: everything the first launch adds is contained in
   one managed folder (`~/.iei-variant-review/tools/`), and removing that
-  folder uninstalls it completely. On Windows, one third-party installer —
-  Docker Desktop — is required once, described below.
+  folder uninstalls it completely. On Windows, two one-time steps are
+  required — a Linux distribution for WSL2 (one PowerShell line) and the
+  Docker Desktop installer — both described below.
 
 ## Get the software
 
@@ -72,15 +73,24 @@ same one-time Open Anyway approval for it.
 
 ## Windows: one installer, then double-click
 
-GUIDE-IEI runs inside **WSL2** (a Linux environment Windows provides), and
-its annotation engine runs in a container. One installer covers both:
+GUIDE-IEI runs inside **WSL2** (a Linux environment Windows provides) with
+a Linux distribution, and its annotation engine runs in a container:
 
-1. Install
+1. Open **PowerShell** and run the one line
+
+   ```
+   wsl --install -d Ubuntu
+   ```
+
+   then restart when asked. This installs both WSL2 and Ubuntu, the Linux
+   environment the workbench runs in. (Docker Desktop's installer enables
+   WSL2 too, but provides only its own internal distribution, which cannot
+   host the workbench — this step is needed either way.)
+2. Install
    **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
-   and restart if asked. Its installer enables WSL2; afterwards, in Docker
-   Desktop's settings, confirm **WSL integration** is on (Settings →
-   Resources → WSL integration).
-2. Inside the GUIDE-IEI folder, open `desktop` → `windows` and
+   and restart if asked. In its settings, confirm **WSL integration** is
+   on (Settings → Resources → WSL integration).
+3. Inside the GUIDE-IEI folder, open `desktop` → `windows` and
    double-click **GUIDE-IEI.bat**.
 
 The first launch copies GUIDE-IEI into the Linux filesystem (where large
@@ -184,7 +194,7 @@ When `C:` is too small, there are two good options and one fallback:
 | The workbench page does not load | The launcher window must remain open — it *is* the application. Start it again and watch for error lines. |
 | A `[FIX]` line about the container daemon | The container runtime is installed but not running. Docker Desktop users: launch Docker Desktop; the setup check otherwise prints the exact start command. |
 | Everything is slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
-| Windows: the launcher window flashes and closes | Docker Desktop (and with it WSL2) is not installed yet — step 1 above. |
+| Windows: the launcher window flashes and closes, or reports WSL is not set up | No Linux distribution is installed yet — run `wsl --install -d Ubuntu` in PowerShell (step 1 above), restart, and launch again. |
 | The folder lives in OneDrive/Dropbox and behaves oddly | Cloud-synced folders corrupt the working files. Move the `guide-iei` folder to an ordinary location and launch again. |
 | Uncertain what state the installation is in | Run the setup check from the appendix below (no options). It changes nothing and reports exactly what is present and missing. |
 

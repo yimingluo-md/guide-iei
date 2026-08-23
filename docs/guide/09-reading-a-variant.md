@@ -287,9 +287,13 @@ applies to whole-genome analysis only.
     pathogenic residue is weaker evidence than the same change, which is
     exactly why the two signals are kept apart rather than merged.
 
-  Both are matching aids computed against the release named in the VCF
-  header — as everywhere, the applicable ACMG strength is the reviewer's
-  judgment, not the software's.
+  Both flags compare positions **within the same transcript**: the
+  catalog records which transcript numbered each residue, and a patient
+  annotation from a different isoform — where the same position number
+  denotes a different residue — is never matched. Both are matching aids
+  computed against the release named in the VCF header — as everywhere,
+  the applicable ACMG strength is the reviewer's judgment, not the
+  software's.
 - **ClinGen** contributes two expert-panel layers: allele-level assertions
   from the Evidence Repository, with disease- and inheritance-specific
   detail, and gene-level validity and dosage curation. One dosage caution

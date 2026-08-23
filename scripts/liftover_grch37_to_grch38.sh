@@ -98,7 +98,7 @@ if [[ -s "$OUTPUT" && -s "${OUTPUT}.tbi" && -s "$QC" && -s "$PROVENANCE" ]]; the
     if python3 - "$PROVENANCE" "$INPUT" "$CHAIN" "$SOURCE_FASTA" "$TARGET_DICT" \
         "$BCFTOOLS_VERSION" "$PLUGIN_COMMIT" "$MAX_LENGTH" "$PIPELINE_VERSION" \
         "$OUTPUT" "$TARGET_FASTA" <<'PY'
-import hashlib, json, os, sys
+import gzip, hashlib, json, os, sys, zlib
 (
     provenance_path, input_path, chain_path, source_path, dictionary_path,
     version, commit, max_length, pipeline_version,
@@ -114,6 +114,35 @@ def sha256(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+def sidecar_agrees(identity, path):
+    # The multi-GB FASTA is never re-hashed at reuse time, but its
+    # download-time sha256 sidecar is one line of text: when the recorded
+    # identity and a current sidecar both exist, they must agree — a
+    # re-downloaded or replaced reference then invalidates the cache
+    # without a full read.
+    recorded = identity.get("sha256")
+    if not recorded:
+        return True
+    try:
+        fields = open(path + ".sha256.local").read().split()
+    except OSError:
+        return True
+    return not fields or fields[0] == recorded
+def tabix_index_ok(path):
+    # Structural check for legacy provenances that never recorded the
+    # index: the file must at least BE a tabix index (BGZF-compressed,
+    # TBI magic), not arbitrary bytes at the right name.
+    try:
+        with open(path, "rb") as handle:
+            if handle.read(2) != b"\x1f\x8b":
+                return False
+        with gzip.open(path, "rb") as handle:
+            return handle.read(4) == b"TBI\x01"
+    except (OSError, EOFError, zlib.error):
+        # Truncated gzip raises EOFError and corrupt deflate zlib.error —
+        # neither is an OSError; an escape here printed a raw traceback
+        # even though bash treated the nonzero exit as a safe cache miss.
+        return False
 def same(identity, path, verify_hash=True):
     stat = os.stat(path)
     return (
@@ -135,11 +164,19 @@ valid = (
     same(value.get("input", {}), input_path)
     and same(value.get("chain", {}), chain_path)
     and same(value.get("source_reference", {}), source_path, verify_hash=False)
+    and sidecar_agrees(value.get("source_reference", {}), source_path)
     and same(value.get("target_sequence_dictionary", {}), dictionary_path)
     # The cached OUTPUT itself must be intact: a truncated or in-place
     # damaged file previously passed on mere non-emptiness.
     and same(value.get("output", {}), output_path)
-    and same_optional("output_index", output_path + ".tbi")
+    # A provenance that recorded the index verifies it in full; one that
+    # predates the key must still prove the current .tbi is structurally
+    # a tabix index — "any nonempty file" reused literal garbage.
+    and (
+        same(value["output_index"], output_path + ".tbi")
+        if "output_index" in value
+        else tabix_index_ok(output_path + ".tbi")
+    )
     and same_optional("target_reference", target_fasta_path, verify_hash=False)
     and tool.get("bcftools_version") == version
     and tool.get("plugin_commit") == commit

@@ -19,24 +19,46 @@ Write-Host ""
 
 # --- WSL2 present with a Linux distribution? -------------------------------
 $wslReady = $false
+$distro = $null
 try {
-    # Docker Desktop registers internal docker-desktop* distributions that
-    # are not usable Linux environments; only a real distribution counts.
+    # Docker Desktop, Rancher Desktop and Podman register internal
+    # distributions that are not usable Linux environments; only a real
+    # distribution counts.
     $distros = (wsl.exe -l -q) 2>$null |
         ForEach-Object { ($_ -replace "`0", '').Trim() } |
-        Where-Object { $_ -and $_ -notmatch '^docker-desktop' }
-    if ($distros) { $wslReady = $true }
+        Where-Object { $_ -and $_ -notmatch '^(docker-desktop|rancher-desktop|podman-machine)' }
+    if ($distros) {
+        $wslReady = $true
+        # Every later wsl.exe call must target THIS distribution
+        # explicitly: unqualified calls run in the WSL default, which can
+        # be docker-desktop (Docker installed first, or the default lost
+        # during a WSL relocation) — an environment the check above just
+        # ruled out. `wsl -l` lists the default first, so when the user's
+        # default is a real distribution it is the one chosen here. On a
+        # machine with several real distributions, prefer the one that
+        # already holds a GUIDE-IEI install — a changed default must not
+        # silently migrate the app (and its review state) elsewhere.
+        $distro = @($distros)[0]
+        if (@($distros).Count -gt 1) {
+            foreach ($candidate in $distros) {
+                $installed = (wsl.exe -d $candidate bash -c "test -d ~/guide-iei/scripts && echo yes") 2>$null
+                if ($installed) { $distro = $candidate; break }
+            }
+        }
+    }
 } catch { $wslReady = $false }
 
 if (-not $wslReady) {
-    Write-Host "GUIDE-IEI runs inside WSL2 (Windows Subsystem for Linux),"
-    Write-Host "which is not set up yet. The simplest route is to install"
-    Write-Host "Docker Desktop - its installer enables WSL2 for you and is"
-    Write-Host "also needed for annotation."
+    Write-Host "GUIDE-IEI runs inside WSL2 (Windows Subsystem for Linux)"
+    Write-Host "with a Linux distribution, and no distribution is installed"
+    Write-Host "yet. (Docker Desktop's own internal one does not count.)"
     Write-Host ""
-    Write-Host "  1. Install Docker Desktop (opens now), restart if asked."
-    Write-Host "  2. Double-click GUIDE-IEI.bat again."
-    Start-Process "https://www.docker.com/products/docker-desktop/"
+    Write-Host "  1. Open PowerShell and run:   wsl --install -d Ubuntu"
+    Write-Host "     then restart when asked."
+    Write-Host "  2. Install Docker Desktop if you have not (needed for"
+    Write-Host "     annotation):"
+    Write-Host "     https://www.docker.com/products/docker-desktop/"
+    Write-Host "  3. Double-click GUIDE-IEI.bat again."
     exit 1
 }
 
@@ -51,8 +73,8 @@ if (-not (Test-Path $dockerExe)) {
 
 # --- Repository copy inside WSL -------------------------------------------
 $wslRepo = "~/guide-iei"
-$winRootWsl = (wsl.exe wslpath -a "$WinRoot").Trim()
-$hasRepo = (wsl.exe bash -c "test -d $wslRepo/scripts && echo yes") 2>$null
+$winRootWsl = (wsl.exe -d $distro wslpath -a "$WinRoot").Trim()
+$hasRepo = (wsl.exe -d $distro bash -c "test -d $wslRepo/scripts && echo yes") 2>$null
 
 if (-not $hasRepo -or $Update) {
     if ($Update) {
@@ -64,7 +86,7 @@ if (-not $hasRepo -or $Update) {
     # deleted or renamed, leaving stale modules in the installed copy. The
     # repository holds no user state (that lives in ~/.iei-variant-review),
     # so a staged swap is safe; webui dependencies reinstall on next start.
-    wsl.exe bash -c "rm -rf $wslRepo.staging && mkdir -p $wslRepo.staging && cp -R '$winRootWsl'/. $wslRepo.staging/ && find $wslRepo.staging -name '*.sh' -o -name '*.command' | xargs -r chmod +x && rm -rf $wslRepo && mv $wslRepo.staging $wslRepo"
+    wsl.exe -d $distro bash -c "rm -rf $wslRepo.staging && mkdir -p $wslRepo.staging && cp -R '$winRootWsl'/. $wslRepo.staging/ && find $wslRepo.staging -name '*.sh' -o -name '*.command' | xargs -r chmod +x && rm -rf $wslRepo && mv $wslRepo.staging $wslRepo"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: copying into WSL failed. Please report this message."
         exit 1
@@ -74,5 +96,5 @@ if (-not $hasRepo -or $Update) {
 # --- Start the workbench ---------------------------------------------------
 # start_workbench.sh handles first-time setup (--bootstrap), the browser
 # open (via the Windows default browser), and supervised restarts.
-wsl.exe bash -lc "cd $wslRepo && bash scripts/start_workbench.sh --bootstrap"
+wsl.exe -d $distro bash -lc "cd $wslRepo && bash scripts/start_workbench.sh --bootstrap"
 exit $LASTEXITCODE
