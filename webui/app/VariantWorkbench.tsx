@@ -2948,7 +2948,7 @@ function AboutPanel() {
   }
   const upToDate = check?.ok && check.update_available === false && !check.error;
   return <div className="gene-knowledge-settings about-panel">
-    <div className="content-header"><div><p className="eyebrow">About</p><h1>GUIDE-IEI</h1><p className="subtitle"><strong>G</strong>enomic <strong>U</strong>ser-friendly <strong>I</strong>n-depth <strong>D</strong>iagnostic-analysis <strong>E</strong>nvironment for <strong>I</strong>nborn <strong>E</strong>rrors of <strong>I</strong>mmunity</p></div></div>
+    <div className="content-header"><div><p className="eyebrow">About</p><h1>GUIDE-IEI</h1><p className="subtitle"><strong>G</strong>enomic <strong>U</strong>ser-friendly <strong>I</strong>n-depth <strong>D</strong>iagnostic-analysis <strong>E</strong>nvironment for <strong>I</strong>nborn <strong>E</strong>rrors of <strong>I</strong>mmunity</p><p className="subtitle">Version {status?.current_version ?? "…"}</p></div></div>
     {error && <div className="alert error">{error}</div>}
     {status?.incomplete_update && !installResult && <div className="alert error"><strong>A previous update did not finish.</strong> The software may be running a mix of two versions. Check for updates and install again to complete it{status.rollback_available ? ", or return to the previous version below" : ""}.</div>}
     {status?.restart_pending && !installResult && <div className="alert software-update-done"><div><strong>An update was installed but is not running yet.</strong><span>Restart to finish it.</span></div><button className="primary-button dark" disabled={Boolean(working)} onClick={() => void restartNow()}>{working === "restart" ? "Restarting…" : "Restart the workbench"}</button></div>}
