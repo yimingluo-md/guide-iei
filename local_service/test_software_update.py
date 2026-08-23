@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 import unittest
+import unittest.mock
 import zipfile
 from pathlib import Path
 
@@ -244,6 +245,150 @@ class SoftwareUpdateTests(unittest.TestCase):
         github = FakeGitHub("0.6.0", self.release_files())
         with self.assertRaisesRegex(ValueError, "VERSION is missing"):
             self.updater(github).install()
+
+    def test_rollback_works_when_the_release_added_no_files(self):
+        """The likeliest release shape — a bugfix touching only existing
+        files — previously crashed rollback with 'empty manifest'."""
+        github = FakeGitHub("0.6.0", self.release_files(
+            **{"scripts/added.sh": None}
+        ))
+        updater = self.updater(github)
+        updater.install()
+        result = updater.rollback()
+        self.assertEqual(result["restored_version"], "0.5.0")
+        self.assertEqual((self.repo / "VERSION").read_text(), "0.5.0\n")
+        self.assertEqual((self.repo / "scripts" / "run.sh").read_text(), "old script\n")
+        self.assertFalse(updater.status()["rollback_available"])
+
+    def test_rollback_keeps_config_edits_made_after_install(self):
+        """The .new-review flow invites merging keys into the user config
+        AFTER install; rollback must never revert those edits, and the
+        stale .new file must not survive."""
+        github = FakeGitHub("0.6.0", self.release_files())
+        updater = self.updater(github)
+        updater.install()
+        config = self.repo / "config" / "annotation.config.yaml"
+        config.write_text("# merged after review\nspliceai: 0.5\nnewkey: 1\n")
+        updater.rollback()
+        self.assertEqual(
+            config.read_text(), "# merged after review\nspliceai: 0.5\nnewkey: 1\n"
+        )
+        self.assertFalse(config.with_name(config.name + ".new").exists())
+
+    def test_rollback_of_a_dependency_change_writes_the_install_flag(self):
+        github = FakeGitHub("0.6.0", self.release_files(
+            **{"webui/package.json": b'{"new": true}\n'}
+        ))
+        updater = self.updater(github)
+        summary = updater.install()
+        self.assertTrue(summary["dependencies_changed"])
+        (self.repo / "webui" / ".dependencies-updated").unlink()  # consumed
+        result = updater.rollback()
+        self.assertTrue(result["dependencies_changed"])
+        self.assertTrue((self.repo / "webui" / ".dependencies-updated").is_file())
+
+    def test_rollback_mirrors_to_the_wsl_origin(self):
+        origin = Path(self.temp.name) / "windows-folder"
+        (origin / "scripts").mkdir(parents=True)
+        (origin / "VERSION").write_text("0.5.0\n")
+        (origin / "scripts" / "run.sh").write_text("old script\n")
+        (self.repo / ".wsl-origin").write_text(str(origin) + "\n")
+        github = FakeGitHub("0.6.0", self.release_files())
+        updater = self.updater(github)
+        updater.install()
+        self.assertEqual((origin / "VERSION").read_text(), "0.6.0\n")
+        result = updater.rollback()
+        self.assertTrue(result["wsl_origin_synced"])
+        self.assertEqual((origin / "VERSION").read_text(), "0.5.0\n")
+        self.assertEqual((origin / "scripts" / "run.sh").read_text(), "old script\n")
+        self.assertFalse((origin / "scripts" / "added.sh").exists())
+
+    def test_case_only_rename_does_not_delete_the_new_file(self):
+        """On the case-insensitive filesystems clinicians run, deleting the
+        old spelling of a case-only rename deletes the file the install
+        just wrote."""
+        first = FakeGitHub("0.6.0", self.release_files(
+            **{"docs/Guide.md": b"guide v1\n"}
+        ))
+        self.updater(first).install()
+        second = FakeGitHub("0.7.0", self.release_files(
+            VERSION=b"0.7.0\n",
+            **{"docs/Guide.md": None, "docs/guide.md": b"guide v2\n"},
+        ))
+        summary = self.updater(second).install()
+        self.assertNotIn("docs/Guide.md", summary["files_removed"])
+        renamed = [p for p in (self.repo / "docs").iterdir() if p.name.lower() == "guide.md"]
+        self.assertTrue(renamed and renamed[0].read_text() == "guide v2\n")
+
+    def test_interrupted_install_is_detected_and_repairable(self):
+        """A crash mid-swap can leave the tree claiming the NEW version;
+        the sentinel keeps install available as a repair."""
+        github = FakeGitHub("0.6.0", self.release_files())
+        updater = self.updater(github)
+        # Simulate the crash state: sentinel written, VERSION already new.
+        updater.updates_dir.mkdir(parents=True, exist_ok=True)
+        updater._sentinel.write_text("0.6.0\n")
+        (self.repo / "VERSION").write_text("0.6.0\n")
+        self.assertTrue(updater.status()["incomplete_update"])
+        summary = updater.install()  # same version — allowed as repair
+        self.assertTrue(summary["repaired"])
+        self.assertEqual((self.repo / "scripts" / "run.sh").read_text(), "new script\n")
+        self.assertFalse(updater.status()["incomplete_update"])
+
+    def test_version_file_is_applied_last(self):
+        """A crash before completion must leave the OLD version on disk so
+        check() keeps offering the update."""
+        from local_service import software_update as module
+        github = FakeGitHub("0.6.0", self.release_files())
+        updater = self.updater(github)
+        real = module.SoftwareUpdater._replace_file
+        def exploding(content, destination, mode=None):
+            if destination.name == "run.sh":
+                raise OSError("simulated crash")
+            real(content, destination, mode)
+        with unittest.mock.patch.object(
+            module.SoftwareUpdater, "_replace_file", staticmethod(exploding)
+        ):
+            with self.assertRaises(OSError):
+                updater.install()
+        self.assertEqual((self.repo / "VERSION").read_text(), "0.5.0\n")
+        self.assertTrue(updater.status()["incomplete_update"])
+
+    def test_release_shipping_local_state_files_is_refused(self):
+        files = self.release_files()
+        files[".wsl-origin"] = str(Path(self.temp.name) / "victim").encode()
+        github = FakeGitHub("0.6.0", files)
+        with self.assertRaisesRegex(ValueError, "local machine state"):
+            self.updater(github).install()
+        self.assertEqual((self.repo / "VERSION").read_text(), "0.5.0\n")
+
+    def test_directory_at_a_manifest_path_is_refused_before_any_change(self):
+        (self.repo / "scripts" / "added.sh").mkdir()
+        github = FakeGitHub("0.6.0", self.release_files())
+        with self.assertRaisesRegex(ValueError, "folder sits where"):
+            self.updater(github).install()
+        self.assertEqual((self.repo / "VERSION").read_text(), "0.5.0\n")
+        self.assertEqual((self.repo / "scripts" / "run.sh").read_text(), "old script\n")
+
+    def test_restart_pending_lifecycle(self):
+        github = FakeGitHub("0.6.0", self.release_files())
+        updater = self.updater(github)
+        self.assertFalse(updater.status()["restart_pending"])
+        updater.install()
+        self.assertTrue(updater.status()["restart_pending"])
+        updater.clear_restart_pending()
+        self.assertFalse(updater.status()["restart_pending"])
+
+    def test_dropped_package_directories_are_pruned(self):
+        github = FakeGitHub("0.6.0", self.release_files(
+            **{"tools/legacy/old.py": b"module\n"}
+        ))
+        self.updater(github).install()
+        second = FakeGitHub("0.7.0", self.release_files(
+            VERSION=b"0.7.0\n", **{"tools/legacy/old.py": None}
+        ))
+        self.updater(second).install()
+        self.assertFalse((self.repo / "tools").exists())
 
     def test_foreign_asset_hosts_are_refused(self):
         github = FakeGitHub("0.6.0", self.release_files())

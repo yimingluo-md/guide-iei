@@ -68,14 +68,17 @@ ls -la dist/
 echo
 if [[ "$PUBLISH" == "1" ]]; then
     command -v gh >/dev/null 2>&1 || die "--publish needs the gh CLI, authenticated"
-    git tag -a "$TAG" -m "GUIDE-IEI ${VERSION}" 2>/dev/null \
-        || echo "tag ${TAG} already exists; publishing release for it"
-    git push origin "$TAG"
+    gh release view "$TAG" >/dev/null 2>&1 \
+        && die "release ${TAG} already exists on GitHub"
+    # gh release create makes the tag on the remote itself; pushing a bare
+    # tag first would trigger the release workflow and the two publishers
+    # would race to create the same release.
     gh release create "$TAG" "$ZIP" dist/sha256sums.txt \
+        --target "$(git rev-parse HEAD)" \
         --title "GUIDE-IEI ${VERSION}" --notes-file dist/release-notes.md
-    echo "release ${TAG} published"
+    echo "release ${TAG} published (the workflow skips tags that already have a release)"
 else
     echo "next: git tag -a ${TAG} -m 'GUIDE-IEI ${VERSION}' && git push origin ${TAG}"
     echo "      (the release workflow publishes the assets automatically), or"
-    echo "      re-run with --publish to tag and publish from here."
+    echo "      re-run with --publish to publish from here."
 fi

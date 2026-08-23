@@ -205,27 +205,37 @@ application. Open **About & updates** in the left navigation:
 
 - The page shows the installed version. **Check for updates** asks
   github.com for the newest release and shows its description — what
-  changed, in plain terms. This lookup is the only request GUIDE-IEI
-  ever makes beyond your computer; it happens only when you click, and
-  nothing about you or your data is sent.
+  changed, in plain terms. The lookup happens only when you click, and
+  nothing about you or your data is sent. (GUIDE-IEI reaches the network
+  only on your explicit request: this lookup, dataset downloads you
+  start, and the optional per-variant SpliceAI lookup, which sends only
+  the variant coordinates you ask about.)
 - **Install** downloads the release, verifies its checksum, and replaces
   the software's own files — nothing else. Annotation datasets, the
   sample library, review data, and your edited configuration are never
-  touched. When a release introduces new configuration options, your
-  file is kept as-is and the new version is saved beside it
+  touched. When a release changes the configuration, your file is kept
+  as-is and the new version is saved beside it
   (`annotation.config.yaml.new`) for you to compare at leisure.
 - A restart finishes the update; the page offers the button. When a
-  release changed the interface's components, that restart takes about a
-  minute longer while they install themselves.
+  release changed the interface's underlying components, the page says
+  so and asks you to **close the launcher window entirely and start
+  GUIDE-IEI again** — that first start installs the new components and
+  takes about a minute longer.
 - The version you were running is kept. If anything about the new
   version misbehaves, **Return to it** on the same page restores the
-  previous version as it was.
+  previous software exactly — your configuration file and data stay as
+  they are at that moment.
 
 Updating never runs while an annotation job, import, or storage
 migration is in progress — finish or cancel those first.
 
-On the terminal route, `git pull` in the repository folder achieves the
-same, followed by a restart of `start_workbench.sh`.
+On the terminal route, updating is `git pull` in the repository folder,
+with two caveats the in-app updater handles for you: git refuses to pull
+over a hand-edited `config/annotation.config.yaml` (stash or commit your
+edits first), and when `webui/package.json` changed you must run
+`npm install` inside `webui/` before restarting `start_workbench.sh`.
+The two routes do not mix — after using the in-app updater, keep using
+it (the folder no longer matches git's records).
 
 ## Uninstalling
 

@@ -1478,6 +1478,8 @@ export type SoftwareUpdateStatus = {
   repo: string;
   rollback_available: boolean;
   rollback_version: string | null;
+  incomplete_update: boolean;
+  restart_pending: boolean;
 };
 
 export type SoftwareUpdateCheck = {
@@ -1489,6 +1491,7 @@ export type SoftwareUpdateCheck = {
   published_at?: string | null;
   notes?: string;
   update_available?: boolean;
+  incomplete_update?: boolean;
   error?: string;
 };
 
@@ -1502,7 +1505,8 @@ export type SoftwareUpdateResult = {
   dependencies_changed?: boolean;
   container_changed?: boolean;
   files_removed?: string[];
-  wsl_origin_synced?: boolean;
+  repaired?: boolean;
+  wsl_origin_synced?: boolean | null;
 };
 
 export async function getSoftwareUpdateStatus() {
@@ -1510,7 +1514,12 @@ export async function getSoftwareUpdateStatus() {
 }
 
 export async function checkForSoftwareUpdate() {
-  return request<SoftwareUpdateCheck>("/api/software-update/check");
+  // POST: the outbound release lookup must be impossible to trigger from
+  // another site's no-cors GET.
+  return request<SoftwareUpdateCheck>("/api/software-update/check", {
+    method: "POST",
+    body: "{}",
+  });
 }
 
 export async function installSoftwareUpdate() {

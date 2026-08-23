@@ -677,6 +677,8 @@ class AnnotationJobService:
         self.software_updater = SoftwareUpdater(
             self.pipeline_root, self.state_dir
         )
+        # A fresh process IS the restart an install asked for.
+        self.software_updater.clear_restart_pending()
         self._software_update_lock = threading.Lock()
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._processes: dict[str, subprocess.Popen] = {}
@@ -693,6 +695,7 @@ class AnnotationJobService:
         self._storage_transition = threading.Condition(threading.Lock())
         self._active_storage_mutations = 0
         self._migration_reserved = False
+        self._migration_reservation_reason = ""
         self._storage_usage_cache: dict[str, tuple[float, int]] = {}
         self._storage_usage_lock = threading.Lock()
         self._restart_requested = False
@@ -1277,7 +1280,9 @@ class AnnotationJobService:
         with self._storage_transition:
             if self._migration_reserved or self.storage_migration_active():
                 raise ValueError(
-                    "a storage migration is running; wait for it to finish before changing workbench data"
+                    (self._migration_reservation_reason
+                     or "a storage migration is running")
+                    + "; wait for it to finish before changing workbench data"
                 )
             if self.storage_restart_required() and not allow_pending_restart:
                 raise ValueError(
@@ -1334,17 +1339,49 @@ class AnnotationJobService:
         """Install the latest release. Refused while anything is running —
         replacing scripts underneath a live annotation job is the hazard."""
         with self._software_update_lock:
-            self._ensure_software_update_idle()
-            return self.software_updater.install()
+            return self._software_update_reserved(self.software_updater.install)
 
     def software_update_rollback(self) -> dict:
         with self._software_update_lock:
+            return self._software_update_reserved(self.software_updater.rollback)
+
+    def _software_update_reserved(self, operation):
+        """Run an update operation under the migration-style reservation.
+
+        Checking idleness once at entry is not enough: the download and
+        verification can take minutes, and a job submitted in that window
+        would have its scripts swapped underneath it. The reservation
+        makes begin_storage_mutation refuse new jobs, imports, and
+        migrations for the whole install, and the restart endpoint is
+        likewise refused while it holds."""
+        with self._storage_transition:
+            if self._migration_reserved or self.storage_migration_active():
+                raise ValueError(
+                    "wait for the running storage migration to finish "
+                    "before updating the software"
+                )
+            if self._active_storage_mutations > 1:
+                # This request's own reservation accounts for one.
+                raise ValueError(
+                    "wait for the active import or data change to finish "
+                    "before updating the software"
+                )
+            self._migration_reserved = True
+            self._migration_reservation_reason = (
+                "a software update is installing"
+            )
+        try:
             self._ensure_software_update_idle()
-            return self.software_updater.rollback()
+            return operation()
+        finally:
+            with self._storage_transition:
+                self._migration_reserved = False
+                self._migration_reservation_reason = ""
+                self._storage_transition.notify_all()
 
     def _ensure_software_update_idle(self) -> None:
         try:
-            self._ensure_storage_idle()
+            self._ensure_storage_idle(ignore_migration_reservation=True)
         except ValueError as exc:
             raise ValueError(
                 str(exc).replace(
@@ -4477,10 +4514,6 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json({"ok": True, "version": SERVICE_VERSION})
         elif path == "/api/software-update/status":
             self._json(self.service.software_updater.status())
-        elif path == "/api/software-update/check":
-            # Explicitly user-triggered: the ONLY request this application
-            # ever makes to a non-local host is this release lookup.
-            self._json(self.service.software_updater.check())
         elif path == "/api/capabilities":
             self._json(self.service.capabilities())
         elif path == "/api/jobs":
@@ -4954,6 +4987,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/jobs/") and path.endswith("/cancel"):
                 job_id = path.split("/")[3]
                 self._json(self.service.cancel(job_id))
+                return
+            if path == "/api/software-update/check":
+                # A POST so no-cors cross-site GETs (an <img> tag on any
+                # web page) can never trigger the outbound release lookup:
+                # it must stay strictly click-driven, as documented.
+                self._json(self.service.software_updater.check())
                 return
             if path == "/api/software-update/install":
                 self._json(self.service.software_update_install())

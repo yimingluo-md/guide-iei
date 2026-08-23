@@ -13,12 +13,17 @@ Design rules:
   supplies.
 - The downloaded archive must verify against the release's sha256sums
   asset before a single file is touched.
-- The user's annotation config is never overwritten: when a release's
-  config carries keys the user's copy lacks, the release version is
-  written BESIDE it (`.new`) and the new keys are reported, preserving
-  every user edit and comment.
+- The user's annotation config is never overwritten — not by install and
+  not by rollback: when a release's config carries changes, the release
+  version is written BESIDE it (`.new`) and reported; rollback keeps
+  whatever the user's config says at that moment.
 - The previous version's files are snapshotted before the swap; rollback
-  restores them with one call.
+  restores them with one call, including on releases that added no files.
+- A crash mid-install is detected (a sentinel written before the swap):
+  the same release can be reinstalled to repair, and rollback restores.
+- Local machine-state files (.wsl-origin, the dependency flag) can never
+  arrive from a release archive, and the Windows-origin mirror target is
+  captured BEFORE any release content lands.
 - Nothing here runs automatically: check() and install() are invoked only
   by explicit user actions in the workbench.
 """
@@ -39,9 +44,13 @@ RELEASE_API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 DOWNLOAD_URL_PREFIX = f"https://github.com/{GITHUB_REPO}/releases/download/"
 MANIFEST_NAME = "release-manifest.txt"
 SUMS_ASSET_NAME = "sha256sums.txt"
-# Files the user edits by hand: never overwritten, release copy lands
-# beside them as <name>.new when it differs.
+# Files the user edits by hand: never overwritten (install writes the
+# release copy beside them as .new; rollback leaves them alone).
 PRESERVED_USER_FILES = ("config/annotation.config.yaml",)
+# Local machine state that must never arrive from a release archive: a
+# hostile archive shipping these could redirect the origin mirror or
+# force scripted work on the next launch.
+FORBIDDEN_RELEASE_PATHS = (".wsl-origin", "webui/.dependencies-updated")
 # Changes to these mean the next start must do extra work; the updater
 # reports them so the UI can set expectations honestly.
 DEPENDENCY_FILES = ("webui/package.json", "webui/package-lock.json")
@@ -70,7 +79,8 @@ def parse_version(value: str) -> tuple[int, ...]:
 
 
 def _safe_relative_path(value: str) -> str:
-    """Validate a manifest/archive path: relative, inside the tree."""
+    """Validate a manifest/archive path: relative, inside the tree, and
+    never one of the local machine-state files."""
     path = str(value).strip()
     if (
         not path
@@ -80,6 +90,11 @@ def _safe_relative_path(value: str) -> str:
         or any(part in ("..", "") for part in path.split("/"))
     ):
         raise ValueError(f"unsafe path in release payload: {value!r}")
+    if path in FORBIDDEN_RELEASE_PATHS:
+        raise ValueError(
+            f"release payload carries local machine state ({path!r}); "
+            "refusing the release"
+        )
     return path
 
 
@@ -99,6 +114,18 @@ class SoftwareUpdater:
         except OSError:
             return "unknown"
 
+    @property
+    def _sentinel(self) -> Path:
+        return self.updates_dir / "update-in-progress.txt"
+
+    @property
+    def _restart_pending_file(self) -> Path:
+        return self.updates_dir / "restart-pending.txt"
+
+    def clear_restart_pending(self) -> None:
+        """Called at service startup: a fresh process IS the restart."""
+        self._restart_pending_file.unlink(missing_ok=True)
+
     def status(self) -> dict:
         rollback_version = None
         version_file = self.rollback_dir / "rollback-version.txt"
@@ -109,6 +136,10 @@ class SoftwareUpdater:
             "repo": GITHUB_REPO,
             "rollback_available": rollback_version is not None,
             "rollback_version": rollback_version,
+            # A crash mid-swap leaves a mixed tree that self-reports the
+            # NEW version; the sentinel is the only honest witness.
+            "incomplete_update": self._sentinel.is_file(),
+            "restart_pending": self._restart_pending_file.is_file(),
         }
 
     def check(self) -> dict:
@@ -144,6 +175,7 @@ class SoftwareUpdater:
             "published_at": release.get("published_at"),
             "notes": str(release.get("body") or ""),
             "update_available": parse_version(latest) > parse_version(current),
+            "incomplete_update": self._sentinel.is_file(),
         }
         if zip_asset and sums_asset:
             result["assets"] = {
@@ -169,10 +201,15 @@ class SoftwareUpdater:
                 "the software folder does not look like a GUIDE-IEI "
                 "installation (VERSION is missing); refusing to update it"
             )
+        repairing = self._sentinel.is_file()
         info = self.check()
         if not info.get("ok"):
             raise ValueError(info.get("error") or "release lookup failed")
-        if not info.get("update_available"):
+        if "assets" not in info:
+            raise ValueError(info.get("error") or "no installable release")
+        # A repair (interrupted earlier install) may reinstall the SAME
+        # version — the tree already claims it while old files remain.
+        if not info.get("update_available") and not repairing:
             raise ValueError(
                 info.get("error")
                 or "no newer release is available to install"
@@ -199,6 +236,11 @@ class SoftwareUpdater:
                 "release assets are inconsistent)"
             )
 
+        # The origin mirror target must come from THIS machine's state as
+        # it was before any release content landed, never from the
+        # archive being installed.
+        origin = self._wsl_origin_target()
+
         self.updates_dir.mkdir(parents=True, exist_ok=True)
         with tempfile.TemporaryDirectory(dir=self.updates_dir) as staging_name:
             staging = Path(staging_name)
@@ -214,7 +256,17 @@ class SoftwareUpdater:
                     f"file(s), e.g. {missing[0]!r} — refusing a partial "
                     "install"
                 )
+            wrong_kind = [
+                path for path in manifest
+                if (self.repo_root / path).is_dir()
+            ]
+            if wrong_kind:
+                raise ValueError(
+                    f"a folder sits where the release ships a file "
+                    f"({wrong_kind[0]}); move it aside and install again"
+                )
             old_manifest = self._installed_manifest()
+            self._sentinel.write_text(info["latest_version"] + "\n")
             summary = self._apply(staging, manifest, old_manifest)
 
         (self.updates_dir / "installed-manifest.txt").write_text(
@@ -225,8 +277,13 @@ class SoftwareUpdater:
             "installed_version": info["latest_version"],
             "previous_version": info["current_version"],
             "restart_required": True,
+            "repaired": repairing,
         })
-        summary["wsl_origin_synced"] = self._sync_wsl_origin(manifest, old_manifest)
+        summary["wsl_origin_synced"] = self._sync_wsl_origin(
+            origin, manifest, old_manifest
+        )
+        self._restart_pending_file.write_text(info["latest_version"] + "\n")
+        self._sentinel.unlink(missing_ok=True)
         return summary
 
     # ------------------------------------------------------------------ #
@@ -237,28 +294,62 @@ class SoftwareUpdater:
         manifest_file = self.rollback_dir / "rollback-manifest.txt"
         if not (version_file.is_file() and manifest_file.is_file()):
             raise ValueError("no previous version is available to restore")
+        origin = self._wsl_origin_target()
         restored_version = version_file.read_text().strip()
-        for path in self._read_manifest(manifest_file):
+        restored = self._read_manifest(manifest_file, allow_empty=True)
+        dependency_before = self._dependency_bytes()
+        for path in restored:
             source = self.rollback_dir / "files" / path
             if not source.is_file():
                 continue
-            self._replace_file(source.read_bytes(), self.repo_root / path,
+            destination = self.repo_root / path
+            if path in PRESERVED_USER_FILES and destination.is_file():
+                # The user's config is theirs at every point in time —
+                # including edits made AFTER the install (merging keys the
+                # .new file suggested). Rollback never reverts it.
+                continue
+            self._replace_file(source.read_bytes(), destination,
                                mode=source.stat().st_mode & 0o777)
-        added_file = self.rollback_dir / "rollback-added.txt"
-        if added_file.is_file():
-            for path in self._read_manifest(added_file):
-                (self.repo_root / path).unlink(missing_ok=True)
+        added = self._read_manifest(
+            self.rollback_dir / "rollback-added.txt", allow_empty=True,
+            allow_missing=True,
+        )
+        for path in added:
+            target = self.repo_root / path
+            try:
+                target.unlink(missing_ok=True)
+            except OSError:
+                # A directory or permission oddity at an added path must
+                # not strand the rollback; the file list below reports
+                # exactly what was restored.
+                continue
+        self._prune_empty_dirs(added, self.repo_root)
+        # A stale ".new" config from the rolled-back release would invite
+        # merging keys for a version no longer installed.
+        for path in PRESERVED_USER_FILES:
+            preserved = self.repo_root / path
+            preserved.with_name(preserved.name + ".new").unlink(missing_ok=True)
         previous_manifest = self.rollback_dir / "previous-installed-manifest.txt"
         installed = self.updates_dir / "installed-manifest.txt"
         if previous_manifest.is_file():
             shutil.copy2(previous_manifest, installed)
         else:
             installed.unlink(missing_ok=True)
+        dependencies_changed = dependency_before != self._dependency_bytes()
+        if dependencies_changed:
+            (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
+        synced = self._sync_wsl_origin(
+            origin, restored, [*restored, *added]
+        )
         shutil.rmtree(self.rollback_dir, ignore_errors=True)
+        self._sentinel.unlink(missing_ok=True)
+        self._restart_pending_file.write_text(restored_version + "\n")
         return {
             "ok": True,
             "restored_version": restored_version,
             "restart_required": True,
+            "dependencies_changed": dependencies_changed,
+            "wsl_origin_synced": synced,
         }
 
     # ------------------------------------------------------------------ #
@@ -296,13 +387,16 @@ class SoftwareUpdater:
                     os.chmod(target, mode)
 
     @staticmethod
-    def _read_manifest(path: Path) -> list[str]:
+    def _read_manifest(path: Path, allow_empty: bool = False,
+                       allow_missing: bool = False) -> list[str]:
+        if allow_missing and not path.is_file():
+            return []
         entries = []
         for line in path.read_text().splitlines():
             line = line.strip()
             if line:
                 entries.append(_safe_relative_path(line))
-        if not entries:
+        if not entries and not allow_empty:
             raise ValueError(f"empty manifest: {path}")
         return entries
 
@@ -312,16 +406,40 @@ class SoftwareUpdater:
             return self._read_manifest(stored)
         return None
 
+    def _dependency_bytes(self) -> tuple[bytes, ...]:
+        values = []
+        for path in DEPENDENCY_FILES:
+            target = self.repo_root / path
+            values.append(target.read_bytes() if target.is_file() else b"")
+        return tuple(values)
+
     @staticmethod
     def _replace_file(content: bytes, destination: Path, mode: int | None = None) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
         temporary = destination.with_name(
             f".{destination.name}.{os.getpid()}.update-tmp"
         )
-        temporary.write_bytes(content)
-        if mode:
-            os.chmod(temporary, mode)
-        os.replace(temporary, destination)
+        try:
+            temporary.write_bytes(content)
+            if mode:
+                os.chmod(temporary, mode)
+            os.replace(temporary, destination)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+    @staticmethod
+    def _prune_empty_dirs(removed_paths: list[str], root: Path) -> None:
+        """Remove directories a deletion pass emptied, up to (never
+        including) root — a leftover empty Python package directory stays
+        importable as a namespace package, shadowing real modules."""
+        for path in removed_paths:
+            parent = (root / path).parent
+            while parent != root and root in parent.parents:
+                try:
+                    parent.rmdir()
+                except OSError:
+                    break
+                parent = parent.parent
 
     def _apply(self, staging: Path, manifest: list[str],
                old_manifest: list[str] | None) -> dict:
@@ -343,24 +461,31 @@ class SoftwareUpdater:
                 added.append(path)
         self.rollback_dir.mkdir(parents=True, exist_ok=True)
         (self.rollback_dir / "rollback-manifest.txt").write_text(
-            "\n".join(snapshotted) + "\n" if snapshotted else "\n"
+            "\n".join(snapshotted) + ("\n" if snapshotted else "")
         )
         (self.rollback_dir / "rollback-added.txt").write_text(
-            "\n".join(added) + "\n" if added else ""
-        )
-        (self.rollback_dir / "rollback-version.txt").write_text(
-            self.current_version() + "\n"
+            "\n".join(added) + ("\n" if added else "")
         )
         stored = self.updates_dir / "installed-manifest.txt"
         if stored.is_file():
             shutil.copy2(
                 stored, self.rollback_dir / "previous-installed-manifest.txt"
             )
+        # Written LAST: its presence is the promise that the snapshot is
+        # complete, so a crash during the snapshot never offers a partial
+        # rollback.
+        (self.rollback_dir / "rollback-version.txt").write_text(
+            self.current_version() + "\n"
+        )
 
         deps_changed = False
         container_changed = False
         config_review: list[str] = []
-        for path in manifest:
+        # VERSION is applied LAST: a crash mid-swap must leave a tree that
+        # still reports the OLD version, so check() keeps offering the
+        # update and a retry repairs instead of "already up to date".
+        ordered = sorted(manifest, key=lambda path: path == "VERSION")
+        for path in ordered:
             staged = staging / path
             destination = self.repo_root / path
             new_bytes = staged.read_bytes()
@@ -388,17 +513,23 @@ class SoftwareUpdater:
         removed = []
         if old_manifest is not None:
             preserved = set(PRESERVED_USER_FILES)
+            # Case-insensitive comparison: on the case-insensitive
+            # filesystems clinicians run (APFS, NTFS), deleting the OLD
+            # spelling of a case-only rename would delete the file the
+            # install just wrote.
+            new_lower = {path.lower() for path in manifest}
             for path in old_manifest:
-                if path in manifest or path in preserved:
+                if path.lower() in new_lower or path in preserved:
                     continue
                 target = self.repo_root / path
                 if target.is_file():
                     target.unlink()
                     removed.append(path)
+            self._prune_empty_dirs(removed, self.repo_root)
 
         if deps_changed:
-            # The launcher runs npm install on the next start when this
-            # flag exists; the UI warns that the restart takes longer.
+            # The launcher runs npm install on the next full start when
+            # this flag exists; the UI directs a full relaunch.
             (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
         return {
             "config_review_needed": config_review,
@@ -408,16 +539,30 @@ class SoftwareUpdater:
             "files_removed": removed,
         }
 
-    def _sync_wsl_origin(self, manifest: list[str],
-                         old_manifest: list[str] | None) -> bool:
-        """Mirror the update onto the Windows-side folder the WSL copy came
-        from, so a later launcher refresh cannot silently downgrade."""
+    def _wsl_origin_target(self) -> Path | None:
+        """The Windows-side folder this WSL copy came from, or None.
+
+        Read from the machine's own pre-update state — a release archive
+        can never ship this file (FORBIDDEN_RELEASE_PATHS)."""
         origin_file = self.repo_root / ".wsl-origin"
         if not origin_file.is_file():
-            return False
-        origin = Path(origin_file.read_text().strip())
-        if not (origin.is_dir() and (origin / "VERSION").is_file()):
-            return False
+            return None
+        try:
+            origin = Path(origin_file.read_text().strip())
+        except OSError:
+            return None
+        if origin.is_dir() and (origin / "VERSION").is_file():
+            return origin
+        return None
+
+    def _sync_wsl_origin(self, origin: Path | None, manifest: list[str],
+                         old_manifest: list[str] | None) -> bool | None:
+        """Mirror the applied file set onto the Windows-side folder the WSL
+        copy came from, so a later launcher refresh cannot silently swap
+        versions in either direction. Returns None when there is no origin,
+        False when the mirror could not complete (the UI warns)."""
+        if origin is None:
+            return None
         try:
             for path in manifest:
                 source = self.repo_root / path
@@ -427,9 +572,14 @@ class SoftwareUpdater:
                     source.read_bytes(), origin / path,
                     mode=source.stat().st_mode & 0o777,
                 )
+            removed = []
+            new_lower = {path.lower() for path in manifest}
             for path in old_manifest or []:
-                if path not in manifest and path not in PRESERVED_USER_FILES:
-                    (origin / path).unlink(missing_ok=True)
+                if path.lower() in new_lower or path in PRESERVED_USER_FILES:
+                    continue
+                (origin / path).unlink(missing_ok=True)
+                removed.append(path)
+            self._prune_empty_dirs(removed, origin)
         except OSError:
             return False
         return True

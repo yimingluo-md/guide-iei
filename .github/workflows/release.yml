@@ -27,6 +27,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="$(tr -d '[:space:]' < VERSION)"
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "release ${GITHUB_REF_NAME} already exists (published locally); nothing to do"
+            exit 0
+          fi
           gh release create "${GITHUB_REF_NAME}" \
             "dist/guide-iei-${VERSION}.zip" dist/sha256sums.txt \
             --title "GUIDE-IEI ${VERSION}" \

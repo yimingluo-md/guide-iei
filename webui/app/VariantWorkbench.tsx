@@ -2920,7 +2920,7 @@ function AboutPanel() {
   }
   async function runRollback() {
     if (!status?.rollback_version) return;
-    if (!window.confirm(`Return to GUIDE-IEI ${status.rollback_version}? The workbench restarts afterwards.`)) return;
+    if (!window.confirm(`Return to GUIDE-IEI ${status.rollback_version}? Your configuration file and data stay exactly as they are; the workbench restarts afterwards.`)) return;
     setWorking("rollback"); setError("");
     try {
       const result = await rollbackSoftwareUpdate();
@@ -2948,8 +2948,10 @@ function AboutPanel() {
   }
   const upToDate = check?.ok && check.update_available === false && !check.error;
   return <div className="gene-knowledge-settings about-panel">
-    <div className="content-header"><div><p className="eyebrow">About</p><h1>GUIDE-IEI</h1><p className="subtitle">Version {status?.current_version ?? "…"} · a local application — your genomic data never leave this computer.</p></div></div>
+    <div className="content-header"><div><p className="eyebrow">About</p><h1>GUIDE-IEI</h1><p className="subtitle">Version {status?.current_version ?? "…"} · a local application: analysis and review run entirely on this computer.</p></div></div>
     {error && <div className="alert error">{error}</div>}
+    {status?.incomplete_update && !installResult && <div className="alert error"><strong>A previous update did not finish.</strong> The software may be running a mix of two versions. Check for updates and install again to complete it{status.rollback_available ? ", or return to the previous version below" : ""}.</div>}
+    {status?.restart_pending && !installResult && <div className="alert software-update-done"><div><strong>An update was installed but is not running yet.</strong><span>Restart to finish it.</span></div><button className="primary-button dark" disabled={Boolean(working)} onClick={() => void restartNow()}>{working === "restart" ? "Restarting…" : "Restart the workbench"}</button></div>}
     <section className="gene-resource-section"><div className="section-title"><div><p className="eyebrow">Software updates</p><h2>Keep GUIDE-IEI current</h2></div><button className="secondary-button" disabled={Boolean(working)} onClick={() => void runCheck()}>{working === "check" ? "Checking…" : "Check for updates"}</button></div>
       {check?.error && <div className="alert">{check.error}</div>}
       {upToDate && <div className="alert">GUIDE-IEI {check.current_version} is the newest release.</div>}
@@ -2964,15 +2966,17 @@ function AboutPanel() {
           <strong>{installResult.restored_version ? `GUIDE-IEI ${installResult.restored_version} restored.` : `GUIDE-IEI ${installResult.installed_version} installed.`}</strong>
           <span>
             {installResult.config_review_needed?.length ? " This release updated the annotation configuration; your file was kept and the new version was saved beside it as annotation.config.yaml.new for review." : ""}
-            {installResult.dependencies_changed ? " Interface components changed, so the restart takes a minute longer while they install." : ""}
             {installResult.container_changed ? " The annotation engine's container recipe changed; the next annotation run rebuilds it (a large one-time download)." : ""}
-            {" Restart to run the "}{installResult.restored_version ? "restored" : "new"}{" version."}
+            {installResult.wsl_origin_synced === false ? " The update could not be mirrored to the Windows-side GUIDE-IEI folder — do not use the launcher's -Update option until a later update reports success, or it may reinstate the old version." : ""}
+            {installResult.dependencies_changed
+              ? " Interface components changed: close the launcher window (the Terminal) completely, then start GUIDE-IEI again — the first start installs the new components and takes about a minute longer."
+              : ` Restart to run the ${installResult.restored_version ? "restored" : "new"} version.`}
           </span>
         </div>
-        <button className="primary-button dark" disabled={Boolean(working)} onClick={() => void restartNow()}>{working === "restart" ? "Restarting…" : "Restart the workbench"}</button>
+        {!installResult.dependencies_changed && <button className="primary-button dark" disabled={Boolean(working)} onClick={() => void restartNow()}>{working === "restart" ? "Restarting…" : "Restart the workbench"}</button>}
       </div>}
-      {status?.rollback_available && !installResult && <p className="constraint-note">A previous version ({status.rollback_version}) is kept. <button className="link-button" disabled={Boolean(working)} onClick={() => void runRollback()}>{working === "rollback" ? "Restoring…" : "Return to it"}</button> if the current one misbehaves.</p>}
-      <p className="constraint-note">Checking contacts github.com once to read the latest release description — that lookup is the only request this application ever makes beyond your computer, it happens only when you ask, and nothing about you or your data is sent.</p>
+      {status?.rollback_available && !installResult && <p className="constraint-note">The previously installed version ({status.rollback_version}) is kept. <button className="link-button" disabled={Boolean(working)} onClick={() => void runRollback()}>{working === "rollback" ? "Restoring…" : "Return to it"}</button> if the current one misbehaves. Your configuration file stays exactly as it is now.</p>}
+      <p className="constraint-note">Checking contacts github.com once to read the latest release description; nothing about you or your data is sent. GUIDE-IEI reaches the network only when you ask it to: this release lookup, annotation-dataset downloads you start, and the optional per-variant SpliceAI lookup, which sends only the variant coordinates you request.</p>
     </section>
   </div>;
 }

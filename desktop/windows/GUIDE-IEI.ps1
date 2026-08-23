@@ -83,13 +83,20 @@ if (-not $hasRepo -or $Update) {
         Write-Host "First launch: copying GUIDE-IEI into WSL (one time)..."
     }
     # Replace, never overlay: overlay copies kept files that upstream
-    # deleted or renamed, leaving stale modules in the installed copy. The
-    # repository holds no user state (that lives in ~/.iei-variant-review),
-    # so a staged swap is safe; webui dependencies reinstall on next start.
+    # deleted or renamed, leaving stale modules in the installed copy.
+    # Review state lives in ~/.iei-variant-review, but the repo folder CAN
+    # hold user state — the edited annotation config and default-location
+    # datasets — which the swap below explicitly carries across; webui
+    # dependencies reinstall on next start.
     # .wsl-origin records where this copy came from, so the in-app software
     # updater can mirror updates back to the Windows-side folder — a later
-    # -Update refresh must never silently downgrade the WSL copy.
-    wsl.exe -d $distro bash -c "rm -rf $wslRepo.staging && mkdir -p $wslRepo.staging && cp -R '$winRootWsl'/. $wslRepo.staging/ && find $wslRepo.staging -name '*.sh' -o -name '*.command' | xargs -r chmod +x && printf '%s\n' '$winRootWsl' > $wslRepo.staging/.wsl-origin && rm -rf $wslRepo && mv $wslRepo.staging $wslRepo"
+    # -Update refresh must never silently downgrade the WSL copy. The
+    # refresh itself carries the user's state across the swap: their edited
+    # annotation config (plus a pending .new review file) is copied into
+    # the staging tree, and any datasets living under the default
+    # references/ location are MOVED across (an instant rename, never a
+    # copy of hundreds of gigabytes) — a refresh must never delete either.
+    wsl.exe -d $distro bash -c "rm -rf $wslRepo.staging && mkdir -p $wslRepo.staging && cp -R '$winRootWsl'/. $wslRepo.staging/ && find $wslRepo.staging -name '*.sh' -o -name '*.command' | xargs -r chmod +x && printf '%s\n' '$winRootWsl' > $wslRepo.staging/.wsl-origin && if [ -f $wslRepo/config/annotation.config.yaml ]; then mkdir -p $wslRepo.staging/config && cp -p $wslRepo/config/annotation.config.yaml $wslRepo.staging/config/; fi && if [ -f $wslRepo/config/annotation.config.yaml.new ]; then cp -p $wslRepo/config/annotation.config.yaml.new $wslRepo.staging/config/; fi && if [ -d $wslRepo/references ]; then rm -rf $wslRepo.staging/references && mv $wslRepo/references $wslRepo.staging/references; fi && rm -rf $wslRepo && mv $wslRepo.staging $wslRepo"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: copying into WSL failed. Please report this message."
         exit 1
