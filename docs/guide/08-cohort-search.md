@@ -108,7 +108,8 @@ default would hide them. The gene and region forms share the qualifying
 filters (impact, popmax, predictors, ClinVar). This is the scalable route for large collections:
 screening 50 genomes against a panel is one query, and only the matched
 findings are ever opened. Matched findings flow into the review
-workspace with each record's complete evidence restored.
+workspace with each record re-read from its source, so every evidence
+field the variant page displays reflects the full record.
 
 When a new gene–disease association is published, this is the two-minute
 check across the entire collection — without touching the original files.

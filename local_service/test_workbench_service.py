@@ -835,6 +835,15 @@ class AnnotationJobServiceTests(unittest.TestCase):
         os.utime(aamatch, None)
         self.assertEqual(self.service._resolve_final_output(base), aamatch)
 
+        # The run's own sidecar is authoritative over any mtime reasoning —
+        # equal timestamps on coarse filesystems guessed wrong both ways.
+        (out_dir / "case.vep.vcf.gz.deliverable").write_text("case.vep.vcf.gz\n")
+        self.assertEqual(self.service._resolve_final_output(base), base)
+        (out_dir / "case.vep.vcf.gz.deliverable").write_text(
+            "case.vep.aamatch.vcf.gz\n"
+        )
+        self.assertEqual(self.service._resolve_final_output(base), aamatch)
+
     def test_bulk_intake_queue_processes_items_and_records_failures(self):
         vcf_dir = Path(self.temp.name) / "bulk-src"
         vcf_dir.mkdir()

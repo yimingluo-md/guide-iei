@@ -68,6 +68,9 @@ def reference_paths(cfg: dict) -> list[str]:
     clinvar_dir = (cfg.get("clinvar", {}) or {}).get("dest_dir")
     if clinvar_dir:
         paths.append(str(Path(clinvar_dir) / "clinvar_aa_reference.tsv"))
+    region = cfg.get("region", {}) or {}
+    # The BED that decided which variants reached VEP is run-defining.
+    paths.extend([region.get("custom_bed"), region.get("bed")])
     return sorted({path for path in paths if path and path != "auto"})
 
 
@@ -82,6 +85,10 @@ def main() -> int:
     parser.add_argument("--image", required=True)
     parser.add_argument("--image-id", default="unknown")
     parser.add_argument("--clinvar-release", default="NA")
+    parser.add_argument("--requested-assembly", default="")
+    parser.add_argument("--resolved-assembly", default="")
+    parser.add_argument("--filter-policy", default="")
+    parser.add_argument("--region-bed", default="")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
@@ -100,12 +107,17 @@ def main() -> int:
         "output": file_metadata(args.output),
         "container": {"runtime": args.runtime, "image": args.image, "identity": args.image_id},
         "clinvar_release": args.clinvar_release,
+        "requested_assembly": args.requested_assembly or None,
+        "resolved_assembly": args.resolved_assembly or None,
+        "input_filter_policy": args.filter_policy or None,
+        "region_bed": args.region_bed or None,
         "vep_argv": plan.get("argv", []),
         "references": [
             file_metadata(
                 path if os.path.isabs(path) else os.path.join(args.base_dir, path)
             )
-            for path in reference_paths(cfg)
+            for path in sorted({*reference_paths(cfg),
+                                *([args.region_bed] if args.region_bed else [])})
         ],
     }
     with open(args.output + ".run_manifest.json", "w") as out:

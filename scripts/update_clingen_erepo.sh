@@ -43,9 +43,9 @@ fi
 # build wrote — a swapped ClinVar or a damaged sqlite must trigger a
 # rebuild, not pass as current. Manifests from before these fields simply
 # rebuild once.
-if [[ -s "${DEST}/manifest.json" ]] && python3 - "$SOURCE" "${DEST}/manifest.json" "$CLINVAR" "$FASTA" "${DEST}/clingen_erepo.sqlite3" <<'PY'
+if [[ -s "${DEST}/manifest.json" ]] && python3 - "$SOURCE" "${DEST}/manifest.json" "$CLINVAR" "$FASTA" "${DEST}/clingen_erepo.sqlite3" "${DEST}/clingen_erepo.GRCh38.vcf" <<'PY'
 import hashlib,json,sys
-source,manifest,clinvar,fasta,database=sys.argv[1:]
+source,manifest,clinvar,fasta,database,installed_vcf=sys.argv[1:]
 def sha(path):
     digest=hashlib.sha256()
     with open(path,'rb') as handle:
@@ -56,7 +56,7 @@ try: value=json.load(open(manifest))
 except Exception: raise SystemExit(1)
 if sha(source) != value.get('source_sha256',''): raise SystemExit(1)
 for key, path in (("clinvar_sha256", clinvar), ("fasta_sha256", fasta),
-                  ("sqlite_sha256", database)):
+                  ("sqlite_sha256", database), ("vcf_sha256", installed_vcf)):
     recorded=value.get(key)
     if not recorded: raise SystemExit(1)   # legacy manifest: rebuild once
     try:

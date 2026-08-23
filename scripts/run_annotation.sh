@@ -51,13 +51,16 @@ done
 [[ -n "$OUTPUT" ]] || die "need -o/--output VCF"
 [[ -f "$INPUT"  ]] || die "input not found: $INPUT"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
-RUN_FORMAT="$(yaml_get "$CONFIG" run.format)"
-if [[ -n "$RUN_FORMAT" && "$RUN_FORMAT" != "vcf" ]]; then
-    # Post-processing (PTC 50-bp, haplotypes, aa-match, ClinGen, QC) is
-    # VCF-only; a tab run would produce output the rest of the pipeline
-    # cannot consume. Refuse up front instead of failing midway.
-    die "run.format: ${RUN_FORMAT} is not supported by this runner — output is VCF-only"
-fi
+# Post-processing (PTC 50-bp, haplotypes, aa-match, ClinGen, QC) is
+# VCF-only; a tab run would produce output the rest of the pipeline cannot
+# consume. Refuse up front instead of failing midway. The real key is
+# output.format; run.format is also checked in case of older configs.
+for FORMAT_KEY in output.format run.format; do
+    RUN_FORMAT="$(yaml_get "$CONFIG" "$FORMAT_KEY")"
+    if [[ -n "$RUN_FORMAT" && "$RUN_FORMAT" != "vcf" ]]; then
+        die "${FORMAT_KEY}: ${RUN_FORMAT} is not supported by this runner — output is VCF-only"
+    fi
+done
 INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
 # INPUT is reassigned through liftover/normalisation/pre-filter stages; the
 # reproducibility manifest at the end records the file the operator supplied.
@@ -70,6 +73,7 @@ OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
 if [[ "$INPUT" == "$OUTPUT" || "$INPUT" -ef "$OUTPUT" ]]; then
     die "input and output resolve to the same file: $INPUT — the run would overwrite the source VCF"
 fi
+DELIVERABLE_SIDECAR="${OUTPUT}.deliverable"
 AAMATCH_FINAL="${OUTPUT%.vcf.gz}.aamatch.vcf.gz"
 [[ "$OUTPUT" == *.vcf.gz ]] || AAMATCH_FINAL="${OUTPUT%.vcf}.aamatch.vcf"
 if [[ "$INPUT" == "$AAMATCH_FINAL" || "$INPUT" -ef "$AAMATCH_FINAL" ]]; then
@@ -346,7 +350,12 @@ if [[ "$DRY" != "1" ]] \
     # ClinVar release is unchanged — otherwise the PS1-level change flag
     # stays silently dead until the next release.
     AA_REF_FORMAT="aa4"
-    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$CLINVAR_RELEASE $AA_REF_FORMAT" ]]; then
+    # Bind the stamp to the ClinVar CONTENT, not just its release string: a
+    # replaced or damaged ClinVar VCF under an unchanged release name must
+    # trigger a rebuild (the same rule the ClinGen updater applies).
+    CLINVAR_SHA="$(shasum -a 256 "$CLINVAR_VCF" 2>/dev/null | cut -d' ' -f1)"
+    CLINVAR_SHA="${CLINVAR_SHA:-unknown}"
+    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA" ]]; then
         NEED_BUILD=0
         log "aa-match reference up to date (release $CLINVAR_RELEASE), skip rebuild."
     fi
@@ -354,7 +363,7 @@ if [[ "$DRY" != "1" ]] \
     if [[ "$NEED_BUILD" == "1" ]]; then
         log "=== building ClinVar aa-match reference ==="
         if bash "${HERE}/build_clinvar_aa_reference.sh" "$CONFIG" "$CLINVAR_VCF"; then
-            echo "$CLINVAR_RELEASE $AA_REF_FORMAT" > "$STAMP"
+            echo "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA" > "$STAMP"
         else
             # The matcher will run against the previous catalog; its output
             # must be labeled with THAT release, not the current one.
@@ -470,6 +479,12 @@ if [[ "$DRY" == "1" ]]; then
     log "--dry-run: not executing. Command shown above."
     exit 0
 fi
+
+# Point of no return: outputs are about to be (re)written, so a previous
+# run's deliverable sidecar is now stale. Deleting it any earlier let a
+# dry-run or an early validation failure erase the pointer to a still-valid
+# previous result.
+rm -f "$DELIVERABLE_SIDECAR"
 
 # VEP only creates this sidecar when warnings occur. Remove a sidecar from a
 # prior failed/forced run so it cannot be mistaken for the current run's state.
@@ -713,12 +728,20 @@ case "$RUNTIME" in
     docker|podman)
         IMAGE_ID="$("$RUNTIME" image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || echo unknown)" ;;
 esac
+# The deliverable sidecar names the file this run actually produced, so the
+# service never has to guess from mtimes (equal timestamps on coarse
+# filesystems picked a stale .aamatch sibling).
+printf '%s\n' "$(basename "$FINAL_OUTPUT")" > "$DELIVERABLE_SIDECAR" || true
 if python3 "${ROOT}/pipeline/write_run_manifest.py" \
     --config "$CONFIG" --base-dir "$ROOT" \
     --input "$SOURCE_INPUT" --output "$FINAL_OUTPUT" \
     --plan-json "$PLAN_JSON" \
     --runtime "$RUNTIME" --image "$IMAGE" --image-id "$IMAGE_ID" \
-    --clinvar-release "$CLINVAR_RELEASE"; then
+    --clinvar-release "$CLINVAR_RELEASE" \
+    --requested-assembly "$REQUESTED_ASSEMBLY" \
+    --resolved-assembly "$RESOLVED_ASSEMBLY" \
+    --filter-policy "${FILTER_LABELS[*]:-none}" \
+    --region-bed "${REGION_BED:-}"; then
     log "run manifest -> ${FINAL_OUTPUT}.run_manifest.json"
 else
     warn "run manifest could not be written (the annotated VCF itself is complete)"

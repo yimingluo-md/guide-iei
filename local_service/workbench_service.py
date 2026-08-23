@@ -851,6 +851,17 @@ class AnnotationJobService:
             options.pop("sources", None)
             options.setdefault("annotation_bundle", bundle)
             options.setdefault("resource_versions", installed_versions)
+            # A browser-uploaded source lives in the workspace staging area,
+            # which cleanup deletes: its path must never replace a durable
+            # workstation location on existing datasets.
+            declared = str(options.get("original_path") or path)
+            try:
+                uploads_root = (self.workspace_dir / "uploads").resolve()
+                options["original_is_ephemeral"] = (
+                    uploads_root in Path(declared).expanduser().resolve().parents
+                )
+            except OSError:
+                options["original_is_ephemeral"] = False
             results.append(self.sample_library.import_vcf(path, options))
         return {"imports": results, "datasets": [dataset for result in results for dataset in result["datasets"]]}
 
@@ -4329,10 +4340,27 @@ class AnnotationJobService:
 
     @staticmethod
     def _resolve_final_output(output_path: Path) -> Path:
-        # Prefer the ClinVar amino-acid-match sibling only when it is at
-        # least as new as this run's base output: an existence-only check
-        # let a previous run's .aamatch.vcf.gz masquerade as the current
-        # result whenever the new run did not regenerate it.
+        # The run's own sidecar names the file it actually produced —
+        # authoritative, no mtime guessing (equal timestamps on
+        # coarse-granularity filesystems mis-picked a stale sibling).
+        sidecar = Path(f"{output_path}.deliverable")
+        if sidecar.is_file():
+            try:
+                name = sidecar.read_text().strip().split("\n")[0]
+                # A malformed sidecar (empty, path separators, junk bytes)
+                # must fall back, not fail a successful run: with_name
+                # raises ValueError on bad names and read_text can raise
+                # UnicodeDecodeError.
+                if name and os.sep not in name and "/" not in name:
+                    named = output_path.with_name(name)
+                    if named.is_file():
+                        return named
+            except (OSError, ValueError):
+                pass
+        # Legacy runs without a sidecar: prefer the ClinVar
+        # amino-acid-match sibling only when it is at least as new as this
+        # run's base output — an existence-only check let a previous run's
+        # .aamatch.vcf.gz masquerade as the current result.
         aamatch = Path(str(output_path)[:-7] + ".aamatch.vcf.gz")
         if not aamatch.exists():
             return output_path

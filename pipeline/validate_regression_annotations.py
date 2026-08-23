@@ -33,6 +33,7 @@ def parse_info(raw: str) -> dict[str, str]:
 def load_vcf(path: Path) -> tuple[list[str], dict[str, dict]]:
     fields = None
     records = {}
+    number_a_keys: set[str] = set()
     with open_text(path) as handle:
         for line in handle:
             if line.startswith("##INFO=<ID=CSQ,"):
@@ -40,6 +41,14 @@ def load_vcf(path: Path) -> tuple[list[str], dict[str, dict]]:
                 if not match:
                     raise ValueError("CSQ header has no Format field list")
                 fields = match.group(1).strip().split("|")
+                continue
+            if line.startswith("##INFO=<ID="):
+                # Number=A INFO values are per-ALT lists; expectations are
+                # written per allele, so each ALT's record must carry its
+                # own slice, not the raw comma-joined string.
+                match = re.match(r"##INFO=<ID=([^,]+),Number=A[,>]", line)
+                if match:
+                    number_a_keys.add(match.group(1))
                 continue
             if line.startswith("#"):
                 continue
@@ -71,11 +80,19 @@ def load_vcf(path: Path) -> tuple[list[str], dict[str, dict]]:
                     if not entry.get("ALLELE_NUM")
                     or entry["ALLELE_NUM"] == allele_number
                 ]
+                own_info = dict(info)
+                for key_a in number_a_keys:
+                    value = own_info.get(key_a)
+                    if value is None:
+                        continue
+                    parts = value.split(",")
+                    if len(parts) == len(alts):
+                        own_info[key_a] = parts[alt_index]
                 key = f"{columns[0]}-{columns[1]}-{columns[3]}-{alt}"
                 if key in records:
                     records[key]["entries"].extend(own_entries)
                 else:
-                    records[key] = {"info": info, "entries": own_entries}
+                    records[key] = {"info": own_info, "entries": own_entries}
     if fields is None:
         raise ValueError("VEP CSQ header was not found")
     return fields, records

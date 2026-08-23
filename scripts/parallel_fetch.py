@@ -143,10 +143,20 @@ def main() -> int:
             raise RuntimeError(
                 f"existing file has the expected size but failed MD5: {output}"
             )
-        print(
-            f"{display_progress(100):5.1f}%  verified {output} ({total} bytes)",
-            flush=True,
-        )
+        if expected_sum or expected_md5:
+            print(
+                f"{display_progress(100):5.1f}%  verified {output} ({total} bytes)",
+                flush=True,
+            )
+        else:
+            # "Verified" is an integrity claim; without an upstream checksum
+            # only the size was compared.
+            print(
+                f"{display_progress(100):5.1f}%  {output} matches the remote "
+                f"size ({total} bytes); no upstream checksum available to "
+                "verify content",
+                flush=True,
+            )
         os.close(lock_descriptor)
         lock_path.unlink(missing_ok=True)
         return 0

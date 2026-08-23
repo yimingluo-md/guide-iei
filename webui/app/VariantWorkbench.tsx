@@ -115,7 +115,7 @@ import {
   parseVcfFiles,
   preferredClinicalTranscriptRows,
   STANDARD_VARIANT_QC,
-  variantQcFailures,
+  variantQcFailures, genotypeQcFailures, type GenotypeEvidence,
   type ImportSummary,
   type VariantQcSettings,
   type VariantRow,
@@ -908,8 +908,8 @@ export default function VariantWorkbench() {
     [screenFilteredRows],
   );
   const trioPairs = useMemo(
-    () => trio ? compoundHetPairs(screenFilteredRows, trio) : [],
-    [screenFilteredRows, trio],
+    () => trio ? compoundHetPairs(screenFilteredRows, trio, trioThresholds) : [],
+    [screenFilteredRows, trio, trioThresholds],
   );
   const trioCandidatePairs = useMemo(
     () => trioPairs.filter((pair) => pair.phase !== "cis" && pair.phase !== "excluded_hemizygous"),
@@ -1400,7 +1400,7 @@ export default function VariantWorkbench() {
             <>
               <div className="content-header">
                 <div><p className="eyebrow">{summary ? `${summary.files} imported file${summary.files === 1 ? "" : "s"}` : "No VCF imported"}</p><h1>{view === "compound" ? "Candidate compound heterozygotes" : view === "saved" ? "Saved candidates" : "Prioritized variants"}</h1><p className="subtitle">{filtered.length} transcript-level rows · {new Set(filtered.map((row) => row.gene)).size} genes · {(() => { const count = summary?.cohortMode ? summary.samples : new Set(filtered.map((row) => row.sample)).size; return `${count} sample${count === 1 ? "" : "s"}`; })()}</p></div>
-                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} oneRowPerVariant={oneRowPerVariant} setOneRowPerVariant={setOneRowPerVariant} /><button className="secondary-button" onClick={() => downloadTsv(filtered)}>Export TSV</button></div>
+                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} oneRowPerVariant={oneRowPerVariant} setOneRowPerVariant={setOneRowPerVariant} /><button className="secondary-button" onClick={() => downloadTsv(filtered, qcSettings)}>Export TSV</button></div>
               </div>
               {summary && <div className="qc-strip"><span><strong>{summary.samples}</strong> sample{summary.samples === 1 ? "" : "s"}</span><span><strong>{summary.intakeQc.filter((check) => check.status === "pass").length}</strong> intake checks passed</span><span><strong>{qcFailingCalls}</strong> calls {includeQcFailing ? "flagged" : "hidden by QC"}</span>{(summary.warnings.length > 0 || summary.intakeQc.some((check) => check.status === "warning")) && <button onClick={() => setView("import")}>Review intake QC</button>}</div>}
               <VariantTable rows={prioritizedRows} hasImportedData={Boolean(summary)} saved={saved} setSaved={setSaved} setSelected={setSelected} compoundKeys={compoundKeys} visibleInfo={visibleInfo} trio={trio} trioThresholds={trioThresholds} trioCompoundVariantKeys={trioCompoundVariantKeys} qcSettings={qcSettings} />
@@ -1426,6 +1426,20 @@ function Check({ label, checked, onChange, note, disabled = false }: { label: st
 
 function Threshold({ label, value, placeholder, onChange, disabled = false }: { label: string; value: number | null; placeholder: string; onChange: (value: number | null) => void; disabled?: boolean }) {
   return <label className="threshold"><span>{label}</span><input type="number" step="0.01" value={value ?? ""} placeholder={placeholder} disabled={disabled} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} /></label>;
+}
+
+function carrierQcFailures(
+  carrier: { sample: string; evidence: GenotypeEvidence },
+  row: VariantRow,
+  settings: VariantQcSettings,
+) {
+  const evidence = carrier.evidence;
+  return genotypeQcFailures({
+    dp: evidence.dp, gq: evidence.gq, adRef: evidence.adRef,
+    adAlt: evidence.adAlt, alleleBalance: evidence.alleleBalance,
+    genotype: evidence.gt, genotypeClass: evidence.genotypeClass,
+    genotypeFilter: evidence.genotypeFilter,
+  }, row, settings);
 }
 
 function toggleSet<T>(current: Set<T>, item: T, checked: boolean) {
@@ -1666,8 +1680,8 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
 
       <div className="evidence-layout">
         {selected.carriers && <EvidenceSection eyebrow="Cohort evidence" title={selected.cohortSampleCount ? `Carriers · ${selected.carriers.length} of ${selected.cohortSampleCount} individuals` : `Carriers · ${selected.carriers.length} individual${selected.carriers.length === 1 ? "" : "s"} (separately called)`}>
-          <div className="cohort-carriers-table"><table><thead><tr><th>Individual</th><th>GT</th><th>DP</th><th>GQ</th><th>AD</th><th>AB</th><th>FT</th></tr></thead><tbody>
-            {selected.carriers.map((carrier) => <tr key={carrier.sample}><td>{carrier.sample}</td><td className="mono">{carrier.evidence.gt}</td><td>{carrier.evidence.dp ?? "—"}</td><td>{carrier.evidence.gq ?? "—"}</td><td>{carrier.evidence.adRef ?? "—"}, {carrier.evidence.adAlt ?? "—"}</td><td>{compactNumber(carrier.evidence.alleleBalance, 2)}</td><td>{carrier.evidence.genotypeFilter || "—"}</td></tr>)}
+          <div className="cohort-carriers-table"><table><thead><tr><th>Individual</th><th>GT</th><th>DP</th><th>GQ</th><th>AD</th><th>AB</th><th>FT</th><th>QC</th></tr></thead><tbody>
+            {selected.carriers.map((carrier) => { const carrierFailures = carrierQcFailures(carrier, selected, qcSettings); return <tr key={carrier.sample} className={carrierFailures.length ? "carrier-qc-fail" : ""}><td>{carrier.sample}</td><td className="mono">{carrier.evidence.gt}{carrier.evidence.partialCall ? <span className="qc-warn-flag" title="Partially called genotype"> partial</span> : null}</td><td>{carrier.evidence.dp ?? "—"}</td><td>{carrier.evidence.gq ?? "—"}</td><td>{carrier.evidence.adRef ?? "—"}, {carrier.evidence.adAlt ?? "—"}</td><td>{compactNumber(carrier.evidence.alleleBalance, 2)}</td><td>{carrier.evidence.genotypeFilter || "—"}</td><td>{carrierFailures.length ? <span className="qc-fail-flag" title={carrierFailures.join("; ")}>Fail</span> : "Pass"}</td></tr>; })}
           </tbody></table></div>
           <p className="constraint-note">{selected.cohortSampleCount
             ? "Jointly called file: non-carrying individuals are confirmed reference at this site. Sample-evidence fields elsewhere on this page describe the best-supported carrier."
@@ -1675,15 +1689,34 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
         </EvidenceSection>}
         {trio && <TrioGenotypeEvidence row={selected} trio={trio} assessment={deNovo}/>}
         {visibleInfo.has("quality") && <EvidenceSection eyebrow="Sample evidence" title="Call quality"><EvidenceGrid items={[
-          ["QC status", selectedQcFailures.length ? `Fail: ${selectedQcFailures.join("; ")}` : "Pass"], ["Record warning", duplicateRecordLabel(selected) || "None"], ["QUAL", compactNumber(selected.qual ?? null, 1)], ["Site depth", selected.siteDepth ?? "—"], ["Depth (DP)", selected.dp ?? "—"], ["Genotype quality", selected.gq ?? "—"], ["Allele depths", selected.adRef !== undefined || selected.adAlt !== undefined ? `${selected.adRef ?? "—"}, ${selected.adAlt ?? "—"}` : "—"], ["Allele balance", compactNumber(selected.alleleBalance, 3)], ["Genotype FT", selected.genotypeFilter || "—"], ["Genotype", selected.genotype], ["Phase", selected.phaseSet ? `${selected.phase} · PS ${selected.phaseSet}` : selected.phase],
+          ["QC status", selectedQcFailures.length
+            ? `Fail: ${selectedQcFailures.join("; ")}`
+            : selected.carriers?.length
+              ? (() => {
+                  // The measurements below belong to ONE representative
+                  // carrier; a bare "Pass" over a failing representative's
+                  // numbers misread as that carrier passing. Judge the REAL
+                  // representative from the carriers array — cohort rows
+                  // carry a synthetic "N carry" genotype string that would
+                  // evaluate nonsensically.
+                  const passing = selected.carriers.filter((carrier) => carrierQcFailures(carrier, selected, qcSettings).length === 0).length;
+                  const representative = selected.carriers.reduce((best, entry) =>
+                    (entry.evidence.gq ?? -1) > (best.evidence.gq ?? -1) ? entry : best);
+                  const representativeFails = carrierQcFailures(representative, selected, qcSettings).length > 0;
+                  return `Pass — ${passing} of ${selected.carriers.length} carriers pass${representativeFails ? `; the representative shown below (${representative.sample}) fails` : ""}`;
+                })()
+              : "Pass"], ["Record warning", duplicateRecordLabel(selected) || "None"], ["QUAL", compactNumber(selected.qual ?? null, 1)], ["Site depth", selected.siteDepth ?? "—"], ["Depth (DP)", selected.dp ?? "—"], ["Genotype quality", selected.gq ?? "—"], ["Allele depths", selected.adRef !== undefined || selected.adAlt !== undefined ? `${selected.adRef ?? "—"}, ${selected.adAlt ?? "—"}` : "—"], ["Allele balance", compactNumber(selected.alleleBalance, 3)], ["Genotype FT", selected.genotypeFilter || "—"], ["Genotype", selected.genotype], ["Phase", selected.phaseSet ? `${selected.phase} · PS ${selected.phaseSet}` : selected.phase],
         ]} /></EvidenceSection>}
         {visibleInfo.has("clinvar") && <EvidenceSection eyebrow="Clinical evidence" title="ClinVar"><EvidenceGrid items={[
           ["Significance", cleanLabel(selected.clinvar)], ["Conflicting submissions", cleanLabel(selected.clinvarConflictingEvidence)], ["Conflict includes P / LP", isClinvarConflictWithPathogenic(selected.clinvar, selected.clinvarConflictingEvidence) ? "Yes" : "No"], ["Review status", cleanLabel(selected.clinvarReviewStatus)], ["Condition", cleanLabel(selected.clinvarDisease)], ["Same amino-acid change (PS1-style)", selected.clinvarAaChangeMatch ? "Yes" : "No / not annotated"], ["Same pathogenic residue (PM5-style)", selected.clinvarAaMatch ? "Yes" : "No / not annotated"],
         ]} /></EvidenceSection>}
         {visibleInfo.has("clinvar") && <ClinGenVariantEvidence evidence={clingenEvidence} loading={clingenEvidenceLoading} error={clingenEvidenceError} compact={selected.clingenErepo ?? []}/>}
         {visibleInfo.has("transcript") && <EvidenceSection eyebrow="Molecular consequence" title="Transcript"><EvidenceGrid items={[
-          ["HGVSc", selected.hgvsC || "—"], ["HGVSp", selected.hgvsP || "—"], ["Transcript", selected.transcript || "—"], ["Gene ID", selected.geneId || "—"], ["Biotype", cleanLabel(selected.biotype)], ["Transcript warning", isReferenceDisruptedTranscript(selected) ? "Reference ORF disrupted; not a conventional pLoF baseline" : "None"], ["Exon", selected.exon || "—"], ["Consequence", cleanLabel(selected.consequence)], ["MANE", selected.mane ? "Yes" : "No"], ["VEP PICK", selected.picked ? "Yes" : "No"], ...(selected.collapsedTranscriptRows?.length ? [["Also annotated on", selected.collapsedTranscriptRows.map((other) => `${other.gene} · ${other.transcript || "—"} · ${cleanLabel(other.consequence)}${other.hgvsC ? ` · ${other.hgvsC}` : ""}${other.hgvsP ? ` ${other.hgvsP}` : ""}${other.maneSelect ? " · MANE Select" : other.mane ? " · MANE Plus Clinical" : ""}`).join("\n")] as [string, string]] : []),
-        ]} /></EvidenceSection>}
+          ["HGVSc", selected.hgvsC || "—"], ["HGVSp", selected.hgvsP || "—"], ["Transcript", selected.transcript || "—"], ["Gene ID", selected.geneId || "—"], ["Biotype", cleanLabel(selected.biotype)], ["Transcript warning", isReferenceDisruptedTranscript(selected) ? "Reference ORF disrupted; not a conventional pLoF baseline" : "None"], ["Exon", selected.exon || "—"], ["Consequence", cleanLabel(selected.consequence)], ["MANE", selected.mane ? "Yes" : "No"], ["VEP PICK", selected.picked ? "Yes" : "No"],
+        ]} />{selected.collapsedTranscriptRows?.length ? <div className="alt-transcripts"><h4>All transcript and gene annotations of this variant</h4><table><thead><tr><th>Gene</th><th>Transcript</th><th>Consequence</th><th>HGVSc</th><th>HGVSp</th><th>Designation</th></tr></thead><tbody>
+          <tr className="current"><td>{selected.gene}</td><td className="mono">{selected.transcript || "—"}</td><td>{cleanLabel(selected.consequence)}</td><td className="mono">{selected.hgvsC || "—"}</td><td className="mono">{selected.hgvsP || "—"}</td><td>{selected.maneSelect ? "MANE Select" : selected.mane ? "MANE Plus Clinical" : selected.picked ? "VEP PICK" : "—"} (shown)</td></tr>
+          {selected.collapsedTranscriptRows.map((other) => <tr key={other.key}><td>{other.gene}</td><td className="mono">{other.transcript || "—"}</td><td>{cleanLabel(other.consequence)}</td><td className="mono">{other.hgvsC || "—"}</td><td className="mono">{other.hgvsP || "—"}</td><td>{other.maneSelect ? "MANE Select" : other.mane ? "MANE Plus Clinical" : other.picked ? "VEP PICK" : "—"}</td></tr>)}
+        </tbody></table></div> : null}</EvidenceSection>}
         {visibleInfo.has("population") && <EvidenceSection eyebrow="Population & regions" title="Frequency context"><EvidenceGrid items={[
           ["gnomAD popmax", compactNumber(selected.gnomadPopmax)], ["Popmax population", cleanLabel(selected.gnomadPopmaxPopulation)], ["RepeatMasker", selected.repeat ? "Overlap" : "No overlap"], ["Segmental duplication", selected.segdup ? "Overlap" : "No overlap"], ["Unscored indel flag", selected.unscoredIndelReasons?.map(unscoredIndelReasonLabel).join("; ") || "None"], ["Variant ID", fullVariantId(selected)], ["Source VCF", selected.source],
           ["Input assembly", selected.liftedFromGrch37 ? "GRCh37 (lifted to GRCh38)" : "GRCh38"], ["Original locus", selected.liftedFromGrch37 && selected.originalChrom ? `${selected.originalChrom}:${selected.originalPos} ${selected.originalRef}›${selected.originalAlt}` : "—"],
@@ -2531,7 +2564,7 @@ function CohortPanel({ onReview }: {
         try {
           const parsed = await parseVcfFiles([
             new File([sourceFile.vcf], sourceFile.name, { type: "text/vcf" }),
-          ], { retainRawAnnotations: true, intake: "server-records" });
+          ], { intake: "server-records" });
           parserWarnings.push(...parsed.summary.warnings);
           if (!intakeQc.length) intakeQc.push(...parsed.summary.intakeQc);
           const selections = new Map(sourceFile.selections.map((selection) => [
@@ -2560,7 +2593,7 @@ function CohortPanel({ onReview }: {
       }
       const warnings = [
         ...(parsedRows.length ? [
-          "Full source INFO, VEP CSQ, and sample FORMAT annotations were loaded on demand from indexed VCFs with tabix.",
+          "Complete source records were restored from the indexed VCFs with tabix; every standard evidence field reflects the full record.",
         ] : []),
         ...source.warnings,
         ...parserWarnings,
@@ -2600,7 +2633,7 @@ function CohortPanel({ onReview }: {
       for (const sourceFile of source.files) {
         const parsed = await parseVcfFiles([
           new File([sourceFile.vcf], sourceFile.name, { type: "text/vcf" }),
-        ], { retainRawAnnotations: true, intake: "server-records" });
+        ], { intake: "server-records" });
         reviewRows.push(...parsed.rows.map((row) => ({
           ...row,
           source: sourceFile.source_path,
@@ -3156,7 +3189,7 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
         setError("The selection mixes exome and whole-genome datasets; open one assay type at a time so review settings match the data.");
         return;
       }
-      const parsed = await parseVcfFiles(files, { retainRawAnnotations: true, intake: "prepared-review" });
+      const parsed = await parseVcfFiles(files, { intake: "prepared-review" });
       parsed.summary.warnings.unshift(`Combined review · ${label}${groups.size > 1 ? ` · ${groups.size} source files` : ""}`);
       onReview(parsed.rows, parsed.summary, chosen[0]?.analysis_scope ?? "exome");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Combined review could not be opened."); }
@@ -3166,7 +3199,7 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
   async function openDataset(dataset: SampleLibraryDataset) {
     setWorking(dataset.id); setError(""); setMessage("Opening the managed review VCF…");
     try {
-      const parsed = await parseVcfFiles([await openSampleLibraryFile(dataset.id, dataset.original_name)], { retainRawAnnotations: true, intake: "prepared-review" });
+      const parsed = await parseVcfFiles([await openSampleLibraryFile(dataset.id, dataset.original_name)], { intake: "prepared-review" });
       parsed.summary.warnings.unshift(`Reopened from Sample Library · ${dataset.profile_label}`);
       onReview(parsed.rows.map((row) => ({
         ...row,
@@ -3895,10 +3928,12 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         // must count both or one source accumulates invisibly.
         const typedPaths = inputPaths.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
         const totalInputs = selectedFiles.length + typedPaths.length;
+        const typedNames = typedPaths.map((value) => value.split("/").pop() || value);
         const parts = [
           ...selectedFiles.slice(0, 3).map((file) => file.name),
-          ...(selectedFiles.length > 3 ? [`and ${selectedFiles.length - 3} more`] : []),
-          ...(typedPaths.length ? [`${typedPaths.length} typed workstation path${typedPaths.length === 1 ? "" : "s"}`] : []),
+          ...(selectedFiles.length > 3 ? [`and ${selectedFiles.length - 3} more picked`] : []),
+          ...typedNames.slice(0, 2).map((name) => `${name} (typed path)`),
+          ...(typedNames.length > 2 ? [`and ${typedNames.length - 2} more typed paths`] : []),
         ];
         return <div className="wizard-selection"><div><strong>{totalInputs} VCF file{totalInputs === 1 ? "" : "s"} selected</strong><span>{parts.join(", ") || "No files chosen yet"}</span></div><button onClick={() => setStep(1)}>Change</button></div>;
       })()}
@@ -4116,11 +4151,11 @@ function GenePanel({ genes, rows, onSelect }: { genes: [string, number][]; rows:
   return <><div className="content-header"><div><p className="eyebrow">Gene-level summary</p><h1>Prioritized genes</h1><p className="subtitle">Counts reflect the active variant filters.</p></div></div><div className="gene-grid">{genes.map(([gene, count]) => { const geneRows = rows.filter((row) => row.gene === gene); const strongest = geneRows.some((row) => row.impact === "HIGH") ? "HIGH" : geneRows[0]?.impact; return <button key={gene} onClick={() => onSelect(gene)}><span className="gene-rank">{String(genes.indexOf(genes.find(([item]) => item === gene)!) + 1).padStart(2, "0")}</span><strong>{gene}</strong><span>{count} variant{count === 1 ? "" : "s"}</span><span className={`impact-pill ${strongest?.toLowerCase()}`}>{strongest}</span><Icon name="chevron" /></button>; })}</div></>;
 }
 
-function downloadTsv(rows: VariantRow[]) {
+function downloadTsv(rows: VariantRow[], qcSettings: VariantQcSettings) {
   const detectedDbnsfp = ADDITIONAL_DBNSFP_PREDICTORS.filter((definition) =>
     rows.some((row) => row.availableDbnsfpPredictors?.includes(definition.id)));
   const headers = ["sample", "variant_id", "chrom", "pos", "ref", "alt", "original_assembly", "original_chrom", "original_pos", "original_ref", "original_alt", "unscored_indel_reasons", "gene", "HGVSc", "HGVSp", "consequence", "impact", "gnomad_popmax", "gnomad_popmax_population", "gnomad_frequencies", "CADD_phred", "CADD_raw", "AlphaMissense", "AlphaMissense_pred", "REVEL", "MetaRNN", "MetaRNN_pred", "PrimateAI", "PrimateAI_pred", "SIFT", "SIFT_pred", "PolyPhen_HDIV", "PolyPhen_HDIV_pred", "GERP_RS", "phyloP100way", "phastCons100way", "LOFTEE", "LOFTEE_filter", "LOFTEE_flags", "LOFTEE_PTC_50BP", "LOFTEE_50BP_original", "PTC_distance_from_last_exon", "PTC_calc_status", "haplotype_frame_status", "haplotype_frame_partners", "haplotype_protein_change", "ClinVar", "ClinVar_conflicting_evidence", "SpliceAI", "promoterAI", "LoGoFunc_prediction", "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF", "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match", "genotype", "DP", "GQ", "allele_balance", "carriers", "MANE", "PICK", "RepeatMasker", "SegDup", ...detectedDbnsfp.flatMap((definition) => [definition.scoreColumn, ...(definition.predictionColumn ? [definition.predictionColumn] : [])])];
-  const body = rows.map((row) => [row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "", row.originalChrom ?? "", row.originalPos ?? "", row.originalRef ?? "", row.originalAlt ?? "", row.unscoredIndelReasons?.join("&") ?? "", row.gene, row.hgvsC, row.hgvsP, row.consequence, row.impact, row.gnomadPopmax ?? "", row.gnomadPopmaxPopulation ?? "", JSON.stringify(row.gnomadFrequencies ?? {}), row.cadd ?? "", row.caddRaw ?? "", row.alphaMissense ?? "", row.alphaPrediction, row.revel ?? "", row.metaRnn ?? "", row.metaRnnPrediction ?? "", row.primateAi ?? "", row.primateAiPrediction ?? "", row.sift ?? "", row.siftPrediction ?? "", row.polyPhen ?? "", row.polyPhenPrediction ?? "", row.gerpRs ?? "", row.phyloP100way ?? "", row.phastCons100way ?? "", row.loftee, row.lofteeFilter, row.lofteeFlags, row.loftee50bp, row.loftee50bpOriginal, row.ptcDistanceFromLastExon ?? "", row.ptcCalcStatus, row.haplotypeFrameStatus ?? "", row.haplotypeFramePartners?.join(",") ?? "", row.haplotypeProteinChange ?? "", row.clinvar, row.clinvarConflictingEvidence ?? "", row.spliceAI ?? "", row.promoterAI ?? "", row.loGoFuncPrediction, row.loGoFuncNeutral ?? "", row.loGoFuncGof ?? "", row.loGoFuncLof ?? "", row.loGoFuncSourceTranscript, row.loGoFuncSourceHgvsp, row.loGoFuncMatch, row.genotype, row.dp ?? "", row.gq ?? "", row.alleleBalance ?? "", row.carriers?.map((carrier) => `${carrier.sample}:${carrier.evidence.gt}:DP=${carrier.evidence.dp ?? "."}:GQ=${carrier.evidence.gq ?? "."}:AB=${carrier.evidence.alleleBalance?.toFixed(3) ?? "."}`).join(";") ?? "", row.mane, row.picked, row.repeat, row.segdup, ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])])].join("\t"));
+  const body = rows.map((row) => [row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "", row.originalChrom ?? "", row.originalPos ?? "", row.originalRef ?? "", row.originalAlt ?? "", row.unscoredIndelReasons?.join("&") ?? "", row.gene, row.hgvsC, row.hgvsP, row.consequence, row.impact, row.gnomadPopmax ?? "", row.gnomadPopmaxPopulation ?? "", JSON.stringify(row.gnomadFrequencies ?? {}), row.cadd ?? "", row.caddRaw ?? "", row.alphaMissense ?? "", row.alphaPrediction, row.revel ?? "", row.metaRnn ?? "", row.metaRnnPrediction ?? "", row.primateAi ?? "", row.primateAiPrediction ?? "", row.sift ?? "", row.siftPrediction ?? "", row.polyPhen ?? "", row.polyPhenPrediction ?? "", row.gerpRs ?? "", row.phyloP100way ?? "", row.phastCons100way ?? "", row.loftee, row.lofteeFilter, row.lofteeFlags, row.loftee50bp, row.loftee50bpOriginal, row.ptcDistanceFromLastExon ?? "", row.ptcCalcStatus, row.haplotypeFrameStatus ?? "", row.haplotypeFramePartners?.join(",") ?? "", row.haplotypeProteinChange ?? "", row.clinvar, row.clinvarConflictingEvidence ?? "", row.spliceAI ?? "", row.promoterAI ?? "", row.loGoFuncPrediction, row.loGoFuncNeutral ?? "", row.loGoFuncGof ?? "", row.loGoFuncLof ?? "", row.loGoFuncSourceTranscript, row.loGoFuncSourceHgvsp, row.loGoFuncMatch, row.genotype, row.dp ?? "", row.gq ?? "", row.alleleBalance ?? "", row.carriers?.map((carrier) => { const failures = carrierQcFailures(carrier, row, qcSettings); return `${carrier.sample}:${carrier.evidence.gt}${carrier.evidence.partialCall ? "(partial)" : ""}:DP=${carrier.evidence.dp ?? "."}:GQ=${carrier.evidence.gq ?? "."}:AD=${carrier.evidence.adRef ?? "."},${carrier.evidence.adAlt ?? "."}:AB=${carrier.evidence.alleleBalance?.toFixed(3) ?? "."}:FT=${carrier.evidence.genotypeFilter || "."}:QC=${failures.length ? `fail(${failures.join("|").replace(/[;\t]/g, " ")})` : "pass"}`; }).join(";") ?? "", row.mane, row.picked, row.repeat, row.segdup, ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])])].join("\t"));
   const url = URL.createObjectURL(new Blob([[headers.join("\t"), ...body].join("\n")], { type: "text/tab-separated-values" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = "iei-prioritized-variants.tsv"; anchor.click(); URL.revokeObjectURL(url);
 }

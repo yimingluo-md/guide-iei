@@ -111,7 +111,8 @@ ENV PERL5LIB=${LOFTEE_DIR}:${PERL5LIB}
 
 # LOFTEE also needs the Perl module DBD::SQLite (to read loftee.sql / *.sql
 # conservation DB). Install via cpanm (present in the base image).
-RUN cpanm --notest DBD::SQLite && rm -rf /root/.cpanm
+# Pinned: an unpinned CPAN install floated with the build date.
+RUN cpanm --notest DBD::SQLite@1.74 && rm -rf /root/.cpanm
 
 # Ensembl's SpliceAI plugin unconditionally calls add_file() for both SNV and
 # indel parameters, although this pipeline's required public MANE resource is

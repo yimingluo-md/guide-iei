@@ -45,15 +45,22 @@ if curl -s -m 2 -o /dev/null "$UI_URL" 2>/dev/null; then
 fi
 
 if [[ "$BOOTSTRAP" == "1" ]]; then
-    # First use: the setup check exits 0 when the workstation is ready and
-    # 2 when user-space items still need installing.
-    if ! bash "${HERE}/setup_environment.sh" --check --skip-container; then
+    # First use: the FULL setup check (container included) decides whether to
+    # install — checking with --skip-container skipped the very container
+    # setup the guide promises whenever Python/Node happened to be ready.
+    if ! bash "${HERE}/setup_environment.sh" --check; then
         echo
-        echo "== First-time preparation: installing the user-space environment."
-        echo "   This happens once and needs no administrator password."
-        # The full install (no --skip-container) so the annotation runtime
-        # the guide promises is set up on first launch, not silently skipped.
-        bash "${HERE}/setup_environment.sh" --install --yes
+        echo "== First-time preparation: installing the environment."
+        echo "   This happens once and needs no administrator password on a Mac."
+        # A container item that cannot be fixed unattended (Docker Desktop
+        # installed but not running, say) must not brick the launch: the
+        # review workbench works without the annotation runtime.
+        if ! bash "${HERE}/setup_environment.sh" --install --yes; then
+            echo
+            echo "== Some items above still need attention (usually the container"
+            echo "   runtime). The review workbench starts anyway; annotation"
+            echo "   will ask for the runtime when it needs it."
+        fi
     fi
 fi
 

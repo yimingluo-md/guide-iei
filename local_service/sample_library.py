@@ -364,6 +364,48 @@ class SampleLibrary:
         now = utc_now()
         datasets = []
         with self._session() as connection:
+            if original_checksum and not bool(payload.get("original_is_ephemeral")):
+                # The original location is a property of the CONTENT: when the
+                # same bytes are re-imported from a new home, datasets of this
+                # managed file — any profile — must learn the live path, or
+                # full-WGS reindexing keeps reading a deleted file. But the
+                # refresh only HEALS, never clobbers: a row keeps its path
+                # when that path is still alive and different (it may be the
+                # raw WGS source while this import is a derived review file —
+                # their original checksums differ), and staged-upload sources
+                # are excluded above.
+                candidates = connection.execute(
+                    """SELECT id, original_path, original_checksum
+                       FROM library_datasets WHERE managed_checksum=?""",
+                    (review_checksum,),
+                ).fetchall()
+                heal = []
+                for row in candidates:
+                    row_checksum = row["original_checksum"] or ""
+                    if row_checksum and row_checksum != original_checksum:
+                        continue
+                    stored = row["original_path"] or ""
+                    stored_resolved = (
+                        self._original_path(stored) if stored else None
+                    )
+                    if (
+                        not stored
+                        or str(stored_resolved) == original_path
+                        or (stored_resolved is not None and not Path(stored_resolved).is_file())
+                    ):
+                        heal.append(row["id"])
+                if heal:
+                    connection.executemany(
+                        """UPDATE library_datasets
+                           SET original_name=?, original_path=?, original_checksum=?,
+                               original_size_bytes=?, original_mtime_ns=?, updated_at=?
+                           WHERE id=?""",
+                        [
+                            (original_name, original_path, original_checksum,
+                             original_size, original_mtime, now, row_id)
+                            for row_id in heal
+                        ],
+                    )
             for vcf_sample in header.samples:
                 existing_dataset = connection.execute(
                     """SELECT d.id,d.sample_id,d.vcf_sample_name,s.individual_id
@@ -373,23 +415,6 @@ class SampleLibrary:
                     (review_checksum, vcf_sample, settings_hash),
                 ).fetchone()
                 if existing_dataset:
-                    # Exact-content dedup must not fossilize the original
-                    # location: the user may be re-importing the same content
-                    # from the file's new home, and full-WGS reindexing reads
-                    # original_path — refresh it when the new source is live.
-                    if original_checksum:
-                        connection.execute(
-                            """UPDATE library_datasets
-                               SET original_name=?, original_path=?,
-                                   original_checksum=?, original_size_bytes=?,
-                                   original_mtime_ns=?, updated_at=?
-                               WHERE id=?""",
-                            (
-                                original_name, original_path, original_checksum,
-                                original_size, original_mtime, now,
-                                existing_dataset["id"],
-                            ),
-                        )
                     datasets.append(dict(existing_dataset))
                     continue
                 individual_id = self._legacy_individual(connection, vcf_sample)

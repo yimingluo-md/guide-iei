@@ -372,3 +372,31 @@ test("low-quality parental calls cannot claim inherited or confirmed trans", () 
   assert.equal(pairs.length, 1);
   assert.notEqual(pairs[0].phase, "confirmed_trans_inheritance");
 });
+
+test("configured trio thresholds gate compound-het origins too", () => {
+  const midQuality = (gt) => evidence(gt, 15, 40, gt === "0/0" ? 15 : 8, gt === "0/0" ? 0 : 7);
+  const maternal = row({
+    key: "m1", pos: 100,
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: midQuality("0/1"),
+      FATHER: midQuality("0/0"),
+    },
+  });
+  const paternal = row({
+    key: "p1", pos: 200,
+    sampleGenotypes: {
+      CHILD: evidence("0/1", 30, 99, 15, 15),
+      MOTHER: midQuality("0/0"),
+      FATHER: midQuality("0/1"),
+    },
+  });
+  // Defaults (DP >= 10, GQ >= 20): mid-quality parents support confirmation.
+  const relaxed = compoundHetPairs([maternal, paternal], trio);
+  assert.equal(relaxed[0].phase, "confirmed_trans_inheritance");
+  // A reviewer who tightened DP/GQ must see the same rule applied here.
+  const strict = compoundHetPairs([maternal, paternal], trio, {
+    ...DEFAULT_TRIO_THRESHOLDS, parentMinDp: 25, minGq: 60,
+  });
+  assert.notEqual(strict[0].phase, "confirmed_trans_inheritance");
+});

@@ -322,7 +322,7 @@ test("server-restored record slices stay per-sample even at 16+ samples", async 
     + `chr1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t${gts.join("\t")}\n`;
   const restored = await parseVcfFiles(
     [new File([vcf], "slice.vcf")],
-    { retainRawAnnotations: true, intake: "server-records" },
+    { intake: "server-records" },
   );
   assert.ok(!restored.summary.cohortMode);
   assert.deepEqual(restored.rows.map((row) => row.sample).sort(), ["S1", "S2"]);
@@ -376,19 +376,16 @@ test("prefers the selected WGS CADD plugin over a duplicate dbNSFP value", async
   assert.equal(result.rows[0].caddRaw, 2.1);
 });
 
-test("optionally retains populated INFO, CSQ, and FORMAT fields for on-demand review", async () => {
-  const result = await parseVcfFiles(
-    [new File([VCF], "cohort-source.vcf")],
-    { retainRawAnnotations: true },
-  );
-  const row = result.rows[0];
-  assert.equal(row.rawVcfEvidence.info.CSQ, undefined);
-  assert.equal(row.rawVcfEvidence.consequence.gnomADe_AFR_AF, "0.0003");
-  assert.equal(row.rawVcfEvidence.consequence.CADD_phred, "24.6");
-  assert.equal(row.rawVcfEvidence.format.GT, "0/1");
-  assert.equal(row.rawVcfEvidence.format.AD, "20,20");
+test("rows carry no raw INFO/CSQ/FORMAT payload (removed by design)", async () => {
+  // The raw-evidence panel was removed at the user's request; retaining the
+  // parsed payload anyway cost memory on cohort-scale imports while nothing
+  // rendered it. Restored records populate the standard evidence fields.
+  const result = await parseVcfFiles([new File([VCF], "raw.vcf")], {});
+  assert.ok(result.rows.length > 0);
+  for (const row of result.rows) {
+    assert.equal("rawVcfEvidence" in row && row.rawVcfEvidence !== undefined, false);
+  }
 });
-
 test("parses strict LoGoFunc evidence and exposes it beside the MANE transcript", async () => {
   const fields = [
     "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature",

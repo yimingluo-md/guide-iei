@@ -370,15 +370,21 @@ function variantIdentity(row: VariantRow) {
   return `${row.chrom}:${row.pos}:${row.ref}:${row.alt}`;
 }
 
-function originFor(row: VariantRow, trio: TrioDefinition): CompoundOrigin {
+function originFor(
+  row: VariantRow,
+  trio: TrioDefinition,
+  thresholds: TrioThresholds = DEFAULT_TRIO_THRESHOLDS,
+): CompoundOrigin {
   const evidence = row.sampleGenotypes ?? {};
   const mother = evidence[trio.mother] ?? null;
   const father = evidence[trio.father] ?? null;
   // A parental origin feeds "confirmed trans by inheritance", so both
-  // parental genotypes backing it must meet the quality thresholds —
-  // opposing DP=1/GQ=1 calls must not mint a confirmed compound het.
+  // parental genotypes backing it must meet the CONFIGURED quality
+  // thresholds — opposing DP=1/GQ=1 calls must not mint a confirmed
+  // compound het, and a reviewer who tightened the panel's DP/GQ values
+  // must see comphet origins judged by the same rule.
   const solid = (parent: GenotypeEvidence | null) =>
-    adequate(parent, DEFAULT_TRIO_THRESHOLDS.parentMinDp, DEFAULT_TRIO_THRESHOLDS.minGq);
+    adequate(parent, thresholds.parentMinDp, thresholds.minGq);
   if (mother?.carrier && father?.carrier) return "both";
   if (mother?.carrier && isHomRef(father)) {
     return solid(mother) && solid(father) ? "maternal" : "unknown";
@@ -386,7 +392,7 @@ function originFor(row: VariantRow, trio: TrioDefinition): CompoundOrigin {
   if (father?.carrier && isHomRef(mother)) {
     return solid(father) && solid(mother) ? "paternal" : "unknown";
   }
-  const deNovo = assessDeNovo(row, trio);
+  const deNovo = assessDeNovo(row, trio, thresholds);
   // "possible" covers the missing-parental-genotype case: converting "we do
   // not know the parental genotype" into "this arose de novo" promoted
   // unphaseable pairs to possible_trans. Only a high-confidence call counts.
@@ -410,7 +416,11 @@ function representativeRows(rows: VariantRow[], trio: TrioDefinition) {
   return [...unique.values()];
 }
 
-export function compoundHetPairs(rows: VariantRow[], trio: TrioDefinition): CompoundHetPair[] {
+export function compoundHetPairs(
+  rows: VariantRow[],
+  trio: TrioDefinition,
+  thresholds: TrioThresholds = DEFAULT_TRIO_THRESHOLDS,
+): CompoundHetPair[] {
   const groups = new Map<string, VariantRow[]>();
   representativeRows(rows, trio).forEach((row) => {
     groups.set(row.gene, [...(groups.get(row.gene) ?? []), row]);
@@ -422,8 +432,8 @@ export function compoundHetPairs(rows: VariantRow[], trio: TrioDefinition): Comp
       for (let secondIndex = firstIndex + 1; secondIndex < variants.length; secondIndex += 1) {
         const first = variants[firstIndex];
         const second = variants[secondIndex];
-        const firstOrigin = originFor(first, trio);
-        const secondOrigin = originFor(second, trio);
+        const firstOrigin = originFor(first, trio, thresholds);
+        const secondOrigin = originFor(second, trio, thresholds);
         let phase: CompoundPhase = "phase_unknown";
         let reason = "Both variants qualify, but inheritance and phase do not establish trans configuration.";
         if (trio.probandSex === "male" && (isNonParX(first) || isNonParX(second))) {

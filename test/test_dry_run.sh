@@ -58,6 +58,19 @@ SAME_LOG="$(bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
 grep -q 'same file' <<<"$SAME_LOG"
 echo "  same-path refusal OK"
 
+echo "[2c/3] output.format: tab is refused up front"
+TAB_CFG="test/out/tab-config.yaml"
+sed 's/^  format: vcf.*/  format: tab/' "$CFG" > "$TAB_CFG"
+if bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
+  -o test/out/tab.vep.vcf.gz -c "$TAB_CFG" --no-clinvar --dry-run >/dev/null 2>&1; then
+  echo "ERROR: output.format: tab was accepted by the VCF-only runner" >&2
+  exit 1
+fi
+TAB_LOG="$(bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
+  -o test/out/tab.vep.vcf.gz -c "$TAB_CFG" --no-clinvar --dry-run 2>&1 || true)"
+grep -q 'VCF-only' <<<"$TAB_LOG"
+echo "  tab refusal OK"
+
 echo "[3/3] clinvar_aa_match.py on simulated VEP output"
 python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
   --input test/out/sample.vep.vcf \

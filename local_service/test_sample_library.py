@@ -177,6 +177,9 @@ class SampleLibraryTests(unittest.TestCase):
         moved = self.state / "moved" / "case.vcf"
         moved.parent.mkdir()
         moved.write_bytes(self.vcf.read_bytes())
+        # A true move: the refresh HEALS dead paths, and deliberately never
+        # clobbers a still-alive different location.
+        self.vcf.unlink()
         again = self.library.import_vcf(moved, self.payload(include=False))
         self.assertTrue(again["deduplicated_file"])
         self.assertEqual(
@@ -185,6 +188,19 @@ class SampleLibraryTests(unittest.TestCase):
         )
         record = self.library.get(first["datasets"][0]["id"])
         self.assertEqual(record["original_path"], str(moved.resolve()))
+        # The location is a property of the CONTENT: rows imported under a
+        # DIFFERENT profile must learn the live path too, or their full-WGS
+        # reindex keeps reading the deleted file.
+        other_payload = self.payload(include=False)
+        other_payload["qc_settings"] = {"minDp": 30}
+        other = self.library.import_vcf(moved, other_payload)
+        moved2 = self.state / "moved-again" / "case.vcf"
+        moved2.parent.mkdir()
+        moved2.write_bytes(moved.read_bytes())
+        moved.unlink()
+        self.library.import_vcf(moved2, self.payload(include=False))
+        stale_profile = self.library.get(other["datasets"][0]["id"])
+        self.assertEqual(stale_profile["original_path"], str(moved2.resolve()))
 
     def test_cohort_indexing_failure_degrades_to_needs_repair_with_reason(self):
         """A cohort-indexing failure must not present as a failed import

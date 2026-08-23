@@ -84,14 +84,17 @@ fi
 [[ -s "$CHAIN" ]] || die "hg19->GRCh38 chain missing: $CHAIN (run download_references.sh --only liftover)"
 [[ -s "$TARGET_FASTA" ]] || die "GRCh38 target FASTA missing: $TARGET_FASTA"
 
-if [[ ! -s "$TARGET_DICT" ]]; then
+if [[ ! -s "$TARGET_DICT" || "$TARGET_DICT" -ot "$TARGET_FASTA" ]]; then
+    # A dictionary older than its FASTA is stale (the FASTA was replaced);
+    # regenerating it also invalidates cached conversions whose provenance
+    # recorded the old dictionary.
     log "creating GRCh38 sequence dictionary: $TARGET_DICT"
     hts samtools dict -o "$TARGET_DICT" "$TARGET_FASTA"
 fi
 
 # Reuse an identical prior conversion. New input, source/target reference,
 # chain, tool pin, policy, or pipeline version invalidates the cache.
-if [[ -s "$OUTPUT" && -s "$QC" && -s "$PROVENANCE" ]]; then
+if [[ -s "$OUTPUT" && -s "${OUTPUT}.tbi" && -s "$QC" && -s "$PROVENANCE" ]]; then
     if python3 - "$PROVENANCE" "$INPUT" "$CHAIN" "$SOURCE_FASTA" "$TARGET_DICT" \
         "$BCFTOOLS_VERSION" "$PLUGIN_COMMIT" "$MAX_LENGTH" "$PIPELINE_VERSION" \
         "$OUTPUT" "$TARGET_FASTA" <<'PY'

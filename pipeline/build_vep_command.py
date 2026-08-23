@@ -133,6 +133,7 @@ def _resolve_indexed(plan: VepPlan, mapper: PathMapper, host_path: str,
                      label: str, required: bool,
                      check_exists: bool) -> str | None:
     """Resolve a BGZF reference and require a sibling tabix/CSI index."""
+    host_path = mapper.absolutize(host_path)
     cp = _resolve(plan, mapper, host_path, label, required, check_exists)
     if cp is None or not check_exists:
         return cp

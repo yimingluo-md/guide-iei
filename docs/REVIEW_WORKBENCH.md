@@ -112,10 +112,14 @@ Results are grouped as one row per unique allele. Clicking a variant opens its
 carrier list plus stored annotation, transcript, genotype, source-profile, and
 coordinate details. When matched findings are sent into the main Review
 workspace, the service uses tabix to retrieve each exact record from the
-indexed prepared VCF and restores its complete populated INFO, VEP CSQ, and
-sample FORMAT evidence on demand. This keeps the SQLite index compact while
-retaining access to population frequencies and any other annotations present
-in the source. Carrier checkboxes can instead load selected individuals'
+indexed prepared VCF and re-parses the complete record on demand: every
+evidence field the workbench displays — the full predictor panel,
+population frequencies, ClinVar/ClinGen, LOFTEE, and the sample's
+GT/DP/GQ/AD/allele-balance/FT/phase — reflects the source record rather
+than the compact index. This keeps the SQLite index small. Fields the
+workbench does not display (caller-specific FORMAT keys, custom INFO
+fields) are not carried into the review and should be inspected in the
+source VCF directly. Carrier checkboxes can instead load selected individuals'
 complete stored review sets, using each file's original Full or Compact WGS
 import profile. Complete-set browser loads are limited to 50 sample entries
 and 200,000 stored carrier observations; very large full-WGS selections

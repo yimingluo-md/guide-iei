@@ -16,13 +16,6 @@ export type GenotypeEvidence = {
   genotypeClass: "heterozygous" | "homozygous_alt" | "hemizygous" | "other";
   partialCall?: boolean;
   genotypeFilter: string;
-  rawFields?: Record<string, string>;
-};
-
-export type RawVcfEvidence = {
-  info: Record<string, string>;
-  consequence: Record<string, string>;
-  format: Record<string, string>;
 };
 
 export type ClinGenErepoCompact = {
@@ -271,7 +264,6 @@ export type VariantRow = {
   segdup: boolean;
   phase: "phased" | "unknown";
   otherPredictors: string[];
-  rawVcfEvidence?: RawVcfEvidence;
 };
 
 export type ImportSummary = {
@@ -320,7 +312,7 @@ type GenotypeQcView = {
   genotypeFilter?: string;
 };
 
-function genotypeQcFailures(
+export function genotypeQcFailures(
   view: GenotypeQcView,
   row: VariantRow,
   settings: VariantQcSettings,
@@ -589,15 +581,6 @@ function clinGenErepoAssertions(raw: string | undefined, alt: string): ClinGenEr
   });
 }
 
-function populatedFields(record: Record<string, string>, exclude: string[] = []) {
-  const excluded = new Set(exclude);
-  return Object.fromEntries(
-    Object.entries(record).filter(
-      ([key, value]) => !excluded.has(key) && Boolean(value) && !EMPTY.has(value),
-    ),
-  );
-}
-
 export function haplotypeFrameEvidence(
   raw: string | undefined,
   currentVariant: string,
@@ -716,7 +699,6 @@ function parseGenotype(
   format: string,
   sampleValue: string,
   altIndex: number,
-  retainRawFields = false,
 ): GenotypeEvidence {
   const keys = format.split(":");
   const values = sampleValue.split(":");
@@ -783,7 +765,6 @@ function parseGenotype(
     genotypeClass,
     partialCall,
     genotypeFilter: fields.FT || "",
-    rawFields: retainRawFields ? populatedFields(fields) : undefined,
   };
 }
 
@@ -1038,7 +1019,7 @@ async function vcfHeaderLines(file: File) {
 
 export async function parseVcfFiles(
   files: File[],
-  options: { retainRawAnnotations?: boolean; intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number; aggregateMaxPopmax?: number | null; rowCap?: number } = {},
+  options: { intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number; aggregateMaxPopmax?: number | null; rowCap?: number } = {},
 ): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
   const rows: VariantRow[] = [];
   let importCohortMode = false;
@@ -1258,7 +1239,6 @@ export async function parseVcfFiles(
                 format,
                 sampleValues[sampleIndex] ?? "",
                 altIndex,
-                Boolean(options.retainRawAnnotations),
               )
             : {
                 gt: "./.", called: false, carrier: true, dp: null, gq: null,
@@ -1600,11 +1580,6 @@ export async function parseVcfFiles(
               segdup: truthy(first(combined, ["SegDup", "SEGDUP"])),
               phase: genotype.phased ? "phased" : "unknown",
               otherPredictors,
-              rawVcfEvidence: options.retainRawAnnotations ? {
-                info: populatedFields(info, ["CSQ"]),
-                consequence: populatedFields(csq),
-                format: genotype.rawFields ?? {},
-              } : undefined,
             });
           });
         });
