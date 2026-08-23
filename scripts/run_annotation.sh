@@ -57,6 +57,17 @@ INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
 SOURCE_INPUT="$INPUT"
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
+# VEP is invoked with --force_overwrite: identical input and output paths
+# would truncate the only source VCF. String equality catches the direct
+# case; -ef additionally catches symlinks and hard links to the same file.
+if [[ "$INPUT" == "$OUTPUT" || "$INPUT" -ef "$OUTPUT" ]]; then
+    die "input and output resolve to the same file: $INPUT — the run would overwrite the source VCF"
+fi
+AAMATCH_FINAL="${OUTPUT%.vcf.gz}.aamatch.vcf.gz"
+[[ "$OUTPUT" == *.vcf.gz ]] || AAMATCH_FINAL="${OUTPUT%.vcf}.aamatch.vcf"
+if [[ "$INPUT" == "$AAMATCH_FINAL" || "$INPUT" -ef "$AAMATCH_FINAL" ]]; then
+    die "input collides with the run's .aamatch output: $AAMATCH_FINAL — choose a different output path"
+fi
 WORKDIR="$(dirname "$OUTPUT")"
 INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="${INPUT_BASE%.vcf}"
 

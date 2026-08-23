@@ -47,6 +47,17 @@ DRY_ALL_LOG="$(bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf 
 grep -q 'input pre-filter OFF' <<<"$DRY_ALL_LOG"
 echo "  dry-run assembled OK"
 
+echo "[2b/3] same-path input/output is refused"
+if bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
+  -o test/sample.mini.vcf -c "$CFG" --no-clinvar --dry-run >/dev/null 2>&1; then
+  echo "ERROR: identical input and output paths were accepted" >&2
+  exit 1
+fi
+SAME_LOG="$(bash "${ROOT}/scripts/run_annotation.sh" -i test/sample.mini.vcf \
+  -o test/sample.mini.vcf -c "$CFG" --no-clinvar --dry-run 2>&1 || true)"
+grep -q 'same file' <<<"$SAME_LOG"
+echo "  same-path refusal OK"
+
 echo "[3/3] clinvar_aa_match.py on simulated VEP output"
 python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
   --input test/out/sample.vep.vcf \
