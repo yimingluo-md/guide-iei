@@ -72,6 +72,47 @@ splice), three layers are presented:
   the default view; partially restored or phase-unresolved events remain
   visible with their state labeled.
 
+### LOFTEE filters and flags
+
+LOFTEE reports two kinds of qualifier, and the distinction matters. A
+**filter** is what demotes a call to LC — a named reason the variant may
+escape true loss of function. A **flag** annotates a call (HC or LC)
+without demoting it — a caution to weigh, not a verdict. The variant page
+expands every code in place; the vocabulary is collected here.
+
+**Filters (the reasons behind an LC call):**
+
+| Filter | What it asserts |
+|---|---|
+| `END_TRUNC` | The truncation falls in LOFTEE's terminal region, where nonsense-mediated decay may not occur — the shortened protein may be expressed. |
+| `INCOMPLETE_CDS` | The transcript's coding sequence is incompletely annotated (no defined start or stop), so the consequence itself is uncertain. |
+| `EXON_INTRON_UNDEF` | The transcript's exon–intron boundaries are undefined. |
+| `SMALL_INTRON` | The affected splice site belongs to an unusually small intron (< 15 bp), where splicing annotation is unreliable. |
+| `ANC_ALLELE` | The alternate allele restores the inferred human ancestral sequence — the "loss" allele is the evolutionarily older state. |
+| `NON_DONOR_DISRUPTING` / `NON_ACCEPTOR_DISRUPTING` | The predicted disruption of the donor or acceptor site does not reach LOFTEE's threshold. |
+| `RESCUE_DONOR` / `RESCUE_ACCEPTOR` | A nearby in-frame splice site is predicted to rescue the disrupted one. |
+| `GC_TO_GT_DONOR` | The allele converts a non-canonical GC donor to the canonical GT motif — more likely to improve splicing than disrupt it. |
+| `5UTR_SPLICE` / `3UTR_SPLICE` | The essential-splice consequence lies in an untranslated region rather than coding sequence. |
+
+**Flags (cautions that do not demote the call):**
+
+| Flag | What it asserts |
+|---|---|
+| `SINGLE_EXON` | The transcript has a single exon, so nonsense-mediated decay — which requires a downstream exon junction — is not expected. |
+| `NAGNAG_SITE` | The acceptor lies in a NAGNAG sequence that may permit frame-preserving alternative splicing. |
+| `PHYLOCSF_WEAK` | The exon lacks the cross-species conservation pattern expected of protein-coding sequence. |
+| `PHYLOCSF_UNLIKELY_ORF` | The exon is coding-like, but the annotated reading frame is not the one best supported by conservation. |
+| `NON_CAN_SPLICE` | The affected splice site is non-canonical rather than the usual GT–AG motif. |
+| `NO_EXON_NUMBER` | LOFTEE could not determine the exon number needed for its terminal-position assessment. |
+
+An LC call is therefore not a dismissal but a **named, checkable
+hypothesis**. `END_TRUNC` invites the question of whether the truncated
+terminal portion matters functionally for this protein; `RESCUE_DONOR`
+invites inspection of the predicted rescue site; `ANC_ALLELE` invites
+checking the allele's population history. Several codes can co-occur, and
+the reasoning behind each is inspectable — which is precisely what a
+single opaque score would not offer.
+
 ## Missense and mechanism predictors
 
 The predictor panel is reported side by side, raw values only. Predictors
