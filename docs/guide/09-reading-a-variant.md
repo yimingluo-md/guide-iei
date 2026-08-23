@@ -17,7 +17,7 @@ belongs to the reviewer.
 
 ## Population frequency
 
-gnomAD frequencies, with **popmax** — the highest frequency observed in any
+[gnomAD](https://gnomad.broadinstitute.org) frequencies, with **popmax** — the highest frequency observed in any
 major population — as the headline value.
 
 One caveat is specific to this annotation path: a **blank gnomAD value
@@ -55,7 +55,7 @@ way; this is presentation only.
 For putative loss-of-function variants (stop-gained, frameshift, essential
 splice), three layers are presented:
 
-- **LOFTEE HC/LC.** High-confidence (HC) indicates the variant survived
+- **[LOFTEE](https://github.com/konradjk/loftee) HC/LC.** High-confidence (HC) indicates the variant survived
   LOFTEE's transcript-level checks for recognized LoF-rescue patterns —
   non-canonical splice contexts, terminal-exon position, and related
   escapes. Low-confidence (LC) names the specific filter that was
@@ -129,7 +129,7 @@ default.
 These columns are pulled from dbNSFP 5.4a (and the genome-wide sources)
 on every annotation:
 
-- **AlphaMissense** — DeepMind's missense classifier: a protein language
+- **AlphaMissense** ([Cheng et al., *Science* 2023](https://www.science.org/doi/10.1126/science.adg7492)) — DeepMind's missense classifier: a protein language
   model fine-tuned with structural context from AlphaFold and weak labels
   from human/primate population frequency. Score 0–1, higher = more
   likely pathogenic; the authors' three-way call (likely benign /
@@ -217,7 +217,7 @@ Three structural caveats apply to any predictor comparison:
 
 ### Gain versus loss of function
 
-When LoGoFunc is installed, its three class probabilities — neutral,
+When LoGoFunc ([Stein et al., *Genome Medicine* 2023](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-023-01261-9)) is installed, its three class probabilities — neutral,
 gain-of-function, loss-of-function — add mechanistic context of
 particular weight in IEI, where GOF and LOF variants in the same gene
 produce distinct diseases (*STAT1*, *STAT3*, *CARD11*, *JAK1* among
