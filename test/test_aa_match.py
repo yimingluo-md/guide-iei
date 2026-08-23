@@ -304,6 +304,26 @@ def test_legacy_two_column_reference_loads_residue_only(tmp_path):
     assert not ref.changes
 
 
+
+def test_second_pass_is_idempotent(tmp_path):
+    """Re-annotating already-annotated output must replace the headers and
+    INFO keys, never duplicate them."""
+    ref = _ref(changes=[("BRCA1", "100", "H")])
+    vin = str(tmp_path / "in.vcf")
+    first = str(tmp_path / "first.vcf")
+    second = str(tmp_path / "second.vcf")
+    _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
+    aam.annotate(vin, first, ref)
+    aam.annotate(first, second, ref)
+    text = open(second).read()
+    assert text.count("##INFO=<ID=ClinVar_path_aa_match,") == 1
+    assert text.count("##INFO=<ID=ClinVar_path_aa_change_match,") == 1
+    record = [l for l in text.splitlines() if not l.startswith("#")][0]
+    info = record.split("\t")[7]
+    assert info.count("ClinVar_path_aa_match=") == 1
+    assert info.count("ClinVar_path_aa_change_match=") == 1
+    assert open(first).read() == text
+
 if __name__ == "__main__":
     import tempfile, pathlib, inspect
     passed = 0

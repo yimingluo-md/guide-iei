@@ -174,11 +174,11 @@ fi
 PYTHON_OK=0
 PYYAML_OK=0
 if command -v python3 >/dev/null 2>&1; then
-    if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' 2>/dev/null; then
-        ok "python3 $(python3 -c 'import platform; print(platform.python_version())') (>= 3.8)"
+    if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
+        ok "python3 $(python3 -c 'import platform; print(platform.python_version())') (>= 3.9)"
         PYTHON_OK=1
     else
-        fix "python3 is older than 3.8" "install a current Python 3"
+        fix "python3 is older than 3.9" "install a current Python 3"
     fi
 else
     if [ "$OS" = "Darwin" ]; then

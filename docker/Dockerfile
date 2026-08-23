@@ -41,7 +41,13 @@ ARG VEP_TAG=release_113.4
 FROM ensemblorg/ensembl-vep:${VEP_TAG}
 
 # --- LOFTEE branch: MUST be grch38 for a GRCh38 pipeline -----------------------
+# The branch alone is a moving target: identical GUIDE-IEI source could
+# produce different LoF calls on different build dates. The commit pin makes
+# the LoF layer part of the validated bundle (grch38 head, stable since
+# 2022-02-24). VEP_TAG likewise accepts a digest-pinned form
+# ("release_113.4@sha256:...") for byte-identical base images.
 ARG LOFTEE_BRANCH=grch38
+ARG LOFTEE_COMMIT=a46b502a68c812c8ae0c5a5721c0603fe81cae8d
 # LOFTEE is cloned here and added to PERL5LIB so `--plugin LoF` resolves LoF.pm.
 ARG LOFTEE_DIR=/opt/vep/src/loftee
 ARG BCFTOOLS_VERSION=1.20
@@ -91,8 +97,10 @@ ENV BCFTOOLS_LIFTOVER_COMMIT=${BCFTOOLS_LIFTOVER_COMMIT}
 # The official VEP image also bundles an older /plugins/LoF.pm. VEP resolves
 # plugin entry points from /plugins before PERL5LIB, so replace that one with
 # the cloned GRCh38 entry point; helper modules still resolve from LOFTEE_DIR.
-RUN git clone --depth 1 --branch ${LOFTEE_BRANCH} \
+RUN git clone --branch ${LOFTEE_BRANCH} \
         https://github.com/konradjk/loftee.git ${LOFTEE_DIR} && \
+    git -C ${LOFTEE_DIR} checkout --quiet ${LOFTEE_COMMIT} && \
+    test "$(git -C ${LOFTEE_DIR} rev-parse HEAD)" = "${LOFTEE_COMMIT}" && \
     cp ${LOFTEE_DIR}/LoF.pm /plugins/LoF.pm && \
     chown -R vep:vep ${LOFTEE_DIR}
 

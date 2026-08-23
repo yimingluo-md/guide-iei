@@ -140,7 +140,7 @@ run:
 output:
   # VCF output preserves sample GT/zygosity (unlike --tab). Do not change unless
   # you specifically want a TSV and are willing to lose zygosity.
-  format: vcf                # vcf | tab
+  format: vcf                # vcf only — the post-processing chain is VCF-only
   compress: bgzip            # bgzip | none  (bgzip => .vcf.gz + tabix index)
   vep_stats: true            # write the *_summary.html VEP stats report
 

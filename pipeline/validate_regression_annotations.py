@@ -57,14 +57,25 @@ def load_vcf(path: Path) -> tuple[list[str], dict[str, dict]]:
             # Index per ALT: a multi-allelic record keyed on the raw comma-
             # joined ALT column ("...-A,AGG") can never match a single-allele
             # expected.yaml key, producing a false "variant missing" FAIL.
+            # Entries are attributed to their ALT via ALLELE_NUM — handing
+            # every entry to every ALT let one allele's annotation make a
+            # different allele pass. Entries without ALLELE_NUM (legacy
+            # runs) still count toward every ALT.
             # On a duplicate key (e.g. a lifted record landing twice), merge
             # the CSQ entries instead of silently discarding the first.
-            for alt in columns[4].split(","):
+            alts = columns[4].split(",")
+            for alt_index, alt in enumerate(alts):
+                allele_number = str(alt_index + 1)
+                own_entries = [
+                    entry for entry in entries
+                    if not entry.get("ALLELE_NUM")
+                    or entry["ALLELE_NUM"] == allele_number
+                ]
                 key = f"{columns[0]}-{columns[1]}-{columns[3]}-{alt}"
                 if key in records:
-                    records[key]["entries"].extend(entries)
+                    records[key]["entries"].extend(own_entries)
                 else:
-                    records[key] = {"info": info, "entries": list(entries)}
+                    records[key] = {"info": info, "entries": own_entries}
     if fields is None:
         raise ValueError("VEP CSQ header was not found")
     return fields, records

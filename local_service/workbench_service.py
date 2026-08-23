@@ -4512,7 +4512,33 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         else:
             self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
 
+    def _reject_cross_site(self) -> bool:
+        """Refuse mutating requests that did not come from this machine's UI.
+
+        The service binds loopback, but that alone does not stop a malicious
+        webpage: simple no-preflight POSTs (text/plain) reach 127.0.0.1 from
+        any site the browser visits, and DNS rebinding defeats same-origin
+        checks entirely unless the Host header is verified. Non-browser
+        local clients (curl, the pipeline) send no Origin and pass.
+        """
+        host = (self.headers.get("Host") or "").strip()
+        hostname = host[: host.rfind(":")] if host.count(":") == 1 else host
+        if hostname.startswith("[") and "]" in hostname:
+            hostname = hostname[: hostname.index("]") + 1]
+        if hostname not in {"127.0.0.1", "localhost", "[::1]"}:
+            self._json({"error": "request Host is not this workstation"},
+                       HTTPStatus.FORBIDDEN)
+            return True
+        origin = self.headers.get("Origin")
+        if origin and not self._LOOPBACK_ORIGIN.match(origin):
+            self._json({"error": "cross-site requests are not accepted"},
+                       HTTPStatus.FORBIDDEN)
+            return True
+        return False
+
     def do_POST(self) -> None:
+        if self._reject_cross_site():
+            return
         path = urlparse(self.path).path
         mutation_started = False
         try:
@@ -4844,9 +4870,15 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
 
+    # Loopback origins on any port: the UI's port is user-configurable
+    # (IEI_UI_PORT), and a loopback page is the only legitimate caller.
+    _LOOPBACK_ORIGIN = re.compile(
+        r"^https?://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$"
+    )
+
     def _cors_headers(self) -> None:
         origin = self.headers.get("Origin")
-        if origin in {"http://127.0.0.1:3000", "http://localhost:3000"}:
+        if origin and self._LOOPBACK_ORIGIN.match(origin):
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Vary", "Origin")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")

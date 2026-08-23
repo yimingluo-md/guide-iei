@@ -106,7 +106,7 @@ Its summary looks like this:
 == IEI pipeline environment check — macOS (arm64)
 
 [ OK ] core tools (git, tar, curl/wget, awk, sed, sort, gzip)
-[ OK ] python3 3.9.12 (>= 3.8)
+[ OK ] python3 3.9.12 (>= 3.9)
 [ OK ] PyYAML importable (config parser dependency)
 [ OK ] node v26.7.0 (>= 22.13)
 [ OK ] webui/node_modules present

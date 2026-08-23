@@ -148,12 +148,33 @@ def test_multi_allelic_record_matches_per_alt_key(tmp_path):
     assert report["status"] == "PASS", report["checks"]
 
 
+def test_one_alts_annotation_cannot_satisfy_another_alt(tmp_path):
+    """CSQ entries are attributed to their ALT via ALLELE_NUM: expecting
+    the annotation on ALT G while it belongs only to ALT T must FAIL."""
+    import re
+    config, expected, vcf = write_inputs(tmp_path)
+    text = vcf.read_text()
+    # Give the record two ALTs, tag every existing CSQ entry as allele 1
+    # (T), and point the expectation key at allele 2 (G) instead.
+    text = text.replace("17\t1\t.\tC\tT\t.", "17\t1\t.\tC\tT,G\t.")
+    header_match = re.search(r'Format: ([^"]+)"', text)
+    fields = header_match.group(1)
+    text = text.replace(f'Format: {fields}"', f'Format: ALLELE_NUM|{fields}"')
+    text = re.sub(r"CSQ=([^\t;]+)", lambda m: "CSQ=" + ",".join(
+        "1|" + entry for entry in m.group(1).split(",")), text)
+    vcf.write_text(text)
+    expected.write_text(expected.read_text().replace("17-1-C-T", "17-1-C-G"))
+    report = run_validation(config, expected, vcf)
+    assert report["status"] == "FAIL", report["checks"]
+
+
 if __name__ == "__main__":
     tests = [
         test_regression_passes_and_optional_track_is_explicit_skip,
         test_regression_fails_when_required_predictor_is_empty,
         test_installed_optional_field_contract_is_enforced,
         test_multi_allelic_record_matches_per_alt_key,
+        test_one_alts_annotation_cannot_satisfy_another_alt,
     ]
     for test in tests:
         with tempfile.TemporaryDirectory() as directory:

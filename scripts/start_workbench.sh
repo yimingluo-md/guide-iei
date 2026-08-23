@@ -51,7 +51,9 @@ if [[ "$BOOTSTRAP" == "1" ]]; then
         echo
         echo "== First-time preparation: installing the user-space environment."
         echo "   This happens once and needs no administrator password."
-        bash "${HERE}/setup_environment.sh" --install --yes --skip-container
+        # The full install (no --skip-container) so the annotation runtime
+        # the guide promises is set up on first launch, not silently skipped.
+        bash "${HERE}/setup_environment.sh" --install --yes
     fi
 fi
 
@@ -112,8 +114,11 @@ cd "$ROOT"
         launched_at=$SECONDS
         python3 -m local_service.workbench_service --port "$SERVICE_PORT" &
         child=$!
-        wait "$child"
-        rc=$?
+        # Under set -e a nonzero `wait` would abort this subshell before the
+        # status is ever inspected — killing both crash-restart and the
+        # exit-75 in-app restart. Capture the status in the same command.
+        rc=0
+        wait "$child" || rc=$?
         if [[ "$rc" -eq 75 ]]; then
             echo "[workbench] service restart requested from the app; starting again"
             rapid_failures=0

@@ -10,6 +10,7 @@ CONFIG="${1:-${REPO_ROOT}/config/annotation.config.yaml}"
 # --- defaults (overridable by env) -------------------------------------------
 VEP_TAG="${VEP_TAG:-release_113.4}"
 LOFTEE_BRANCH="${LOFTEE_BRANCH:-grch38}"
+LOFTEE_COMMIT="${LOFTEE_COMMIT:-a46b502a68c812c8ae0c5a5721c0603fe81cae8d}"
 BCFTOOLS_VERSION="${BCFTOOLS_VERSION:-1.20}"
 BCFTOOLS_LIFTOVER_COMMIT="${BCFTOOLS_LIFTOVER_COMMIT:-909d23019e19aeadf3bf6fe1407fd6afc094592a}"
 IMAGE_NAME="${IMAGE_NAME:-vep-annotate}"
@@ -38,6 +39,7 @@ exec "${RUNTIME}" build \
     -t "${IMAGE_NAME}:${IMAGE_TAG}" \
     --build-arg "VEP_TAG=${VEP_TAG}" \
     --build-arg "LOFTEE_BRANCH=${LOFTEE_BRANCH}" \
+    --build-arg "LOFTEE_COMMIT=${LOFTEE_COMMIT}" \
     --build-arg "BCFTOOLS_VERSION=${BCFTOOLS_VERSION}" \
     --build-arg "BCFTOOLS_LIFTOVER_COMMIT=${BCFTOOLS_LIFTOVER_COMMIT}" \
     -f "${HERE}/Dockerfile" \

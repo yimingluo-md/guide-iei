@@ -20,7 +20,11 @@ Write-Host ""
 # --- WSL2 present with a Linux distribution? -------------------------------
 $wslReady = $false
 try {
-    $distros = (wsl.exe -l -q) 2>$null | Where-Object { $_ -and $_.Trim() }
+    # Docker Desktop registers internal docker-desktop* distributions that
+    # are not usable Linux environments; only a real distribution counts.
+    $distros = (wsl.exe -l -q) 2>$null |
+        ForEach-Object { ($_ -replace "`0", '').Trim() } |
+        Where-Object { $_ -and $_ -notmatch '^docker-desktop' }
     if ($distros) { $wslReady = $true }
 } catch { $wslReady = $false }
 
@@ -56,7 +60,11 @@ if (-not $hasRepo -or $Update) {
     } else {
         Write-Host "First launch: copying GUIDE-IEI into WSL (one time)..."
     }
-    wsl.exe bash -c "mkdir -p $wslRepo && cp -R '$winRootWsl'/. $wslRepo/ && find $wslRepo -name '*.sh' -o -name '*.command' | xargs -r chmod +x"
+    # Replace, never overlay: overlay copies kept files that upstream
+    # deleted or renamed, leaving stale modules in the installed copy. The
+    # repository holds no user state (that lives in ~/.iei-variant-review),
+    # so a staged swap is safe; webui dependencies reinstall on next start.
+    wsl.exe bash -c "rm -rf $wslRepo.staging && mkdir -p $wslRepo.staging && cp -R '$winRootWsl'/. $wslRepo.staging/ && find $wslRepo.staging -name '*.sh' -o -name '*.command' | xargs -r chmod +x && rm -rf $wslRepo && mv $wslRepo.staging $wslRepo"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: copying into WSL failed. Please report this message."
         exit 1

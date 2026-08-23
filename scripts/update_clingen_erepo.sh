@@ -37,13 +37,32 @@ if command -v curl >/dev/null 2>&1; then
 else
     wget -O "$SOURCE" "$URL"
 fi
-if [[ -s "${DEST}/manifest.json" ]] && python3 - "$SOURCE" "${DEST}/manifest.json" <<'PY'
+# The cache is current only when the DOWNLOAD is unchanged AND the inputs
+# the allele mappings were built against (ClinVar VCF, reference FASTA) are
+# the ones on record AND the installed database still hashes to what the
+# build wrote — a swapped ClinVar or a damaged sqlite must trigger a
+# rebuild, not pass as current. Manifests from before these fields simply
+# rebuild once.
+if [[ -s "${DEST}/manifest.json" ]] && python3 - "$SOURCE" "${DEST}/manifest.json" "$CLINVAR" "$FASTA" "${DEST}/clingen_erepo.sqlite3" <<'PY'
 import hashlib,json,sys
-source,manifest=sys.argv[1:]
-digest=hashlib.sha256(open(source,'rb').read()).hexdigest()
-try: installed=json.load(open(manifest)).get('source_sha256','')
-except Exception: installed=''
-raise SystemExit(0 if digest and digest == installed else 1)
+source,manifest,clinvar,fasta,database=sys.argv[1:]
+def sha(path):
+    digest=hashlib.sha256()
+    with open(path,'rb') as handle:
+        for chunk in iter(lambda: handle.read(1024*1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+try: value=json.load(open(manifest))
+except Exception: raise SystemExit(1)
+if sha(source) != value.get('source_sha256',''): raise SystemExit(1)
+for key, path in (("clinvar_sha256", clinvar), ("fasta_sha256", fasta),
+                  ("sqlite_sha256", database)):
+    recorded=value.get(key)
+    if not recorded: raise SystemExit(1)   # legacy manifest: rebuild once
+    try:
+        if sha(path) != recorded: raise SystemExit(1)
+    except OSError: raise SystemExit(1)
+raise SystemExit(0)
 PY
 then
     log "ClinGen Evidence Repository is already current; installed snapshot unchanged"
@@ -87,9 +106,9 @@ python3 "${ROOT}/pipeline/prepare_clingen_erepo.py" --source "$SOURCE" \
     --clinvar-vcf "$CLINVAR" --reference-sequences "$SEQUENCES" \
     --output-vcf "$RAW_VCF" --output-sqlite "$DB" --manifest "$MANIFEST" \
     --api-version "$API_VERSION"
-python3 - "$MANIFEST" "$RAW_VCF" "$DB" <<'PY'
+python3 - "$MANIFEST" "$RAW_VCF" "$DB" "$CLINVAR" "$FASTA" <<'PY'
 import hashlib,json,sys
-manifest_path,vcf,db=sys.argv[1:]
+manifest_path,vcf,db,clinvar,fasta=sys.argv[1:]
 data=json.load(open(manifest_path))
 def digest(path):
  h=hashlib.sha256()
@@ -97,6 +116,9 @@ def digest(path):
   for chunk in iter(lambda:f.read(1024*1024),b''): h.update(chunk)
  return h.hexdigest()
 data['vcf_sha256']=digest(vcf); data['sqlite_sha256']=digest(db)
+# The inputs the allele mappings were built against: a different ClinVar
+# or reference FASTA must invalidate the cache above.
+data['clinvar_sha256']=digest(clinvar); data['fasta_sha256']=digest(fasta)
 open(manifest_path,'w').write(json.dumps(data,indent=2,sort_keys=True)+'\n')
 PY
 

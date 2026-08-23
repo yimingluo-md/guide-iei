@@ -334,6 +334,11 @@ def annotate_vcf(
                 target.write(raw)
                 continue
             if not raw or raw.startswith("#"):
+                # Idempotency: a second pass replaces this tool's own header
+                # and provenance lines instead of duplicating them.
+                if raw.startswith(f"##INFO=<ID={INFO_KEY},") or \
+                        raw.startswith("##iei_haplotype_postprocessing=<"):
+                    continue
                 target.write(raw)
                 continue
             columns = raw.rstrip("\n").split("\t")
@@ -363,11 +368,14 @@ def annotate_vcf(
                         ]))
             if per_record:
                 value = ",".join(sorted(set(per_record)))
-                columns[7] = (
-                    f"{columns[7]};{INFO_KEY}={value}"
-                    if columns[7] not in {"", "."}
-                    else f"{INFO_KEY}={value}"
-                )
+                # Strip a previous pass's value so re-running replaces it.
+                retained = [
+                    item for item in columns[7].split(";")
+                    if item not in ("", ".")
+                    and not item.startswith(f"{INFO_KEY}=")
+                ]
+                columns[7] = ";".join(retained + [f"{INFO_KEY}={value}"]) \
+                    if retained else f"{INFO_KEY}={value}"
             target.write("\t".join(columns) + "\n")
     return matched
 

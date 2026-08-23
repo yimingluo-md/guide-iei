@@ -74,17 +74,27 @@ class PathMapper:
     pass-through (returns absolute host paths, records no mounts).
     """
 
-    def __init__(self, container: bool, refs_root: str = "/refs"):
+    def __init__(self, container: bool, refs_root: str = "/refs", base_dir: str | None = None):
         self.container = container
+        self.base_dir = base_dir
         self.refs_root = refs_root
         self._refs: dict[str, str] = {}    # host_dir -> container_dir (read-only ref mounts)
         self._counter = 0
+
+    def absolutize(self, host_path: str) -> str:
+        # Config-declared reference paths are relative to the PROJECT root
+        # (the config file's parent directory's parent), never the caller's
+        # working directory — invoking the runner from elsewhere previously
+        # resolved every relative plugin path against the wrong base.
+        if os.path.isabs(host_path):
+            return host_path
+        return os.path.join(self.base_dir, host_path) if self.base_dir else host_path
 
     def map(self, host_path: str) -> str:
         # Resolve symlinks before choosing the bind mount. Large optional
         # datasets may remain in a lab-managed data directory while a small,
         # ignored link under references/ supplies the configured path.
-        ap = os.path.realpath(os.path.abspath(host_path))
+        ap = os.path.realpath(os.path.abspath(self.absolutize(host_path)))
         if not self.container:
             return ap
         host_dir = os.path.dirname(ap)
@@ -107,6 +117,7 @@ def _resolve(plan: VepPlan, mapper: PathMapper, host_path: str,
 
     Records a warning (skip) or error (required-but-missing) on `plan`.
     """
+    host_path = mapper.absolutize(host_path)
     exists = os.path.exists(host_path)
     if check_exists and not exists:
         msg = f"{label}: file not found -> {host_path}"
@@ -140,10 +151,11 @@ def _resolve_indexed(plan: VepPlan, mapper: PathMapper, host_path: str,
 # --------------------------------------------------------------------------- #
 def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
                       container: bool = True,
-                      check_exists: bool = True) -> VepPlan:
+                      check_exists: bool = True,
+                      base_dir: str | None = None) -> VepPlan:
     """Build the VEP argument list + bind-mounts from a parsed config dict."""
     plan = VepPlan()
-    mapper = PathMapper(container=container)
+    mapper = PathMapper(container=container, base_dir=base_dir)
 
     ref = cfg.get("reference", {})
     run = cfg.get("run", {})
@@ -430,7 +442,11 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     cfg = load_config(args.config)
+    # Config paths are project-root-relative: root = the config's parent
+    # directory's parent (config/ lives directly under the project).
+    config_base = os.path.dirname(os.path.dirname(os.path.abspath(args.config)))
     plan = build_vep_command(cfg, args.input, args.output,
+                             base_dir=config_base,
                              container=not args.no_container,
                              check_exists=not args.no_check)
 

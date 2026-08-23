@@ -51,6 +51,13 @@ done
 [[ -n "$OUTPUT" ]] || die "need -o/--output VCF"
 [[ -f "$INPUT"  ]] || die "input not found: $INPUT"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
+RUN_FORMAT="$(yaml_get "$CONFIG" run.format)"
+if [[ -n "$RUN_FORMAT" && "$RUN_FORMAT" != "vcf" ]]; then
+    # Post-processing (PTC 50-bp, haplotypes, aa-match, ClinGen, QC) is
+    # VCF-only; a tab run would produce output the rest of the pipeline
+    # cannot consume. Refuse up front instead of failing midway.
+    die "run.format: ${RUN_FORMAT} is not supported by this runner — output is VCF-only"
+fi
 INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
 # INPUT is reassigned through liftover/normalisation/pre-filter stages; the
 # reproducibility manifest at the end records the file the operator supplied.
@@ -305,6 +312,12 @@ fi
 # ============================================================================ #
 CLINVAR_RELEASE="NA"
 CLINVAR_VCF=""
+if [[ "$DO_CLINVAR" == "1" && "$DRY" == "1" ]]; then
+    # A dry run must not mutate reference state: the fetch replaces the
+    # installed ClinVar before the dry-run exit was ever reached.
+    log "--dry-run: would fetch the latest ClinVar release"
+    DO_CLINVAR=0
+fi
 if [[ "$DO_CLINVAR" == "1" ]] && [[ "$(yaml_get "$CONFIG" clinvar.auto_fetch)" != "false" ]]; then
     log "=== fetching latest ClinVar ==="
     CV_OUT="$(bash "${HERE}/fetch_clinvar.sh" "$CONFIG")" || die "ClinVar fetch failed"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 import hashlib
 import json
 import os
@@ -57,6 +58,16 @@ def reference_paths(cfg: dict) -> list[str]:
     paths.extend(track.get("file") for track in (cfg.get("custom_tracks", {}) or {}).values())
     clingen = cfg.get("clingen_erepo", {}) or {}
     paths.extend(clingen.get(key) for key in ("database", "vcf", "manifest"))
+    # Run-defining inputs previously absent from the manifest: the liftover
+    # chain and source reference, the ClinVar amino-acid-match catalog, and
+    # the GTF the frameshift 50-bp recalculation reads exon structure from.
+    liftover = ((cfg.get("liftover", {}) or {}).get("grch37_to_grch38", {}) or {})
+    paths.extend(liftover.get(key) for key in ("chain", "source_fasta"))
+    post = cfg.get("post_processing", {}) or {}
+    paths.append(((post.get("loftee_ptc_50bp", {}) or {}).get("gtf")))
+    clinvar_dir = (cfg.get("clinvar", {}) or {}).get("dest_dir")
+    if clinvar_dir:
+        paths.append(str(Path(clinvar_dir) / "clinvar_aa_reference.tsv"))
     return sorted({path for path in paths if path and path != "auto"})
 
 

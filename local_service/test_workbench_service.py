@@ -883,6 +883,35 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(exome_default["max_gnomad_popmax"], 0.01)
         self.assertIsNone(exome_default["min_spliceai"])
 
+    def test_cross_site_posts_are_rejected(self):
+        """A malicious webpage can fire no-preflight POSTs at loopback and
+        DNS rebinding defeats origin checks without Host validation — both
+        must be refused; local non-browser clients (no Origin) pass."""
+        server = create_server(self.service, "127.0.0.1", 0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        port = server.server_address[1]
+        try:
+            def post(headers):
+                request = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/api/jobs",
+                    data=b"{}", method="POST", headers=headers,
+                )
+                try:
+                    with urllib.request.urlopen(request, timeout=5) as response:
+                        return response.status
+                except urllib.error.HTTPError as error:
+                    return error.code
+
+            self.assertEqual(post({"Origin": "https://evil.example"}), 403)
+            self.assertEqual(post({"Host": "evil.example"}), 403)
+            # A legitimate loopback origin (any port) is not rejected by the
+            # guard — the request proceeds into normal validation.
+            self.assertNotEqual(post({"Origin": "http://127.0.0.1:3999"}), 403)
+            self.assertNotEqual(post({}), 403)
+        finally:
+            server.shutdown()
+
     def test_storage_guard_treats_bulk_intake_as_active_work(self):
         """A storage migration snapshotting mid-batch would activate a copy
         missing everything the queue imported after the snapshot."""

@@ -217,6 +217,12 @@ def annotate(in_path: str, out_path: str, ref: Reference,
                     f'{clinvar_release}); else 0">'
                 )
                 for h in header:
+                    # Idempotency: a second pass over already-annotated
+                    # output must replace our header lines, not duplicate
+                    # them.
+                    if h.startswith(f"##INFO=<ID={info_key},") or \
+                            h.startswith(f"##INFO=<ID={change_key},"):
+                        continue
                     fout.write(h + "\n")
                 fout.write(residue_info + "\n")
                 fout.write(change_info + "\n")
@@ -263,10 +269,14 @@ def annotate(in_path: str, out_path: str, ref: Reference,
                 f"{info_key}={','.join(map(str, residue_flags))};"
                 f"{change_key}={','.join(map(str, change_flags))}"
             )
-            if info in (".", ""):
-                cols[7] = keys
-            else:
-                cols[7] = f"{info};{keys}"
+            # Strip a previous pass's values so re-running replaces them.
+            retained = [
+                item for item in info.split(";")
+                if item not in ("", ".")
+                and not item.startswith(f"{info_key}=")
+                and not item.startswith(f"{change_key}=")
+            ]
+            cols[7] = ";".join(retained + [keys]) if retained else keys
             fout.write("\t".join(cols) + "\n")
 
     return stats
