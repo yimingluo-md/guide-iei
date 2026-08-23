@@ -182,7 +182,10 @@ test("keeps SCREEN observed context separate and exposes defensible positive-evi
   assert.match(source, /reviewAnalysisScope === "whole_genome"/);
   assert.match(source, /analysisScope === "whole_genome" && reviewSection === "regulatory"/);
   assert.match(source, /analysisScope === "whole_genome" && <RegulatorySummary/);
-  assert.ok(source.indexOf("RawVcfEvidencePanel evidence={selected.rawVcfEvidence}") < source.indexOf("analysisScope === \"whole_genome\" && <RegulatorySummary"));
+  // The raw source-annotation panel was removed at the user's request; the
+  // old ordering assertion passed vacuously once its string vanished
+  // (indexOf() === -1 compares less-than anything). Assert the removal.
+  assert.equal(source.includes("RawVcfEvidencePanel"), false);
   assert.match(regulatory, /item\.state_label/);
   assert.match(regulatory, /classification unavailable/);
   assert.match(regulatory, /Classifier assays/);

@@ -311,6 +311,23 @@ test("a cohort row passes QC when any carrier passes, fails only when all do", (
   assert.ok(failures.some((f) => f.includes("no carrier passes QC (2 carriers)")));
 });
 
+test("server-restored record slices stay per-sample even at 16+ samples", async () => {
+  const samples = Array.from({ length: 18 }, (_, i) => `S${i + 1}`);
+  const gts = samples.map((_, i) => (i < 2 ? "0/1:30:99:15,15" : "0/0:30:99:30,0"));
+  const vcf = "##fileformat=VCFv4.2\n"
+    + "##reference=GRCh38\n"
+    + "##contig=<ID=chr1,length=248956422>\n"
+    + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">\n`
+    + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + samples.join("\t") + "\n"
+    + `chr1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t${gts.join("\t")}\n`;
+  const restored = await parseVcfFiles(
+    [new File([vcf], "slice.vcf")],
+    { retainRawAnnotations: true, intake: "server-records" },
+  );
+  assert.ok(!restored.summary.cohortMode);
+  assert.deepEqual(restored.rows.map((row) => row.sample).sort(), ["S1", "S2"]);
+});
+
 test("one-row-per-variant collapse prefers MANE Select and keeps the rest as a chip", () => {
   const base = { sample: "P1", chrom: "19", pos: 1620980, ref: "G", alt: "A", picked: true, impact: "HIGH" };
   const maneSelect = { ...base, key: "a", gene: "TCF3", transcript: "ENST00000262965", mane: true, maneSelect: true };

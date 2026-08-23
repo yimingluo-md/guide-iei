@@ -19,7 +19,7 @@ import sqlite3
 import uuid
 import zipfile
 from collections import Counter, defaultdict
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree
@@ -695,7 +695,8 @@ class PhenotypeStore:
         self._upsert(record, "replace", clean(payload.get("source_name")) or "manual")
         return self.get(individual_id)
 
-    def _upsert(self, record: dict, mode: str, source_name: str) -> str:
+    def _upsert(self, record: dict, mode: str, source_name: str,
+                connection: sqlite3.Connection | None = None) -> str:
         now = utc_now()
         existing = self.get(record["individual_id"])
         if existing and mode == "skip_existing":
@@ -713,7 +714,11 @@ class PhenotypeStore:
                     else:
                         merged[key] = value
             record = merged
-        with self._session() as connection:
+        # Bulk imports pass one shared connection so every patient row and
+        # the audit-run record commit together: per-record commits left
+        # unaudited partial updates when an import failed midway.
+        session = nullcontext(connection) if connection is not None else self._session()
+        with session as connection:
             connection.execute(
                 """
                 INSERT INTO phenotype_individuals(
@@ -780,11 +785,16 @@ class PhenotypeStore:
         if mode not in {"update_nonblank", "replace", "skip_existing"}:
             raise ValueError("unsupported update_mode")
         filename = clean(payload.get("filename"))
-        outcomes = Counter(
-            self._upsert(record, mode, filename) for record in records
-        )
         profile_name = clean(payload.get("profile_name"))
+        # One transaction for the whole import: patient rows, the reusable
+        # mapping profile, and the audit-run record land together or not at
+        # all — a midway failure can no longer leave updated patients with
+        # no audit trail.
         with self._session() as connection:
+            outcomes = Counter(
+                self._upsert(record, mode, filename, connection)
+                for record in records
+            )
             if profile_name:
                 connection.execute(
                     """

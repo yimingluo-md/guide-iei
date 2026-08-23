@@ -955,6 +955,16 @@ export default function VariantWorkbench() {
   ), [collapsedRows]);
 
   const uniqueSamples = [...new Set(referencedRows.map((row) => row.sample))];
+  useEffect(() => {
+    // A configured trio must not survive an import that no longer contains
+    // its three samples; stale sample names silently zeroed every family
+    // result while the panel still claimed to be configured.
+    if (!trio) return;
+    const present = new Set(uniqueSamples);
+    if (![trio.proband, trio.mother, trio.father].every((sample) => present.has(sample))) {
+      setTrio(null);
+    }
+  }, [uniqueSamples, trio]); // eslint-disable-line react-hooks/exhaustive-deps
   const geneCounts = useMemo(() => {
     const counts = new Map<string, number>();
     filtered.forEach((row) => counts.set(row.gene, (counts.get(row.gene) ?? 0) + 1));
@@ -1672,7 +1682,7 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
         ]} /></EvidenceSection>}
         {visibleInfo.has("clinvar") && <ClinGenVariantEvidence evidence={clingenEvidence} loading={clingenEvidenceLoading} error={clingenEvidenceError} compact={selected.clingenErepo ?? []}/>}
         {visibleInfo.has("transcript") && <EvidenceSection eyebrow="Molecular consequence" title="Transcript"><EvidenceGrid items={[
-          ["HGVSc", selected.hgvsC || "—"], ["HGVSp", selected.hgvsP || "—"], ["Transcript", selected.transcript || "—"], ["Gene ID", selected.geneId || "—"], ["Biotype", cleanLabel(selected.biotype)], ["Transcript warning", isReferenceDisruptedTranscript(selected) ? "Reference ORF disrupted; not a conventional pLoF baseline" : "None"], ["Exon", selected.exon || "—"], ["Consequence", cleanLabel(selected.consequence)], ["MANE", selected.mane ? "Yes" : "No"], ["VEP PICK", selected.picked ? "Yes" : "No"],
+          ["HGVSc", selected.hgvsC || "—"], ["HGVSp", selected.hgvsP || "—"], ["Transcript", selected.transcript || "—"], ["Gene ID", selected.geneId || "—"], ["Biotype", cleanLabel(selected.biotype)], ["Transcript warning", isReferenceDisruptedTranscript(selected) ? "Reference ORF disrupted; not a conventional pLoF baseline" : "None"], ["Exon", selected.exon || "—"], ["Consequence", cleanLabel(selected.consequence)], ["MANE", selected.mane ? "Yes" : "No"], ["VEP PICK", selected.picked ? "Yes" : "No"], ...(selected.collapsedTranscriptRows?.length ? [["Also annotated on", selected.collapsedTranscriptRows.map((other) => `${other.gene} · ${other.transcript || "—"} · ${cleanLabel(other.consequence)}${other.hgvsC ? ` · ${other.hgvsC}` : ""}${other.hgvsP ? ` ${other.hgvsP}` : ""}${other.maneSelect ? " · MANE Select" : other.mane ? " · MANE Plus Clinical" : ""}`).join("\n")] as [string, string]] : []),
         ]} /></EvidenceSection>}
         {visibleInfo.has("population") && <EvidenceSection eyebrow="Population & regions" title="Frequency context"><EvidenceGrid items={[
           ["gnomAD popmax", compactNumber(selected.gnomadPopmax)], ["Popmax population", cleanLabel(selected.gnomadPopmaxPopulation)], ["RepeatMasker", selected.repeat ? "Overlap" : "No overlap"], ["Segmental duplication", selected.segdup ? "Overlap" : "No overlap"], ["Unscored indel flag", selected.unscoredIndelReasons?.map(unscoredIndelReasonLabel).join("; ") || "None"], ["Variant ID", fullVariantId(selected)], ["Source VCF", selected.source],
@@ -2529,7 +2539,7 @@ function CohortPanel({ onReview }: {
             selection,
           ]));
           parsed.rows.forEach((row) => {
-            const selection = selections.get(`${row.sample}\t${fullVariantId(row)}`);
+            const selection = selections.get(`${row.sample}\t${normalizedVariantKey(row)}`);
             if (!selection) return;
             parsedPairs.add(`${selection.variant_key}\t${selection.sample_entry_id}`);
             parsedRows.push({ ...row, source: sourceFile.source_path });
@@ -3141,9 +3151,14 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
         if (groups.size > 1) setMessage(`Preparing projection ${index} of ${groups.size}…`);
         files.push(await openSampleLibraryReviewSelection(ids, `combined-${index}.review.vcf.gz`));
       }
+      const scopes = new Set(chosen.map((dataset) => dataset.analysis_scope));
+      if (scopes.size > 1) {
+        setError("The selection mixes exome and whole-genome datasets; open one assay type at a time so review settings match the data.");
+        return;
+      }
       const parsed = await parseVcfFiles(files, { retainRawAnnotations: true, intake: "prepared-review" });
       parsed.summary.warnings.unshift(`Combined review · ${label}${groups.size > 1 ? ` · ${groups.size} source files` : ""}`);
-      onReview(parsed.rows, parsed.summary, datasets[0]?.analysis_scope ?? "exome");
+      onReview(parsed.rows, parsed.summary, chosen[0]?.analysis_scope ?? "exome");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Combined review could not be opened."); }
     finally { setWorking(""); setMessage(""); }
   }
@@ -3875,7 +3890,18 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       <input ref={configureFolderInput} className="sr-only" type="file" accept={VCF_FILE_ACCEPT} multiple onChange={(event) => chooseFiles(Array.from(event.target.files ?? []))} />
       <details className="advanced-paths"><summary>Advanced: use existing workstation paths</summary><label className="form-field"><span>VCF path(s), one per line</span><textarea rows={3} value={inputPaths} onChange={(event) => setInputPaths(event.target.value)} placeholder={"/absolute/path/patient.vcf.gz\n/absolute/path/folder/another.vcf.gz"} /></label><button className="secondary-button" onClick={() => setStep(2)} disabled={!inputPaths.trim()}>Continue to settings</button></details>
     </> : <>
-      {!setupOnly && <div className="wizard-selection"><div><strong>{selectedFiles.length || inputPaths.split(/\r?\n/).filter(Boolean).length} VCF file{(selectedFiles.length || inputPaths.split(/\r?\n/).filter(Boolean).length) === 1 ? "" : "s"} selected</strong><span>{selectedFiles.slice(0, 3).map((file) => file.name).join(", ") || "Existing workstation paths"}{selectedFiles.length > 3 ? ` and ${selectedFiles.length - 3} more` : ""}</span></div><button onClick={() => setStep(1)}>Change</button></div>}
+      {!setupOnly && (() => {
+        // Picked files and typed workstation paths BOTH submit; the summary
+        // must count both or one source accumulates invisibly.
+        const typedPaths = inputPaths.split(/\r?\n/).map((value) => value.trim()).filter(Boolean);
+        const totalInputs = selectedFiles.length + typedPaths.length;
+        const parts = [
+          ...selectedFiles.slice(0, 3).map((file) => file.name),
+          ...(selectedFiles.length > 3 ? [`and ${selectedFiles.length - 3} more`] : []),
+          ...(typedPaths.length ? [`${typedPaths.length} typed workstation path${typedPaths.length === 1 ? "" : "s"}`] : []),
+        ];
+        return <div className="wizard-selection"><div><strong>{totalInputs} VCF file{totalInputs === 1 ? "" : "s"} selected</strong><span>{parts.join(", ") || "No files chosen yet"}</span></div><button onClick={() => setStep(1)}>Change</button></div>;
+      })()}
       {!setupOnly && <section className="settings-section"><div className="settings-section-head"><div><h3>{analysisScope === "exome" ? "Exome-region annotation" : "Whole-genome annotation"}</h3><p>{analysisScope === "exome" ? "Coding exons and splice-region padding are selected before VEP." : "The input is automatically prepared as sorted BGZF with tabix/CSI indexing before parallel VEP annotation."}</p></div></div>
         <div className="run-defaults"><div className="scope-run-summary"><strong>{analysisScope === "exome" ? "Exome region only" : "Whole genome"}</strong><span>{analysisScope === "exome" ? "promoterAI and full-genome CADD unavailable" : "indexed WGS intake · CADD and promoterAI on by default"}</span></div><Check label="PASS records only" checked={passOnly} onChange={setPassOnly} /><Check label="Refresh ClinVar before run" checked={useClinvar} onChange={setUseClinvar} /></div>
         <div className="form-pair simple"><label className="form-field"><span>Input genome build</span><select value={inputAssembly} onChange={(event) => setInputAssembly(event.target.value as typeof inputAssembly)}>{capabilities?.input_assemblies.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option value="GRCh38">GRCh38 / hg38</option>}</select></label><label className="form-field worker-field"><span>VEP workers <small>{workerMode === "automatic" ? "Automatic" : "Custom"}</small></span><div className="worker-value"><strong>{fork}</strong><span>worker{fork === 1 ? "" : "s"}</span>{workerMode === "custom" && <button type="button" onClick={() => { const recommended = capabilities?.hardware.recommended_vep_workers ?? 1; setFork(recommended); setWorkerMode("automatic"); }}>Use automatic</button>}</div><input className="worker-range" type="range" min={1} max={capabilities?.hardware.max_vep_workers ?? 8} step={1} value={fork} onChange={(event) => { setFork(Number(event.target.value)); setWorkerMode("custom"); }} /><small>Detected {capabilities?.hardware.logical_cpus ?? "—"} logical CPU threads · recommended {capabilities?.hardware.recommended_vep_workers ?? "—"}.</small></label></div>
@@ -4093,8 +4119,8 @@ function GenePanel({ genes, rows, onSelect }: { genes: [string, number][]; rows:
 function downloadTsv(rows: VariantRow[]) {
   const detectedDbnsfp = ADDITIONAL_DBNSFP_PREDICTORS.filter((definition) =>
     rows.some((row) => row.availableDbnsfpPredictors?.includes(definition.id)));
-  const headers = ["sample", "variant_id", "chrom", "pos", "ref", "alt", "original_assembly", "original_chrom", "original_pos", "original_ref", "original_alt", "unscored_indel_reasons", "gene", "HGVSc", "HGVSp", "consequence", "impact", "gnomad_popmax", "gnomad_popmax_population", "gnomad_frequencies", "CADD_phred", "CADD_raw", "AlphaMissense", "AlphaMissense_pred", "REVEL", "MetaRNN", "MetaRNN_pred", "PrimateAI", "PrimateAI_pred", "SIFT", "SIFT_pred", "PolyPhen_HDIV", "PolyPhen_HDIV_pred", "GERP_RS", "phyloP100way", "phastCons100way", "LOFTEE", "LOFTEE_filter", "LOFTEE_flags", "LOFTEE_PTC_50BP", "LOFTEE_50BP_original", "PTC_distance_from_last_exon", "PTC_calc_status", "haplotype_frame_status", "haplotype_frame_partners", "haplotype_protein_change", "ClinVar", "ClinVar_conflicting_evidence", "SpliceAI", "promoterAI", "LoGoFunc_prediction", "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF", "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match", "genotype", "MANE", "PICK", "RepeatMasker", "SegDup", ...detectedDbnsfp.flatMap((definition) => [definition.scoreColumn, ...(definition.predictionColumn ? [definition.predictionColumn] : [])])];
-  const body = rows.map((row) => [row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "", row.originalChrom ?? "", row.originalPos ?? "", row.originalRef ?? "", row.originalAlt ?? "", row.unscoredIndelReasons?.join("&") ?? "", row.gene, row.hgvsC, row.hgvsP, row.consequence, row.impact, row.gnomadPopmax ?? "", row.gnomadPopmaxPopulation ?? "", JSON.stringify(row.gnomadFrequencies ?? {}), row.cadd ?? "", row.caddRaw ?? "", row.alphaMissense ?? "", row.alphaPrediction, row.revel ?? "", row.metaRnn ?? "", row.metaRnnPrediction ?? "", row.primateAi ?? "", row.primateAiPrediction ?? "", row.sift ?? "", row.siftPrediction ?? "", row.polyPhen ?? "", row.polyPhenPrediction ?? "", row.gerpRs ?? "", row.phyloP100way ?? "", row.phastCons100way ?? "", row.loftee, row.lofteeFilter, row.lofteeFlags, row.loftee50bp, row.loftee50bpOriginal, row.ptcDistanceFromLastExon ?? "", row.ptcCalcStatus, row.haplotypeFrameStatus ?? "", row.haplotypeFramePartners?.join(",") ?? "", row.haplotypeProteinChange ?? "", row.clinvar, row.clinvarConflictingEvidence ?? "", row.spliceAI ?? "", row.promoterAI ?? "", row.loGoFuncPrediction, row.loGoFuncNeutral ?? "", row.loGoFuncGof ?? "", row.loGoFuncLof ?? "", row.loGoFuncSourceTranscript, row.loGoFuncSourceHgvsp, row.loGoFuncMatch, row.genotype, row.mane, row.picked, row.repeat, row.segdup, ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])])].join("\t"));
+  const headers = ["sample", "variant_id", "chrom", "pos", "ref", "alt", "original_assembly", "original_chrom", "original_pos", "original_ref", "original_alt", "unscored_indel_reasons", "gene", "HGVSc", "HGVSp", "consequence", "impact", "gnomad_popmax", "gnomad_popmax_population", "gnomad_frequencies", "CADD_phred", "CADD_raw", "AlphaMissense", "AlphaMissense_pred", "REVEL", "MetaRNN", "MetaRNN_pred", "PrimateAI", "PrimateAI_pred", "SIFT", "SIFT_pred", "PolyPhen_HDIV", "PolyPhen_HDIV_pred", "GERP_RS", "phyloP100way", "phastCons100way", "LOFTEE", "LOFTEE_filter", "LOFTEE_flags", "LOFTEE_PTC_50BP", "LOFTEE_50BP_original", "PTC_distance_from_last_exon", "PTC_calc_status", "haplotype_frame_status", "haplotype_frame_partners", "haplotype_protein_change", "ClinVar", "ClinVar_conflicting_evidence", "SpliceAI", "promoterAI", "LoGoFunc_prediction", "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF", "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match", "genotype", "DP", "GQ", "allele_balance", "carriers", "MANE", "PICK", "RepeatMasker", "SegDup", ...detectedDbnsfp.flatMap((definition) => [definition.scoreColumn, ...(definition.predictionColumn ? [definition.predictionColumn] : [])])];
+  const body = rows.map((row) => [row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "", row.originalChrom ?? "", row.originalPos ?? "", row.originalRef ?? "", row.originalAlt ?? "", row.unscoredIndelReasons?.join("&") ?? "", row.gene, row.hgvsC, row.hgvsP, row.consequence, row.impact, row.gnomadPopmax ?? "", row.gnomadPopmaxPopulation ?? "", JSON.stringify(row.gnomadFrequencies ?? {}), row.cadd ?? "", row.caddRaw ?? "", row.alphaMissense ?? "", row.alphaPrediction, row.revel ?? "", row.metaRnn ?? "", row.metaRnnPrediction ?? "", row.primateAi ?? "", row.primateAiPrediction ?? "", row.sift ?? "", row.siftPrediction ?? "", row.polyPhen ?? "", row.polyPhenPrediction ?? "", row.gerpRs ?? "", row.phyloP100way ?? "", row.phastCons100way ?? "", row.loftee, row.lofteeFilter, row.lofteeFlags, row.loftee50bp, row.loftee50bpOriginal, row.ptcDistanceFromLastExon ?? "", row.ptcCalcStatus, row.haplotypeFrameStatus ?? "", row.haplotypeFramePartners?.join(",") ?? "", row.haplotypeProteinChange ?? "", row.clinvar, row.clinvarConflictingEvidence ?? "", row.spliceAI ?? "", row.promoterAI ?? "", row.loGoFuncPrediction, row.loGoFuncNeutral ?? "", row.loGoFuncGof ?? "", row.loGoFuncLof ?? "", row.loGoFuncSourceTranscript, row.loGoFuncSourceHgvsp, row.loGoFuncMatch, row.genotype, row.dp ?? "", row.gq ?? "", row.alleleBalance ?? "", row.carriers?.map((carrier) => `${carrier.sample}:${carrier.evidence.gt}:DP=${carrier.evidence.dp ?? "."}:GQ=${carrier.evidence.gq ?? "."}:AB=${carrier.evidence.alleleBalance?.toFixed(3) ?? "."}`).join(";") ?? "", row.mane, row.picked, row.repeat, row.segdup, ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])])].join("\t"));
   const url = URL.createObjectURL(new Blob([[headers.join("\t"), ...body].join("\n")], { type: "text/tab-separated-values" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = "iei-prioritized-variants.tsv"; anchor.click(); URL.revokeObjectURL(url);
 }
@@ -4104,6 +4130,15 @@ function downloadCohortTsv(rows: CohortQueryRow[]) {
   const body = rows.map((row) => [row.sample, row.variant_key, row.rsid ?? "", row.original_assembly ?? "", row.original_chrom ?? "", row.original_pos ?? "", row.original_ref ?? "", row.original_alt ?? "", row.unscored_indel_reasons, row.gene, row.hgvsc, row.hgvsp, row.consequence, row.impact, row.genotype, row.zygosity, row.dp ?? "", row.gq ?? "", row.allele_balance ?? "", row.gnomad_popmax ?? "", row.cadd ?? "", row.alpha_missense ?? "", row.spliceai ?? "", row.promoterai ?? "", row.logofunc_prediction, row.logofunc_neutral ?? "", row.logofunc_gof ?? "", row.logofunc_lof ?? "", row.logofunc_source_transcript, row.logofunc_source_hgvsp, row.logofunc_match, row.clinvar, row.clinvar_conflicting, row.loftee, row.loftee_50bp, row.loftee_50bp_original, row.ptc_distance ?? "", row.ptc_calc_status, row.haplotype_frame_status, row.haplotype_frame_partners, row.haplotype_protein_change, row.haplotype_transcript, row.mane, row.picked, row.source_path].join("\t"));
   const url = URL.createObjectURL(new Blob([[headers.join("\t"), ...body].join("\n")], { type: "text/tab-separated-values" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = "iei-cohort-carriers.tsv"; anchor.click(); URL.revokeObjectURL(url);
+}
+
+// The database's variant keys are chromosome-normalized (chr1 -> 1, M ->
+// MT, uppercase alleles); a source VCF's own spelling must normalize the
+// same way or restoration falls back for every chr-prefixed file.
+function normalizedVariantKey(row: VariantRow) {
+  let chrom = row.chrom.replace(/^chr/i, "").toUpperCase();
+  if (chrom === "M") chrom = "MT";
+  return `${chrom}:${row.pos}:${row.ref.toUpperCase()}:${row.alt.toUpperCase()}`;
 }
 
 function cohortRowForReview(row: CohortQueryRow): VariantRow {
@@ -4147,6 +4182,7 @@ function cohortRowForReview(row: CohortQueryRow): VariantRow {
     pos: row.pos,
     ref: row.ref,
     alt: row.alt,
+    liftedFromGrch37: row.original_assembly === "GRCh37",
     originalAssembly: row.original_assembly ?? undefined,
     originalChrom: row.original_chrom ?? undefined,
     originalPos: row.original_pos,

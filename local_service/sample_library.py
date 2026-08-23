@@ -373,6 +373,23 @@ class SampleLibrary:
                     (review_checksum, vcf_sample, settings_hash),
                 ).fetchone()
                 if existing_dataset:
+                    # Exact-content dedup must not fossilize the original
+                    # location: the user may be re-importing the same content
+                    # from the file's new home, and full-WGS reindexing reads
+                    # original_path — refresh it when the new source is live.
+                    if original_checksum:
+                        connection.execute(
+                            """UPDATE library_datasets
+                               SET original_name=?, original_path=?,
+                                   original_checksum=?, original_size_bytes=?,
+                                   original_mtime_ns=?, updated_at=?
+                               WHERE id=?""",
+                            (
+                                original_name, original_path, original_checksum,
+                                original_size, original_mtime, now,
+                                existing_dataset["id"],
+                            ),
+                        )
                     datasets.append(dict(existing_dataset))
                     continue
                 individual_id = self._legacy_individual(connection, vcf_sample)
@@ -415,7 +432,9 @@ class SampleLibrary:
                 })
 
         cohort_result = None
+        cohort_error = ""
         if include_in_cohort:
+          try:
             cohort_result = self.cohort.import_vcf(
                 managed_path,
                 force=False,
@@ -448,6 +467,21 @@ class SampleLibrary:
                     """UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=?
                        WHERE id=?""",
                     (profile_label, settings_hash, _json(settings), cohort_result.get("id")),
+                )
+          except Exception as exc:  # noqa: BLE001 — the library import stands
+            # The library rows are already committed and remain fully usable;
+            # a cohort-indexing failure must not present as a failed import
+            # that half-landed. The datasets surface as "needs repair" with
+            # the working Repair action, and the reason travels with them.
+            cohort_error = str(exc)[:300]
+            warnings.append(
+                f"Cohort Search indexing failed: {cohort_error} — the dataset "
+                "is in the library; use 'Repair Cohort Search' on its card."
+            )
+            with self._session() as connection:
+                connection.executemany(
+                    "UPDATE library_datasets SET warnings=?, updated_at=? WHERE id=?",
+                    [(_json(warnings), utc_now(), item["id"]) for item in datasets],
                 )
         return {
             "datasets": datasets,
@@ -563,7 +597,7 @@ class SampleLibrary:
         )
         if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
             return projected
-        partial = projected.with_name(projected.name + f".{os.getpid()}.partial.vcf.gz")
+        partial = projected.with_name(projected.name + f".{uuid.uuid4().hex}.partial.vcf.gz")
         try:
             subset = backend.run(
                 "bcftools",
@@ -633,7 +667,7 @@ class SampleLibrary:
         projected = self.files_dir / f"{checksum}.subset-{selection_id}.review.vcf.gz"
         if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
             return projected
-        partial = projected.with_name(projected.name + f".{os.getpid()}.partial.vcf.gz")
+        partial = projected.with_name(projected.name + f".{uuid.uuid4().hex}.partial.vcf.gz")
         try:
             subset = backend.run(
                 "bcftools",

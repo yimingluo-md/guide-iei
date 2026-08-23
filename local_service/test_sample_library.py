@@ -170,6 +170,41 @@ class SampleLibraryTests(unittest.TestCase):
             self.cohort.prepare_managed_vcf = original_prepare
         self.assertEqual(self.library.list(), [])
 
+    def test_dedup_refreshes_the_original_path_from_the_new_source(self):
+        """Re-importing identical content from the file's new location must
+        update original_path — full-WGS reindexing reads it."""
+        first = self.library.import_vcf(self.vcf, self.payload(include=False))
+        moved = self.state / "moved" / "case.vcf"
+        moved.parent.mkdir()
+        moved.write_bytes(self.vcf.read_bytes())
+        again = self.library.import_vcf(moved, self.payload(include=False))
+        self.assertTrue(again["deduplicated_file"])
+        self.assertEqual(
+            {d["id"] for d in again["datasets"]},
+            {d["id"] for d in first["datasets"]},
+        )
+        record = self.library.get(first["datasets"][0]["id"])
+        self.assertEqual(record["original_path"], str(moved.resolve()))
+
+    def test_cohort_indexing_failure_degrades_to_needs_repair_with_reason(self):
+        """A cohort-indexing failure must not present as a failed import
+        that half-landed: the datasets stay usable and carry the reason."""
+        original = self.cohort.import_vcf
+
+        def explode(*args, **kwargs):
+            raise RuntimeError("synthetic cohort indexing failure")
+
+        self.cohort.import_vcf = explode
+        try:
+            result = self.library.import_vcf(self.vcf, self.payload(include=True))
+        finally:
+            self.cohort.import_vcf = original
+        self.assertEqual(len(result["datasets"]), 2)
+        self.assertIsNone(result["cohort"])
+        self.assertTrue(any("Repair Cohort Search" in w for w in result["warnings"]))
+        record = self.library.get(result["datasets"][0]["id"])
+        self.assertEqual(record["cohort_index_status"], "needs_repair")
+
     def test_bulk_apply_reports_per_item_outcomes(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=False))
         ids = [d["id"] for d in result["datasets"]]

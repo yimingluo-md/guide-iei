@@ -146,5 +146,42 @@ class PhenotypeStoreTests(unittest.TestCase):
         self.assertEqual(parsed["suggested_mapping"]["sample_ids"], "VCF Sample")
 
 
+
+class AtomicImportTests(unittest.TestCase):
+    def test_failed_bulk_import_leaves_no_partial_unaudited_updates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = PhenotypeStore(Path(directory) / "p.sqlite3")
+            content = "individual_id,phenotype_summary\nP1,first\nP2,second\n"
+            payload = {
+                "content_base64": base64.b64encode(content.encode()).decode(),
+                "filename": "cases.csv",
+                "mapping": {"individual_id": "individual_id",
+                            "phenotype_summary": "phenotype_summary"},
+            }
+            original = store._upsert
+            calls = {"n": 0}
+
+            def failing(record, mode, source_name, connection=None):
+                calls["n"] += 1
+                if calls["n"] == 2:
+                    raise RuntimeError("synthetic failure on the second row")
+                return original(record, mode, source_name, connection)
+
+            store._upsert = failing
+            try:
+                with self.assertRaisesRegex(RuntimeError, "second row"):
+                    store.import_records(payload)
+            finally:
+                store._upsert = original
+            # Everything rolled back together: no patient rows, no audit run.
+            self.assertIsNone(store.get("P1"))
+            self.assertIsNone(store.get("P2"))
+            import sqlite3
+            with sqlite3.connect(Path(directory) / "p.sqlite3") as connection:
+                runs = connection.execute(
+                    "SELECT COUNT(*) FROM phenotype_import_runs"
+                ).fetchone()[0]
+            self.assertEqual(runs, 0)
+
 if __name__ == "__main__":
     unittest.main()

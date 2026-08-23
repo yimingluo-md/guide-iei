@@ -675,6 +675,8 @@ class AnnotationJobService:
         self._resource_processes: dict[str, subprocess.Popen] = {}
         self._resource_threads: dict[str, threading.Thread] = {}
         self._resource_lock = threading.Lock()
+        self._resource_pids_lock = threading.Lock()
+        self._harden_private_permissions()
         self._storage_jobs: dict[str, dict] = {}
         self._storage_threads: dict[str, threading.Thread] = {}
         self._storage_lock = threading.Lock()
@@ -2172,21 +2174,54 @@ class AnnotationJobService:
     # not leave invisible orphan downloaders competing with the next
     # instance's jobs for the same output files.
     # ------------------------------------------------------------------
+    def _harden_private_permissions(self) -> None:
+        """Keep patient-bearing state private to the owning user.
+
+        Directory and database modes otherwise inherit the ambient umask
+        (0755/0644 under the common 022), leaving PHI world-readable on a
+        shared machine. Mode 0700 on the state root denies traversal to
+        every other user regardless of inner file modes; the databases are
+        tightened directly as well. Best effort — permission models vary
+        (network shares, Windows), so failures are ignored.
+        """
+        if os.name != "posix":
+            return
+        for directory in (self.state_dir, self.state_dir / "sample-library"):
+            try:
+                if directory.is_dir():
+                    os.chmod(directory, 0o700)
+            except OSError:
+                pass
+        for name in (
+            "cohort.sqlite3", "sample-library.sqlite3", "bulk-intake.sqlite3",
+            "jobs.sqlite3", "spliceai-lookup-cache.sqlite3",
+        ):
+            target = self.state_dir / name
+            try:
+                if target.is_file():
+                    os.chmod(target, 0o600)
+            except OSError:
+                pass
+
     def _active_resource_pids_path(self) -> Path:
         return self.state_dir / "resource-job-pids.json"
 
     def _rewrite_active_resource_pids(self, mutate) -> None:
-        path = self._active_resource_pids_path()
-        try:
-            data = json.loads(path.read_text()) if path.exists() else {}
-        except (OSError, ValueError):
-            data = {}
-        if not isinstance(data, dict):
-            data = {}
-        mutate(data)
-        temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
-        temporary.write_text(json.dumps(data))
-        temporary.replace(path)
+        # The write is atomic but the read-modify-write was not: two jobs
+        # registering concurrently could lose one PID from the crash-cleanup
+        # registry, leaving an invisible orphan process.
+        with self._resource_pids_lock:
+            path = self._active_resource_pids_path()
+            try:
+                data = json.loads(path.read_text()) if path.exists() else {}
+            except (OSError, ValueError):
+                data = {}
+            if not isinstance(data, dict):
+                data = {}
+            mutate(data)
+            temporary = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+            temporary.write_text(json.dumps(data))
+            temporary.replace(path)
 
     def _record_active_resource_pid(self, job_id: str, pid: int) -> None:
         self._rewrite_active_resource_pids(lambda data: data.__setitem__(job_id, pid))
@@ -2502,9 +2537,15 @@ class AnnotationJobService:
             for stale_id in list(self._wgs_review_files)[:-30]:
                 # Delete the backing file with its registry entry:
                 # otherwise outputs accumulate forever while their
-                # download links 404 for files still on disk.
+                # download links 404 for files still on disk. Prefilter
+                # caching hands the SAME output file to repeated opens of a
+                # genome, so the file is removed only when no remaining
+                # registry entry still references it.
                 stale_path = self._wgs_review_files.pop(stale_id, None)
-                if stale_path is not None:
+                if (
+                    stale_path is not None
+                    and stale_path not in self._wgs_review_files.values()
+                ):
                     try:
                         stale_path.unlink(missing_ok=True)
                     except OSError:

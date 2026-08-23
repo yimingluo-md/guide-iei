@@ -1049,7 +1049,12 @@ export async function parseVcfFiles(
   // site are NOT confirmed reference, so these rows carry no denominator.
   const headerSampleCounts = await Promise.all(files.map((file) => vcfSampleCount(file)));
   const totalHeaderSamples = headerSampleCounts.reduce((sum, count) => sum + count, 0);
-  const aggregatedCohort = files.length > 1 && totalHeaderSamples >= COHORT_SAMPLE_GUARD;
+  // Server-restored record slices are per-sample by construction; letting a
+  // 16+-sample source slice flip into cohort row-shaping renamed every row
+  // to "Cohort" and broke the per-sample selection matching downstream.
+  const perSampleIntake = options.intake === "server-records";
+  const aggregatedCohort = !perSampleIntake
+    && files.length > 1 && totalHeaderSamples >= COHORT_SAMPLE_GUARD;
   const aggregatedVariants = new Map<string, { carriers: CohortCarrier[]; rowEmitted: boolean } | { dropped: true }>();
   const clinvarReleaseByFile = new Map<string, string>();
   const carrierEntryCap = options.carrierEntryCap ?? 3_000_000;
@@ -1117,7 +1122,7 @@ export async function parseVcfFiles(
     // keep the per-sample model that trio analysis and the phenotype tab are
     // built on. A single jointly-called file keeps its carrier denominator;
     // separately-called aggregation does not.
-    const jointCohortFile = samples.length >= COHORT_SAMPLE_GUARD && files.length === 1;
+    const jointCohortFile = !perSampleIntake && samples.length >= COHORT_SAMPLE_GUARD && files.length === 1;
     const cohortMode = jointCohortFile || aggregatedCohort;
     if (cohortMode) importCohortMode = true;
     const clinvarHeader = lines.find((line) => /clinvar/i.test(line) && /20\d{2}[-_.]?\d{2}/.test(line));
