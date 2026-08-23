@@ -4212,8 +4212,18 @@ class AnnotationJobService:
 
     @staticmethod
     def _resolve_final_output(output_path: Path) -> Path:
+        # Prefer the ClinVar amino-acid-match sibling only when it is at
+        # least as new as this run's base output: an existence-only check
+        # let a previous run's .aamatch.vcf.gz masquerade as the current
+        # result whenever the new run did not regenerate it.
         aamatch = Path(str(output_path)[:-7] + ".aamatch.vcf.gz")
-        return aamatch if aamatch.exists() else output_path
+        if not aamatch.exists():
+            return output_path
+        if not output_path.exists():
+            return aamatch
+        if aamatch.stat().st_mtime >= output_path.stat().st_mtime:
+            return aamatch
+        return output_path
 
     def shutdown(self) -> None:
         self._stop.set()

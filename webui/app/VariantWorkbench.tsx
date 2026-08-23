@@ -2294,6 +2294,7 @@ function CohortPanel({ onReview }: {
   const [selectedVariant, setSelectedVariant] = useState<CohortQueryRow | null>(null);
   const [variantDetail, setVariantDetail] = useState<CohortVariantDetail | null>(null);
   const [detailWorking, setDetailWorking] = useState(false);
+  const detailRequestToken = useRef(0);
   const [reviewWorking, setReviewWorking] = useState(false);
   const [selectedCarrierIds, setSelectedCarrierIds] = useState<Set<number>>(new Set());
   const [managingSamples, setManagingSamples] = useState(false);
@@ -2633,16 +2634,22 @@ function CohortPanel({ onReview }: {
   }
 
   async function openVariantDetail(row: CohortQueryRow) {
+    // Responses may arrive out of order when variants are clicked in quick
+    // succession; only the most recent request may write state, or variant
+    // B's header can end up over variant A's carriers.
+    const token = ++detailRequestToken.current;
     setSelectedVariant(row);
     setVariantDetail(null);
     setDetailWorking(true);
     try {
       const detail = await getCohortVariantDetail(row.variant_key);
+      if (detailRequestToken.current !== token) return;
       setVariantDetail(detail);
     } catch (reason) {
+      if (detailRequestToken.current !== token) return;
       setError(reason instanceof Error ? reason.message : "Variant details could not be loaded.");
     } finally {
-      setDetailWorking(false);
+      if (detailRequestToken.current === token) setDetailWorking(false);
     }
   }
 

@@ -80,6 +80,35 @@ class SampleLibraryTests(unittest.TestCase):
         again = self.library.review_file(by_sample["P1"]["id"])
         self.assertEqual(again, projected)
 
+    def test_review_file_cache_keys_cannot_collide_across_sanitized_names(self):
+        """Sample names that differ only in special characters (PAT/1 vs
+        PAT?1) must never share a projection cache file — a collision serves
+        one patient's variants under another patient's name."""
+        from local_service.cohort_store import HtsBackend, read_vcf_header
+        backend = HtsBackend.discover()
+        if backend is None or not backend.native_tools.get("bcftools"):
+            self.skipTest("native bcftools is required for sample projections")
+        tricky = self.state / "tricky.vcf"
+        tricky.write_text(
+            "##fileformat=VCFv4.2\n"
+            "##contig=<ID=1>\n"
+            '##FILTER=<ID=PASS,Description="All filters passed">\n'
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele">\n'
+            '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPAT 1\tPAT#1\n"
+            "1\t100\t.\tA\tG\t50\tPASS\tCSQ=G\tGT\t0/1\t0/0\n"
+            "1\t200\t.\tC\tT\t50\tPASS\tCSQ=T\tGT\t0/0\t0/1\n"
+        )
+        self.cohort.hts_backend = backend
+        result = self.library.import_vcf(tricky, self.payload(include=False))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+        self.assertEqual(set(by_sample), {"PAT 1", "PAT#1"})
+        first = self.library.review_file(by_sample["PAT 1"]["id"])
+        second = self.library.review_file(by_sample["PAT#1"]["id"])
+        self.assertNotEqual(first, second)
+        self.assertEqual(read_vcf_header(first).samples, ("PAT 1",))
+        self.assertEqual(read_vcf_header(second).samples, ("PAT#1",))
+
     def test_review_file_combined_projects_selected_samples_or_serves_whole_file(self):
         from local_service.cohort_store import HtsBackend, read_vcf_header
         backend = HtsBackend.discover()

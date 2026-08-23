@@ -533,10 +533,19 @@ class SampleLibrary:
             # instead of freezing, so this degrades loudly, not silently.
             return source
         checksum = str(record.get("managed_checksum") or source.stem)
+        # The cache key must be collision-proof for the exact sample name:
+        # lossy sanitization alone let same-file samples differing only in
+        # special characters (PAT/1 vs PAT?1) share one cache file, serving
+        # one patient's variants under another's name. A hash of the exact
+        # name disambiguates; the sanitized prefix stays for readability.
         safe_sample = "".join(
             ch if ch.isalnum() or ch in "._-" else "_" for ch in sample
+        )[:40]
+        sample_digest = hashlib.sha256(sample.encode("utf-8")).hexdigest()[:12]
+        projected = (
+            self.files_dir
+            / f"{checksum}.{safe_sample}.{sample_digest}.review.vcf.gz"
         )
-        projected = self.files_dir / f"{checksum}.{safe_sample}.review.vcf.gz"
         if projected.is_file() and projected.stat().st_mtime >= source.stat().st_mtime:
             return projected
         partial = projected.with_name(projected.name + f".{os.getpid()}.partial.vcf.gz")

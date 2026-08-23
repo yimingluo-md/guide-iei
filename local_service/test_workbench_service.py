@@ -816,6 +816,25 @@ class AnnotationJobServiceTests(unittest.TestCase):
                     {"chrom": "1", "pos": 1000, "ref": "AT", "alt": "A"}
                 )
 
+    def test_final_output_ignores_a_stale_aamatch_sibling(self):
+        """The .aamatch.vcf.gz sibling counts only when it is at least as
+        new as the base output: a previous run's file must not masquerade
+        as the current result."""
+        out_dir = Path(self.temp.name) / "final-output"
+        out_dir.mkdir()
+        base = out_dir / "case.vep.vcf.gz"
+        aamatch = out_dir / "case.vep.aamatch.vcf.gz"
+
+        aamatch.write_bytes(b"OLD")
+        self.assertEqual(self.service._resolve_final_output(base), aamatch)
+
+        base.write_bytes(b"CURRENT")
+        os.utime(aamatch, (1_000_000, 1_000_000))
+        self.assertEqual(self.service._resolve_final_output(base), base)
+
+        os.utime(aamatch, None)
+        self.assertEqual(self.service._resolve_final_output(base), aamatch)
+
     def test_bulk_intake_queue_processes_items_and_records_failures(self):
         vcf_dir = Path(self.temp.name) / "bulk-src"
         vcf_dir.mkdir()
