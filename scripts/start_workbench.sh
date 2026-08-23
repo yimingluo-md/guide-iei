@@ -198,6 +198,17 @@ if [[ ! -d "${ROOT}/webui/node_modules" ]]; then
         exit 1
     }
 fi
+if [[ -f "${ROOT}/webui/.dependencies-updated" ]]; then
+    # A software update changed the web UI dependency manifest; the
+    # installed node_modules would otherwise run silently stale.
+    echo "a software update changed the web UI dependencies; running npm install..."
+    if npm install --no-fund --no-audit; then
+        rm -f "${ROOT}/webui/.dependencies-updated"
+    else
+        echo "ERROR: npm install failed after the software update. Run 'bash scripts/setup_environment.sh' for diagnostics." >&2
+        exit 1
+    fi
+fi
 # Open the browser once the UI answers; the poller waits in the background
 # while Next.js occupies the foreground below.
 if [[ "$BOOTSTRAP" == "1" ]]; then

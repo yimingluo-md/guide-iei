@@ -1473,6 +1473,60 @@ export async function restartWorkbenchService() {
   });
 }
 
+export type SoftwareUpdateStatus = {
+  current_version: string;
+  repo: string;
+  rollback_available: boolean;
+  rollback_version: string | null;
+};
+
+export type SoftwareUpdateCheck = {
+  ok: boolean;
+  current_version: string;
+  repo: string;
+  latest_version?: string;
+  tag?: string;
+  published_at?: string | null;
+  notes?: string;
+  update_available?: boolean;
+  error?: string;
+};
+
+export type SoftwareUpdateResult = {
+  ok: boolean;
+  installed_version?: string;
+  previous_version?: string;
+  restored_version?: string;
+  restart_required: boolean;
+  config_review_needed?: string[];
+  dependencies_changed?: boolean;
+  container_changed?: boolean;
+  files_removed?: string[];
+  wsl_origin_synced?: boolean;
+};
+
+export async function getSoftwareUpdateStatus() {
+  return request<SoftwareUpdateStatus>("/api/software-update/status");
+}
+
+export async function checkForSoftwareUpdate() {
+  return request<SoftwareUpdateCheck>("/api/software-update/check");
+}
+
+export async function installSoftwareUpdate() {
+  return request<SoftwareUpdateResult>("/api/software-update/install", {
+    method: "POST",
+    body: "{}",
+  });
+}
+
+export async function rollbackSoftwareUpdate() {
+  return request<SoftwareUpdateResult>("/api/software-update/rollback", {
+    method: "POST",
+    body: "{}",
+  });
+}
+
 export async function startStorageMigration(kind: StorageLocationKind, path: string) {
   return request<StorageMigrationJob>("/api/storage/migrate", {
     method: "POST", body: JSON.stringify({ kind, path }),

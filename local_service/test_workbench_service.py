@@ -1276,6 +1276,12 @@ class AnnotationJobServiceTests(unittest.TestCase):
             ) as response:
                 jobs = json.load(response)
             with urllib.request.urlopen(
+                f"http://127.0.0.1:{port}/api/software-update/status", timeout=2
+            ) as response:
+                update_status = json.load(response)
+            self.assertIn("current_version", update_status)
+            self.assertFalse(update_status["rollback_available"])
+            with urllib.request.urlopen(
                 f"http://127.0.0.1:{port}/api/resource-downloads", timeout=2
             ) as response:
                 resource_jobs = json.load(response)

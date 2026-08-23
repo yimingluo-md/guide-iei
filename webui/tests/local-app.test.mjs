@@ -66,8 +66,12 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /useState<"GRCh38" \| "GRCh37" \| "auto">\("auto"\)/);
   assert.match(source, /Detected .* logical CPU threads/);
   assert.match(source, /Use automatic/);
-  assert.doesNotMatch(source, /Check for updates/);
+  // Reference datasets are never updated from the review UI (the old
+  // /api/references/update surface stays gone); the SOFTWARE updater in
+  // the About panel is a deliberate feature and must be present.
   assert.doesNotMatch(service, /\/api\/references\/update/);
+  assert.match(source, /checkForSoftwareUpdate/);
+  assert.match(source, /rollbackSoftwareUpdate/);
   assert.doesNotMatch(source, /Annotation config/);
   assert.match(service, /annotation_options/);
   assert.match(service, /annotation-files\/stage/);

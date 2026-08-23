@@ -51,6 +51,13 @@ import {
   chooseLocalResourceSource,
   compactStorage,
   getServiceHealth,
+  getSoftwareUpdateStatus,
+  checkForSoftwareUpdate,
+  installSoftwareUpdate,
+  rollbackSoftwareUpdate,
+  type SoftwareUpdateStatus,
+  type SoftwareUpdateCheck,
+  type SoftwareUpdateResult,
   openStorageLocation,
   restartWorkbenchService,
   setStorageLocation,
@@ -150,7 +157,7 @@ import {
   type RegulatoryContextSet,
 } from "./regulatory-evidence";
 
-type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "sample_library" | "storage" | "phenotypes" | "gene_lists" | "gene_knowledge" | "glossary" | "import";
+type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "sample_library" | "storage" | "phenotypes" | "gene_lists" | "gene_knowledge" | "glossary" | "import" | "about";
 type AnalysisScope = "exome" | "whole_genome";
 type LibraryImportOptions = {
   keep: boolean;
@@ -1201,6 +1208,7 @@ export default function VariantWorkbench() {
           <button className={`nav-item ${view === "gene_lists" ? "active" : ""}`} onClick={() => { setView("gene_lists"); setSelected(null); }}><span>Gene lists</span><span>{4 + customGeneLists.length}</span></button>
           <button className={`nav-item ${view === "glossary" ? "active" : ""}`} onClick={() => { setView("glossary"); setSelected(null); }}><span>Glossary</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "storage" ? "active" : ""}`} onClick={() => { setView("storage"); setSelected(null); }}><span>Storage</span><Icon name="file" /></button>
+          <button className={`nav-item ${view === "about" ? "active" : ""}`} onClick={() => { setView("about"); setSelected(null); }}><span>About &amp; updates</span><Icon name="star" /></button>
           <button className={`nav-item ${view === "import" ? "active" : ""}`} onClick={() => setView("import")}><span>Import & QC</span><Icon name="chevron" /></button>
           <div className="rail-note"><strong>Defaults active</strong><span>PASS upstream</span><span>MANE transcripts</span><span>Repeat/SegDup excluded</span></div>
         </nav>
@@ -1331,6 +1339,8 @@ export default function VariantWorkbench() {
             }} onManagePhenotype={(individualId) => { setPhenotypeTarget(individualId ?? null); setView("phenotypes"); }} />
           ) : view === "storage" ? (
             <StoragePanel />
+          ) : view === "about" ? (
+            <AboutPanel />
           ) : view === "phenotypes" ? (
             <PhenotypePanel initialIndividualId={phenotypeTarget} />
           ) : view === "gene_knowledge" ? (
@@ -2879,6 +2889,92 @@ function CustomGeneSet({ list, onChange, onDelete }: { list: CustomGeneList; onC
     setEditing(false);
   };
   return <article className="custom-gene-list-card"><header><div><strong>{list.name}</strong><span>{list.genes.size} gene{list.genes.size === 1 ? "" : "s"}</span></div><div><button className="secondary-button" onClick={beginEditing}>Edit</button><button className="secondary-button" onClick={() => uploadRef.current?.click()}>Replace file</button><button className="danger-text-button" onClick={onDelete}>Delete</button><input ref={uploadRef} className="sr-only" type="file" accept=".txt,.csv,.tsv" onChange={(event) => { const file = event.target.files?.[0]; if (file) file.text().then((text) => onChange({ ...list, genes: parseGeneList(text) })); event.target.value = ""; }} /></div></header>{editing ? <div className="custom-gene-list-editor"><label className="form-field"><span>List name</span><input value={name} onChange={(event) => setName(event.target.value)} /></label><label className="form-field"><span>Gene symbols</span><textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={9} spellCheck={false} /></label><div><span>{parseGeneList(draft).size} unique genes</span><button className="secondary-button" onClick={() => setEditing(false)}>Cancel</button><button className="primary-button dark" onClick={save}>Apply changes</button></div></div> : <p>{[...list.genes].sort().slice(0, 18).join(", ")}{list.genes.size > 18 ? `, +${list.genes.size - 18} more` : ""}{!list.genes.size ? "No genes have been added." : ""}</p>}</article>;
+}
+
+function AboutPanel() {
+  const [status, setStatus] = useState<SoftwareUpdateStatus | null>(null);
+  const [check, setCheck] = useState<SoftwareUpdateCheck | null>(null);
+  const [installResult, setInstallResult] = useState<SoftwareUpdateResult | null>(null);
+  const [working, setWorking] = useState<"" | "check" | "install" | "rollback" | "restart">("");
+  const [error, setError] = useState("");
+  useEffect(() => {
+    getSoftwareUpdateStatus().then(setStatus).catch((reason) => setError(reason instanceof Error ? reason.message : "The local service could not be reached."));
+  }, []);
+  async function runCheck() {
+    setWorking("check"); setError(""); setCheck(null); setInstallResult(null);
+    try { setCheck(await checkForSoftwareUpdate()); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : "The update check failed."); }
+    finally { setWorking(""); }
+  }
+  async function runInstall() {
+    if (!check?.latest_version) return;
+    if (!window.confirm(`Install GUIDE-IEI ${check.latest_version}? Your datasets, sample library, and edited configuration are not touched. The workbench restarts afterwards.`)) return;
+    setWorking("install"); setError("");
+    try {
+      const result = await installSoftwareUpdate();
+      setInstallResult(result);
+      setCheck(null);
+      setStatus(await getSoftwareUpdateStatus().catch(() => status));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "The update could not be installed."); }
+    finally { setWorking(""); }
+  }
+  async function runRollback() {
+    if (!status?.rollback_version) return;
+    if (!window.confirm(`Return to GUIDE-IEI ${status.rollback_version}? The workbench restarts afterwards.`)) return;
+    setWorking("rollback"); setError("");
+    try {
+      const result = await rollbackSoftwareUpdate();
+      setInstallResult(result);
+      setStatus(await getSoftwareUpdateStatus().catch(() => status));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "The previous version could not be restored."); }
+    finally { setWorking(""); }
+  }
+  async function restartNow() {
+    setWorking("restart"); setError("");
+    try {
+      await restartWorkbenchService();
+      const deadline = Date.now() + 120_000;
+      let healthy = false;
+      while (Date.now() < deadline) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+        try { await getServiceHealth(); healthy = true; break; } catch { /* service restarting */ }
+      }
+      if (!healthy) throw new Error("The service did not come back within two minutes. Close the launcher window and start GUIDE-IEI again.");
+      window.location.reload();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "The workbench could not be restarted.");
+      setWorking("");
+    }
+  }
+  const upToDate = check?.ok && check.update_available === false && !check.error;
+  return <div className="gene-knowledge-settings about-panel">
+    <div className="content-header"><div><p className="eyebrow">About</p><h1>GUIDE-IEI</h1><p className="subtitle">Version {status?.current_version ?? "…"} · a local application — your genomic data never leave this computer.</p></div></div>
+    {error && <div className="alert error">{error}</div>}
+    <section className="gene-resource-section"><div className="section-title"><div><p className="eyebrow">Software updates</p><h2>Keep GUIDE-IEI current</h2></div><button className="secondary-button" disabled={Boolean(working)} onClick={() => void runCheck()}>{working === "check" ? "Checking…" : "Check for updates"}</button></div>
+      {check?.error && <div className="alert">{check.error}</div>}
+      {upToDate && <div className="alert">GUIDE-IEI {check.current_version} is the newest release.</div>}
+      {check?.ok && check.update_available && <article className="software-update-card">
+        <div className="section-title"><div><p className="eyebrow">New release</p><h2>GUIDE-IEI {check.latest_version}</h2></div><span className="mini-badge teal">{check.published_at ? new Date(check.published_at).toLocaleDateString() : "available"}</span></div>
+        {check.notes && <pre className="release-notes">{check.notes}</pre>}
+        <button className="primary-button dark" disabled={Boolean(working)} onClick={() => void runInstall()}>{working === "install" ? "Downloading and installing…" : `Install ${check.latest_version}`}</button>
+        <p className="constraint-note">Installation replaces only the software&apos;s own files. Annotation datasets, the sample library, review data, and your edited configuration are never touched, and the current version is kept for rollback.</p>
+      </article>}
+      {installResult && <div className="alert software-update-done">
+        <div>
+          <strong>{installResult.restored_version ? `GUIDE-IEI ${installResult.restored_version} restored.` : `GUIDE-IEI ${installResult.installed_version} installed.`}</strong>
+          <span>
+            {installResult.config_review_needed?.length ? " This release updated the annotation configuration; your file was kept and the new version was saved beside it as annotation.config.yaml.new for review." : ""}
+            {installResult.dependencies_changed ? " Interface components changed, so the restart takes a minute longer while they install." : ""}
+            {installResult.container_changed ? " The annotation engine's container recipe changed; the next annotation run rebuilds it (a large one-time download)." : ""}
+            {" Restart to run the "}{installResult.restored_version ? "restored" : "new"}{" version."}
+          </span>
+        </div>
+        <button className="primary-button dark" disabled={Boolean(working)} onClick={() => void restartNow()}>{working === "restart" ? "Restarting…" : "Restart the workbench"}</button>
+      </div>}
+      {status?.rollback_available && !installResult && <p className="constraint-note">A previous version ({status.rollback_version}) is kept. <button className="link-button" disabled={Boolean(working)} onClick={() => void runRollback()}>{working === "rollback" ? "Restoring…" : "Return to it"}</button> if the current one misbehaves.</p>}
+      <p className="constraint-note">Checking contacts github.com once to read the latest release description — that lookup is the only request this application ever makes beyond your computer, it happens only when you ask, and nothing about you or your data is sent.</p>
+    </section>
+  </div>;
 }
 
 function StoragePanel() {

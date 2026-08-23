@@ -86,7 +86,10 @@ if (-not $hasRepo -or $Update) {
     # deleted or renamed, leaving stale modules in the installed copy. The
     # repository holds no user state (that lives in ~/.iei-variant-review),
     # so a staged swap is safe; webui dependencies reinstall on next start.
-    wsl.exe -d $distro bash -c "rm -rf $wslRepo.staging && mkdir -p $wslRepo.staging && cp -R '$winRootWsl'/. $wslRepo.staging/ && find $wslRepo.staging -name '*.sh' -o -name '*.command' | xargs -r chmod +x && rm -rf $wslRepo && mv $wslRepo.staging $wslRepo"
+    # .wsl-origin records where this copy came from, so the in-app software
+    # updater can mirror updates back to the Windows-side folder — a later
+    # -Update refresh must never silently downgrade the WSL copy.
+    wsl.exe -d $distro bash -c "rm -rf $wslRepo.staging && mkdir -p $wslRepo.staging && cp -R '$winRootWsl'/. $wslRepo.staging/ && find $wslRepo.staging -name '*.sh' -o -name '*.command' | xargs -r chmod +x && printf '%s\n' '$winRootWsl' > $wslRepo.staging/.wsl-origin && rm -rf $wslRepo && mv $wslRepo.staging $wslRepo"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: copying into WSL failed. Please report this message."
         exit 1

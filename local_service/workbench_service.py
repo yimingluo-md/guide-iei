@@ -41,6 +41,7 @@ from local_service.cohort_store import CohortStore
 from local_service.gene_knowledge import GeneKnowledgeStore
 from local_service.phenotype_store import PhenotypeStore
 from local_service.screen_context import ScreenContextStore
+from local_service.software_update import SoftwareUpdater
 from local_service.sample_library import SampleLibrary
 from local_service.storage_locations import (
     STORAGE_KINDS,
@@ -673,6 +674,10 @@ class AnnotationJobService:
             self.annotation_root / "clingen_erepo" / "clingen_erepo.sqlite3",
             self.annotation_root / "clingen_erepo" / "manifest.json",
         )
+        self.software_updater = SoftwareUpdater(
+            self.pipeline_root, self.state_dir
+        )
+        self._software_update_lock = threading.Lock()
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._processes: dict[str, subprocess.Popen] = {}
         self._process_lock = threading.Lock()
@@ -1324,6 +1329,28 @@ class AnnotationJobService:
     @property
     def restart_requested(self) -> bool:
         return self._restart_requested
+
+    def software_update_install(self) -> dict:
+        """Install the latest release. Refused while anything is running —
+        replacing scripts underneath a live annotation job is the hazard."""
+        with self._software_update_lock:
+            self._ensure_software_update_idle()
+            return self.software_updater.install()
+
+    def software_update_rollback(self) -> dict:
+        with self._software_update_lock:
+            self._ensure_software_update_idle()
+            return self.software_updater.rollback()
+
+    def _ensure_software_update_idle(self) -> None:
+        try:
+            self._ensure_storage_idle()
+        except ValueError as exc:
+            raise ValueError(
+                str(exc).replace(
+                    "before changing storage", "before updating the software"
+                )
+            ) from exc
 
     def request_service_restart(self) -> dict:
         """Mark this process for supervised restart once nothing is running.
@@ -4448,6 +4475,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         query = parse_qs(parsed_url.query)
         if path == "/api/health":
             self._json({"ok": True, "version": SERVICE_VERSION})
+        elif path == "/api/software-update/status":
+            self._json(self.service.software_updater.status())
+        elif path == "/api/software-update/check":
+            # Explicitly user-triggered: the ONLY request this application
+            # ever makes to a non-local host is this release lookup.
+            self._json(self.service.software_updater.check())
         elif path == "/api/capabilities":
             self._json(self.service.capabilities())
         elif path == "/api/jobs":
@@ -4655,6 +4688,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     "/api/phenotypes/individual",
                     "/api/gene-knowledge/omim/install",
                     "/api/screen-context/install",
+                    "/api/software-update/install",
+                    "/api/software-update/rollback",
                 }
                 or path.startswith("/api/resource-downloads/")
                 or path.startswith("/api/resource-preparations/")
@@ -4919,6 +4954,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/jobs/") and path.endswith("/cancel"):
                 job_id = path.split("/")[3]
                 self._json(self.service.cancel(job_id))
+                return
+            if path == "/api/software-update/install":
+                self._json(self.service.software_update_install())
+                return
+            if path == "/api/software-update/rollback":
+                self._json(self.service.software_update_rollback())
                 return
             self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
         except KeyError:

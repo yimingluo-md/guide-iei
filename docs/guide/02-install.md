@@ -198,6 +198,35 @@ When `C:` is too small, there are two good options and one fallback:
 | The folder lives in OneDrive/Dropbox and behaves oddly | Cloud-synced folders corrupt the working files. Move the `guide-iei` folder to an ordinary location and launch again. |
 | Uncertain what state the installation is in | Run the setup check from the appendix below (no options). It changes nothing and reports exactly what is present and missing. |
 
+## Keeping GUIDE-IEI up to date
+
+Updates are delivered as releases and installed from inside the
+application. Open **About & updates** in the left navigation:
+
+- The page shows the installed version. **Check for updates** asks
+  github.com for the newest release and shows its description — what
+  changed, in plain terms. This lookup is the only request GUIDE-IEI
+  ever makes beyond your computer; it happens only when you click, and
+  nothing about you or your data is sent.
+- **Install** downloads the release, verifies its checksum, and replaces
+  the software's own files — nothing else. Annotation datasets, the
+  sample library, review data, and your edited configuration are never
+  touched. When a release introduces new configuration options, your
+  file is kept as-is and the new version is saved beside it
+  (`annotation.config.yaml.new`) for you to compare at leisure.
+- A restart finishes the update; the page offers the button. When a
+  release changed the interface's components, that restart takes about a
+  minute longer while they install themselves.
+- The version you were running is kept. If anything about the new
+  version misbehaves, **Return to it** on the same page restores the
+  previous version as it was.
+
+Updating never runs while an annotation job, import, or storage
+migration is in progress — finish or cancel those first.
+
+On the terminal route, `git pull` in the repository folder achieves the
+same, followed by a restart of `start_workbench.sh`.
+
 ## Uninstalling
 
 Delete the `guide-iei` folder (the launcher app lives inside it) and the
