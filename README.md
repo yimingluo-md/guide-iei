@@ -116,6 +116,13 @@ Desktop). The first launch prepares the environment and opens the
 workbench in the browser; the [installation chapter](docs/guide/02-install.md)
 walks through it.
 
+> **Mac, first open:** macOS blocks downloaded apps it cannot verify —
+> a dialog says *"GUIDE-IEI" Not Opened* with only **Move to Trash** and
+> **Done**. Click **Done** (not Move to Trash), open **System Settings →
+> Privacy & Security**, scroll to the Security section where it says
+> *"GUIDE-IEI" was blocked*, click **Open Anyway**, then double-click
+> the app once more and confirm. One time only.
+
 **Terminal:** three commands; nothing is installed outside one managed
 folder, and no administrator rights are required on macOS:
 

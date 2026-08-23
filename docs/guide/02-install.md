@@ -39,9 +39,20 @@ Inside the folder, open `desktop` → `macos` and double-click
 **GUIDE-IEI.app** (drag it to the Dock if you like — it stays connected to
 the folder it came from).
 
-- **The first time only**, macOS asks about an app from an unidentified
-  developer. Right-click the app and choose **Open**, then **Open** again —
-  a one-time step for any app installed outside the App Store.
+- **The first time only**, macOS refuses the app with *"GUIDE-IEI" Not
+  Opened — Apple could not verify…*, offering only **Move to Trash** and
+  **Done**. This is the standard treatment of any downloaded app outside
+  the App Store, and the resolution is one time only:
+  1. Click **Done** (not Move to Trash).
+  2. Open **System Settings → Privacy & Security** and scroll down to
+     the **Security** section, which now says *"GUIDE-IEI" was blocked to
+     protect your Mac*.
+  3. Click **Open Anyway** (your login password or Touch ID confirms
+     it), then double-click the app again and confirm **Open Anyway**
+     once more.
+
+  On older macOS versions, right-clicking the app and choosing **Open**
+  achieves the same in one step.
 - **The first launch prepares the environment**: a Terminal window opens
   and reports progress while Python is checked, Node.js and the interface
   dependencies are installed into the managed folder, and a smoke test
@@ -54,9 +65,10 @@ the folder it came from).
   application; closing it stops the workbench. Later launches skip the
   preparation and open in seconds.
 
-If the app itself refuses to open (a rare unzip quirk), double-click
-`GUIDE-IEI-Workbench.command` in the same folder — it is the same
-launcher in plainer clothing.
+If the app itself refuses to open even after Open Anyway (a rare unzip
+quirk), double-click `GUIDE-IEI-Workbench.command` in the same folder —
+it is the same launcher in plainer clothing, and macOS may ask for the
+same one-time Open Anyway approval for it.
 
 ## Windows: one installer, then double-click
 
@@ -168,7 +180,7 @@ When `C:` is too small, there are two good options and one fallback:
 
 | Symptom | Cause and remedy |
 |---|---|
-| macOS: "cannot be opened because it is from an unidentified developer" | Expected once for an app installed outside the App Store: right-click **GUIDE-IEI.app** → **Open** → **Open**. |
+| macOS: *"GUIDE-IEI" Not Opened* with only Move to Trash / Done | Expected once for a downloaded app: **Done** → System Settings → Privacy & Security → Security section → **Open Anyway** → open the app again. Never needed twice. |
 | The workbench page does not load | The launcher window must remain open — it *is* the application. Start it again and watch for error lines. |
 | A `[FIX]` line about the container daemon | The container runtime is installed but not running. Docker Desktop users: launch Docker Desktop; the setup check otherwise prints the exact start command. |
 | Everything is slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
