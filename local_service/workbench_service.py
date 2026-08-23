@@ -21,6 +21,7 @@ import signal
 import socketserver
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import uuid
@@ -2684,7 +2685,25 @@ class AnnotationJobService:
     # ------------------------------------------------------------------
 
     def _bulk_intake_connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.state_dir / "bulk-intake.sqlite3", timeout=60)
+        # Transient OperationalErrors (SQLITE_IOERR under file-descriptor
+        # pressure or journal recovery on CI runners) killed the worker
+        # thread outright and, worse, could surface an empty table to the
+        # already-running guard right after a committed INSERT. A short
+        # retry heals the transient class; persistent failures still raise.
+        last_error: sqlite3.OperationalError | None = None
+        for attempt in range(5):
+            try:
+                connection = sqlite3.connect(
+                    self.state_dir / "bulk-intake.sqlite3", timeout=60
+                )
+                break
+            except sqlite3.OperationalError as error:
+                last_error = error
+                if self._stop.is_set():
+                    raise
+                time.sleep(0.2 * (attempt + 1))
+        else:
+            raise last_error  # type: ignore[misc]
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=60000")
         connection.executescript(
@@ -2779,6 +2798,16 @@ class AnnotationJobService:
                         f"bulk intake {active['id']} is still running — wait for it "
                         "to finish or cancel it first"
                     )
+                worker = self._bulk_intake_thread
+                if worker and worker.is_alive():
+                    # The database is the source of truth, but a live
+                    # worker with no visible job row means the row is in
+                    # flux (or was lost to an I/O hiccup) — never run two
+                    # workers over one queue database.
+                    raise ValueError(
+                        "a bulk intake worker is still finishing — wait a "
+                        "moment and try again"
+                    )
                 job_id = uuid.uuid4().hex
                 now = utc_now()
                 connection.execute(
@@ -2817,6 +2846,31 @@ class AnnotationJobService:
             self._start_bulk_intake_worker(row["id"])
 
     def _run_bulk_intake(self, job_id: str) -> None:
+        try:
+            self._run_bulk_intake_inner(job_id)
+        except sqlite3.OperationalError as error:
+            if self._stop.is_set():
+                # Service shut down mid-item (the state dir may already be
+                # gone — routine in tests and at exit): the interrupted
+                # item is reset to queued and resumed at the next start,
+                # so a raw thread-death traceback here is pure noise.
+                return
+            print(
+                f"[local-service] bulk intake {job_id} stopped on a "
+                f"database error: {error}",
+                file=sys.stderr,
+            )
+            try:
+                with closing(self._bulk_intake_connect()) as connection, connection:
+                    connection.execute(
+                        "UPDATE bulk_jobs SET status='failed', updated_at=?"
+                        " WHERE id=? AND status IN ('queued','running')",
+                        (utc_now(), job_id),
+                    )
+            except sqlite3.Error:
+                pass
+
+    def _run_bulk_intake_inner(self, job_id: str) -> None:
         with closing(self._bulk_intake_connect()) as connection, connection:
             row = connection.execute(
                 "SELECT options FROM bulk_jobs WHERE id=?", (job_id,)

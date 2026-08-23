@@ -1305,7 +1305,7 @@ export async function importSampleLibrary(payload: {
 
 export type BulkIntakeJob = {
   id: string;
-  status: "queued" | "running" | "completed" | "cancelled";
+  status: "queued" | "running" | "completed" | "cancelled" | "failed";
   created_at: string;
   updated_at: string;
   options: { analysis_scope: "exome" | "whole_genome"; filters: Record<string, unknown>; include_in_cohort: boolean };
