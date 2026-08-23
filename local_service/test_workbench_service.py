@@ -883,6 +883,21 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(exome_default["max_gnomad_popmax"], 0.01)
         self.assertIsNone(exome_default["min_spliceai"])
 
+    def test_storage_guard_treats_bulk_intake_as_active_work(self):
+        """A storage migration snapshotting mid-batch would activate a copy
+        missing everything the queue imported after the snapshot."""
+        with closing(self.service._bulk_intake_connect()) as connection, connection:
+            now = "2026-08-23T00:00:00+00:00"
+            connection.execute(
+                "INSERT INTO bulk_jobs (id, created_at, updated_at, status, options)"
+                " VALUES ('busy', ?, ?, 'running', '{}')", (now, now))
+        with self.assertRaisesRegex(ValueError, "bulk import"):
+            self.service._ensure_storage_idle()
+        with closing(self.service._bulk_intake_connect()) as connection, connection:
+            connection.execute(
+                "UPDATE bulk_jobs SET status='completed' WHERE id='busy'")
+        self.service._ensure_storage_idle()
+
     def test_bulk_intake_resume_resets_interrupted_items(self):
         source = Path(self.temp.name) / "resume.vcf.gz"
         source.write_bytes(b"placeholder")

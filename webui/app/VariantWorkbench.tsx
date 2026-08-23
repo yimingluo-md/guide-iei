@@ -3104,12 +3104,22 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
   const [working, setWorking] = useState("");
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const [selectedDatasets, setSelectedDatasets] = useState<Set<string>>(new Set());
   async function refresh(value = query) {
-    try { setDatasets(await getSampleLibrary(value)); setLibraryPage(0); setError(""); }
+    try {
+      const next = await getSampleLibrary(value);
+      setDatasets(next);
+      setLibraryPage(0);
+      // A selection must never outlive its visibility: datasets selected
+      // under one search and hidden by the next would otherwise still be
+      // removed by "Remove selected" while invisible.
+      const visible = new Set(next.map((dataset) => dataset.id));
+      setSelectedDatasets((current) => new Set([...current].filter((id) => visible.has(id))));
+      setError("");
+    }
     catch (reason) { setError(reason instanceof Error ? reason.message : "Sample Library is unavailable."); }
   }
   useEffect(() => { void refresh(""); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [selectedDatasets, setSelectedDatasets] = useState<Set<string>>(new Set());
 
   async function openCombined(datasetIds: string[], label: string) {
     setWorking("combined"); setError("");

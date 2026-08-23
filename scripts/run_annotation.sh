@@ -76,14 +76,19 @@ RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
 IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
 export RUNTIME IMAGE
 
-# Post-processing temp files carry the PID (so two runs targeting the same
-# output cannot interleave through a shared name) and are removed on exit (so
-# a failed run cannot leave look-alike .tmp files beside the deliverable).
+# All run-scoped temp files carry the PID (so two runs sharing an input
+# basename and output directory cannot interleave through a shared name) and
+# are removed on exit (so a failed run cannot leave look-alike files beside
+# the deliverable). Preprocessing intermediates (sorted/normalized/prefiltered
+# working copies) get the same treatment as post-processing temps; only the
+# liftover output keeps a stable name, because it is a provenance-validated
+# cache — its creation is serialized by a lock below instead.
+RUN_TOKEN="run$$"
 POSTPROC_TMPS=()
 cleanup_postproc_tmps() {
     local tmp
     for tmp in ${POSTPROC_TMPS[@]+"${POSTPROC_TMPS[@]}"}; do
-        rm -f "$tmp" "${tmp}.gz"
+        rm -f "$tmp" "${tmp}.gz" "${tmp}.tbi" "${tmp}.csi"
     done
 }
 trap cleanup_postproc_tmps EXIT
@@ -113,8 +118,22 @@ if [[ "$RESOLVED_ASSEMBLY" == "GRCh37" ]]; then
         --input "$INPUT" --output "$LIFTED_INPUT" --config "$CONFIG"
     )
     [[ "$DRY" == "1" ]] && LIFTOVER_ARGS+=(--dry-run)
+    # The lifted output is a cross-run cache with a stable name, so two
+    # concurrent runs of the same input must not build it simultaneously.
+    # mkdir is the portable atomic lock (macOS ships no flock).
+    LIFTOVER_LOCK="${LIFTED_INPUT}.lock"
+    LOCK_WAITED=0
+    while ! mkdir "$LIFTOVER_LOCK" 2>/dev/null; do
+        (( LOCK_WAITED == 0 )) && log "another run is converting this input; waiting for its liftover..."
+        sleep 5
+        LOCK_WAITED=$(( LOCK_WAITED + 5 ))
+        (( LOCK_WAITED >= 3600 )) && die "gave up waiting for ${LIFTOVER_LOCK} — remove it if no other run is active"
+    done
+    trap 'rmdir "$LIFTOVER_LOCK" 2>/dev/null; cleanup_postproc_tmps' EXIT
     bash "${HERE}/liftover_grch37_to_grch38.sh" "${LIFTOVER_ARGS[@]}" \
         || die "GRCh37->GRCh38 liftover failed"
+    rmdir "$LIFTOVER_LOCK" 2>/dev/null || true
+    trap cleanup_postproc_tmps EXIT
     if [[ "$DRY" != "1" ]]; then
         INPUT="$LIFTED_INPUT"
         log "annotation input converted to canonical GRCh38: $INPUT"
@@ -164,7 +183,8 @@ if [[ "$WGS_MODE" == "1" ]]; then
     elif hts bcftools index -s "$INPUT" >/dev/null 2>&1; then
         log "whole-genome input index validated and reused: $INPUT"
     else
-        WGS_INDEXED="${WORKDIR}/${INPUT_BASE}.wgs-indexed.vcf.gz"
+        WGS_INDEXED="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.wgs-indexed.vcf.gz"
+        POSTPROC_TMPS+=("$WGS_INDEXED")
         log "whole-genome input is not queryable; creating sorted BGZF working copy"
         hts bcftools sort -O z -o "$WGS_INDEXED" "$INPUT" \
             || die "whole-genome BGZF preparation failed"
@@ -202,17 +222,20 @@ fi
 
 if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
     INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="${INPUT_BASE%.vcf}"
-    FILT="${WORKDIR}/${INPUT_BASE}.prefiltered.vcf.gz"
+    FILT="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.prefiltered.vcf.gz"
+    POSTPROC_TMPS+=("$FILT")
     if [[ "$DRY" != "1" ]]; then
         # Normalize only contig labels when a GRCh38 VCF uses UCSC chr1/chrM
         # names but the Ensembl region BED/cache uses 1/MT (or vice versa).
         # Coordinates, alleles, INFO and sample FORMAT fields are unchanged.
         if [[ -n "$REGION_BED" ]]; then
-            CHROM_MAP="${WORKDIR}/${INPUT_BASE}.chr-map.tsv"
+            CHROM_MAP="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.chr-map.tsv"
+            POSTPROC_TMPS+=("$CHROM_MAP")
             python3 "${ROOT}/pipeline/contig_map.py" \
                 --vcf "$INPUT" --bed "$REGION_BED" --output "$CHROM_MAP"
             if [[ -s "$CHROM_MAP" ]]; then
-                NORMALIZED="${WORKDIR}/${INPUT_BASE}.contigs-normalized.vcf.gz"
+                NORMALIZED="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.contigs-normalized.vcf.gz"
+                POSTPROC_TMPS+=("$NORMALIZED")
                 hts bcftools annotate --rename-chrs "$CHROM_MAP" -O z -o "$NORMALIZED" "$INPUT" \
                     || die "contig-name normalization failed"
                 hts tabix -p vcf -f "$NORMALIZED"
@@ -228,7 +251,8 @@ if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
                 # bgzip fixes neither ordering nor double-compression. Mirror
                 # the whole-genome path: sort to BGZF, then index with a CSI
                 # fallback for long contigs.
-                COMPRESSED_INPUT="${WORKDIR}/${INPUT_BASE}.input.sorted.vcf.gz"
+                COMPRESSED_INPUT="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.input.sorted.vcf.gz"
+                POSTPROC_TMPS+=("$COMPRESSED_INPUT")
                 hts bcftools sort -O z -o "$COMPRESSED_INPUT" "$INPUT" \
                     || die "region pre-filter input sort/BGZF preparation failed"
                 INPUT="$COMPRESSED_INPUT"

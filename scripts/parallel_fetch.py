@@ -61,6 +61,31 @@ def md5(path: Path) -> str:
     return digest.hexdigest()
 
 
+def load_resume_state(state_path: Path, partial: Path, url: str,
+                      total: int, etag: str | None, chunk_size: int) -> set[int]:
+    """Ranges safe to skip on resume.
+
+    The completed set is only trustworthy while the partial file it
+    describes still exists at full size: trusting the state after the
+    partial was deleted recreated a zero-filled sparse file and published
+    it as a finished download. Metadata mismatches remain hard errors (the
+    remote changed); a missing or wrong-size partial just restarts.
+    """
+    if not state_path.exists():
+        return set()
+    state = json.loads(state_path.read_text())
+    expected = {"url": url, "size": total, "etag": etag, "chunk_size": chunk_size}
+    if any(state.get(key) != value for key, value in expected.items()):
+        raise RuntimeError(f"resume metadata differs; move aside {state_path} and {partial}")
+    if not partial.exists() or partial.stat().st_size != total:
+        print("resume state found but the partial file is missing or the wrong "
+              "size; restarting the download from scratch", flush=True)
+        state_path.unlink(missing_ok=True)
+        partial.unlink(missing_ok=True)
+        return set()
+    return set(state.get("completed", []))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("url")
@@ -130,15 +155,9 @@ def main() -> int:
     state_path = Path(f"{output}.ranges.json")
     chunk_size = args.chunk_mib * 1024 * 1024
     chunks = [(start, min(total - 1, start + chunk_size - 1)) for start in range(0, total, chunk_size)]
-    completed: set[int] = set()
-    if state_path.exists():
-        state = json.loads(state_path.read_text())
-        expected = {"url": args.url, "size": total, "etag": etag, "chunk_size": chunk_size}
-        if any(state.get(key) != value for key, value in expected.items()):
-            raise RuntimeError(f"resume metadata differs; move aside {state_path} and {partial}")
-        completed = set(state.get("completed", []))
-    else:
-        state = {"url": args.url, "size": total, "etag": etag, "chunk_size": chunk_size, "completed": []}
+    completed = load_resume_state(state_path, partial, args.url, total, etag, chunk_size)
+    state = {"url": args.url, "size": total, "etag": etag, "chunk_size": chunk_size,
+             "completed": sorted(completed)}
 
     descriptor = os.open(partial, os.O_CREAT | os.O_RDWR, 0o644)
     os.ftruncate(descriptor, total)

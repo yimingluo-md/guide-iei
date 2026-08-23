@@ -270,7 +270,13 @@ def main() -> int:
         "pipeline_version": args.pipeline_version,
         "conversion": "GRCh37/hg19 to GRCh38",
         "input": file_identity(args.input),
-        "output": file_identity(args.lifted, hash_file=False),
+        # The output's own hash makes cache reuse detect in-place damage,
+        # not just size/mtime drift; its index rides along when present.
+        "output": file_identity(args.lifted),
+        **(
+            {"output_index": file_identity(f"{args.lifted}.tbi")}
+            if Path(f"{args.lifted}.tbi").is_file() else {}
+        ),
         "chain": file_identity(args.chain),
         "source_reference": file_identity(
             args.source_fasta, hash_file=False, checksum_sidecar=True

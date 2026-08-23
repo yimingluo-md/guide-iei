@@ -52,6 +52,25 @@ export RUNTIME IMAGE
 
 want() { [[ -z "$ONLY" ]] || [[ ",$ONLY," == *",$1,"* ]]; }
 
+# No upstream checksum exists for some mirrors; a BGZF file still proves its
+# own integrity cheaply: gzip magic at byte 0 and the fixed 28-byte BGZF EOF
+# block at the end. Zero-filled or truncated downloads fail both instantly.
+verify_bgzf() {
+    python3 - "$1" <<'BGZF'
+import sys
+eof = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+path = sys.argv[1]
+try:
+    with open(path, "rb") as handle:
+        head = handle.read(2)
+        handle.seek(-28, 2)
+        tail = handle.read(28)
+except OSError:
+    sys.exit(1)
+sys.exit(0 if head == b"\x1f\x8b" and tail == eof else 1)
+BGZF
+}
+
 # --- versions / assembly ------------------------------------------------------
 ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh38}"
 # VEP cache release must match the base image's VEP major version.
@@ -272,10 +291,12 @@ if want spliceai; then
         "${SPLICEAI_BASE}/${SPLICEAI_NAME}" "$SPLICEAI_PATH" \
         --connections 8 --chunk-mib 128 \
         || die "SpliceAI SNV dataset download failed"
+    verify_bgzf "$SPLICEAI_PATH" || die "SpliceAI SNV dataset failed BGZF integrity check (delete it and re-run)"
     python3 "${HERE}/parallel_fetch.py" \
         "${SPLICEAI_BASE}/${SPLICEAI_NAME}.tbi" "${SPLICEAI_PATH}.tbi" \
         --connections 1 --chunk-mib 4 \
         || die "SpliceAI SNV index download failed"
+    verify_bgzf "${SPLICEAI_PATH}.tbi" || die "SpliceAI SNV index failed BGZF integrity check (delete it and re-run)"
 fi
 
 # ============================================================================ #

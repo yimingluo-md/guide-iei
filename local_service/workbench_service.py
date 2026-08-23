@@ -1209,7 +1209,9 @@ class AnnotationJobService:
                 job["id"] for job in self._wgs_review_jobs.values()
                 if job["status"] in {"queued", "running"}
             ]
-        if running_jobs or running_resources or running_wgs or self.cohort.has_active_import():
+        bulk_active = self._bulk_intake_active()
+        if (running_jobs or running_resources or running_wgs
+                or self.cohort.has_active_import() or bulk_active):
             details = []
             if running_jobs:
                 details.append("annotation job")
@@ -1219,7 +1221,26 @@ class AnnotationJobService:
                 details.append("whole-genome prefilter")
             if self.cohort.has_active_import():
                 details.append("cohort import")
+            if bulk_active:
+                details.append("bulk import")
             raise ValueError("wait for the active " + ", ".join(details) + " before changing storage")
+
+    def _bulk_intake_active(self) -> bool:
+        """True while a bulk-intake job is queued or running.
+
+        Storage migration snapshots the databases; snapshotting mid-batch
+        and activating the copy would lose everything the queue imported
+        after the snapshot, so bulk intake counts as active storage work.
+        """
+        try:
+            with closing(self._bulk_intake_connect()) as connection:
+                row = connection.execute(
+                    "SELECT 1 FROM bulk_jobs WHERE status IN ('queued','running') LIMIT 1"
+                ).fetchone()
+            return row is not None
+        except sqlite3.Error:
+            thread = self._bulk_intake_thread
+            return bool(thread and thread.is_alive())
 
     def storage_restart_required(self) -> bool:
         return any((
@@ -2560,6 +2581,11 @@ class AnnotationJobService:
 
     def start_bulk_intake(self, payload: dict) -> dict:
         self._ensure_active_storage_available(require_workspace=True)
+        if self.storage_migration_active() or self._migration_reserved:
+            raise ValueError(
+                "a storage migration is in progress — start the bulk import "
+                "after it completes"
+            )
         scope = str(payload.get("analysis_scope") or "whole_genome")
         if scope not in {"exome", "whole_genome"}:
             raise ValueError("analysis_scope must be exome or whole_genome")

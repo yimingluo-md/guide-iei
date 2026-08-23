@@ -93,11 +93,13 @@ fi
 # chain, tool pin, policy, or pipeline version invalidates the cache.
 if [[ -s "$OUTPUT" && -s "$QC" && -s "$PROVENANCE" ]]; then
     if python3 - "$PROVENANCE" "$INPUT" "$CHAIN" "$SOURCE_FASTA" "$TARGET_DICT" \
-        "$BCFTOOLS_VERSION" "$PLUGIN_COMMIT" "$MAX_LENGTH" "$PIPELINE_VERSION" <<'PY'
+        "$BCFTOOLS_VERSION" "$PLUGIN_COMMIT" "$MAX_LENGTH" "$PIPELINE_VERSION" \
+        "$OUTPUT" "$TARGET_FASTA" <<'PY'
 import hashlib, json, os, sys
 (
     provenance_path, input_path, chain_path, source_path, dictionary_path,
     version, commit, max_length, pipeline_version,
+    output_path, target_fasta_path,
 ) = sys.argv[1:]
 try:
     value = json.load(open(provenance_path))
@@ -122,11 +124,20 @@ def same(identity, path, verify_hash=True):
         )
     )
 tool = value.get("tool", {})
+def same_optional(key, path, **kwargs):
+    # Provenances written before the key existed stay valid on their old
+    # checks; new provenances enforce the stronger identity.
+    return key not in value or same(value[key], path, **kwargs)
 valid = (
     same(value.get("input", {}), input_path)
     and same(value.get("chain", {}), chain_path)
     and same(value.get("source_reference", {}), source_path, verify_hash=False)
     and same(value.get("target_sequence_dictionary", {}), dictionary_path)
+    # The cached OUTPUT itself must be intact: a truncated or in-place
+    # damaged file previously passed on mere non-emptiness.
+    and same(value.get("output", {}), output_path)
+    and same_optional("output_index", output_path + ".tbi")
+    and same_optional("target_reference", target_fasta_path, verify_hash=False)
     and tool.get("bcftools_version") == version
     and tool.get("plugin_commit") == commit
     and str(value.get("policy", {}).get("max_allele_length")) == max_length
