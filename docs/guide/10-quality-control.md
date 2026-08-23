@@ -83,5 +83,3 @@ dataset readiness on the setup screen → confirm the input's genome build →
 run the regression panel → re-run the setup check
 (`bash scripts/setup_environment.sh`). Each step localizes the problem
 further; together they cover the failure modes seen in practice.
-
-Next: [Limitations and when to be skeptical](11-limitations.md)
