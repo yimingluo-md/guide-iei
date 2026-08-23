@@ -109,8 +109,15 @@ software is not a diagnostic result on its own.
 
 ## Quickstart
 
-Installation consists of three commands; nothing is installed outside one
-managed folder, and no administrator rights are required on macOS:
+**One-click:** download the repository ([Code → Download ZIP](https://github.com/yimingluo-md/guide-iei/archive/refs/heads/main.zip)),
+unzip, and double-click `desktop/macos/GUIDE-IEI.app` (Mac) or
+`desktop/windows/GUIDE-IEI.bat` (Windows, after installing Docker
+Desktop). The first launch prepares the environment and opens the
+workbench in the browser; the [installation chapter](docs/guide/02-install.md)
+walks through it.
+
+**Terminal:** three commands; nothing is installed outside one managed
+folder, and no administrator rights are required on macOS:
 
 ```bash
 git clone https://github.com/yimingluo-md/guide-iei.git && cd guide-iei

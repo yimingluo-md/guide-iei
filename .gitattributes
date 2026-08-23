@@ -1,0 +1,15 @@
+# Shell and Python scripts must keep LF endings — they execute inside
+# WSL/macOS even when the repository was cloned on Windows.
+*.sh text eol=lf
+*.command text eol=lf
+*.py text eol=lf
+*.mjs text eol=lf
+*.ts text eol=lf
+*.tsx text eol=lf
+# Windows launcher files use native CRLF endings.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+# Never transform binary assets.
+*.png binary
+*.icns binary
+*.gz binary

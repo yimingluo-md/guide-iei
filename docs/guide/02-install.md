@@ -6,73 +6,82 @@ nav_order: 2
 
 # Install it on your computer
 
-Installation consists of three commands. This chapter explains what each
-does, walks each platform through them, and addresses the problems most
-often encountered on first use.
+GUIDE-IEI starts from a double-click. The first launch prepares everything
+it needs on its own — a few minutes, once — and every later launch opens
+the workbench directly. A terminal route exists for those who prefer it
+(and for Linux), described in the appendix at the end of this chapter.
 
 ## Requirements
 
 - A reasonably modern computer: **Mac** (Intel or Apple Silicon), **Windows
-  10/11** (via WSL2, described below), or **Linux**.
+  10/11** (via WSL2, which the launcher arranges), or **Linux**.
 - **Disk space**: approximately 110 GB for the exome reference datasets and
   more for whole-genome work ([the next chapter](03-datasets.md) provides
   the planning table). Datasets may reside on an external SSD when the
   internal drive is small.
 - **No administrator rights are required on a Mac**, and nothing is
-  installed system-wide: everything the installer adds is contained in one
-  managed folder (`~/.iei-variant-review/tools/`), and removing that folder
-  uninstalls it completely. On Linux and WSL2, one component — the
-  container runtime — is a system package; the installer prints the exact
-  commands and asks for confirmation before running them.
+  installed system-wide: everything the first launch adds is contained in
+  one managed folder (`~/.iei-variant-review/tools/`), and removing that
+  folder uninstalls it completely. On Windows, one third-party installer —
+  Docker Desktop — is required once, described below.
 
-## The three commands
+## Get the software
 
-Open a terminal (macOS: **Terminal**, in Applications → Utilities; Windows:
-the **Ubuntu/WSL2** window described below; Linux: any shell) and run:
+On the [GUIDE-IEI GitHub page](https://github.com/yimingluo-md/guide-iei),
+use the green **Code** button → **Download ZIP**, then unzip and place the
+`guide-iei` folder somewhere ordinary — the home folder or Documents.
+Avoid cloud-synced locations (OneDrive, Dropbox, iCloud Drive): sync
+services interfere with the workbench's working files.
 
-```bash
-git clone https://github.com/yimingluo-md/guide-iei.git && cd guide-iei
-```
+## Mac: double-click GUIDE-IEI
 
-```bash
-bash scripts/setup_environment.sh --install
-```
+Inside the folder, open `desktop` → `macos` and double-click
+**GUIDE-IEI.app** (drag it to the Dock if you like — it stays connected to
+the folder it came from).
 
-```bash
-bash scripts/start_workbench.sh
-```
+- **The first time only**, macOS asks about an app from an unidentified
+  developer. Right-click the app and choose **Open**, then **Open** again —
+  a one-time step for any app installed outside the App Store.
+- **The first launch prepares the environment**: a Terminal window opens
+  and reports progress while Python is checked, Node.js and the interface
+  dependencies are installed into the managed folder, and a smoke test
+  verifies the wiring — no administrator password, nothing outside the
+  managed folder. A few minutes, once.
+- The browser then opens the workbench at **`http://127.0.0.1:3000`** — a
+  local address; the workbench runs on your machine and uses the browser
+  as its display.
+- **Keep the Terminal window open while you work** — it *is* the
+  application; closing it stops the workbench. Later launches skip the
+  preparation and open in seconds.
 
-Then open **`http://127.0.0.1:3000`** in a browser — a local address: the
-workbench runs on your machine and uses the browser as its display.
+If the app itself refuses to open (a rare unzip quirk), double-click
+`GUIDE-IEI-Workbench.command` in the same folder — it is the same
+launcher in plainer clothing.
 
-```text
-== IEI pipeline environment check — macOS (arm64)
+## Windows: one installer, then double-click
 
-[ OK ] core tools (git, tar, curl/wget, awk, sed, sort, gzip)
-[ OK ] python3 3.9.12 (>= 3.8)
-[ OK ] PyYAML importable (config parser dependency)
-[ OK ] node v26.7.0 (>= 22.13)
-[ OK ] webui/node_modules present
-[ OK ] native bcftools/tabix/bgzip found — htslib I/O runs without container overhead
-[WARN] disk: only 38 GiB free — the exome reference set alone needs ~40 GiB
-       (the Storage page can place datasets on another drive)
-[ OK ] pipeline smoke test passed (test/test_dry_run.sh)
+GUIDE-IEI runs inside **WSL2** (a Linux environment Windows provides), and
+its annotation engine runs in a container. One installer covers both:
 
-== Summary: 7 ok, 1 warning(s), 0 to fix
-Environment ready. Next steps:
-  bash scripts/start_workbench.sh            # launch the review workbench
-```
+1. Install
+   **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
+   and restart if asked. Its installer enables WSL2; afterwards, in Docker
+   Desktop's settings, confirm **WSL integration** is on (Settings →
+   Resources → WSL integration).
+2. Inside the GUIDE-IEI folder, open `desktop` → `windows` and
+   double-click **GUIDE-IEI.bat**.
 
-A `WARN` line, like the disk-space warning above, is advice rather than a
-failure — the summary still ends `Environment ready` when nothing needs
-fixing.
+The first launch copies GUIDE-IEI into the Linux filesystem (where large
+indexed files are read many times faster than across the Windows/Linux
+boundary), prepares the environment, and opens the workbench in your
+normal Windows browser. As on the Mac: keep the launcher window open while
+you work; closing it stops the workbench.
 
-## What the second command does
+## What the first launch prepares
 
-`setup_environment.sh` is a **setup check**. Run without options it only
-*reports*: green `[ OK ]` lines for what is present, and the exact remedy
-for anything missing. With `--install` it also corrects what can be
-corrected without administrator rights:
+The preparation step is a **setup check with an installer attached**. It
+reports a green `[ OK ]` line for everything already present and corrects
+what can be corrected without administrator rights:
 
 - **Python and its single dependency** — verified, installed if absent.
 - **Node.js** (runs the workbench interface) — when no suitable version is
@@ -88,43 +97,42 @@ corrected without administrator rights:
   operations severalfold; added automatically when a package manager is
   available.
 - **A smoke test** — the complete wiring is exercised end to end, with no
-  downloads and no patient data, so the installation is verified before any
-  time is invested in dataset downloads.
+  downloads and no patient data, so the installation is verified before
+  any time is invested in dataset downloads.
 
-The setup check may be run repeatedly without consequence — it changes
-nothing that is already correct — and it is the first thing to re-run
-whenever the installation appears broken.
+Its summary looks like this:
 
-## Windows: the WSL2 track
+```text
+== IEI pipeline environment check — macOS (arm64)
 
-GUIDE-IEI cannot run from native Windows (Command Prompt, PowerShell); it
-requires a Unix environment, which Windows provides through **WSL2**. The
-one-time setup:
+[ OK ] core tools (git, tar, curl/wget, awk, sed, sort, gzip)
+[ OK ] python3 3.9.12 (>= 3.8)
+[ OK ] PyYAML importable (config parser dependency)
+[ OK ] node v26.7.0 (>= 22.13)
+[ OK ] webui/node_modules present
+[ OK ] native bcftools/tabix/bgzip found — htslib I/O runs without container overhead
+[WARN] disk: only 38 GiB free — the exome reference set alone needs ~40 GiB
+       (the Storage page can place datasets on another drive)
+[ OK ] pipeline smoke test passed (test/test_dry_run.sh)
 
-1. In PowerShell (run as administrator): `wsl --install`, then reboot.
-   This installs Ubuntu Linux inside Windows (a ~1–2 GB download).
-2. Install
-   **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
-   and, in its settings, enable **WSL integration** (Settings → Resources →
-   WSL integration).
-3. Open the **Ubuntu** application from the Start menu — that window is the
-   terminal — and run the three commands there.
+== Summary: 7 ok, 1 warning(s), 0 to fix
+Environment ready.
+```
 
-One important practice: keep the GUIDE-IEI folder and its datasets **inside
-the Linux filesystem** (the Ubuntu home folder, `~/...`), not under
-`/mnt/c/...`. Files accessed across the Windows/Linux boundary are read
-many times more slowly, and the large indexed reference files are affected
-most.
+A `WARN` line, like the disk-space warning above, is advice rather than a
+failure — the summary still ends `Environment ready` when nothing needs
+fixing. The check may be repeated without consequence — it changes nothing
+that is already correct — and re-running it (appendix below) is the first
+move whenever the installation appears broken.
 
-### WSL2 disk space: plan before downloading datasets
+## Windows only: WSL2 disk space — plan before downloading datasets
 
 WSL2 keeps its entire Linux filesystem in a single virtual-disk file that
 resides on the Windows system drive (`C:`) by default and **grows as data
-are added**. The Ubuntu installation itself is small, but once the
-annotation datasets are installed, this file reaches the sizes described in
-the [next chapter](03-datasets.md) — roughly **110 GB for exome work,
-150–250 GB for the full whole-genome stack**. The practical rule: the drive
-hosting WSL must have that much free space.
+are added**. Once the annotation datasets are installed, this file reaches
+the sizes described in the [next chapter](03-datasets.md) — roughly
+**110 GB for exome work, 150–250 GB for the full whole-genome stack**. The
+practical rule: the drive hosting WSL must have that much free space.
 
 When `C:` is too small, there are two good options and one fallback:
 
@@ -151,27 +159,52 @@ When `C:` is too small, there are two good options and one fallback:
 - **Fallback: datasets on an external drive via `/mnt`.** The **Storage**
   page inside the application can place the annotation datasets at any
   path, including a Windows drive visible in WSL as `/mnt/d/...`. This
-  works, but it crosses the Windows/Linux boundary described above, and
-  the large indexed reference files (dbNSFP, SpliceAI) pay the largest
-  penalty — annotation becomes noticeably slower. Prefer one of the
-  relocation options when possible.
+  works, but it crosses the Windows/Linux boundary, and the large indexed
+  reference files (dbNSFP, SpliceAI) pay the largest penalty — annotation
+  becomes noticeably slower. Prefer one of the relocation options when
+  possible.
 
 ## Common first-run problems
 
 | Symptom | Cause and remedy |
 |---|---|
-| `[FIX]` line about the container daemon | The container runtime is installed but not running. The setup check prints the exact start command (e.g. `colima start ...`); Docker Desktop users: launch Docker Desktop. |
-| The workbench page does not load | The terminal running `start_workbench.sh` must remain open — it *is* the application. Restart it and watch for error lines. |
-| Everything is slow | Check the setup check's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
-| Git errors after cloning into OneDrive/Dropbox | Cloud-synced folders corrupt git's internal files. Keep the clone in an ordinary folder (e.g. `~/guide-iei`); a sync helper exists for keeping a synced working copy ([Installation reference](../INSTALLATION.md)). |
-| Uncertain what state the installation is in | Re-run `bash scripts/setup_environment.sh` (no options). It changes nothing and reports exactly what is present and missing. |
+| macOS: "cannot be opened because it is from an unidentified developer" | Expected once for an app installed outside the App Store: right-click **GUIDE-IEI.app** → **Open** → **Open**. |
+| The workbench page does not load | The launcher window must remain open — it *is* the application. Start it again and watch for error lines. |
+| A `[FIX]` line about the container daemon | The container runtime is installed but not running. Docker Desktop users: launch Docker Desktop; the setup check otherwise prints the exact start command. |
+| Everything is slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
+| Windows: the launcher window flashes and closes | Docker Desktop (and with it WSL2) is not installed yet — step 1 above. |
+| The folder lives in OneDrive/Dropbox and behaves oddly | Cloud-synced folders corrupt the working files. Move the `guide-iei` folder to an ordinary location and launch again. |
+| Uncertain what state the installation is in | Run the setup check from the appendix below (no options). It changes nothing and reports exactly what is present and missing. |
 
 ## Uninstalling
 
-Delete the cloned `guide-iei` folder and the managed folder
-`~/.iei-variant-review/` — noting that the latter also contains the sample
-library, so export anything worth keeping first. Nothing else on the system
-was modified.
+Delete the `guide-iei` folder (the launcher app lives inside it) and the
+managed folder `~/.iei-variant-review/` — noting that the latter also
+contains the sample library, so export anything worth keeping first.
+Nothing else on the system was modified.
+
+## Appendix: the terminal route
+
+Everything the launcher does can be typed instead — the route of choice on
+Linux, on servers, and for anyone at home in a shell:
+
+```bash
+git clone https://github.com/yimingluo-md/guide-iei.git && cd guide-iei
+```
+
+```bash
+bash scripts/setup_environment.sh --install
+```
+
+```bash
+bash scripts/start_workbench.sh
+```
+
+Then open **`http://127.0.0.1:3000`** in a browser.
+`setup_environment.sh` run without options is the pure setup check —
+report only, change nothing. On Linux and WSL2, one component — the
+container runtime — is a system package; the installer prints the exact
+commands and asks for confirmation before running them.
 
 Technical reference: [Installation & requirements](../INSTALLATION.md)
 

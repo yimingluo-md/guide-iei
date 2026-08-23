@@ -6,6 +6,54 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "${HERE}/.." && pwd)"
 SERVICE_PORT="${IEI_SERVICE_PORT:-43117}"
 SERVICE_START_TIMEOUT="${IEI_SERVICE_START_TIMEOUT:-120}"
+UI_PORT="${IEI_UI_PORT:-3000}"
+UI_URL="http://127.0.0.1:${UI_PORT}"
+
+# --bootstrap is the double-click entry path (GUIDE-IEI.app on macOS, the
+# Windows launcher via WSL): prepare the environment on first use, then
+# start the workbench and open the browser — no typed commands.
+BOOTSTRAP=0
+for arg in "$@"; do
+    case "$arg" in
+        --bootstrap) BOOTSTRAP=1 ;;
+    esac
+done
+
+open_browser() {
+    if command -v open >/dev/null 2>&1; then open "$1" 2>/dev/null || true
+    elif grep -qi microsoft /proc/version 2>/dev/null; then
+        # WSL: open the Windows-side default browser.
+        powershell.exe -NoProfile -Command "Start-Process '$1'" >/dev/null 2>&1 || true
+    elif command -v xdg-open >/dev/null 2>&1; then xdg-open "$1" >/dev/null 2>&1 || true
+    fi
+}
+
+ui_is_guide_iei() {
+    curl -s -m 2 "$UI_URL" 2>/dev/null | grep -q "GUIDE-IEI"
+}
+
+# Single instance: if the workbench is already up, just open it.
+if ui_is_guide_iei; then
+    echo "GUIDE-IEI is already running at ${UI_URL}."
+    if [[ "$BOOTSTRAP" == "1" ]]; then open_browser "$UI_URL"; fi
+    exit 0
+fi
+if curl -s -m 2 -o /dev/null "$UI_URL" 2>/dev/null; then
+    echo "ERROR: port ${UI_PORT} is in use by another application." >&2
+    echo "Set IEI_UI_PORT to a free port and start again." >&2
+    exit 1
+fi
+
+if [[ "$BOOTSTRAP" == "1" ]]; then
+    # First use: the setup check exits 0 when the workstation is ready and
+    # 2 when user-space items still need installing.
+    if ! bash "${HERE}/setup_environment.sh" --check --skip-container; then
+        echo
+        echo "== First-time preparation: installing the user-space environment."
+        echo "   This happens once and needs no administrator password."
+        bash "${HERE}/setup_environment.sh" --install --yes --skip-container
+    fi
+fi
 
 if [[ ! "$SERVICE_START_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
     echo "ERROR: IEI_SERVICE_START_TIMEOUT must be a positive number of seconds." >&2
@@ -138,9 +186,23 @@ if [[ ! -d "${ROOT}/webui/node_modules" ]]; then
         exit 1
     }
 fi
+# Open the browser once the UI answers; the poller waits in the background
+# while Next.js occupies the foreground below.
+if [[ "$BOOTSTRAP" == "1" ]]; then
+    (
+        for _ in $(seq 1 240); do
+            sleep 0.5
+            if curl -s -m 2 "$UI_URL" 2>/dev/null | grep -q "GUIDE-IEI"; then
+                open_browser "$UI_URL"
+                exit 0
+            fi
+        done
+    ) &
+fi
+
 if command -v npm >/dev/null 2>&1; then
-    npm run dev
+    npm run dev -- -p "$UI_PORT"
 else
     echo "npm is not on PATH; starting Next.js with ${NODE_BIN}."
-    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" dev --hostname 127.0.0.1
+    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" dev --hostname 127.0.0.1 -p "$UI_PORT"
 fi

@@ -1,0 +1,20 @@
+#!/bin/bash
+# GUIDE-IEI one-click launcher (macOS).
+# Lives at <repo>/desktop/macos/GUIDE-IEI.app/Contents/MacOS/GUIDE-IEI, so
+# the repository root is five directories up. If the workbench is already
+# running this only opens the browser; otherwise it opens a Terminal window
+# running the supervised start (with first-time setup when needed), so
+# progress is visible and closing the window stops the workbench.
+set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "${HERE}/../../../../.." && pwd)"
+UI_PORT="${IEI_UI_PORT:-3000}"
+
+if curl -s -m 2 "http://127.0.0.1:${UI_PORT}" 2>/dev/null | grep -q "GUIDE-IEI"; then
+    open "http://127.0.0.1:${UI_PORT}"
+    exit 0
+fi
+
+RUNNER="${ROOT}/desktop/macos/GUIDE-IEI-Workbench.command"
+if [[ ! -x "$RUNNER" ]]; then chmod +x "$RUNNER" 2>/dev/null || true; fi
+exec open -a Terminal "$RUNNER"
