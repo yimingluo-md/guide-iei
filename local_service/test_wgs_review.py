@@ -368,29 +368,38 @@ class WgsPrefilterTests(unittest.TestCase):
         self.assertEqual(result["records_retained"], 1)
         self.assertEqual(result["unscored_intronic_indels"], 0)
 
-    @unittest.skipUnless(
-        os.environ.get("IEI_RUN_HTS_INTEGRATION") == "1",
-        "set IEI_RUN_HTS_INTEGRATION=1 to exercise real WGS BGZF/tabix intake",
-    )
     def test_prefilter_reports_live_record_counts(self):
         """Worker counts used to surface only when a whole shard group
         finished — the reviewer watched "0 records scanned" for the entire
         phase of a multi-million-record genome."""
-        updates = []
-        self.store.prefilter(
-            self.source, WgsPrefilterOptions(),
-            progress=updates.append,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "wgs.vcf"
+            write_parallel_vcf(source)
+            cohort = CohortStore(
+                root / "cohort.sqlite3",
+                enable_auto_index=True,
+                hts_backend=FakeHtsBackend(),
+                index_readers=4,
+            )
+            updates = []
+            WgsReviewStore(root, cohort).prefilter(
+                source, WgsPrefilterOptions(noncoding_mode="all"),
+                promoter_map_path=None,
+                progress=updates.append,
+            )
         filtering = [u for u in updates if u.get("phase") == "filtering"]
         self.assertTrue(filtering)
         # The final filtering update carries the true totals (small test
         # inputs may finish within one poll; the sidecar written at worker
         # exit guarantees the last update is exact).
-        self.assertGreater(filtering[-1]["records_scanned"], 0)
-        self.assertGreaterEqual(
-            filtering[-1]["records_scanned"], filtering[-1]["records_retained"]
-        )
+        self.assertEqual(filtering[-1]["records_scanned"], 4)
+        self.assertEqual(filtering[-1]["records_retained"], 4)
 
+    @unittest.skipUnless(
+        os.environ.get("IEI_RUN_HTS_INTEGRATION") == "1",
+        "set IEI_RUN_HTS_INTEGRATION=1 to exercise real WGS BGZF/tabix intake",
+    )
     def test_real_four_reader_indexed_prefilter(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
