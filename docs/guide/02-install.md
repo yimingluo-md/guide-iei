@@ -6,10 +6,14 @@ nav_order: 2
 
 # Install it on your computer
 
-GUIDE-IEI starts from a double-click. The first launch prepares everything
-it needs on its own — a few minutes, once — and every later launch opens
-the workbench directly. A terminal route exists for those who prefer it
-(and for Linux), described in the appendix at the end of this chapter.
+GUIDE-IEI is launched from the downloaded project folder. On first use, it
+prepares a local working environment and verifies that the annotation and
+review components can communicate correctly. Later launches open the
+workbench directly.
+
+Most Mac and Windows users can follow the graphical instructions below.
+Linux users and users comfortable with a terminal can use the command-line
+route in the appendix.
 
 ## Requirements
 
@@ -58,20 +62,21 @@ the folder it came from).
   and reports progress while Python is checked, Node.js and the interface
   dependencies are installed into the managed folder, and a smoke test
   verifies the wiring — no administrator password, nothing outside the
-  managed folder. A few minutes, once.
+  managed folder. This usually takes a few minutes and is required only on
+  first launch or after certain updates.
 - The browser then opens the workbench at **`http://127.0.0.1:3000`** — a
   local address; the workbench runs on your machine and uses the browser
   as its display.
-- **Keep the Terminal window open while you work** — it *is* the
-  application; closing it stops the workbench. Later launches skip the
-  preparation and open in seconds.
+- **Keep the Terminal window open while using GUIDE-IEI.** Closing it stops
+  the local workbench service. Later launches skip the preparation and open
+  in seconds.
 
 If the app itself refuses to open even after Open Anyway (a rare unzip
 quirk), double-click `GUIDE-IEI-Workbench.command` in the same folder —
 it is the same launcher in plainer clothing, and macOS may ask for the
 same one-time Open Anyway approval for it.
 
-## Windows: one installer, then double-click
+## Windows: prepare WSL2 and Docker Desktop first, then launch GUIDE-IEI
 
 GUIDE-IEI runs inside **WSL2** (a Linux environment Windows provides) with
 a Linux distribution, and its annotation engine runs in a container:
@@ -193,9 +198,9 @@ When `C:` is too small, there are two good options and one fallback:
 | macOS: *"GUIDE-IEI" Not Opened* with only Move to Trash / Done | Expected once for a downloaded app: **Done** → System Settings → Privacy & Security → Security section → **Open Anyway** → open the app again. Never needed twice. |
 | The workbench page does not load | The launcher window must remain open — it *is* the application. Start it again and watch for error lines. |
 | A `[FIX]` line about the container daemon | The container runtime is installed but not running. Docker Desktop users: launch Docker Desktop; the setup check otherwise prints the exact start command. |
-| Everything is slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
+| Import or annotation is unexpectedly slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
 | Windows: the launcher window flashes and closes, or reports WSL is not set up | No Linux distribution is installed yet — run `wsl --install -d Ubuntu` in PowerShell (step 1 above), restart, and launch again. |
-| The folder lives in OneDrive/Dropbox and behaves oddly | Cloud-synced folders corrupt the working files. Move the `guide-iei` folder to an ordinary location and launch again. |
+| The folder lives in OneDrive/Dropbox and behaves oddly | Cloud-synced folders may cause synchronization conflicts, poor performance, or incomplete working files. Use an ordinary local folder whenever possible. |
 | Uncertain what state the installation is in | Run the setup check from the appendix below (no options). It changes nothing and reports exactly what is present and missing. |
 
 ## Keeping GUIDE-IEI up to date

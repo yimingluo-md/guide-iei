@@ -30,25 +30,22 @@ requested explicitly — see the [FAQ](../FAQ.md)), no account, no subscription.
 
 ## Input
 
-A called **VCF** — single- or multi-sample, `.vcf` or `.vcf.gz`:
-
-- **GRCh38** is used directly. **GRCh37/hg19** files are converted through
-  a quality-controlled, provenance-preserving liftover
-  ([GRCh37 input](../GRCH37_INPUT.md)).
-- FASTQ/BAM are not used: alignment and variant calling happen upstream,
-  often at the sequencing lab, and the VCF is all GUIDE-IEI needs. For
-  high-quality FASTQ processing or re-processing, the developer's personal
-  recommendation is **Illumina DRAGEN**, or, as a free option,
-  **[LOGAN](https://github.com/CCBR/LOGAN)** from NCI's CCBR.
+Analysis begins with a called VCF containing SNVs and small indels. GRCh38
+files are used directly; GRCh37/hg19 files undergo controlled conversion to
+GRCh38. Alignment and variant calling occur upstream and are outside the
+current scope of GUIDE-IEI.
 
 ## What it deliberately does not do
 
 - **Classify variants.** No automated ACMG/AMP verdicts and no clinical
-  reports. Evidence is presented neutrally. GUIDE-IEI is for clinicians and
-  researchers who already bring a candidate-gene hypothesis for a specific
-  patient.
-- **Rank by phenotype.** No HPO-driven prioritization — GUIDE-IEI is built
-  for IEI, where HPO-driven prioritization may have limited utility.
+  reports. Evidence is presented neutrally. GUIDE-IEI supports both
+  hypothesis-driven review of candidate genes and broader genome-wide
+  exploration, but the interpretation remains reviewer-directed.
+- **Perform automated phenotype-based ranking.** Phenotype records remain
+  available to the reviewer, but GUIDE-IEI does not currently convert them
+  into HPO-driven variant scores. This is intentional: the variable and
+  evolving manifestations of IEI may not be fully represented by phenotype
+  matching alone.
 - **Replace confirmation.** Research use only; anything that would
   influence care needs CLIA-certified confirmation.
 

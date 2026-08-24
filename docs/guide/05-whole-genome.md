@@ -56,10 +56,10 @@ does not use this exception. For these unscored indels, an on-demand
 SpliceAI score can be requested for the individual variant under review
 ([Reading a variant page](09-reading-a-variant.md)).
 
-In a representative genome, this strategy reduced approximately 4.3 million
-PASS variants to roughly 23,000 retained records — a set that preserves
-every rare coding variant together with the qualifying non-coding
-candidates, at a size a human reviewer can filter and interrogate. The
+In one internal test genome, the Compact WGS profile reduced approximately
+4.3 million PASS variants to about 23,000 retained records. This is an
+illustrative example, not an expected acceptance range; results vary with
+ancestry, sequencing, variant calling, and annotation completeness. The
 selection runs once per genome, in minutes; reopening the same genome with
 unchanged settings does not repeat it.
 
@@ -72,26 +72,22 @@ default.
 
 The review workspace is unchanged from exome analysis, with regulatory
 context added, and candidates can be examined by the criterion through
-which they qualified. In practice, the developer recommends concentrating
-first on the two non-coding variant classes with relatively
-well-established disease mechanisms and better prediction:
+which they qualified. A practical review strategy is to begin with splice
+and promoter candidates, for which computational prediction methods are more
+mature, and then examine broader regulatory-element overlaps.
 
-1. **Deep intronic splice-disrupting variants (SpliceAI).** A high delta
-   score deep within an intron predicts disruption of normal splicing —
-   cryptic exon inclusion, exon skipping, or intron retention. Whether
-   the score reflects loss of a native site or gain of a cryptic one, the
-   functional consequence is corruption of the normal transcript:
-   effectively a **loss-of-function mechanism**. SpliceAI does not
-   predict expression increase.
-2. **Promoter variants (PromoterAI).** PromoterAI
-   ([Illumina, *Science* 2025](https://www.science.org/doi/10.1126/science.ads7373))
-   is a deep neural network from the group that produced SpliceAI; it
-   reads the sequence context around a transcription start site and
-   returns a **signed** score from −1 to +1 for a variant's predicted
-   effect on expression. The sign matters clinically: a negative score
-   predicts under-expression — a haploinsufficiency-type mechanism —
-   while a positive score predicts **over-expression**, a dosage-gain
-   mechanism no splice predictor can capture.
+1. **Deep intronic splice candidates.** A high SpliceAI delta score predicts
+   altered donor or acceptor use and may nominate cryptic exon inclusion,
+   exon skipping, intron retention, or another splice change. It does not by
+   itself establish loss of function. The molecular consequence depends on
+   the affected transcript, reading frame, abundance of the abnormal
+   transcript, and the gene's disease mechanism.
+2. **Promoter candidates.** PromoterAI estimates whether a variant near a
+   transcription start site may reduce or increase expression. A negative
+   score predicts reduced expression; a positive score predicts increased
+   expression. Clinical relevance depends on whether the transcript is
+   disease-relevant, whether the gene is dosage-sensitive, and whether the
+   predicted expression change can be confirmed experimentally.
 
 Both predictions remain predictions: a qualifying score nominates a
 mechanism to be tested — transcript analysis for splice candidates,

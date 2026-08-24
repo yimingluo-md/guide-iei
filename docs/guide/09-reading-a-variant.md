@@ -6,12 +6,14 @@ nav_order: 9
 
 # Reading a variant page
 
-What each block of evidence on the variant page asserts — and, equally
-important, what it does not. GUIDE-IEI presents evidence neutrally: no
-verdict labels, no pass/fail coloring, because the weight of any single
-line of evidence depends on the gene, the inheritance model, and the
-patient. This chapter supplies the meaning of each block; the weighing
-belongs to the reviewer.
+The variant page brings several kinds of evidence together, but those evidence
+types are not interchangeable. Population frequency, transcript consequence,
+clinical database reports, computational predictions, gene-level constraint,
+segregation, and call quality answer different questions.
+
+GUIDE-IEI does not combine them into a classification. The reviewer must weigh
+each item in the context of the patient, inheritance pattern, transcript, and
+established disease mechanism.
 
 ![Evidence sections of a variant page: predictors, call quality, ClinVar, ClinGen, and the transcript block](../assets/img/variant-evidence-sections.png)
 
@@ -20,12 +22,12 @@ belongs to the reviewer.
 [gnomAD](https://gnomad.broadinstitute.org) frequencies, with **popmax** — the highest frequency observed in any
 major population — as the headline value.
 
-One caveat is specific to this annotation path: a **blank gnomAD value
-means "unavailable from this VEP annotation," not "absent from gnomAD."**
-Depending on the VEP cache's matching path, a variant without an rsID may
-receive no frequency even when the allele is present in the gnomAD Browser.
-Any candidate under serious consideration should be confirmed in the gnomAD
-Browser directly, by normalized chromosome, position, REF, and ALT.
+One caveat is specific to this annotation pathway: a blank gnomAD value means
+“unavailable from this VEP annotation,” not necessarily “absent from gnomAD.”
+Depending on the VEP cache's variant-matching process, a variant without an
+rsID may lack frequency data even when the allele is present in the gnomAD
+Browser. However, we expect most such unannotated variants, if present, to be
+ultra-rare in gnomAD.
 
 ## Consequence and transcripts
 
@@ -55,11 +57,12 @@ way; this is presentation only.
 For putative loss-of-function variants (stop-gained, frameshift, essential
 splice), three layers are presented:
 
-- **[LOFTEE](https://github.com/konradjk/loftee) HC/LC.** High-confidence (HC) indicates the variant survived
-  LOFTEE's transcript-level checks for recognized LoF-rescue patterns —
-  non-canonical splice contexts, terminal-exon position, and related
-  escapes. Low-confidence (LC) names the specific filter that was
-  triggered: an inspectable reason, not a score.
+- **[LOFTEE](https://github.com/konradjk/loftee) HC/LC.** LOFTEE HC indicates
+  that a predicted loss-of-function consequence did not trigger one of
+  LOFTEE's transcript-specific low-confidence filters. An LC result provides
+  a specific reason why the predicted consequence may not behave as a
+  straightforward loss-of-function allele. For splice-site variants, consider
+  integrating LOFTEE results with SpliceAI evidence where appropriate.
 - **The 50-bp rule, recalculated.** For frameshifts, standard LOFTEE
   applies the last-exon-junction 50-bp rule at the variant's own position.
   GUIDE-IEI recalculates it at the **premature termination codon the
@@ -115,14 +118,15 @@ single opaque score would not offer.
 
 ## Missense and mechanism predictors
 
-The predictor panel is reported side by side, raw values only. Predictors
-disagree routinely; agreement across *methodologically distinct*
-predictors is more informative than any single value, and all are
-population-level statistical statements with no knowledge of the
-individual patient. What follows is the complete catalog — what each
-score measures and how it was derived — first the standing panel present
-on every run, then the optional dbNSFP predictors that are off by
-default.
+Prediction scores are computational estimates, not functional evidence.
+Different tools often share training data, component scores, or
+population-frequency features, so agreement among them should not be counted
+as multiple independent lines of evidence. Use the scores to prioritize
+variants and define testable hypotheses, while considering transcript
+relevance, gene mechanism, clinical evidence, and the patient's phenotype.
+What follows is the complete catalog — what each score measures and how it was
+derived — first the standing panel present on every run, then the optional
+dbNSFP predictors that are off by default.
 
 ### The standing panel
 
@@ -242,6 +246,10 @@ directions. An `IEI_UNSCORED_INDEL` flag indicates a variant retained
 despite the absence of a precomputed score — the score is missing, not
 reassuring.
 
+A high score predicts altered splice-site use, not necessarily loss of
+function. The resulting transcript may be out of frame, in frame, partially
+expressed, or otherwise altered.
+
 For an unscored **indel**, the variant page offers **"Get SpliceAI score
 online (Broad lookup)"** — a per-variant request to the Broad Institute's
 public SpliceAI service, which computes scores for arbitrary variants on
@@ -276,16 +284,10 @@ applies to whole-genome analysis only.
   every run. Two deliberately **separate** protein-level flags accompany
   it, each computed per ALT allele so multiallelic records never share a
   match:
-  - `ClinVar_path_aa_change_match` — this allele produces the **same
-    amino-acid change** as a reported pathogenic/likely-pathogenic
-    variant, through any nucleotide change (the reasoning clinicians
-    apply as **PS1**).
-  - `ClinVar_path_aa_match` — this allele is a missense at the **same
-    protein residue** as a reported P/LP missense, regardless of which
-    substitution (the reasoning clinicians apply as **PM5**).
-    Residue-level matching is intentional: a different change at a known
-    pathogenic residue is weaker evidence than the same change, which is
-    exactly why the two signals are kept apart rather than merged.
+  - **ClinVar P/LP report with the same protein change**
+  - **ClinVar P/LP missense report at the same residue**
+
+  These are candidate PS1/PM5 evidence.
 
   Both flags compare positions **within the same transcript**: the
   catalog records which transcript numbered each residue, and a patient
@@ -305,9 +307,9 @@ applies to whole-genome analysis only.
 The Gene tab joins the bundled knowledge: gnomAD constraint (the gene's
 depletion for LoF and missense variation in the population), IUIS IEI
 classification and disease association, and ClinGen gene–disease validity.
-Constraint characterizes the gene, not the variant: a truncating variant
-in a LoF-tolerant gene invites skepticism, while the same variant in a
-highly constrained IUIS gene invites attention.
+Constraint describes a gene's population-level intolerance to variation; it
+does not classify individual variants. It may help generate hypotheses about
+novel monogenic conditions caused by haploinsufficiency.
 
 ## Call-quality flags
 
@@ -354,11 +356,12 @@ Three display conventions keep this evidence honest:
   its subsets is marked as a summary, not independent confirmation of
   each subset.
 
-What the evidence licenses is deliberately modest: the variant lies in
-sequence with regulatory potential, active — or not assayable — in the
-cell types of interest. Position is not mechanism, the listed genes are
-proximity context rather than predicted targets, and the causal argument
-must be built from converging evidence and functional study.
+The conclusion supported by this evidence is deliberately limited: the
+variant overlaps a candidate regulatory element, and SCREEN may show a
+regulatory signature in selected reference tissues or cell types. This does
+not establish the target gene, the direction of effect, pathogenicity, or
+activity in the patient. Those questions require converging evidence and,
+where feasible, functional study.
 
 Technical reference: [Annotation sources](../ANNOTATIONS.md) — dataset
 provenance, versions, and preparation for every source above — and

@@ -6,31 +6,24 @@ nav_order: 7
 
 # Phenotypes and the Sample Library
 
-An analysis session produces two things worth keeping: the genomic dataset
-as reviewed, and the clinical context that made the review interpretable.
-GUIDE-IEI persists both locally — genomic datasets in the **Sample
-Library**, clinical context as **phenotype records** — and connects them
-through one organizing principle: *the individual, the specimen, and the
-dataset are different things*. One person may have an exome, a later
-genome, and a reannotation of either; conflating those layers is how
-clinical records get duplicated and contradicted. The library keeps them
-distinct: an individual carries the phenotype record, links to one or more
-samples, and each sample may carry several genomic datasets — one per
-import.
+A reusable case record has two distinct components: the genomic dataset and
+the clinical context in which it is interpreted. GUIDE-IEI stores both locally
+while keeping the individual, specimen, and imported dataset separate.
+
+One individual may have several specimens, assays, or reanalyses. The
+phenotype record belongs to the individual; samples link the individual to one
+or more imported genomic datasets. This structure avoids duplicating or
+silently overwriting clinical information.
 
 ## What is stored at import
 
 After any review intake, **Keep in Sample Library** is on by default (with
 **Include qualifying variants in Cohort Search** alongside it); choose
-**Review once** when no trace should remain. A kept dataset stores the
-managed review VCF — content-addressed, so re-importing identical data
-costs no additional space — together with provenance that answers, years
-later, *exactly what produced this list*: the original file's name,
-location, and checksum; assay scope and import profile; the QC and
-prefilter settings; the installed annotation dataset versions; and a hash
-of the complete import configuration. Two datasets with different settings
-hashes were produced by different rules and are labeled as such wherever
-they meet — the comparability question is made visible, not averaged away.
+**Review once** when no trace should remain. For each retained dataset,
+GUIDE-IEI records the source file, assay scope, import settings,
+annotation-resource versions, and other provenance needed to understand how
+the review set was produced. Technical identifiers, checksums, and
+configuration hashes remain available under provenance details.
 
 ## Reopening a review
 
@@ -77,15 +70,19 @@ replacement and skip are explicit choices.
 
 ## Storage as the library grows
 
-The **Storage** page accounts for every byte the software holds — managed
-library files, the cohort database, caches, staging, and logs — and its
-cleanup removes only what can be rebuilt: uploads, caches, and incomplete
-files, never an original VCF and never a managed library dataset.
+The **Storage** page reports the local disk space used by managed datasets,
+the cohort database, caches, staging files, and logs. Its cleanup removes only
+what can be rebuilt: uploads, caches, and incomplete files, never an original
+VCF and never a managed library dataset.
 Compact-profile storage is modest (roughly 3–12 GB per 100 whole genomes;
 exomes far less); the separate database compaction step reclaims freed
 space when large removals have accumulated. Storage locations, including
 placing the library on an external disk, are configurable and documented
 in the technical reference.
+
+Local storage does not remove the need for institutional safeguards. Users
+remain responsible for workstation encryption, access control, backup,
+retention, and any applicable privacy requirements.
 
 Technical reference:
 [Sample Library & storage](../SAMPLE_LIBRARY_AND_STORAGE.md) and

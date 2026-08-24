@@ -6,10 +6,14 @@ nav_order: 3
 
 # Set up the annotation datasets
 
-The annotation engine is only as informative as its reference data. This
-chapter covers the one-click setup, the two datasets that require a request
-to their providers (dbNSFP registration and the PromoterAI license), and the
-optional datasets — with disk-space planning first.
+GUIDE-IEI draws on several reference datasets, each answering a different
+interpretive question: How common is the variant? What transcript consequence
+is predicted? Has it been reported clinically? Does it alter splicing or
+expression? Does it overlap a regulatory element active in a relevant cell
+type?
+
+This chapter explains which datasets are required, which are optional, and
+which require registration or a separate license.
 
 All of this is done inside the application, at **Run VEP first → Set up
 annotation datasets**. Each dataset is presented as a card describing in
@@ -29,15 +33,17 @@ plain language what it contributes; this chapter is a tour of those cards.
 | CADD whole-genome (optional) | ~83 GB | non-coding CADD only |
 | LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
 
-As a rule of thumb, **~110 GB accommodates exome work; 150–250 GB the full
-whole-genome stack.** The datasets need not reside on the internal drive:
-the **Storage** page can place them on an external SSD, and the application
-verifies free space before each large download rather than failing partway.
+Dataset sizes are approximate and may change between releases. Allow about
+110 GB for the recommended exome resources and 150–250 GB for a more complete
+WGS installation. Download time varies substantially with internet connection
+and storage speed; large installations may take several hours. The datasets
+need not reside on the internal drive: the **Storage** page can place them on
+an external SSD, and the application verifies free space before each large
+download rather than failing partway.
 
 Downloads are fetched from a checksum-verified fast mirror first, with the
-official sources as automatic fallback. Initial setup takes an hour or two
-on a typical connection, and interrupted downloads resume rather than
-restart.
+official sources as automatic fallback. Interrupted downloads resume rather
+than restart.
 
 ## Step 1 — One click for the public datasets
 
@@ -52,9 +58,9 @@ Two actions install everything that is freely downloadable:
   download — it is set up once in Step 3 below.
 
 Progress is reported per dataset. A third action, **Refresh changing
-sources**, updates ClinVar and ClinGen curations on demand; ClinVar is
-additionally refreshed at every annotation run, so annotations never rest
-on a stale snapshot.
+sources**, checks for updated ClinVar and ClinGen resources. Annotation runs
+record the source versions used, allowing results from different dates to be
+compared explicitly.
 
 ## Step 2 — dbNSFP: the one registration
 
@@ -108,9 +114,10 @@ lying outside the exome's coding scope.
   evidence in whole-genome review.
 - **LoGoFunc**
   ([Stein et al., *Genome Medicine* 2023](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-023-01261-9)).
-  Predicts whether a pathogenic missense variant acts through gain or loss
-  of function — mechanistic context that frequency and deleteriousness
-  scores do not provide. One click from Zenodo (~4 GB).
+  Assigns probabilities to neutral, gain-of-function, and loss-of-function
+  classes for missense variants. It may provide a mechanistic hypothesis, but
+  it does not establish pathogenicity or functional effect. One click from
+  Zenodo (~4 GB).
 
 Already bundled with the software, requiring no download: the ENCODE SCREEN
 cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge

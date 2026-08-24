@@ -6,10 +6,14 @@ nav_order: 10
 
 # Quality control and sanity checks
 
-A wrong result that *looks* reasonable is the most dangerous output any
-pipeline can produce. GUIDE-IEI ships three layers of defense; this chapter
-shows how to use them, and — the part no software can fully automate — what
-plausible numbers look like.
+A technically plausible output may still be incomplete or incorrect.
+GUIDE-IEI therefore provides several checks of annotation coverage and
+software–dataset integration. These checks help identify missing or mismatched
+annotations; they do not constitute clinical validation.
+
+GUIDE-IEI's annotation checks do not assess raw-read quality, sequencing
+coverage or callability, contamination, sample identity, or the upstream
+variant caller. Those require separate laboratory and bioinformatic QC.
 
 ## The annotation coverage report
 
@@ -54,8 +58,9 @@ makes you doubt the installation.
 
 ## Plausible magnitudes
 
-Orders of magnitude to carry in your head. Your numbers will vary with
-capture kit, caller, and ancestry — but not by orders of magnitude:
+The following ranges are practical reference points, not acceptance criteria.
+Counts vary with capture design, ancestry, sequencing method, caller,
+filtering, and annotation completeness.
 
 | Stage | Exome | Genome |
 |---|---|---|

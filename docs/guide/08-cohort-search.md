@@ -6,11 +6,12 @@ nav_order: 8
 
 # Cohort analysis: review and search
 
-A jointly-called cohort VCF — tens of samples in one file — supports two
-complementary ways of working, and GUIDE-IEI provides both: **cohort
-review**, where the variant list is examined and filtered directly and each
-variant reports its carriers; and **cohort search**, where the indexed
-cohort answers genotype-first questions across every stored case.
+GUIDE-IEI supports two complementary cohort questions:
+
+- **Cohort review:** Which variants are present in this jointly called or
+  combined dataset, and who carries each one?
+- **Cohort search:** Across all locally indexed cases, who carries this variant
+  or a qualifying variant in this gene, gene list, or region?
 
 ## Cohort review: the variant list, with carriers
 
@@ -37,14 +38,11 @@ phenotype tab (both remain available when reviewing an individual or a
 small family, where rows are per-sample as before — files with 2–15
 samples keep the family-oriented behavior unchanged).
 
-**Two forms of carrier count, by provenance.** A single jointly-called
-file shows `3/88 carry`: every individual was genotyped at every site, so
-non-carriers are confirmed reference and the denominator is earned.
-**Separately-called aggregation** — several files whose samples sum to 16
-or more, or a library selection spanning source files — shows `3 carry`
-with **no denominator**: an individual whose file has no record at a site
-is *not* confirmed reference. The missing denominator is itself the
-signal. Aggregated imports also apply the candidate-import popmax
+**Two forms of carrier count, by provenance.** A jointly called file may
+display `3/88 carry` because all 88 individuals were evaluated at the site. A
+collection assembled from separately called files displays only `3 carry`,
+because absence of a record from another file cannot be interpreted as a
+confirmed reference genotype. Aggregated imports also apply the candidate-import popmax
 threshold at parse time, warn when the files were annotated against
 different ClinVar releases, and refuse duplicate sample names across
 files.
@@ -116,13 +114,11 @@ check across the entire collection — without touching the original files.
 
 ## Building a large collection: bulk import
 
-Importing genomes one at a time is fine for a clinic week and wrong for a
-research cohort. The **Bulk import** panel at the top of the Sample
-Library takes a folder (or a pasted list of files) of annotated VCFs and
-works through them **one file at a time**: each is candidate-filtered
-exactly as a single import would be — the population-frequency ceiling
-plus, for genomes, the non-coding retention routes — then stored in the
-library and, by default, added to Cohort Search as it lands.
+**Bulk Import** automatically processes annotated VCFs one at a time, applying
+candidate filters and adding each retained dataset to the Sample Library. By
+default, each sample is also added to Cohort Search as it is imported. Use
+Cohort Search to query the full collection, and open a combined browser review
+only for a manageable subset of individuals.
 
 Three properties matter at scale:
 
@@ -145,6 +141,9 @@ variant, and region questions against the full collection from its index
 in seconds.
 
 ## Bounds worth knowing
+
+The following are approximate operational limits observed during development,
+not validated performance specifications.
 
 - **Review size.** A browser review stays responsive to roughly 350,000
   rows — routine loads sit far below it (a genome ~40k rows, a genome trio

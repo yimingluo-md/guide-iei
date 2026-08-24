@@ -146,17 +146,15 @@ anywhere in the interface are click-to-define glossary entries.
 
 ## Step 8 — Where this leads
 
-- **A candidate you believe is pathogenic/likely pathogenic and
-  responsible for the patient's manifestations** → confirm in a
-  CLIA-certified laboratory before any clinical action (see the project's
-  *Research use only* statement).
-- **A compelling VUS** → contact a laboratory with the capacity for the
-  relevant functional experiment; searching recent publications is a good
-  way to identify the lead scientists working on that gene.
-- **Nothing convincing** → the sample remains in the library. When new
-  knowledge emerges — a new gene–disease association, a ClinVar
-  reclassification — the review can be reopened, or the cohort searched,
-  without re-requesting data.
+- **A finding that may explain the phenotype** — confirm through a
+  CLIA-certified laboratory before any clinical action.
+- **A compelling VUS** — consider contacting a research laboratory with
+  expertise in the gene that may be able to conduct the relevant functional
+  studies. Recent publications can help identify leading scientists working
+  on the gene.
+- **No convincing candidate** — retain the case for reanalysis as
+  gene–disease associations, ClinVar assertions, and prediction methods
+  evolve.
 
 ## Continuing
 

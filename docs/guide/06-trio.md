@@ -6,14 +6,12 @@ nav_order: 6
 
 # Trio analysis
 
-For a suspected monogenic IEI, parental samples convert two questions that
-a singleton exome cannot answer into routine filters: *is this variant de
-novo?* and *are these two heterozygous variants in trans?* The first
-carries much of the diagnostic yield in sporadic severe disease; the
-second is the difference between a compound-heterozygous diagnosis and two
-coincidental carrier alleles. GUIDE-IEI's family analysis answers both
-from the genotype evidence already in the VCF — and is explicit about the
-confidence each answer deserves.
+Parental data allow a reviewer to evaluate two questions that a singleton
+analysis cannot resolve reliably: whether a variant is consistent with a de
+novo event, and whether two heterozygous variants are supported to be in
+trans. GUIDE-IEI organizes the available genotype evidence for these
+assessments; it does not establish biological parentage, confirm phase at the
+read level, or assign ACMG/AMP criteria.
 
 ## Input: joint genotyping matters
 
@@ -55,10 +53,10 @@ about *evidence*, not about biology:
   and depth, quality, and allele-balance thresholds are met.
 - **Possible de novo** — the model fits, but some parental measurement is
   missing or insufficient; the gap is named.
-- **Possible parental mosaicism** — a nominally reference parent shows
-  alternate-allele reads above the screening limit. In IEI this tier
-  deserves attention rather than dismissal: parental mosaicism both
-  explains recurrence risk and is itself well described for several genes.
+- **Possible parental mosaicism** — a nominally reference parent has an
+  alternate-allele fraction above the screening threshold. This finding
+  requires read-level review and orthogonal confirmation; if confirmed, it
+  may affect recurrence-risk counseling.
 - **Likely artifact** — the proband's own evidence (depth, quality, or
   allele balance) fails the screen.
 - **Mendelian conflict** — the genotypes fit no simple de novo model;
@@ -66,8 +64,8 @@ about *evidence*, not about biology:
 - **Inherited** — a transmitting parent carries the allele.
 
 The thresholds behind these tiers (defaults: DP ≥ 10, GQ ≥ 20, proband
-allele balance 0.20–0.80, parental alternate reads ≤ 2%) are screening
-values, adjustable in the panel — not clinical rules. The variant page
+allele balance 0.20–0.80, and parental alternate-allele fraction ≤ 0.02) are
+screening values, adjustable in the panel — not clinical rules. The variant page
 always shows the unmodified genotype, depths, quality, allele balance, and
 phase set for all three samples, so the tier can be checked against its
 own inputs in one glance.
