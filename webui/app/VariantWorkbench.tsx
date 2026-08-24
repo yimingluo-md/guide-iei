@@ -1171,9 +1171,6 @@ export default function VariantWorkbench() {
         setRegulatoryFilterEnabled(false);
         setRegulatoryMatches(null);
       }
-      if (analysisScope === "whole_genome") {
-        setImpacts(new Set(IMPACTS));
-      }
       setView("variants");
       setSelected(null);
       setSamples(new Set());
@@ -1335,6 +1332,9 @@ export default function VariantWorkbench() {
               enabled={regulatoryFilterEnabled}
               setEnabled={(value) => {
                 setRegulatoryFilterEnabled(value);
+                // Regulatory records are MODIFIER impact; the impact chips
+                // gate the rows this filter sees, so widen them on enable.
+                if (value) setImpacts(new Set(IMPACTS));
                 if (!value) {
                   setRegulatoryMatches(null);
                   setRegulatoryFilterLoading(false);
@@ -1390,7 +1390,6 @@ export default function VariantWorkbench() {
               setRows(reviewRows); setSummary(reviewSummary); setReviewAnalysisScope(analysisScope);
               resetFilters();
               setView("variants"); setSelected(null);
-              if (analysisScope === "whole_genome") setImpacts(new Set(IMPACTS));
             }} onManagePhenotype={(individualId) => { setPhenotypeTarget(individualId ?? null); setView("phenotypes"); }} />
           ) : view === "storage" ? (
             <StoragePanel />
