@@ -208,6 +208,8 @@ When `C:` is too small, there are two good options and one fallback:
 Updates are delivered as releases and installed from inside the
 application. Open **About & updates** in the left navigation:
 
+![The About & updates page: installed version, the Check for updates button, and the plain statement of what the lookup sends](../assets/img/about-updates.png)
+
 - The page shows the installed version. **Check for updates** asks
   github.com for the newest release and shows its description — what
   changed, in plain terms. The lookup happens only when you click, and

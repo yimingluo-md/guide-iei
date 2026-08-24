@@ -44,7 +44,11 @@ page.on("pageerror", (error) => console.log("pageerror:", String(error).slice(0,
 // Screenshots are published in the manual: hide this workstation's own
 // job history and recent-file lists, and refuse any capture whose visible
 // text contains a local path or a real cohort name.
-const FORBIDDEN = ["/Users/", "/Volumes/", "COLUMBIA"];
+const FORBIDDEN = [
+  "/Users/", "/Volumes/", "COLUMBIA",
+  // Real cohort/sample naming from this workstation must never appear.
+  "B3-", "KGIC", "SXZJ", "JGJU", "RheumGenetics", "RG19", "OneDrive",
+];
 const hideHistory = () => page.addStyleTag({
   content: ".job-list, .recent-review-card, .configured-locations { display: none !important; }",
 });
@@ -184,6 +188,13 @@ const continueClicked = await page.evaluate(() => {
 console.log("step-2 via:", continueClicked);
 await new Promise((resolve) => setTimeout(resolve, 2000));
 await shot("annotation-settings");
+
+// 9. About & updates page (chapter 2: version + software updates).
+await page.goto(uiUrl, { waitUntil: "networkidle2" });
+await awaitServiceReady().catch(() => {});
+await clickText("button", "About");
+await new Promise((resolve) => setTimeout(resolve, 800));
+await shot("about-updates");
 
 await browser.close();
 console.log("done");
