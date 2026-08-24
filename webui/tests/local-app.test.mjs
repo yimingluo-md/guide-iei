@@ -25,6 +25,13 @@ test("keeps the clinical review defaults visible", async () => {
   assert.match(source, /Candidate compound het/);
   assert.match(source, /current-review-table/);
   assert.match(source, /<VariantIdentifier row=\{row\}\/>/);
+  assert.match(source, /Research use only\. GUIDE-IEI organizes evidence but does not classify variants or generate diagnostic reports/);
+  assert.match(source, /className="research-use-label">Research use only<\/span>/);
+  assert.doesNotMatch(source, /Patient data processed locally/);
+  assert.doesNotMatch(source, /className="secondary-button glossary-button"/);
+  assert.match(source, /confirmResearchUseExport/);
+  assert.match(source, /FilterSection title="Clinical database"/);
+  assert.match(source, /FilterSection title="Prediction scores"/);
 });
 
 test("provides separate local annotation and annotated-VCF review paths", async () => {
@@ -35,12 +42,14 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /Run VEP first/);
   assert.match(source, /Review annotated VCF/);
   assert.match(source, /Drop \.vcf or \.vcf\.gz files here/);
-  assert.match(source, /Gzip and BGZF-compressed VCFs/);
+  assert.match(source, /Compressed VCFs/);
   assert.match(source, /const VCF_FILE_ACCEPT = "[^"]*\.gz[^"]*application\/gzip/);
   assert.match(source, /accept=\{VCF_FILE_ACCEPT\}/);
   assert.match(source, /Annotation datasets/);
   assert.match(source, /Exome region only/);
   assert.match(source, /Whole genome/);
+  assert.match(source, /Local indexed intake with candidate prefiltering/);
+  assert.match(source, /Patient VCF, phenotype, and analysis data are processed locally/);
   assert.match(source, /analysisScope === "whole_genome"/);
   assert.match(source, /DEFAULT_WGS_ANNOTATION_SOURCES = new Set\(\["cadd_wgs", "promoterai"\]\)/);
   assert.equal(source.match(/annotationSourceIsEnabled\(source, analysisScope, sourceEnabled\)/g)?.length, 2);
@@ -147,18 +156,20 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(service, /"cadd_wgs"/);
   assert.match(source, /Download latest/);
   assert.match(source, /Configured location/);
+  assert.match(source, /WGS public core installed/);
+  assert.match(source, /<summary>Dataset details<\/summary>/);
   assert.match(source, /downloadJob\.progress/);
   assert.match(service, /\/api\/resource-downloads/);
   assert.match(service, /startResourceDownload/);
   assert.match(service, /\/api\/resource-preparations\/dbnsfp/);
   assert.match(service, /startDbnsfpPreparation/);
   assert.match(source, /Prepare and install/);
-  assert.match(source, /promoterAI_tss500\.tsv\.gz/);
+  assert.match(source, /Choose the licensed PromoterAI source folder/);
   assert.match(service, /\/api\/resource-preparations\/promoterai/);
   assert.match(service, /startPromoterAiPreparation/);
   assert.match(source, /PromoterAI \|score\| ≥/);
   assert.match(source, /Math\.abs\(row\.promoterAI\) < promoterAbsMin/);
-  assert.match(source, /Choose the downloaded LoGoFunc \.csv\.gz file/);
+  assert.match(source, /Choose the downloaded LoGoFunc file/);
   assert.match(source, /Import LoGoFunc/);
   assert.match(source, /Download from Zenodo/);
   assert.match(service, /\/api\/resource-preparations\/logofunc/);
@@ -172,14 +183,14 @@ test("builds compound-het candidates only from rows surviving active filters", a
   assert.doesNotMatch(source, /candidateCompoundHetKeys\(rows\)/);
 });
 
-test("keeps SCREEN observed context separate and exposes defensible positive-evidence filtering", async () => {
+test("keeps SCREEN reference context separate and exposes defensible activity filtering", async () => {
   const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
   const regulatory = await readFile(new URL("app/regulatory-evidence.tsx", root), "utf8");
   const service = await readFile(new URL("app/local-service.ts", root), "utf8");
   assert.match(source, /Regulatory evidence/);
   assert.match(source, /RegulatoryFilterControl/);
   assert.match(source, /mode: "any"/);
-  assert.match(regulatory, /SCREEN observed/);
+  assert.match(regulatory, /Detected in SCREEN reference epigenomic data/);
   assert.match(regulatory, /Element–gene links · to be developed/);
   assert.match(regulatory, /Gene-specific variant-effect prediction · to be developed/);
   assert.doesNotMatch(regulatory, /Gene links · not installed/);
@@ -193,12 +204,12 @@ test("keeps SCREEN observed context separate and exposes defensible positive-evi
   assert.match(regulatory, /item\.state_label/);
   assert.match(regulatory, /classification unavailable/);
   assert.match(regulatory, /Classifier assays/);
-  assert.match(regulatory, /Require positive SCREEN evidence/);
+  assert.match(regulatory, /Require SCREEN regulatory activity/);
   assert.match(regulatory, />Immune context</);
-  assert.match(regulatory, /any immune-related tissue aggregate or curated immune-cell context/);
+  assert.match(regulatory, /any selected SCREEN immune-related tissue aggregate or curated immune-cell context/);
   assert.match(regulatory, /setActiveSetId\(immuneAll\.id\)/);
   assert.match(regulatory, /Other context filters/);
-  assert.match(regulatory, /any selected tissue or cell context has positive evidence/);
+  assert.match(regulatory, /regulatory activity is detected in any selected SCREEN tissue or cell context/);
   assert.doesNotMatch(regulatory, /Selected contexts must match/);
   assert.doesNotMatch(regulatory, /<option value="all">ALL/);
   assert.match(regulatory, /Manage named context sets/);
@@ -235,6 +246,12 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /isHighImpactSpliceVariant/);
   assert.match(source, /start-loss is outside LOFTEE scope/);
   assert.match(source, /No PVS1 conclusion is assigned here/);
+  assert.match(source, /loftee-detail-line"><span>LOFTEE<\/span>/);
+  assert.doesNotMatch(source, /Classifies predicted loss-of-function consequences as high or low confidence/);
+  assert.doesNotMatch(source, /Highlighted values cross a model-specific GUIDE review threshold/);
+  assert.match(source, /ClinVar P\/LP report with the same protein change/);
+  assert.match(source, /ClinVar P\/LP missense report at the same residue/);
+  assert.match(source, /Candidate PS1\/PM5 evidence only/);
   assert.match(source, /Not applicable · single-exon transcript/);
   assert.match(source, /no downstream exon–exon junction/);
   assert.match(source, /ENCODE SCREEN cCRE/);
@@ -325,7 +342,7 @@ test("provides persistent genotype-first cohort indexing and carrier search", as
   assert.match(source, /LOAD SELECTED INDIVIDUALS/);
   assert.match(source, /REVIEW THIS VARIANT/);
   assert.match(source, /Complete stored review sets were loaded using each source's original cohort import profile/);
-  assert.match(source, /Complete source records were restored from the indexed VCFs with tabix/);
+  assert.match(source, /Complete source records were restored from the indexed VCFs/);
   assert.match(source, /Variant details/);
   assert.match(source, /Compact WGS/);
   assert.match(service, /analysis_scope/);

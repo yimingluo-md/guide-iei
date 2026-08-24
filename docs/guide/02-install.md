@@ -206,10 +206,12 @@ application. Open **About & updates** in the left navigation:
 - The page shows the installed version. **Check for updates** asks
   github.com for the newest release and shows its description — what
   changed, in plain terms. The lookup happens only when you click, and
-  nothing about you or your data is sent. (GUIDE-IEI reaches the network
-  only on your explicit request: this lookup, dataset downloads you
+  when GUIDE-IEI checks GitHub for updates, no patient, sample, variant,
+  phenotype, or analysis data are sent. GitHub receives ordinary web-request
+  metadata, such as your IP address. GUIDE-IEI reaches the network only on
+  your explicit request: this lookup, dataset downloads you
   start, and the optional per-variant SpliceAI lookup, which sends only
-  the variant coordinates you ask about.)
+  the variant coordinates you ask about.
 - **Install** downloads the release, verifies its checksum, and replaces
   the software's own files — nothing else. Annotation datasets, the
   sample library, review data, and your edited configuration are never

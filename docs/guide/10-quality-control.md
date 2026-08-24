@@ -11,13 +11,13 @@ pipeline can produce. GUIDE-IEI ships three layers of defense; this chapter
 shows how to use them, and — the part no software can fully automate — what
 plausible numbers look like.
 
-## The annotation-QC certificate
+## The annotation coverage report
 
 Every completed run writes two files beside the output VCF: a
 machine-readable `*.annotation_qc.json` and a human-readable
 `*.annotation_qc.html`. Open the HTML after any run that matters.
 
-The certificate reports **coverage per annotation source, each against its
+The report presents **coverage per annotation source, each against its
 appropriate denominator** — AlphaMissense and CADD against missense
 records, LOFTEE against predicted-LoF records, SpliceAI against the MANE
 SNVs it can score — so "95% coverage" means 95% of the records that source
@@ -31,7 +31,7 @@ anything about pathogenicity. Typical causes, in order: a dataset not
 installed, a dataset installed after the run (re-run to pick it up), or an
 input whose variants fall outside a source's scope.
 
-![An annotation completeness certificate: per-source coverage against each source's own denominator, with explicit SKIPPED states for uninstalled optional sources](../assets/img/qc-certificate.png)
+![An annotation coverage report: per-source coverage against each source's own denominator, with explicit SKIPPED states for uninstalled optional sources](../assets/img/qc-certificate.png)
 
 ## The regression panel
 
@@ -76,9 +76,9 @@ capture kit, caller, and ancestry — but not by orders of magnitude:
   usually means a build mismatch (GRCh37 data annotated as GRCh38), a
   frequency source that failed to attach, or non-PASS records included.
 - **A blank column** — if an entire annotation column is empty, check the
-  QC certificate and dataset readiness before anything else.
+  annotation coverage report and dataset readiness before anything else.
 
-**The checklist when numbers look wrong:** open the QC certificate → check
+**The checklist when numbers look wrong:** open the annotation coverage report → check
 dataset readiness on the setup screen → confirm the input's genome build →
 run the regression panel → re-run the setup check
 (`bash scripts/setup_environment.sh`). Each step localizes the problem

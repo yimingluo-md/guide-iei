@@ -890,6 +890,7 @@ export type PhenotypeValidation = {
   row_count: number;
   valid_individuals: number;
   duplicate_individual_ids: string[];
+  duplicate_individual_rows: Record<string, number[]>;
   matched_sample_ids: string[];
   unmatched_sample_ids: string[];
   ambiguous_sample_ids: Record<string, string[]>;

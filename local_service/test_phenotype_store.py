@@ -127,7 +127,7 @@ class PhenotypeStoreTests(unittest.TestCase):
         self.assertEqual(self.store.profiles()[0]["name"], "Lab export")
 
     def test_duplicate_individual_ids_block_import(self):
-        content = b"Case,Sample\nDUP,P1\nDUP,P2\n"
+        content = b"Case,Sample\nDUP,P1\nOK1,P2\nDUP,P2\n"
         payload = {
             "filename": "duplicates.csv",
             "content_base64": encoded(content),
@@ -135,8 +135,43 @@ class PhenotypeStoreTests(unittest.TestCase):
         }
         validation = self.store.validate(payload)
         self.assertEqual(validation["duplicate_individual_ids"], ["DUP"])
+        # The offending spreadsheet rows are named, not just counted.
+        self.assertEqual(validation["duplicate_individual_rows"], {"DUP": [1, 3]})
         with self.assertRaisesRegex(ValueError, "duplicate individual IDs"):
             self.store.import_records(payload)
+
+    def test_infant_ages_are_valid_in_their_own_units(self):
+        """The 130 ceiling is a YEARS bound: '180 days' is a six-month-old,
+        not an out-of-range age — the raw-number check used to reject
+        exactly the patients IEI sees most."""
+        saved = self.store.save_individual({
+            "individual_id": "INFANT-1",
+            "age_at_evaluation": "180",
+            "age_at_evaluation_unit": "days",
+            "age_at_onset": "6",
+            "age_at_onset_unit": "weeks",
+        })
+        self.assertEqual(saved["age_at_evaluation"], 180.0)
+        self.assertEqual(saved["age_at_evaluation_unit"], "days")
+        # A unit embedded in the value alone is honoured too.
+        saved = self.store.save_individual({
+            "individual_id": "INFANT-2",
+            "age_at_evaluation": "200 days",
+        })
+        self.assertEqual(saved["age_at_evaluation"], 200.0)
+        # The years bound still holds after conversion.
+        with self.assertRaisesRegex(ValueError, "outside the supported range"):
+            self.store.save_individual({
+                "individual_id": "BAD-1",
+                "age_at_evaluation": "60000",
+                "age_at_evaluation_unit": "days",
+            })
+        with self.assertRaisesRegex(ValueError, "outside the supported range"):
+            self.store.save_individual({
+                "individual_id": "BAD-2",
+                "age_at_evaluation": "180",
+                "age_at_evaluation_unit": "years",
+            })
 
     def test_xlsx_preview_reads_sheet_and_suggests_columns(self):
         parsed = parse_table("phenotypes.xlsx", xlsx_bytes())

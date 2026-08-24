@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Focused tests for the annotation completeness certificate."""
+"""Focused tests for the annotation coverage report."""
 
 from __future__ import annotations
 
@@ -176,7 +176,7 @@ def write_vcf(path: pathlib.Path, missing_alpha: bool = False) -> None:
     )
 
 
-def test_certificate_uses_annotation_specific_denominators(tmp_path):
+def test_report_uses_annotation_specific_denominators(tmp_path):
     config = tmp_path / "config.yaml"
     vcf = tmp_path / "result.vcf"
     write_config(config)
@@ -196,7 +196,9 @@ def test_certificate_uses_annotation_specific_denominators(tmp_path):
     assert report["details"]["logofunc"]["allele_available_records"] == 1
     assert report["details"]["logofunc"]["exact_transcript_protein_match_records"] == 1
     assert report["details"]["logofunc"]["prediction_class_counts"] == {"GOF": 1}
-    assert "Annotation completeness certificate" in render_html(report)
+    rendered = render_html(report)
+    assert "Annotation coverage report" in rendered
+    assert "Meets configured checks" in rendered
 
 
 def test_missing_critical_missense_annotation_warns_and_records_example(tmp_path):
@@ -317,7 +319,7 @@ def test_disabled_plugin_is_skipped_not_failed(tmp_path):
 
 if __name__ == "__main__":
     tests = [
-        test_certificate_uses_annotation_specific_denominators,
+        test_report_uses_annotation_specific_denominators,
         test_missing_critical_missense_annotation_warns_and_records_example,
         test_logofunc_class_comes_from_mane_entry_not_file_order,
         test_deliberate_ptc_skips_are_not_missing_coverage,

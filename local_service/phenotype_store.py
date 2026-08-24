@@ -102,15 +102,29 @@ def split_values(value: str) -> list[str]:
     ))
 
 
-def parse_age(value: str) -> float | None:
+_AGE_YEARS_PER_UNIT = {
+    "years": 1.0,
+    "months": 1.0 / 12.0,
+    "weeks": 1.0 / 52.1775,
+    "days": 1.0 / 365.25,
+}
+
+
+def parse_age(value: str, unit: str = "years") -> float | None:
     if not value:
         return None
     match = re.search(r"-?\d+(?:\.\d+)?", value)
     if not match:
         raise ValueError(f"invalid age value: {value}")
     parsed = float(match.group())
-    if parsed < 0 or parsed > 130:
-        raise ValueError(f"age value is outside the supported range: {value}")
+    # The 130 ceiling is a YEARS bound. Checking the raw number rejected
+    # "180 days" — a six-month-old, exactly the patient IEI sees most —
+    # so the value converts through its unit before the range check.
+    years = parsed * _AGE_YEARS_PER_UNIT.get(unit or "years", 1.0)
+    if parsed < 0 or years > 130:
+        raise ValueError(
+            f"age value is outside the supported range (0-130 years): {value}"
+        )
     return parsed
 
 
@@ -580,12 +594,20 @@ class PhenotypeStore:
             "individual_id": value("individual_id"),
             "sample_ids": split_values(value("sample_ids")),
             "sex_at_birth": normalize_sex(value("sex_at_birth")),
-            "age_at_evaluation": parse_age(age_evaluation_raw),
+            "age_at_evaluation": parse_age(
+                age_evaluation_raw,
+                infer_age_unit(age_evaluation_raw, value("age_at_evaluation_unit"))
+                if age_evaluation_raw else "years",
+            ),
             "age_at_evaluation_unit": (
                 infer_age_unit(age_evaluation_raw, value("age_at_evaluation_unit"))
                 if age_evaluation_raw else ""
             ),
-            "age_at_onset": parse_age(age_onset_raw),
+            "age_at_onset": parse_age(
+                age_onset_raw,
+                infer_age_unit(age_onset_raw, value("age_at_onset_unit"))
+                if age_onset_raw else "years",
+            ),
             "age_at_onset_unit": (
                 infer_age_unit(age_onset_raw, value("age_at_onset_unit"))
                 if age_onset_raw else ""
@@ -638,14 +660,26 @@ class PhenotypeStore:
         }
 
     def validate(self, payload: dict) -> dict:
-        _, parsed, records, _ = self._records(payload)
+        _, parsed, records, mapping = self._records(payload)
         counts = Counter(record["individual_id"] for record in records)
         duplicates = sorted(key for key, count in counts.items() if count > 1)
+        # Name the offending rows, not just a count: a blocked import must
+        # tell the user which spreadsheet lines to fix. Row numbers are
+        # 1-based DATA rows (the UI adds its header-row offset).
+        duplicate_rows: dict[str, list[int]] = {}
+        if duplicates:
+            wanted = set(duplicates)
+            id_column = mapping.get("individual_id") or ""
+            for index, row in enumerate(parsed["rows"], start=1):
+                identifier = clean(str(row.get(id_column, "") or ""))
+                if identifier in wanted:
+                    duplicate_rows.setdefault(identifier, []).append(index)
         sample_status = self._sample_validation(records)
         return {
             "row_count": parsed["row_count"],
             "valid_individuals": len(records),
             "duplicate_individual_ids": duplicates,
+            "duplicate_individual_rows": duplicate_rows,
             **sample_status,
             "preview": records[:20],
         }
@@ -662,9 +696,21 @@ class PhenotypeStore:
                 else [clean(value) for value in payload.get("sample_ids", []) if clean(value)]
             ),
             "sex_at_birth": normalize_sex(clean(payload.get("sex_at_birth"))),
-            "age_at_evaluation": parse_age(clean(payload.get("age_at_evaluation"))),
+            "age_at_evaluation": parse_age(
+                clean(payload.get("age_at_evaluation")),
+                infer_age_unit(
+                    clean(payload.get("age_at_evaluation")),
+                    clean(payload.get("age_at_evaluation_unit")),
+                ),
+            ),
             "age_at_evaluation_unit": clean(payload.get("age_at_evaluation_unit")) or "years",
-            "age_at_onset": parse_age(clean(payload.get("age_at_onset"))),
+            "age_at_onset": parse_age(
+                clean(payload.get("age_at_onset")),
+                infer_age_unit(
+                    clean(payload.get("age_at_onset")),
+                    clean(payload.get("age_at_onset_unit")),
+                ),
+            ),
             "age_at_onset_unit": clean(payload.get("age_at_onset_unit")) or "years",
             "reported_race": (
                 split_values(payload.get("reported_race"))

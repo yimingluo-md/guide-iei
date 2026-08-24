@@ -74,7 +74,7 @@ loss-of-function calls. An exome typically completes in minutes; the page
 can be left and revisited, as jobs continue in the background.
 
 On completion, two artifacts are written beside the output VCF: the
-annotated VCF itself, and an **annotation-QC certificate** summarizing how
+annotated VCF itself, and an **annotation coverage report** summarizing how
 completely each source annotated the data
 ([Quality control](10-quality-control.md)).
 

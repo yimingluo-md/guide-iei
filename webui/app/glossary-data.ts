@@ -124,7 +124,7 @@ export const GLOSSARY: GlossaryEntry[] = [
   {
     id: "loftee", term: "LOFTEE",
     category: "Predictors & scores",
-    definition: "Judges whether a predicted loss-of-function variant truly abolishes function: high confidence (HC) or low confidence (LC), with stated reasons (e.g., last-exon location that escapes NMD).",
+    definition: "Classifies predicted loss-of-function consequences as high confidence (HC) or low confidence (LC) for a particular transcript and gives reasons. This is not functional evidence or a pathogenicity classification.",
   },
   {
     id: "conservation", term: "conservation", aliases: ["conservation scores", "GERP", "phyloP", "phastCons"],

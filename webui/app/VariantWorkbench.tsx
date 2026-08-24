@@ -171,6 +171,13 @@ type DisplayItem =
   | "revel" | "metaRnn" | "primateAi" | "sift" | "polyPhen"
   | "caddRaw" | "gerp" | "phyloP" | "phastCons" | "loftee";
 
+const RESEARCH_USE_NOTICE = "Research use only. GUIDE-IEI organizes evidence but does not classify variants or generate diagnostic reports. Confirm clinically actionable findings in a certified clinical laboratory before patient care.";
+const CLINVAR_AA_MATCH_HELP = "Candidate PS1/PM5 evidence only. Confirm transcript, reference amino acid, condition, review status, disease mechanism, and evidence independence before applying ACMG/AMP criteria.";
+
+function confirmResearchUseExport() {
+  return window.confirm(`${RESEARCH_USE_NOTICE}\n\nContinue with this export?`);
+}
+
 const STARTER_IEI = new Set(["NFKB1", "NOD2", "IL10RA", "CYBB", "CTLA4", "IL23R", "PIK3CD"]);
 const IMPACTS = ["HIGH", "MODERATE", "LOW", "MODIFIER"] as const;
 const CODING_CONSEQUENCES = new Set([
@@ -351,7 +358,7 @@ function ptcDistanceLabel(distance: number) {
 
 function ptcRuleLabel(result: string) {
   if (result === "PASS") return "50-bp rule: PASS · PTC is >50 bp upstream; NMD expected";
-  if (result === "FAIL") return "50-bp rule: FAIL · predicted NMD escape";
+  if (result === "FAIL") return "Rule suggests possible NMD escape";
   return result ? `50-bp rule: ${result}` : "";
 }
 
@@ -427,6 +434,7 @@ type VariantCoordinates = {
 };
 
 const SPLICEAI_LOOKUP_CONSENT_KEY = "guideIeiSpliceaiOnlineLookupOk";
+const SAVED_CANDIDATES_STORAGE_KEY = "guideIeiSavedCandidates";
 
 /** Per-variant, user-initiated online SpliceAI lookup for unscored indels.
  *  The one deliberate exception to fully-local operation: only
@@ -637,6 +645,37 @@ export default function VariantWorkbench() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
   const [saved, setSaved] = useState<Set<string>>(new Set());
+  // "Saved" must not over-promise: candidates persist on this workstation,
+  // keyed by the library datasets in view. Review-once imports (never
+  // stored anywhere) stay session-only by design.
+  const savedStorageKey = useMemo(() => {
+    const ids = [...new Set(rows.map((row) => row.libraryDatasetId).filter((id): id is string => Boolean(id)))].sort();
+    return ids.length ? `ds:${ids.join(",")}` : null;
+  }, [rows]);
+  const savedKeyLoaded = useRef<string | null>(null);
+  useEffect(() => {
+    if (!savedStorageKey || savedKeyLoaded.current === savedStorageKey) return;
+    savedKeyLoaded.current = savedStorageKey;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SAVED_CANDIDATES_STORAGE_KEY) ?? "{}");
+      const mine = stored?.[savedStorageKey]?.keys;
+      if (Array.isArray(mine)) setSaved(new Set(mine.filter((key: unknown): key is string => typeof key === "string")));
+    } catch { /* unreadable storage: start empty */ }
+  }, [savedStorageKey]);
+  useEffect(() => {
+    if (!savedStorageKey || savedKeyLoaded.current !== savedStorageKey) return;
+    try {
+      const raw = JSON.parse(window.localStorage.getItem(SAVED_CANDIDATES_STORAGE_KEY) ?? "{}");
+      const stored: Record<string, { keys: string[]; at: number }> = raw && typeof raw === "object" ? raw : {};
+      stored[savedStorageKey] = { keys: [...saved], at: Date.now() };
+      const entries = Object.entries(stored);
+      if (entries.length > 25) {
+        entries.sort((a, b) => (a[1]?.at ?? 0) - (b[1]?.at ?? 0));
+        for (const [key] of entries.slice(0, entries.length - 25)) delete stored[key];
+      }
+      window.localStorage.setItem(SAVED_CANDIDATES_STORAGE_KEY, JSON.stringify(stored));
+    } catch { /* storage unavailable: session-only */ }
+  }, [saved, savedStorageKey]);
   const [selected, setSelected] = useState<VariantRow | null>(null);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [importing, setImporting] = useState(false);
@@ -1104,9 +1143,24 @@ export default function VariantWorkbench() {
           return identity ? { ...row, libraryDatasetId: identity.id, librarySampleId: identity.sample_id, libraryIndividualId: identity.individual_id } : row;
         });
         setPendingIdentityDatasets(library.datasets);
-        result.summary.warnings.unshift(
-          `${library.datasets.length} sample dataset${library.datasets.length === 1 ? "" : "s"} saved in the persistent Sample Library${libraryOptions.includeInCohort ? " and added to Cohort Search" : ""}.`,
-        );
+        // The backend reports per-file warnings — most importantly a failed
+        // cohort-index update. Composing an unconditional success line here
+        // told the reviewer samples were searchable when they were not.
+        const libraryWarnings = library.imports.flatMap((item) => item.warnings ?? []);
+        const cohortFailures = library.imports.filter((item) =>
+          (item.warnings ?? []).some((warning) => warning.includes("Repair Cohort Search"))
+        ).length;
+        if (libraryOptions.includeInCohort && cohortFailures > 0) {
+          result.summary.warnings.unshift(
+            `Saved to the Sample Library, but Cohort Search could not be updated for ${cohortFailures} of ${library.imports.length} file${library.imports.length === 1 ? "" : "s"}. The saved reviews are safe — open Sample Library and choose Repair Cohort Search.`,
+            ...libraryWarnings.filter((warning) => !warning.includes("Repair Cohort Search")),
+          );
+        } else {
+          result.summary.warnings.unshift(
+            `${library.datasets.length} sample dataset${library.datasets.length === 1 ? "" : "s"} saved in the persistent Sample Library${libraryOptions.includeInCohort ? " and added to Cohort Search" : ""}.`,
+            ...libraryWarnings,
+          );
+        }
       } else {
         result.summary.warnings.unshift("Review-once import: this dataset was not saved in the Sample Library or Cohort Search.");
       }
@@ -1184,8 +1238,7 @@ export default function VariantWorkbench() {
       <header className="topbar">
         <div className="brand"><span className="brand-mark"><Icon name="dna" /></span><span>GUIDE-IEI</span><span className="version">MVP 0.6</span></div>
         <div className="top-actions">
-          <span className="privacy"><span className="status-dot" />Local analysis session</span>
-          <button className="secondary-button glossary-button" title="Genetics glossary" onClick={() => { setView("glossary"); setSelected(null); }}>Glossary</button>
+          <span className="research-use-label">Research use only</span>
           <button className="primary-button" onClick={() => { setView("import"); setSelected(null); }}><Icon name="upload" />Import VCF</button>
         </div>
       </header>
@@ -1239,9 +1292,11 @@ export default function VariantWorkbench() {
             <input className="range" type="range" min="0" max="0.05" step="0.0005" value={popmax} onChange={(event) => setPopmax(Number(event.target.value))} />
             <div className="range-labels"><span>0</span><span>0.01</span><span>0.05</span></div>
           </FilterSection>
-          <FilterSection title="Clinical evidence">
+          <FilterSection title="Clinical database">
             <Check label="ClinVar P / LP only" checked={clinvarOnly} onChange={(checked) => { setClinvarOnly(checked); if (checked) setClinvarConflictOnly(false); }} />
             <Check label="ClinVar conflict with ≥1 P / LP" checked={clinvarConflictOnly} onChange={(checked) => { setClinvarConflictOnly(checked); if (checked) setClinvarOnly(false); }} />
+          </FilterSection>
+          <FilterSection title="Prediction scores">
             <Threshold label="AlphaMissense ≥" value={alphaMin} placeholder="optional" onChange={setAlphaMin} />
             <Threshold label="CADD phred ≥" value={caddMin} placeholder="optional" onChange={setCaddMin} />
             <Threshold label="SpliceAI max ≥" value={spliceMin} placeholder="optional" onChange={setSpliceMin} />
@@ -1410,7 +1465,7 @@ export default function VariantWorkbench() {
             <>
               <div className="content-header">
                 <div><p className="eyebrow">{summary ? `${summary.files} imported file${summary.files === 1 ? "" : "s"}` : "No VCF imported"}</p><h1>{view === "compound" ? "Candidate compound heterozygotes" : view === "saved" ? "Saved candidates" : "Prioritized variants"}</h1><p className="subtitle">{filtered.length} transcript-level rows · {new Set(filtered.map((row) => row.gene)).size} genes · {(() => { const count = summary?.cohortMode ? summary.samples : new Set(filtered.map((row) => row.sample)).size; return `${count} sample${count === 1 ? "" : "s"}`; })()}</p></div>
-                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} oneRowPerVariant={oneRowPerVariant} setOneRowPerVariant={setOneRowPerVariant} /><button className="secondary-button" onClick={() => downloadTsv(filtered, qcSettings)}>Export TSV</button></div>
+                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} oneRowPerVariant={oneRowPerVariant} setOneRowPerVariant={setOneRowPerVariant} /><button className="secondary-button" onClick={() => { if (confirmResearchUseExport()) downloadTsv(filtered, qcSettings); }}>Export TSV</button></div>
               </div>
               {summary && <div className="qc-strip"><span><strong>{summary.samples}</strong> sample{summary.samples === 1 ? "" : "s"}</span><span><strong>{summary.intakeQc.filter((check) => check.status === "pass").length}</strong> intake checks passed</span><span><strong>{qcFailingCalls}</strong> calls {includeQcFailing ? "flagged" : "hidden by QC"}</span>{(summary.warnings.length > 0 || summary.intakeQc.some((check) => check.status === "warning")) && <button onClick={() => setView("import")}>Review intake QC</button>}</div>}
               <VariantTable rows={prioritizedRows} hasImportedData={Boolean(summary)} saved={saved} setSaved={setSaved} setSelected={setSelected} compoundKeys={compoundKeys} visibleInfo={visibleInfo} trio={trio} trioThresholds={trioThresholds} trioCompoundVariantKeys={trioCompoundVariantKeys} qcSettings={qcSettings} />
@@ -1718,7 +1773,7 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
               : "Pass"], ["Record warning", duplicateRecordLabel(selected) || "None"], ["QUAL", compactNumber(selected.qual ?? null, 1)], ["Site depth", selected.siteDepth ?? "—"], ["Depth (DP)", selected.dp ?? "—"], ["Genotype quality", selected.gq ?? "—"], ["Allele depths", selected.adRef !== undefined || selected.adAlt !== undefined ? `${selected.adRef ?? "—"}, ${selected.adAlt ?? "—"}` : "—"], ["Allele balance", compactNumber(selected.alleleBalance, 3)], ["Genotype FT", selected.genotypeFilter || "—"], ["Genotype", selected.genotype], ["Phase", selected.phaseSet ? `${selected.phase} · PS ${selected.phaseSet}` : selected.phase],
         ]} /></EvidenceSection>}
         {visibleInfo.has("clinvar") && <EvidenceSection eyebrow="Clinical evidence" title="ClinVar"><EvidenceGrid items={[
-          ["Significance", cleanLabel(selected.clinvar)], ["Conflicting submissions", cleanLabel(selected.clinvarConflictingEvidence)], ["Conflict includes P / LP", isClinvarConflictWithPathogenic(selected.clinvar, selected.clinvarConflictingEvidence) ? "Yes" : "No"], ["Review status", cleanLabel(selected.clinvarReviewStatus)], ["Condition", cleanLabel(selected.clinvarDisease)], ["Same amino-acid change (PS1-style)", selected.clinvarAaChangeMatch ? "Yes" : "No / not annotated"], ["Same pathogenic residue (PM5-style)", selected.clinvarAaMatch ? "Yes" : "No / not annotated"],
+          ["Significance", cleanLabel(selected.clinvar)], ["Conflicting submissions", cleanLabel(selected.clinvarConflictingEvidence)], ["Conflict includes P / LP", isClinvarConflictWithPathogenic(selected.clinvar, selected.clinvarConflictingEvidence) ? "Yes" : "No"], ["Review status", cleanLabel(selected.clinvarReviewStatus)], ["Condition", cleanLabel(selected.clinvarDisease)], [<EvidenceHelpLabel key="clinvar-aa-change" label="ClinVar P/LP report with the same protein change" help={CLINVAR_AA_MATCH_HELP}/>, selected.clinvarAaChangeMatch ? "Yes" : "No / not annotated"], [<EvidenceHelpLabel key="clinvar-aa-residue" label="ClinVar P/LP missense report at the same residue" help={CLINVAR_AA_MATCH_HELP}/>, selected.clinvarAaMatch ? "Yes" : "No / not annotated"],
         ]} /></EvidenceSection>}
         {visibleInfo.has("clinvar") && <ClinGenVariantEvidence evidence={clingenEvidence} loading={clingenEvidenceLoading} error={clingenEvidenceError} compact={selected.clingenErepo ?? []}/>}
         {visibleInfo.has("transcript") && <EvidenceSection eyebrow="Molecular consequence" title="Transcript"><EvidenceGrid items={[
@@ -2009,8 +2064,12 @@ function ClinGenVariantEvidence({ evidence, loading, error, compact }: {
   </EvidenceSection>;
 }
 
-function EvidenceGrid({ items }: { items: [string, React.ReactNode][] }) {
-  return <dl className="evidence-grid">{items.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value === null || value === undefined || value === "" ? "—" : value}</dd></div>)}</dl>;
+function EvidenceHelpLabel({ label, help }: { label: string; help: string }) {
+  return <span className="evidence-help-label">{label}<span className="evidence-help" role="note" tabIndex={0} title={help} data-tooltip={help} aria-label={help}>?</span></span>;
+}
+
+function EvidenceGrid({ items }: { items: [React.ReactNode, React.ReactNode][] }) {
+  return <dl className="evidence-grid">{items.map(([label, value], index) => <div key={typeof label === "string" ? label : index}><dt>{label}</dt><dd>{value === null || value === undefined || value === "" ? "—" : value}</dd></div>)}</dl>;
 }
 
 
@@ -2274,8 +2333,8 @@ function PhenotypePanel({ initialIndividualId = null }: { initialIndividualId?: 
         {field("sample_ids", "VCF sample ID(s)", <input value={form.sample_ids} onChange={(event) => setForm({ ...form, sample_ids: event.target.value })} placeholder="SAMPLE01; SAMPLE01_RERUN"/>)}
         {field("sex_at_birth", "Sex at birth", <select value={form.sex_at_birth} onChange={(event) => setForm({ ...form, sex_at_birth: event.target.value })}><option value="">Not recorded</option><option value="female">Female</option><option value="male">Male</option><option value="other">Other</option><option value="unknown">Unknown</option></select>)}
         {field("source_date", "Source date", <input type="date" value={form.source_date} onChange={(event) => setForm({ ...form, source_date: event.target.value })}/>)}
-        <div className="age-pair">{field("age_at_evaluation", "Age at evaluation", <input type="number" min="0" max="130" step="0.1" value={form.age_at_evaluation} onChange={(event) => setForm({ ...form, age_at_evaluation: event.target.value })}/>)}{field("age_at_evaluation_unit", "Unit", <select value={form.age_at_evaluation_unit} onChange={(event) => setForm({ ...form, age_at_evaluation_unit: event.target.value })}><option>years</option><option>months</option><option>weeks</option><option>days</option></select>)}</div>
-        <div className="age-pair">{field("age_at_onset", "Age at onset", <input type="number" min="0" max="130" step="0.1" value={form.age_at_onset} onChange={(event) => setForm({ ...form, age_at_onset: event.target.value })}/>)}{field("age_at_onset_unit", "Unit", <select value={form.age_at_onset_unit} onChange={(event) => setForm({ ...form, age_at_onset_unit: event.target.value })}><option>years</option><option>months</option><option>weeks</option><option>days</option></select>)}</div>
+        <div className="age-pair">{field("age_at_evaluation", "Age at evaluation", <input type="number" min="0" step="0.1" value={form.age_at_evaluation} onChange={(event) => setForm({ ...form, age_at_evaluation: event.target.value })}/>)}{field("age_at_evaluation_unit", "Unit", <select value={form.age_at_evaluation_unit} onChange={(event) => setForm({ ...form, age_at_evaluation_unit: event.target.value })}><option>years</option><option>months</option><option>weeks</option><option>days</option></select>)}</div>
+        <div className="age-pair">{field("age_at_onset", "Age at onset", <input type="number" min="0" step="0.1" value={form.age_at_onset} onChange={(event) => setForm({ ...form, age_at_onset: event.target.value })}/>)}{field("age_at_onset_unit", "Unit", <select value={form.age_at_onset_unit} onChange={(event) => setForm({ ...form, age_at_onset_unit: event.target.value })}><option>years</option><option>months</option><option>weeks</option><option>days</option></select>)}</div>
         {field("reported_race", "Reported race", <input value={form.reported_race} onChange={(event) => setForm({ ...form, reported_race: event.target.value })} placeholder="Self-described or not reported"/>)}
         {field("reported_ethnicity", "Reported ethnicity", <input value={form.reported_ethnicity} onChange={(event) => setForm({ ...form, reported_ethnicity: event.target.value })} placeholder="Self-described or not reported"/>)}
         {field("current_diagnosis", "Current diagnosis", <input value={form.current_diagnosis} onChange={(event) => setForm({ ...form, current_diagnosis: event.target.value })}/>)}
@@ -2300,7 +2359,7 @@ function PhenotypePanel({ initialIndividualId = null }: { initialIndividualId?: 
         </div>
         <div className="mapping-layout"><div><h3>Column mapping</h3><p>Mappings are suggested from the header but must be confirmed. The individual ID is required.</p><div className="mapping-grid">{PHENOTYPE_MAPPING_FIELDS.map(([key, label, required]) => <label key={key}><span>{label}{required ? " *" : ""}</span><select value={mapping[key] ?? ""} onChange={(event) => { setMapping({ ...mapping, [key]: event.target.value || undefined }); setValidation(null); }}><option value="">Not mapped</option>{preview.columns.map((column) => <option key={column}>{column}</option>)}</select></label>)}</div></div><div><h3>Data preview</h3><div className="phenotype-preview-table"><table><thead><tr>{preview.columns.slice(0, 8).map((column) => <th key={column}>{column}</th>)}</tr></thead><tbody>{preview.rows.slice(0, 8).map((row, index) => <tr key={index}>{preview.columns.slice(0, 8).map((column) => <td key={column}>{row[column]}</td>)}</tr>)}</tbody></table></div></div></div>
         <div className="import-options"><label><span>Existing individual</span><select value={updateMode} onChange={(event) => setUpdateMode(event.target.value as typeof updateMode)}><option value="update_nonblank">Update nonblank fields</option><option value="replace">Replace record</option><option value="skip_existing">Leave unchanged</option></select></label><label><span>Save mapping profile as</span><input value={profileName} onChange={(event) => setProfileName(event.target.value)} placeholder="Optional, e.g. LIMS export"/></label><Check label="Preserve unmapped columns as custom fields" checked={preserveUnmapped} onChange={setPreserveUnmapped}/><button className="secondary-button" disabled={working} onClick={validateUpload}>{working ? "Validating…" : "Validate mapping"}</button></div>
-        {validation && <div className="validation-summary"><strong>{validation.valid_individuals} individuals ready</strong><span className={validation.matched_sample_ids.length ? "ok" : ""}>{validation.matched_sample_ids.length} exact VCF sample matches</span><span className={validation.unmatched_sample_ids.length ? "warn" : ""}>{validation.unmatched_sample_ids.length} unmatched sample IDs</span><span className={validation.duplicate_individual_ids.length ? "bad" : ""}>{validation.duplicate_individual_ids.length} duplicate individual IDs</span><span className={Object.keys(validation.ambiguous_sample_ids).length ? "bad" : ""}>{Object.keys(validation.ambiguous_sample_ids).length} ambiguous sample IDs</span>{validation.unmatched_sample_ids.length > 0 && <p>Unmatched links are preserved and may match a VCF imported later: {validation.unmatched_sample_ids.slice(0, 10).join(", ")}{validation.unmatched_sample_ids.length > 10 ? "…" : ""}</p>}{Object.keys(validation.case_insensitive_suggestions).length > 0 && <p>Case-sensitive corrections suggested: {Object.entries(validation.case_insensitive_suggestions).map(([from, to]) => `${from} → ${to}`).join(", ")}</p>}</div>}
+        {validation && <div className="validation-summary"><strong>{validation.valid_individuals} individuals ready</strong><span className={validation.matched_sample_ids.length ? "ok" : ""}>{validation.matched_sample_ids.length} exact VCF sample matches</span><span className={validation.unmatched_sample_ids.length ? "warn" : ""}>{validation.unmatched_sample_ids.length} unmatched sample IDs</span><span className={validation.duplicate_individual_ids.length ? "bad" : ""}>{validation.duplicate_individual_ids.length} duplicate individual IDs</span><span className={Object.keys(validation.ambiguous_sample_ids).length ? "bad" : ""}>{Object.keys(validation.ambiguous_sample_ids).length} ambiguous sample IDs</span>{validation.unmatched_sample_ids.length > 0 && <p>Unmatched links are preserved and may match a VCF imported later: {validation.unmatched_sample_ids.slice(0, 10).join(", ")}{validation.unmatched_sample_ids.length > 10 ? "…" : ""}</p>}{Object.keys(validation.case_insensitive_suggestions).length > 0 && <p>Case-sensitive corrections suggested: {Object.entries(validation.case_insensitive_suggestions).map(([from, to]) => `${from} → ${to}`).join(", ")}</p>}{validation.duplicate_individual_ids.length > 0 && <p className="bad">Duplicate individual IDs — merge or renumber these before importing: {validation.duplicate_individual_ids.slice(0, 10).map((id) => `${id}${validation.duplicate_individual_rows?.[id]?.length ? ` (spreadsheet row${validation.duplicate_individual_rows[id].length === 1 ? "" : "s"} ${validation.duplicate_individual_rows[id].map((row) => row + headerRow).join(", ")})` : ""}`).join("; ")}{validation.duplicate_individual_ids.length > 10 ? " …" : ""}</p>}{Object.keys(validation.ambiguous_sample_ids).length > 0 && <p className="bad">Ambiguous sample IDs — each matches more than one cohort sample: {Object.entries(validation.ambiguous_sample_ids).slice(0, 8).map(([sample, candidates]) => `${sample} → ${candidates.join(" / ")}`).join("; ")}{Object.keys(validation.ambiguous_sample_ids).length > 8 ? " …" : ""}</p>}</div>}
         <div className="phenotype-actions"><button className="secondary-button" onClick={() => { setUpload(null); setPreview(null); setValidation(null); }}>Clear</button><button className="primary-button dark" disabled={working || !validation || validation.duplicate_individual_ids.length > 0 || Object.keys(validation.ambiguous_sample_ids).length > 0} onClick={importUpload}>{working ? "Importing…" : "Import individuals"}</button></div>
       </>}
     </section>}
@@ -2450,7 +2509,32 @@ function CohortPanel({ onReview }: {
     }
   }
 
+  function cohortFilterProblem(): string | null {
+    // An unparseable threshold must block the search, not silently become
+    // "no filter" — a dropped frequency cutoff changes the analysis.
+    const checks: [string, string, number, number | null][] = [
+      [maxPopmax, "gnomAD popmax", 0, 1],
+      [minCadd, "CADD phred", 0, null],
+      [minAlpha, "AlphaMissense", 0, 1],
+      [minSplice, "SpliceAI", 0, 1],
+      [loGoFuncClass ? minLoGoFunc : "", "LoGoFunc probability", 0, 1],
+    ];
+    for (const [raw, label, min, max] of checks) {
+      if (!raw.trim()) continue;
+      const parsed = Number(raw);
+      if (!Number.isFinite(parsed) || parsed < min || (max !== null && parsed > max)) {
+        return `${label}: enter a number${max !== null ? ` from ${min} to ${max}` : ""} using a decimal point, for example 0.01.`;
+      }
+    }
+    return null;
+  }
+
   async function searchCohort() {
+    const filterProblem = cohortFilterProblem();
+    if (filterProblem) {
+      setError(filterProblem);
+      return;
+    }
     if (mode === "variant" && !exactQuery.trim()) {
       setError("Enter a variant such as 4:1004329:C:T or an rsID.");
       return;
@@ -2603,7 +2687,7 @@ function CohortPanel({ onReview }: {
       }
       const warnings = [
         ...(parsedRows.length ? [
-          "Complete source records were restored from the indexed VCFs with tabix; every standard evidence field reflects the full record.",
+          "Complete source records were restored from the indexed VCFs; every standard evidence field reflects the full record.",
         ] : []),
         ...source.warnings,
         ...parserWarnings,
@@ -2707,7 +2791,7 @@ function CohortPanel({ onReview }: {
   }
 
   return <div className="cohort-page">
-    <div className="content-header"><div><p className="eyebrow">Genotype-first discovery</p><h1>Search the local cohort</h1><p className="subtitle">Find every individual carrying an exact variant, or carriers of qualifying variants in a gene.</p></div><div className="cohort-header-actions">{queryResult?.rows.length ? <button className="secondary-button" onClick={() => downloadCohortTsv(queryResult.rows)}>Export carriers</button> : null}</div></div>
+    <div className="content-header"><div><p className="eyebrow">Genotype-first discovery</p><h1>Search the local cohort</h1><p className="subtitle">Find every individual carrying an exact variant, or carriers of qualifying variants in a gene.</p></div><div className="cohort-header-actions">{queryResult?.rows.length ? <button className="secondary-button" onClick={() => { if (confirmResearchUseExport()) downloadCohortTsv(queryResult.rows); }}>Export carriers</button> : null}</div></div>
 
     <div className="cohort-stats">
       <Stat value={stats?.individuals ?? 0} label="individuals"/>
@@ -2750,7 +2834,7 @@ function CohortPanel({ onReview }: {
           {loGoFuncClass && <p className="query-note">LoGoFunc uses its exact source transcript and amino-acid substitution. Missing predictions do not pass this filter.</p>}
           <div className="qualifying-checks"><Check label="Clinical transcripts (MANE + PICK fallback)" checked={maneOnly} onChange={setManeOnly}/><Check label="Exclude RepeatMasker" checked={excludeRepeat} onChange={setExcludeRepeat}/><Check label="Exclude SegDup" checked={excludeSegdup} onChange={setExcludeSegdup}/><Check label="Hide confirmed frame-restored events" checked={excludeConfirmedFrameRestored} onChange={setExcludeConfirmedFrameRestored}/><Check label="ClinVar P / LP only" checked={clinvarOnly} onChange={(checked) => { setClinvarOnly(checked); if (checked) setClinvarConflictOnly(false); }}/><Check label="ClinVar conflict with ≥1 P / LP" checked={clinvarConflictOnly} onChange={(checked) => { setClinvarConflictOnly(checked); if (checked) setClinvarOnly(false); }}/></div>
         </>}
-        <details className="cohort-profile-filters"><summary>Assay and import profile filters {queryScopes.size + queryProfiles.size ? `(${queryScopes.size + queryProfiles.size})` : ""}</summary><p>Leave blank to search every indexed carrier. These filters improve comparability but do not turn absence into a negative genotype call.</p><div className="qualifying-checks"><Check label="WES / exome" checked={queryScopes.has("exome")} onChange={(checked) => setQueryScopes((current) => toggleSet(current, "exome", checked))}/><Check label="Whole genome" checked={queryScopes.has("whole_genome")} onChange={(checked) => setQueryScopes((current) => toggleSet(current, "whole_genome", checked))}/></div><div className="cohort-profile-list">{cohortProfiles.map((profile) => <Check key={profile.profile_hash} label={profile.profile_label} checked={queryProfiles.has(profile.profile_hash)} onChange={(checked) => setQueryProfiles((current) => toggleSet(current, profile.profile_hash, checked))} note={`${profile.sample_entries} sample entr${profile.sample_entries === 1 ? "y" : "ies"} · ${profile.profile_hash}`}/>)}</div></details>
+        <details className="cohort-profile-filters"><summary>Assay and import profile filters {queryScopes.size + queryProfiles.size ? `(${queryScopes.size + queryProfiles.size})` : ""}</summary><p>Leave blank to search every indexed carrier. These filters improve comparability but do not turn absence into a negative genotype call.</p><div className="qualifying-checks"><Check label="WES / exome" checked={queryScopes.has("exome")} onChange={(checked) => setQueryScopes((current) => toggleSet(current, "exome", checked))}/><Check label="Whole genome" checked={queryScopes.has("whole_genome")} onChange={(checked) => setQueryScopes((current) => toggleSet(current, "whole_genome", checked))}/></div><div className="cohort-profile-list">{cohortProfiles.map((profile) => <Check key={profile.profile_hash} label={profile.profile_label} checked={queryProfiles.has(profile.profile_hash)} onChange={(checked) => setQueryProfiles((current) => toggleSet(current, profile.profile_hash, checked))} note={`${profile.sample_entries} sample entr${profile.sample_entries === 1 ? "y" : "ies"}`}/>)}</div></details>
         <div className="cohort-query-footer"><label>Genotype<select value={zygosity} onChange={(event) => setZygosity(event.target.value as typeof zygosity)}><option value="all">All carriers</option><option value="heterozygous">Heterozygous</option><option value="homozygous">Homozygous</option><option value="hemizygous">Hemizygous</option></select></label><button className="primary-button dark" disabled={working} onClick={searchCohort}><Icon name="search" />{working ? "Searching…" : "Find carriers"}</button></div>
       </section>
     </div>
@@ -2929,6 +3013,20 @@ function AboutPanel() {
     } catch (reason) { setError(reason instanceof Error ? reason.message : "The previous version could not be restored."); }
     finally { setWorking(""); }
   }
+  async function runRepair() {
+    // A half-applied tree self-reports the NEW version, so check() offers
+    // nothing to install — but the backend deliberately accepts a
+    // same-version reinstall while its interrupted-update sentinel stands.
+    if (!window.confirm("Repair GUIDE-IEI by reinstalling the current release? Your datasets, sample library, and edited configuration are not touched.")) return;
+    setWorking("install"); setError("");
+    try {
+      const result = await installSoftwareUpdate();
+      setInstallResult(result);
+      setCheck(null);
+      setStatus(await getSoftwareUpdateStatus().catch(() => status));
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "The repair could not be completed."); }
+    finally { setWorking(""); }
+  }
   async function restartNow() {
     setWorking("restart"); setError("");
     try {
@@ -2950,7 +3048,7 @@ function AboutPanel() {
   return <div className="gene-knowledge-settings about-panel">
     <div className="content-header"><div><p className="eyebrow">About</p><h1>GUIDE-IEI</h1><p className="subtitle"><strong>G</strong>enomic <strong>U</strong>ser-friendly <strong>I</strong>n-depth <strong>D</strong>iagnostic-analysis <strong>E</strong>nvironment for <strong>I</strong>nborn <strong>E</strong>rrors of <strong>I</strong>mmunity</p><p className="subtitle">Version {status?.current_version ?? "…"}</p></div></div>
     {error && <div className="alert error">{error}</div>}
-    {status?.incomplete_update && !installResult && <div className="alert error"><strong>A previous update did not finish.</strong> The software may be running a mix of two versions. Check for updates and install again to complete it{status.rollback_available ? ", or return to the previous version below" : ""}.</div>}
+    {status?.incomplete_update && !installResult && <div className="alert error software-update-done"><div><strong>The previous update was interrupted.</strong><span>Do not start a new analysis until GUIDE-IEI is repaired — the software may be running a mix of two versions. Your datasets and configuration were not changed.{status.rollback_available ? " Returning to the previous version below also repairs it." : ""}</span></div><button className="primary-button dark" disabled={Boolean(working)} onClick={() => void runRepair()}>{working === "install" ? "Repairing…" : "Repair update"}</button></div>}
     {status?.restart_pending && !installResult && <div className="alert software-update-done"><div><strong>An update was installed but is not running yet.</strong><span>Restart to finish it.</span></div><button className="primary-button dark" disabled={Boolean(working)} onClick={() => void restartNow()}>{working === "restart" ? "Restarting…" : "Restart the workbench"}</button></div>}
     <section className="gene-resource-section"><div className="section-title"><div><p className="eyebrow">Software updates</p><h2>Keep GUIDE-IEI current</h2></div><button className="secondary-button" disabled={Boolean(working)} onClick={() => void runCheck()}>{working === "check" ? "Checking…" : "Check for updates"}</button></div>
       {check?.error && <div className="alert">{check.error}</div>}
@@ -2976,7 +3074,7 @@ function AboutPanel() {
         {!installResult.dependencies_changed && <button className="primary-button dark" disabled={Boolean(working)} onClick={() => void restartNow()}>{working === "restart" ? "Restarting…" : "Restart the workbench"}</button>}
       </div>}
       {status?.rollback_available && !installResult && <p className="constraint-note">The previously installed version ({status.rollback_version}) is kept. <button className="link-button" disabled={Boolean(working)} onClick={() => void runRollback()}>{working === "rollback" ? "Restoring…" : "Return to it"}</button> if the current one misbehaves. Your configuration file stays exactly as it is now.</p>}
-      <p className="constraint-note">Checking contacts github.com once to read the latest release description; nothing about you or your data is sent. GUIDE-IEI reaches the network only when you ask it to: this release lookup, annotation-dataset downloads you start, and the optional per-variant SpliceAI lookup, which sends only the variant coordinates you request.</p>
+      <p className="constraint-note">When GUIDE-IEI checks GitHub for updates, no patient, sample, variant, phenotype, or analysis data are sent. GitHub receives ordinary web-request metadata, such as your IP address. GUIDE-IEI reaches the network only when you ask it to: this release lookup, annotation-dataset downloads you start, and the optional per-variant SpliceAI lookup, which sends only the variant coordinates you request.</p>
     </section>
   </div>;
 }
@@ -3170,7 +3268,7 @@ function BulkIntakePanel({ onLibraryChanged }: { onLibraryChanged: () => void })
   const lastStatus = useRef<string | null>(null);
   useEffect(() => {
     if (job && lastStatus.current && lastStatus.current !== job.status &&
-        (job.status === "completed" || job.status === "cancelled")) onLibraryChanged();
+        (job.status === "completed" || job.status === "cancelled" || job.status === "failed")) onLibraryChanged();
     lastStatus.current = job?.status ?? null;
   }, [job, onLibraryChanged]);
   async function start() {
@@ -3178,8 +3276,15 @@ function BulkIntakePanel({ onLibraryChanged }: { onLibraryChanged: () => void })
     if (!paths.length) { setError("List at least one VCF file or folder."); return; }
     setStarting(true); setError("");
     try {
-      const parsedPopmax = Number.parseFloat(popmax);
-      const popmaxValue = Number.isFinite(parsedPopmax) ? parsedPopmax : 0.01;
+      // Number() rejects "0,01" outright instead of parseFloat's silent 0,
+      // and an invalid value blocks the import rather than reverting to a
+      // default the user never chose.
+      const parsedPopmax = Number(popmax);
+      if (!popmax.trim() || !Number.isFinite(parsedPopmax) || parsedPopmax < 0 || parsedPopmax > 1) {
+        setError("gnomAD popmax: enter a number from 0 to 1 using a decimal point, for example 0.01.");
+        return;
+      }
+      const popmaxValue = parsedPopmax;
       const filters = scope === "exome"
         ? { max_gnomad_popmax: popmaxValue, min_spliceai: null, min_promoterai_abs: null, noncoding_mode: "none" }
         : { max_gnomad_popmax: popmaxValue };
@@ -3212,7 +3317,7 @@ function BulkIntakePanel({ onLibraryChanged }: { onLibraryChanged: () => void })
       </>}
       {job && (jobActive || job.failed > 0 || !lastStatusIsOld(job)) && <div className={`bulk-intake-status ${job.status}`}>
         <div className="bulk-intake-progress">
-          <strong>{job.status === "completed" ? "Bulk import complete" : job.status === "cancelled" ? "Bulk import cancelled" : "Importing…"}</strong>
+          <strong>{job.status === "completed" ? "Bulk import complete" : job.status === "cancelled" ? "Bulk import cancelled" : job.status === "failed" ? "Bulk import stopped on an error" : "Importing…"}</strong>
           <span>{job.succeeded} imported · {job.failed} failed · {job.skipped} skipped · {job.queued + job.running} remaining of {job.total}</span>
           {jobActive && job.current_path && <small className="mono" title={job.current_path}>Working on {fileName(job.current_path)}</small>}
           {jobActive && <small>Safe to close this page or the app — the queue resumes when the service restarts.</small>}
@@ -3385,7 +3490,8 @@ function SampleLibraryPanel({ onReview, onManagePhenotype }: { onReview: (rows: 
       const cohortStatus = dataset.cohort_index_status ?? (dataset.include_in_cohort ? "needs_repair" : "not_included");
       return <article className="library-card" key={dataset.id}>
         <header><label className="library-select" title="Select for combined review"><input type="checkbox" checked={selectedDatasets.has(dataset.id)} onChange={(event) => setSelectedDatasets((current) => { const next = new Set(current); if (event.target.checked) next.add(dataset.id); else next.delete(dataset.id); return next; })}/></label><div><strong>{dataset.sample_label}</strong><span>{dataset.individual_id ? `Individual ${dataset.individual_id}` : "Phenotype not linked"} · VCF sample {dataset.vcf_sample_name}</span></div><div className="profile-badges"><span>{dataset.analysis_scope === "whole_genome" ? "WGS" : "WES/exome"}</span><span>{dataset.index_scope === "full" ? "Full index" : "Compact candidate"}</span><span className={cohortStatus === "needs_repair" ? "warning" : cohortStatus === "not_included" ? "muted" : ""}>{cohortStatus === "ready" ? "Included in Cohort Search" : cohortStatus === "needs_repair" ? "Cohort index needs repair" : "Library only"}</span></div></header>
-        <div className="library-card-body"><div><span>Dataset</span><strong>{dataset.original_name}</strong><small title={dataset.original_path}>{dataset.original_path}</small></div><div><span>Import profile</span><strong>{dataset.profile_label}</strong><small>Settings {dataset.settings_hash} · {new Date(dataset.imported_at).toLocaleString()}</small></div><div><span>Managed review copy</span><strong>{compactFileSize(dataset.managed_size_bytes)}</strong><small title={dataset.managed_checksum}>SHA-256 {dataset.managed_checksum.slice(0, 16)}…</small></div></div>
+        <div className="library-card-body"><div><span>Dataset</span><strong>{dataset.original_name}</strong></div><div><span>Import profile</span><strong>{dataset.profile_label}</strong><small>{new Date(dataset.imported_at).toLocaleString()}</small></div><div><span>Retained review file</span><strong>{compactFileSize(dataset.managed_size_bytes)}</strong></div></div>
+        <details className="library-provenance"><summary>Provenance and technical details</summary><dl><div><dt>Source path</dt><dd><code>{dataset.original_path}</code></dd></div><div><dt>Managed review copy</dt><dd><code>{dataset.managed_path}</code>{dataset.managed_index_path && <code>{dataset.managed_index_path}</code>}</dd></div><div><dt>Settings hash</dt><dd><code>{dataset.settings_hash}</code></dd></div><div><dt>Managed file SHA-256</dt><dd><code>{dataset.managed_checksum}</code></dd></div><div><dt>Managed file size</dt><dd>{compactFileSize(dataset.managed_size_bytes)}</dd></div></dl></details>
         <footer>
           <button className="primary-button dark" disabled={working === dataset.id} onClick={() => void openDataset(dataset)}>{working === dataset.id ? "Working…" : "Open review"}</button>
           <button className="secondary-button" onClick={() => onManagePhenotype(dataset.individual_id)}>{dataset.individual_id ? "View phenotype" : "Add phenotype"}</button>
@@ -3473,10 +3579,10 @@ function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, 
     <div className="intake-welcome">
       <p className="eyebrow">Start here</p>
       <h1>Import VCF files</h1>
-      <p>Choose the route that matches your files. Everything stays on this workstation.</p>
+      <p>Patient VCF, phenotype, and analysis data are processed locally. Optional online downloads and lookups occur only after your action and identify what will be requested.</p>
       <div className="analysis-scope-switch" role="radiogroup" aria-label="Analysis region">
         <button role="radio" aria-checked={analysisScope === "exome"} className={analysisScope === "exome" ? "active" : ""} onClick={() => setAnalysisScope("exome")}><strong>Exome region only</strong><span>Coding exons and splice-region padding</span></button>
-        <button role="radio" aria-checked={analysisScope === "whole_genome"} className={analysisScope === "whole_genome" ? "active" : ""} onClick={() => setAnalysisScope("whole_genome")}><strong>Whole genome</strong><span>Indexed server-side intake and conservative prefiltering</span></button>
+        <button role="radio" aria-checked={analysisScope === "whole_genome"} className={analysisScope === "whole_genome" ? "active" : ""} onClick={() => setAnalysisScope("whole_genome")}><strong>Whole genome</strong><span>Local indexed intake with candidate prefiltering</span></button>
       </div>
       <div className="intake-mode-switch" role="tablist" aria-label="VCF intake route">
         <button role="tab" aria-selected={mode === "annotate"} className={mode === "annotate" ? "active" : ""} onClick={() => setMode("annotate")}><strong>Run VEP first</strong><span>Start with a raw or hard-filtered VCF</span></button>
@@ -3497,11 +3603,11 @@ function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, 
       <input ref={configureFolderInput} className="sr-only" type="file" accept={VCF_FILE_ACCEPT} multiple onChange={(event) => { if (event.target.files) onStageFiles(Array.from(event.target.files)); event.target.value = ""; }} />
       {pendingFiles.length > 0 && <div className="pending-review-files"><div className="pending-review-head"><div><strong>{pendingFiles.length} file{pendingFiles.length === 1 ? "" : "s"} selected</strong><span>{compactFileSize(pendingFiles.reduce((total, file) => total + file.size, 0))} total · not read yet</span></div><button onClick={() => onStageFiles([])}>Clear all</button></div>{pendingFiles.map((file, index) => <div className="pending-review-row" key={`${file.name}:${file.size}:${file.lastModified}:${index}`}><span className="file-badge"><Icon name="file" /></span><div><strong>{file.name}</strong><span>{compactFileSize(file.size)}</span></div><button aria-label={`Remove ${file.name}`} onClick={() => onStageFiles(pendingFiles.filter((_, itemIndex) => itemIndex !== index))}>Remove</button></div>)}</div>}
       {analysisScope === "exome" && <section className="wgs-prefilter-panel"><div className="settings-section-head"><div><h3>Cohort exome candidate import</h3><p>A file with 16+ samples is prepared on the local service before browser review: PASS-or-unfiltered records in coding regions, filtered by this population-frequency threshold. Single-patient and family files are read directly and are not affected.</p></div><span className="readiness ready">16+ samples only</span></div><div className="qc-field-grid"><QcNumberField label="gnomAD popmax ≤" value={exomeCohortPopmax} step="0.005" onChange={setExomeCohortPopmax}/></div><p className="wgs-filter-logic"><strong>Logic:</strong> PASS-or-unfiltered/QC AND (popmax ≤ threshold OR popmax unavailable) AND exome region. Clear the field to keep common variants.</p></section>}
-      {analysisScope === "whole_genome" && <section className="wgs-prefilter-panel"><div className="settings-section-head"><div><h3>Whole-genome candidate import</h3><p>The local service creates or reuses BGZF/tabix indexes and filters chromosome shards with four readers before browser review.</p></div><span className="readiness ready">cCRE default</span></div><div className="qc-field-grid">
+      {analysisScope === "whole_genome" && <section className="wgs-prefilter-panel"><div className="settings-section-head"><div><h3>Whole-genome candidate import</h3><p>The local service prepares a candidate subset before browser review.</p></div><span className="readiness ready">cCRE default</span></div><div className="qc-field-grid">
         <QcNumberField label="gnomAD popmax ≤" value={wgsFilters.max_gnomad_popmax} step="0.001" onChange={(value) => setWgsFilters((current) => ({ ...current, max_gnomad_popmax: value }))}/>
         <QcNumberField label="SpliceAI ≥" value={wgsFilters.min_spliceai} step="0.05" onChange={(value) => setWgsFilters((current) => ({ ...current, min_spliceai: value }))}/>
         <QcNumberField label="|promoterAI| ≥" value={wgsFilters.min_promoterai_abs} step="0.05" onChange={(value) => setWgsFilters((current) => ({ ...current, min_promoterai_abs: value }))}/>
-      </div><NoncodingModePicker value={wgsFilters.noncoding_mode} onChange={(noncoding_mode) => setWgsFilters((current) => ({ ...current, noncoding_mode }))}/><details className="advanced-paths wgs-local-paths"><summary>Recommended for very large files: use existing workstation paths</summary><label className="form-field"><span>Annotated WGS VCF path(s), one per line</span><textarea rows={3} value={wgsWorkstationPaths} onChange={(event) => setWgsWorkstationPaths(event.target.value)} placeholder={"/absolute/path/case.annotated.vcf.gz"}/><small>A direct path avoids copying a multi-gigabyte browser-selected file into local staging.</small></label></details><p className="wgs-filter-logic"><strong>Logic:</strong> PASS-or-unfiltered/QC AND (popmax ≤ threshold OR popmax unavailable) AND (exonic/essential-splice OR SpliceAI ≥ threshold OR |promoterAI| ≥ threshold OR selected noncoding regions OR flagged unscored intronic/promoter indel). The indel exception applies only when the relevant precomputed score is unavailable, not when a populated score is below threshold.</p></section>}
+      </div><NoncodingModePicker value={wgsFilters.noncoding_mode} onChange={(noncoding_mode) => setWgsFilters((current) => ({ ...current, noncoding_mode }))}/><details className="advanced-paths wgs-local-paths"><summary>Recommended for very large files: use existing workstation paths</summary><label className="form-field"><span>Annotated WGS VCF path(s), one per line</span><textarea rows={3} value={wgsWorkstationPaths} onChange={(event) => setWgsWorkstationPaths(event.target.value)} placeholder={"/absolute/path/case.annotated.vcf.gz"}/><small>A direct path avoids copying a multi-gigabyte browser-selected file into local staging.</small></label></details><details className="advanced-paths wgs-technical-details"><summary>Technical details</summary><p>The local service creates or reuses BGZF/tabix indexes and filters chromosome shards with four readers before browser review.</p><p className="wgs-filter-logic"><strong>Logic:</strong> PASS-or-unfiltered/QC AND (popmax ≤ threshold OR popmax unavailable) AND (exonic/essential-splice OR SpliceAI ≥ threshold OR |promoterAI| ≥ threshold OR selected noncoding regions OR flagged unscored intronic/promoter indel). The indel exception applies only when the relevant precomputed score is unavailable, not when a populated score is below threshold.</p></details></section>}
       <div className="plain-defaults"><span>PASS or unfiltered (.) records</span><span>MANE + clinical transcript fallback</span><span>Repeat/SegDup excluded by default</span></div>
       <QcSettingsPanel settings={qcSettings} setSettings={setQcSettings} preset={qcPreset} setPreset={setQcPreset} includeFailing={includeQcFailing} setIncludeFailing={setIncludeQcFailing} />
       <section className="library-intake-options"><div className="settings-section-head"><div><p className="eyebrow">After review</p><h3>Keep this sample available</h3><p>The Sample Library is persistent; Cohort Search is a rebuildable genotype index.</p></div><span className="readiness ready">Recommended</span></div>
@@ -3671,10 +3777,10 @@ function DatasetSetupCard({
     : source.id === "logofunc" ? source.installed ? "Re-download from Zenodo" : "Download from Zenodo"
     : source.installed ? "Verify files" : "Download / resume";
   const preparationLabel = source.prepare_id === "dbnsfp"
-    ? "Choose the unzipped dbNSFP folder"
+    ? "Choose the downloaded dbNSFP folder"
     : source.prepare_id === "logofunc"
-    ? "Choose the downloaded LoGoFunc .csv.gz file"
-    : "Choose the folder containing tss.tsv and promoterAI_tss500.tsv.gz";
+    ? "Choose the downloaded LoGoFunc file"
+    : "Choose the licensed PromoterAI source folder";
   const chosenSourceName = preparationPath
     ? preparationPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Selected source"
     : "";
@@ -3698,14 +3804,14 @@ function DatasetSetupCard({
       <span className={`dataset-status ${activeDownload ? "working" : source.installed ? "ready" : "missing"}`}>{status}</span>
     </div>
     <div className="dataset-meta"><span>{setupLabels[source.setup_mode]}</span>{source.access === "registration" && <span>Registration required</span>}{source.access === "license" && <span>License required</span>}{source.access === "terms" && <span>Usage terms apply</span>}{source.recommendation === "optional" && <span>Optional</span>}{source.size_hint && <span>{source.size_hint}</span>}</div>
-    {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span>{downloadJob?.progress !== null && downloadJob?.progress !== undefined ? `${downloadJob.progress.toFixed(1)}%` : "Working…"} · {downloadJob?.message}</span></div>}
+    {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span>{downloadJob?.progress !== null && downloadJob?.progress !== undefined ? `${downloadJob.progress.toFixed(1)}%` : "Working…"} · {downloadJob?.operation === "preparation" ? "Preparing local dataset" : "Downloading dataset"}</span></div>}
     {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Download log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
     {source.prepare_id && <div className="dataset-preparation"><span className="dataset-preparation-label">{preparationLabel}</span><div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "logofunc" ? "Choose file" : "Choose folder"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div><button type="button" disabled={activeDownload || choosingPreparationPath || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Preparing…" : preparationButton}</button><small>{preparationHelp}</small></div>}
     <div className="dataset-actions">
       {downloadId && (source.setup_mode !== "bundled" || !source.installed) && <button type="button" disabled={activeDownload} onClick={() => onDownload(downloadId)}>{activeDownload ? "Downloading…" : buttonLabel}</button>}
       {source.reference_url && <a href={source.reference_url} target="_blank" rel="noreferrer">{source.reference_label || "Official reference"} ↗</a>}
     </div>
-    <details className="dataset-instructions" open={source.access === "registration" || source.access === "license"}><summary>{source.access === "registration" ? "Registration and setup instructions" : source.access === "license" ? "License and local setup instructions" : "Dataset details"}</summary><ol>{(source.instructions ?? []).map((instruction) => <li key={instruction}><GlossaryText text={instruction} /></li>)}</ol>{(source.configured_paths?.length ?? 0) > 0 && <div className="configured-locations"><span>Configured location{source.configured_paths?.length === 1 ? "" : "s"}</span>{source.configured_paths?.map((path) => <code key={path}>{path}</code>)}</div>}</details>
+    <details className="dataset-instructions"><summary>Dataset details</summary>{source.access === "registration" && <strong className="dataset-detail-heading">Registration and setup instructions</strong>}{source.access === "license" && <strong className="dataset-detail-heading">License and local setup instructions</strong>}<ol>{(source.instructions ?? []).map((instruction) => <li key={instruction}><GlossaryText text={instruction} /></li>)}</ol>{downloadJob && <div className="dataset-technical-status"><span>Technical status</span><code>{downloadJob.status}</code>{downloadJob.message && <p>{downloadJob.message}</p>}</div>}{(source.configured_paths?.length ?? 0) > 0 && <div className="configured-locations"><span>Configured location{source.configured_paths?.length === 1 ? "" : "s"}</span>{source.configured_paths?.map((path) => <code key={path}>{path}</code>)}</div>}</details>
   </article>;
 }
 
@@ -4015,7 +4121,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     {step === 1 ? <>
       <p className="intake-copy">Drop individual VCFs below, or choose a folder. Each VCF becomes one annotation job.</p>
       <button className="drop-zone annotation-drop-zone" onClick={() => filePicker.current?.click()} onDragOver={(event) => event.preventDefault()} onDrop={handleDrop}>
-        <span className="drop-icon"><Icon name="upload" /></span><strong>Drop .vcf or .vcf.gz files here</strong><span>or drop a folder / click to choose files</span><small>Gzip and BGZF-compressed VCFs · single- or multi-sample</small>
+        <span className="drop-icon"><Icon name="upload" /></span><strong>Drop .vcf or .vcf.gz files here</strong><span>or drop a folder / click to choose files</span><small>Compressed VCFs · single- or multi-sample</small>
       </button>
       <div className="folder-choice"><span>Process every VCF in one folder</span><button className="secondary-button" onClick={() => folderPicker.current?.click()}>Choose folder</button></div>
       <div className="dataset-setup-entry"><div><strong>First time using VEP?</strong><span>Check required datasets, register dbNSFP, and download SpliceAI or ClinVar before selecting a patient VCF.</span></div><button className="secondary-button" onClick={() => { setSetupOnly(true); setStep(2); }}>Set up annotation datasets</button></div>
@@ -4037,14 +4143,14 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ];
         return <div className="wizard-selection"><div><strong>{totalInputs} VCF file{totalInputs === 1 ? "" : "s"} selected</strong><span>{parts.join(", ") || "No files chosen yet"}</span></div><button onClick={() => setStep(1)}>Change</button></div>;
       })()}
-      {!setupOnly && <section className="settings-section"><div className="settings-section-head"><div><h3>{analysisScope === "exome" ? "Exome-region annotation" : "Whole-genome annotation"}</h3><p>{analysisScope === "exome" ? "Coding exons and splice-region padding are selected before VEP." : "The input is automatically prepared as sorted BGZF with tabix/CSI indexing before parallel VEP annotation."}</p></div></div>
+      {!setupOnly && <section className="settings-section"><div className="settings-section-head"><div><h3>{analysisScope === "exome" ? "Exome-region annotation" : "Whole-genome annotation"}</h3><p>{analysisScope === "exome" ? "Coding exons and splice-region padding are selected before VEP." : "The input is prepared locally for efficient parallel VEP annotation."}</p></div></div>{analysisScope === "whole_genome" && <details className="advanced-paths"><summary>Technical details</summary><p>The input is prepared as sorted BGZF with tabix/CSI indexing before parallel VEP annotation.</p></details>}
         <div className="run-defaults"><div className="scope-run-summary"><strong>{analysisScope === "exome" ? "Exome region only" : "Whole genome"}</strong><span>{analysisScope === "exome" ? "promoterAI and full-genome CADD unavailable" : "indexed WGS intake · CADD and promoterAI on by default"}</span></div><Check label="PASS records only" checked={passOnly} onChange={setPassOnly} /><Check label="Refresh ClinVar before run" checked={useClinvar} onChange={setUseClinvar} /></div>
         <div className="form-pair simple"><label className="form-field"><span>Input genome build</span><select value={inputAssembly} onChange={(event) => setInputAssembly(event.target.value as typeof inputAssembly)}>{capabilities?.input_assemblies.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option value="GRCh38">GRCh38 / hg38</option>}</select></label><label className="form-field worker-field"><span>VEP workers <small>{workerMode === "automatic" ? "Automatic" : "Custom"}</small></span><div className="worker-value"><strong>{fork}</strong><span>worker{fork === 1 ? "" : "s"}</span>{workerMode === "custom" && <button type="button" onClick={() => { const recommended = capabilities?.hardware.recommended_vep_workers ?? 1; setFork(recommended); setWorkerMode("automatic"); }}>Use automatic</button>}</div><input className="worker-range" type="range" min={1} max={capabilities?.hardware.max_vep_workers ?? 8} step={1} value={fork} onChange={(event) => { setFork(Number(event.target.value)); setWorkerMode("custom"); }} /><small>Detected {capabilities?.hardware.logical_cpus ?? "—"} logical CPU threads · recommended {capabilities?.hardware.recommended_vep_workers ?? "—"}.</small></label></div>
       </section>}
       <section className="settings-section"><div className="settings-section-head"><div><h3>Annotation datasets</h3><p>Availability and indexes are checked automatically. Open each dataset for sources and setup instructions.</p></div><span className={`readiness ${profileReady || datasetsReady ? "ready" : "missing"}`}>{readinessLabel}</span></div>
         {capabilities?.annotation_profile.error && <div className="alert error">{capabilities.annotation_profile.error}</div>}
         {capabilities?.annotation_profile.foundations.map((item) => <div className="foundation-row" key={item.id} title={item.description || undefined}><span className={`availability-dot ${item.available ? "ready" : "missing"}`} /><strong>{item.label}</strong><span>{item.available ? `Available${item.version ? ` · release ${item.version}` : ""}` : item.message || "Missing"}</span></div>)}
-        <div className="dataset-quick-setup"><div><p className="eyebrow">One-click setup</p><h4>Download recommended public datasets</h4><p>Choose the analysis profile you expect to use. Complete installations are skipped immediately without rereading large files. Registration- and license-gated datasets are handled separately below.</p></div><div className="dataset-quick-actions"><button type="button" disabled={resourceSetupBusy || exomeDatasetsInstalled} onClick={() => void downloadResource("recommended_exome")}><strong>{exomeDatasetsInstalled ? "Exome datasets installed" : "Recommended for exome"}</strong><span>{exomeDatasetsInstalled ? "No download needed · use Update for new ClinVar or ClinGen releases" : "VEP cache, reference FASTA, LOFTEE data, SpliceAI, ClinVar and ClinGen · up to ~90 GiB"}</span></button><button type="button" disabled={resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "WGS datasets installed" : "Recommended for WGS"}</strong><span>{wgsDatasetsInstalled ? "No download needed · exome set and SCREEN contexts are present" : "Exome set plus SCREEN tissue/immune contexts · up to ~92 GiB"}</span></button><button type="button" className="dataset-update-all" disabled={resourceSetupBusy} onClick={() => void downloadResource("refresh_updates")}><strong>Update installed datasets</strong><span>Refresh ClinVar and ClinGen; pinned resources stay unchanged</span></button></div>{quickSetupJob && <div className="resource-progress"><progress max={100} value={quickSetupJob.progress ?? undefined}/><span>{quickSetupJob.message}</span></div>}</div>
+        <div className="dataset-quick-setup"><div><p className="eyebrow">One-click setup</p><h4>Download recommended public datasets</h4><p>Choose the analysis profile you expect to use. Complete installations are skipped immediately without rereading large files. Registration- and license-gated datasets are handled separately below.</p></div><div className="dataset-quick-actions"><button type="button" disabled={resourceSetupBusy || exomeDatasetsInstalled} onClick={() => void downloadResource("recommended_exome")}><strong>{exomeDatasetsInstalled ? "Exome datasets installed" : "Recommended for exome"}</strong><span>{exomeDatasetsInstalled ? "No download needed · use Update for new ClinVar or ClinGen releases" : "VEP cache, reference FASTA, LOFTEE data, SpliceAI, ClinVar and ClinGen · up to ~90 GiB"}</span></button><button type="button" disabled={resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "WGS public core installed" : "Recommended for WGS"}</strong><span>{wgsDatasetsInstalled ? "No download needed · exome set and SCREEN contexts are present" : "Exome set plus SCREEN tissue/immune contexts · up to ~92 GiB"}</span></button><button type="button" className="dataset-update-all" disabled={resourceSetupBusy} onClick={() => void downloadResource("refresh_updates")}><strong>Update installed datasets</strong><span>Refresh ClinVar and ClinGen; pinned resources stay unchanged</span></button></div>{quickSetupJob && <><div className="resource-progress"><progress max={100} value={quickSetupJob.progress ?? undefined}/><span>{quickSetupJob.progress !== null && quickSetupJob.progress !== undefined ? `${quickSetupJob.progress.toFixed(1)}%` : "Working…"} · Preparing recommended datasets</span></div><details className="dataset-instructions"><summary>Dataset details</summary><div className="dataset-technical-status"><span>Technical status</span><code>{quickSetupJob.status}</code>{quickSetupJob.message && <p>{quickSetupJob.message}</p>}</div></details></>}</div>
         {accessRequiredSources.length > 0 && <div className="dataset-group access-required"><div className="dataset-group-head"><div><p className="eyebrow">User action needed</p><h4>Needs a one-time registration or license</h4></div><span>Start here for dbNSFP or PromoterAI</span></div><div className="dataset-grid">{datasetCards(accessRequiredSources)}</div></div>}
         {standardSources.length > 0 && <div className="dataset-group"><div className="dataset-group-head"><div><p className="eyebrow">Public downloads</p><h4>One-click downloads</h4></div></div><div className="dataset-grid">{datasetCards(standardSources)}</div></div>}
         {bundledSources.length > 0 && <div className="dataset-group"><div className="dataset-group-head"><div><p className="eyebrow">Included</p><h4>Built in — nothing to do</h4></div><span>Repair appears only if a built-in file is missing</span></div><div className="dataset-grid">{datasetCards(bundledSources)}</div></div>}

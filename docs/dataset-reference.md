@@ -63,7 +63,7 @@ webpage; each section holds the process detail the UI no longer shows.
   requires exact allele + Ensembl transcript + residue + substitution
   agreement, with allele-only matches labeled as such.
 
-## Hg19 build support
+## GRCh37/hg19 input conversion
 - Uses the pinned BCFtools/liftover plugin (bcftools 1.20, pinned commit)
   with both source and destination FASTAs; remaps GT and Number=A/R/G
   fields when REF/ALT changes; primary contigs retained and normalized.

@@ -81,7 +81,7 @@ see it in place.
 : DeepMind's missense predictor; score 0–1 with calibrated classes (likely benign / ambiguous / likely pathogenic).
 
 **LOFTEE**
-: Judges whether a predicted loss-of-function variant truly abolishes function: high confidence (HC) or low confidence (LC), with stated reasons (e.g., last-exon location that escapes NMD).
+: Classifies predicted loss-of-function consequences as high confidence (HC) or low confidence (LC) for a particular transcript and gives reasons. This is not functional evidence or a pathogenicity classification.
 
 **conservation** *(also: conservation scores, GERP, phyloP, phastCons)*
 : How strongly evolution has preserved a position across species. High conservation implies change is poorly tolerated.
@@ -136,4 +136,3 @@ see it in place.
 
 **allele balance** *(also: AB)*
 : For heterozygotes, the fraction of reads showing the variant — expect ~0.5. Strong skew suggests an artifact or mosaicism.
-

@@ -252,7 +252,7 @@ contains a compact SCREEN summary. **Regulatory evidence** opens a
 variant-scoped workspace with three deliberately separate modules. These
 controls and the workspace are intentionally hidden for exome imports:
 
-1. SCREEN observed tissue/cell evidence (implemented).
+1. Activity detected in SCREEN reference tissue/cell epigenomic data (implemented).
 2. Regulatory element–gene links such as R2G (to be developed).
 3. Gene-specific variant-effect predictions such as AlphaGenome (to be
    developed).

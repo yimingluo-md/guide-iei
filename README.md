@@ -67,7 +67,7 @@ discovering monogenic etiologies in the non-coding genome.
   immune-cell evidence, with plan for further expansion.
 - **A review environment, not only a pipeline** — persistent sample library,
   genotype-first discovery, trio analysis, phenotype records, and per-run
-  annotation-QC certificates.
+  annotation coverage reports.
 
 ## What GUIDE-IEI is not
 

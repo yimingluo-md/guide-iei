@@ -732,10 +732,15 @@ def render_html(report: dict) -> str:
             "</tr>"
         )
     summary = report["summary"]
+    overall_label = {
+        "PASS": "Meets configured checks",
+        "WARN": "Review configured checks",
+        "FAIL": "Does not meet configured checks",
+    }.get(report["overall_status"], str(report["overall_status"]))
     details = html.escape(json.dumps(report["details"], indent=2, sort_keys=True))
     return f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
-<title>Annotation completeness certificate</title>
+<title>Annotation coverage report</title>
 <style>
 body {{ font: 15px system-ui, sans-serif; max-width: 1100px; margin: 2rem auto; padding: 0 1rem; color: #17202a }}
 table {{ border-collapse: collapse; width: 100%; margin: 1rem 0 }}
@@ -745,8 +750,8 @@ th {{ background: #f4f6f7 }} .pass {{ color: #16733b; font-weight: 700 }}
 .not_applicable {{ color: #5d6d7e }} code {{ overflow-wrap: anywhere }}
 details pre {{ white-space: pre-wrap; background: #f7f9f9; padding: 1rem }}
 </style></head><body>
-<h1>Annotation completeness certificate</h1>
-<p><strong>Overall: {html.escape(report['overall_status'])}</strong></p>
+<h1>Annotation coverage report</h1>
+<p><strong>{html.escape(overall_label)}</strong></p>
 <p>This report measures annotation coverage; it is not a clinical classification.</p>
 {''.join(f'<p class="warn">Run note: {html.escape(note)}</p>' for note in report.get('run_notes', []))}
 <p><code>{html.escape(report['input_vcf'])}</code></p>
@@ -778,7 +783,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser.add_argument("--max-missing-examples", type=int)
     parser.add_argument(
         "--note", action="append", default=[],
-        help="run-level provenance note to record in the certificate "
+        help="run-level provenance note to record in the annotation coverage report "
              "(repeatable); e.g. the unfiltered-callset FILTER policy note",
     )
     args = parser.parse_args(argv)

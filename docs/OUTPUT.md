@@ -36,7 +36,7 @@ phase. The review UI excludes only the fully restored state by default. It
 keeps partial and unresolved events visible and retains the original
 per-variant LOFTEE annotation for audit.
 
-## The annotation-QC certificate
+## The annotation coverage report
 
 Every completed run also writes two annotation-completeness artifacts beside
 the final VCF:
@@ -44,7 +44,7 @@ the final VCF:
 - `<final.vcf.gz>.annotation_qc.json` for software/audit use
 - `<final.vcf.gz>.annotation_qc.html` for human review
 
-The certificate uses source-appropriate denominators: AlphaMissense and CADD
+The report uses source-appropriate denominators: AlphaMissense and CADD
 on missense records, LOFTEE on predicted loss-of-function records, and
 SpliceAI on transcript-overlapping MANE SNVs. It records coverage, limited
 examples of missing annotations, ClinVar matches, repeat/segdup overlaps,

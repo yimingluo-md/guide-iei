@@ -233,7 +233,7 @@ class ScreenContextStore:
             "immune_contexts": public_contexts,
             "presets": presets,
             "scientific_caveats": [
-                "Tissue aggregates and immune contexts are observed evidence, not target-gene assignments.",
+                "Tissue aggregates and immune contexts contain activity detected in SCREEN reference epigenomic data, not target-gene assignments.",
                 "A missing classification assay is unavailable evidence, not a negative result.",
                 "Nested Cell Ontology contexts and shared donors are not statistically independent.",
             ],
@@ -394,7 +394,7 @@ class ScreenContextStore:
             "assembly": manifest.get("assembly", "GRCh38"),
             "overlaps": overlaps,
             "modules": {
-                "observed_screen": {"available": True, "label": "SCREEN observed evidence"},
+                "observed_screen": {"available": True, "label": "Detected in SCREEN reference epigenomic data"},
                 "gene_links": {"available": False, "label": "Regulatory element–gene links", "note": "Planned for a future release"},
                 "predictions": {"available": False, "label": "Gene-specific variant-effect prediction", "note": "Planned for a future release"},
             },

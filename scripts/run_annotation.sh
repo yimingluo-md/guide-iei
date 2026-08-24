@@ -21,7 +21,7 @@
 #   5. sample-specific haplotype consequences         -> Haplosaurus
 #   6. ClinVar amino-acid-match post-processing       -> clinvar_aa_match.py
 #   7. exact allele-level ClinGen expert assertions    -> clingen_erepo_annotate.py
-#   8. annotation completeness certificate            -> annotation_qc.py
+#   8. annotation coverage report                     -> annotation_qc.py
 #
 # Output is an annotated VCF (INFO/CSQ), preserving sample GT/zygosity.
 # =============================================================================
@@ -718,14 +718,14 @@ if [[ "$(yaml_get "$CONFIG" clingen_erepo.enabled)" == "true" ]]; then
 fi
 
 # ============================================================================ #
-# 8. Annotation completeness certificate
+# 8. Annotation coverage report
 # ============================================================================ #
 if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
-    log "=== annotation completeness certificate ==="
+    log "=== annotation coverage report ==="
     QC_ARGS=( --config "$CONFIG" --vcf "$FINAL_OUTPUT" )
     [[ -n "$FILTER_POLICY_NOTE" ]] && QC_ARGS+=( --note "$FILTER_POLICY_NOTE" )
     python3 "${ROOT}/pipeline/annotation_qc.py" "${QC_ARGS[@]}" \
-        || die "annotation completeness certificate generation failed"
+        || die "annotation coverage report generation failed"
 fi
 
 # ============================================================================ #

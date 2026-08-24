@@ -157,7 +157,6 @@ ANNOTATION_SOURCE_SETUP = {
         "size_hint": "",
         "instructions": [
             "Included with the software — no action needed.",
-            "High confidence means the premature stop, frameshift, or splice-site change is likely to truly abolish protein function; low confidence lists the specific reasons for doubt.",
         ],
     },
     "spliceai": {
@@ -172,7 +171,7 @@ ANNOTATION_SOURCE_SETUP = {
         "instructions": [
             "Click Download and keep the computer awake; the download is resumable.",
             "These are Ensembl's SpliceAI scores recalculated directly on GRCh38 — not lifted over from the original hg19 scores, whose coordinate conversion is known to contain errors.",
-            "The score file and its index are verified before SpliceAI is marked ready.",
+            "Download completeness, BGZF structure, and index are checked before SpliceAI is marked ready.",
         ],
     },
     "repeatmasker": {
@@ -236,7 +235,7 @@ ANNOTATION_SOURCE_SETUP = {
         "prepare_id": "logofunc",
         "reference_url": "https://zenodo.org/records/13835271",
         "reference_label": "LoGoFunc Zenodo record 13835271",
-        "size_hint": "3.66 GB plus tabix index; GRCh38 canonical missense SNVs",
+        "size_hint": "3.66 GB; GRCh38 canonical missense SNVs",
         "instructions": [
             "Click Download from Zenodo, or use Choose file for a copy downloaded elsewhere; the table is checksum-verified and moved into managed storage.",
             "Predictions apply only when the variant matches the source transcript and amino-acid change exactly; mismatches are shown as such rather than silently reassigned.",
@@ -284,8 +283,8 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "BCFtools/liftover documentation and publication",
         "size_hint": "approximately 915 MB; included with the software",
         "instructions": [
-            "The exact hg19 reference and conversion chain are included; click Repair bundled files if either is reported missing.",
-            "Converted variants keep their original hg19 coordinates for review, and calls that only reflect reference differences between the builds are set aside in an audit file instead of entering the analysis.",
+            "The exact GRCh37/hg19 reference and conversion chain are included; click Repair bundled files if either is reported missing.",
+            "Converted variants keep their original GRCh37/hg19 coordinates for review, and calls that only reflect reference differences between the builds are set aside in an audit file instead of entering the analysis.",
             "When raw sequencing reads are available, re-alignment to GRCh38 is preferable to conversion.",
         ],
     },
@@ -3841,7 +3840,7 @@ class AnnotationJobService:
         # subtitle answers "what question does this dataset answer for me".
         labels = {
             "dbnsfp": ("dbNSFP", "How damaging is each amino-acid change? One database bundling an extensive set of published predictors — AlphaMissense, REVEL, CADD (coding regions), SIFT, PolyPhen, MetaRNN, PrimateAI, conservation scores, and more"),
-            "loftee": ("LOFTEE", "When a variant creates a premature stop or frameshift, or disrupts a canonical splice site, estimates how confident we can be that it truly abolishes the protein, and the reasons"),
+            "loftee": ("LOFTEE", "Transcript-level predicted loss-of-function annotation"),
             "spliceai": ("SpliceAI", "Predicts whether a variant disrupts RNA splicing, including variants outside the classic splice-site positions"),
             "repeatmasker": ("Repetitive-region flag", "Marks variants inside repetitive DNA, where sequencing and variant calling are less reliable"),
             "segdup": ("Duplicated-region flag", "Marks variants in segmental duplications — genomic segments with near-identical copies elsewhere in the genome, a classic source of false variant calls"),
@@ -3849,11 +3848,11 @@ class AnnotationJobService:
             "cadd_wgs": ("CADD scores for non-coding regions", "Genome-wide CADD deleteriousness scores for variants outside protein-coding regions. Coding-region CADD is already included with dbNSFP — install this only for whole-genome, non-coding analysis"),
             "logofunc": ("LoGoFunc", "Research-grade prediction of whether a missense variant causes gain of function, loss of function, or neither — a mechanism hint, not a clinical classifier"),
             "clinvar": ("ClinVar", "What clinical laboratories have reported about each variant. Reports come from many submitters and can conflict; review status matters. Refreshed automatically before every run"),
-            "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create, to judge whether the damaged transcript is degraded or escapes and may make a truncated protein"),
-            "clinvar_aa_match": ("Same-residue pathogenic match", "Flags variants that alter an amino acid where a different change at the same position is already reported pathogenic — e.g., Arg342Gln at a residue with reported pathogenic Arg342Trp"),
-            "liftover": ("Hg19 build support", "Lets you analyze VCFs made against the older hg19/GRCh37 reference. Variants are converted to GRCh38 with safeguards and a full audit trail — nothing is silently dropped"),
+            "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create and flags cases where the rule suggests possible NMD escape"),
+            "clinvar_aa_match": ("ClinVar protein-change and residue matching", "Identifies ClinVar P/LP reports with the same protein change or a P/LP missense report at the same residue. These are candidate PS1/PM5 evidence only; the reviewer must confirm transcript, condition, review status, disease mechanism, and evidence independence"),
+            "liftover": ("GRCh37/hg19 input conversion", "Lets you analyze VCFs made against the older GRCh37/hg19 reference. Variants are converted to GRCh38 with safeguards and a full audit trail — nothing is silently dropped"),
             "ccre": ("ENCODE cCRE regions", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
-            "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: shows in which tissues and immune cell types a regulatory region is active — adding tissue- and cell-level detail on top of the aggregate cCRE map"),
+            "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: SCREEN records a positive regulatory signature in reference tissues and immune cell types, adding context to the aggregate cCRE map"),
             "clingen_erepo": ("ClinGen expert-panel classifications", "Variant interpretations from ClinGen's disease-specific expert panels — the highest review level available. Stored locally; your variants are never sent to any server"),
         }
         try:

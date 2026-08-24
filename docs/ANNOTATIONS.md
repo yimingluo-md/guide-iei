@@ -484,9 +484,9 @@ compact `<vep.vcf.gz>.haplotype.audit.json` records all decisions.
 
 ---
 
-## Annotation completeness certificate and regression panel
+## Annotation coverage report and regression panel
 
-Each completed annotation writes JSON and HTML certificates beside the final
+Each completed annotation writes JSON and HTML coverage reports beside the final
 VCF. Configure warning thresholds under `annotation_qc:` in
 `config/annotation.config.yaml`. These are coverage checks, not pathogenicity
 rules:
