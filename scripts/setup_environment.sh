@@ -177,6 +177,15 @@ if command -v python3 >/dev/null 2>&1; then
     if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
         ok "python3 $(python3 -c 'import platform; print(platform.python_version())') (>= 3.9)"
         PYTHON_OK=1
+        # An x86_64 Python on Apple Silicon runs under Rosetta emulation:
+        # measured 3-6x slower on this pipeline's per-record work (hashing,
+        # whole-genome review filtering). Everything works — just slower.
+        if [ "$OS" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+            PY_ARCH="$(python3 -c 'import platform; print(platform.machine())' 2>/dev/null)"
+            if [ "$PY_ARCH" = "x86_64" ]; then
+                warn "python3 is an Intel build running under Rosetta on this Apple Silicon Mac — whole-genome filtering and hashing run 3-6x slower. A native arm64 Python (e.g. a fresh conda arm64 environment, or /usr/bin/python3 with PyYAML) removes the penalty."
+            fi
+        fi
     else
         fix "python3 is older than 3.9" "install a current Python 3"
     fi

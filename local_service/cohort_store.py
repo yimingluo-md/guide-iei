@@ -1054,12 +1054,19 @@ class CohortStore:
         )
         configured_readers = index_readers
         if configured_readers is None:
+            # The shard readers are CPU-bound (per-record filtering), so
+            # the default scales with the machine instead of pinning four
+            # readers on a ten-core workstation: cores minus two for the
+            # OS/browser, capped at eight, never below the old default.
+            hardware_default = max(
+                DEFAULT_INDEX_READERS, min(8, (os.cpu_count() or 4) - 2)
+            )
             try:
                 configured_readers = int(
-                    os.environ.get("IEI_COHORT_INDEX_READERS", DEFAULT_INDEX_READERS)
+                    os.environ.get("IEI_COHORT_INDEX_READERS", hardware_default)
                 )
             except ValueError:
-                configured_readers = DEFAULT_INDEX_READERS
+                configured_readers = hardware_default
         self.index_readers = max(
             1, min(configured_readers, os.cpu_count() or configured_readers)
         )

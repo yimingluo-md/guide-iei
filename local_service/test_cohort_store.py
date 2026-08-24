@@ -208,6 +208,11 @@ def write_parallel_vcf(path: Path):
         + "|".join(CSQ_FIELDS)
         + '">\n'
         + '##INFO=<ID=promoterAI,Number=1,Type=Float,Description="promoterAI score">\n'
+        # Real prefiltered review files always DECLARE this flag (the merge
+        # step writes the header line); strict bcftools builds (observed:
+        # a conda 1.24) hard-fail sort on undeclared INFO keys rather than
+        # warning, so the fixture must model the declared reality.
+        + '##INFO=<ID=IEI_UNSCORED_INDEL,Number=A,Type=String,Description="Unscored indel routes">\n'
         + '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
         + '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\n'
         + '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Depth">\n'

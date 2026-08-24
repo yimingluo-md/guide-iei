@@ -11,7 +11,12 @@ import os
 import uuid
 import re
 import tempfile
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ProcessPoolExecutor,
+    ThreadPoolExecutor,
+    wait,
+)
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Callable, Iterable
@@ -518,9 +523,24 @@ def _filter_group_worker(
     annotations_retained = 0
     unscored_intronic_indels = 0
     unscored_promoter_indels = 0
+    # Live progress crosses the process boundary through a tiny sidecar:
+    # the parent polls these while the futures run, so the reviewer sees
+    # records ticking instead of a zero that lasts the whole phase.
+    progress_path = destination.with_suffix(".progress")
+
+    def report_progress() -> None:
+        try:
+            staged = progress_path.with_suffix(".progress.tmp")
+            staged.write_text(f"{scanned}\t{retained}\n")
+            os.replace(staged, progress_path)
+        except OSError:
+            pass
+
     with destination.open("wt", encoding="utf-8") as output:
         for line in backend.iter_records(source, contigs):
             scanned += 1
+            if scanned % 25000 == 0:
+                report_progress()
             retain, reasons_by_alt = evaluate_record(
                 line, header, options, ccre_intervals, exome_intervals,
                 promoter_intervals,
@@ -542,6 +562,7 @@ def _filter_group_worker(
                     UNSCORED_PROMOTERAI_PROMOTER in reasons
                     for reasons in reasons_by_alt
                 )
+    report_progress()
     return {
         "path": str(destination),
         "records_scanned": scanned,
@@ -767,6 +788,20 @@ class WgsReviewStore:
             ]
             contig_groups = [group for group in contig_groups if group]
 
+            # The exact denominator for live percent, when the index can
+            # provide it cheaply; totals stay optional so an indexless or
+            # containerless run degrades to per-group reporting.
+            total_records = 0
+            try:
+                if prepared.index_path is not None:
+                    counted = backend.run(
+                        "bcftools", ["index", "-n", str(prepared.path)]
+                    )
+                    if counted.returncode == 0:
+                        total_records = int(counted.stdout.strip() or 0)
+            except (AttributeError, OSError, ValueError):
+                total_records = 0
+
             def collect(executor) -> None:
                 futures = {
                     executor.submit(
@@ -783,23 +818,47 @@ class WgsReviewStore:
                     ): index
                     for index, group in enumerate(contig_groups)
                 }
-                for future in as_completed(futures):
-                    results.append(future.result())
+                def live_counts() -> tuple[int, int]:
+                    scanned_total = 0
+                    retained_total = 0
+                    for index in range(len(contig_groups)):
+                        sidecar = temporary_root / f"shard-{index:04d}.progress"
+                        try:
+                            fields = sidecar.read_text().split()
+                            scanned_total += int(fields[0])
+                            retained_total += int(fields[1])
+                        except (OSError, ValueError, IndexError):
+                            continue
+                    return scanned_total, retained_total
+
+                pending = set(futures)
+                while pending:
+                    finished, pending = wait(
+                        pending, timeout=2.0, return_when=FIRST_COMPLETED
+                    )
+                    for future in finished:
+                        results.append(future.result())
                     if progress:
+                        live_scanned, live_retained = live_counts()
                         completed = len(results)
                         progress({
                             "phase": "filtering",
-                            "progress": 10.0 + (70.0 * completed / len(contig_groups)),
+                            "progress": 10.0 + (70.0 * min(
+                                1.0,
+                                (live_scanned / total_records)
+                                if total_records else
+                                completed / len(contig_groups),
+                            )),
                             "message": (
+                                f"Filtering chromosome shards — "
+                                f"{live_scanned:,} of "
+                                f"{total_records:,} records scanned"
+                                if total_records else
                                 f"Filtered {completed} of {len(contig_groups)} "
                                 "chromosome shard groups."
                             ),
-                            "records_scanned": sum(
-                                item["records_scanned"] for item in results
-                            ),
-                            "records_retained": sum(
-                                item["records_retained"] for item in results
-                            ),
+                            "records_scanned": live_scanned,
+                            "records_retained": live_retained,
                             "reader_count": reader_count,
                         })
 
