@@ -22,6 +22,24 @@ export type AnnotationJob = {
   pid: number | null;
   exit_code: number | null;
   error: string | null;
+  progress?: JobProgress;
+};
+
+export type JobProgressStage = {
+  id: string;
+  label: string;
+  state: "done" | "active" | "pending";
+};
+
+export type JobProgress = {
+  stage: string;
+  stage_label: string;
+  stages: JobProgressStage[];
+  variants_total: number | null;
+  variants_done: number | null;
+  vep_percent: number | null;
+  eta_seconds: number | null;
+  post_processing: boolean;
 };
 
 export type ServiceCapabilities = {

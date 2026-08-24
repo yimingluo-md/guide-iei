@@ -2085,6 +2085,16 @@ function cleanLabel(value: string | undefined) {
   return value ? value.replaceAll("_", " ").replaceAll("&", " / ") : "—";
 }
 
+function formatEta(seconds: number) {
+  const total = Math.round(seconds);
+  if (total < 90) return `${total} s`;
+  const minutes = Math.round(total / 60);
+  if (minutes < 90) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const remainder = minutes % 60;
+  return `${hours} h${remainder ? ` ${remainder} min` : ""}`;
+}
+
 function compactPercent(value: number | null | undefined) {
   return value === null || value === undefined ? "—" : `${(value * 100).toFixed(1).replace(/\.0$/, "")}%`;
 }
@@ -4073,7 +4083,14 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     }
   }
 
-  const recentJobs = jobs.slice(0, 8);
+  // The panel's mount-level poller already refreshes jobs (and their
+  // progress payloads) every 2.5 s; active jobs are surfaced first so the
+  // one row carrying a progress bar can never fall below the list cap.
+  const recentJobs = useMemo(() => {
+    const rank = (job: AnnotationJob) =>
+      job.status === "running" ? 0 : job.status === "queued" ? 1 : 2;
+    return [...jobs].sort((a, b) => rank(a) - rank(b)).slice(0, 8);
+  }, [jobs]);
   const profileReady = Boolean(capabilities?.annotation_profile.ready);
   const datasetsReady = Boolean(capabilities?.annotation_profile.datasets_ready);
   const containerFoundation = capabilities?.annotation_profile.foundations.find((item) => item.id === "vep_container");
@@ -4161,7 +4178,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       <div className="annotation-actions wizard-actions"><button className="secondary-button" onClick={() => { setSetupOnly(false); setStep(1); }}>{setupOnly ? "Done" : "Back"}</button>{!setupOnly && <button className="primary-button dark" onClick={queueAnnotation} disabled={submitting || resourceSetupBusy || !capabilities || !profileReady}>{submitting ? stageProgress || "Starting…" : resourceSetupBusy ? "Wait for dataset download" : "Start VEP annotation"}</button>}</div>
     </>}
     {serviceError && <div className={`alert ${capabilities ? "error" : ""}`}>{serviceError}{!capabilities && <small> Start <span className="mono">python3 -m local_service.workbench_service</span> in the pipeline folder.</small>}</div>}
-    {recentJobs.length > 0 && <div className="job-list"><div className="job-list-head"><strong>Recent annotation jobs</strong><span>{jobs.filter((job) => job.status === "queued" || job.status === "running").length} active</span></div>{recentJobs.map((job) => <div className="job-row" key={job.id}><span className={`job-status ${job.status}`}>{job.status}</span><div><strong title={job.input_path}>{fileName(job.input_path)}</strong><span title={job.final_output_path ?? job.output_path}>{job.final_output_path ?? job.output_path}</span><small>{job.input_assembly === "GRCh37" ? "GRCh37 → GRCh38 liftover" : `${job.input_assembly} input`}</small>{job.error && <small>{job.error}</small>}</div><div className="job-actions">{job.status === "succeeded" && <button onClick={() => reviewJob(job)}>Review</button>}<button onClick={() => showLog(job.id)}>Log</button>{(job.status === "queued" || job.status === "running") && <button onClick={() => stopJob(job.id)}>Cancel</button>}</div></div>)}</div>}
+    {recentJobs.length > 0 && <div className="job-list"><div className="job-list-head"><strong>Recent annotation jobs</strong><span>{jobs.filter((job) => job.status === "queued" || job.status === "running").length} active</span></div>{recentJobs.map((job) => <div className="job-row" key={job.id}><span className={`job-status ${job.status}`}>{job.status}</span><div><strong title={job.input_path}>{fileName(job.input_path)}</strong><span title={job.final_output_path ?? job.output_path}>{job.final_output_path ?? job.output_path}</span><small>{job.input_assembly === "GRCh37" ? "GRCh37 → GRCh38 liftover" : `${job.input_assembly} input`}</small>{job.status === "running" && job.progress && <div className="job-progress">{job.progress.stage === "vep" && job.progress.vep_percent !== null ? <><div className="progress-track"><span style={{ width: `${Math.max(2, job.progress.vep_percent)}%` }} /></div><small>{(job.progress.variants_done ?? 0).toLocaleString()} of {(job.progress.variants_total ?? 0).toLocaleString()} variants annotated{typeof job.progress.eta_seconds === "number" ? ` · about ${formatEta(job.progress.eta_seconds)} left` : ""}</small></> : (job.progress.stage === "done" ? <><div className="progress-track"><span style={{ width: "100%" }} /></div><small>Finishing…</small></> : <><div className="progress-track indeterminate"><span /></div><small>{job.progress.post_processing ? (() => { const post = job.progress!.stages.filter((stage) => !["preflight", "liftover", "prefilter", "clinvar", "vep", "done"].includes(stage.id)); const finished = post.filter((stage) => stage.state === "done").length; return `Post-processing · ${job.progress!.stage_label} (${Math.min(finished + 1, post.length)} of ${post.length})`; })() : job.progress.stage_label}</small></>)}</div>}{job.error && <small>{job.error}</small>}</div><div className="job-actions">{job.status === "succeeded" && <button onClick={() => reviewJob(job)}>Review</button>}<button onClick={() => showLog(job.id)}>Log</button>{(job.status === "queued" || job.status === "running") && <button onClick={() => stopJob(job.id)}>Cancel</button>}</div></div>)}</div>}
     {expandedLog && <div className="log-view"><div><strong>Job log</strong><button onClick={() => setExpandedLog(null)}>×</button></div><pre>{expandedLog.text || "No log output yet."}</pre></div>}
   </section>;
 }

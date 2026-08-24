@@ -70,7 +70,12 @@ Start the run.
 The run screen reports progress through each stage: input checks, the
 ClinVar download (refreshed and version-stamped at every run), region
 filtering, VEP annotation, and the post-processing that refines
-loss-of-function calls. An exome typically completes in minutes; the page
+loss-of-function calls. During the VEP stage — much the longest — a
+progress bar counts annotated variants against the exact total the
+region filter established, with a running estimate of the time
+remaining; the counts are read from the output itself, so the bar
+reflects work actually done. An exome typically completes in minutes; a
+whole genome takes hours, and the bar makes that wait legible. The page
 can be left and revisited, as jobs continue in the background.
 
 On completion, two artifacts are written beside the output VCF: the

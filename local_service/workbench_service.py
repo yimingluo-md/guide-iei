@@ -42,6 +42,7 @@ from local_service.cohort_store import CohortStore
 from local_service.gene_knowledge import GeneKnowledgeStore
 from local_service.phenotype_store import PhenotypeStore
 from local_service.screen_context import ScreenContextStore
+from local_service.job_progress import JobProgressTracker
 from local_service.software_update import SoftwareUpdater
 from local_service.sample_library import SampleLibrary
 from local_service.storage_locations import (
@@ -680,6 +681,7 @@ class AnnotationJobService:
         # A fresh process IS the restart an install asked for.
         self.software_updater.clear_restart_pending()
         self._software_update_lock = threading.Lock()
+        self.job_progress = JobProgressTracker()
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._processes: dict[str, subprocess.Popen] = {}
         self._process_lock = threading.Lock()
@@ -1334,6 +1336,20 @@ class AnnotationJobService:
     @property
     def restart_requested(self) -> bool:
         return self._restart_requested
+
+    def with_job_progress(self, job: dict) -> dict:
+        """Attach a live progress snapshot to a running job's payload.
+
+        Computed only here, on poll: an unwatched run costs nothing. Any
+        tracker failure degrades to a job without a bar, never a broken
+        endpoint."""
+        try:
+            progress = self.job_progress.snapshot(job)
+        except Exception:
+            progress = None
+        if progress is not None:
+            job = {**job, "progress": progress}
+        return job
 
     def software_update_install(self) -> dict:
         """Install the latest release. Refused while anything is running —
@@ -4570,7 +4586,10 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/capabilities":
             self._json(self.service.capabilities())
         elif path == "/api/jobs":
-            self._json({"jobs": self.service.store.list()})
+            self._json({"jobs": [
+                self.service.with_job_progress(job)
+                for job in self.service.store.list()
+            ]})
         elif path == "/api/resource-downloads":
             self._json({"jobs": self.service.resource_downloads()})
         elif path == "/api/gene-knowledge/status":
@@ -4719,6 +4738,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/jobs/"):
             job_id = path.split("/")[3]
             job = self.service.store.get(job_id)
+            if job:
+                job = self.service.with_job_progress(job)
             self._json(job if job else {"error": "job not found"},
                        HTTPStatus.OK if job else HTTPStatus.NOT_FOUND)
         else:

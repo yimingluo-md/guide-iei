@@ -1417,3 +1417,8 @@ tbody tr:last-child td { border-bottom: 0; }
 }
 
 .bulk-intake-status.failed { background: #fbf3f2; border-color: #e5cdc9; }
+
+.job-progress { margin-top: 6px; }
+.job-progress .progress-track { margin: 0 0 4px; }
+.progress-track.indeterminate > span { width: 30%; animation: indeterminate-slide 1.4s ease-in-out infinite; }
+@keyframes indeterminate-slide { 0% { margin-left: 0; } 50% { margin-left: 70%; } 100% { margin-left: 0; } }

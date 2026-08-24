@@ -308,7 +308,17 @@ if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
         log "--dry-run: would pre-filter $INPUT with bcftools view ${VIEW_ARGS[*]}"
     fi
 else
-    log "input pre-filter OFF: annotating every record in the input VCF."
+    # A machine-readable count when it costs nothing (an index is present):
+    # the workbench progress bar needs a denominator for these runs too.
+    OFF_COUNT=""
+    if [[ -f "${INPUT}.tbi" || -f "${INPUT}.csi" ]]; then
+        OFF_COUNT="$(hts bcftools index -n "$INPUT" 2>/dev/null | tr -dc '0-9' || true)"
+    fi
+    if [[ -n "$OFF_COUNT" ]]; then
+        log "input pre-filter OFF: ${OFF_COUNT} variants to annotate (every record in the input VCF)."
+    else
+        log "input pre-filter OFF: annotating every record in the input VCF."
+    fi
 fi
 
 # ============================================================================ #
