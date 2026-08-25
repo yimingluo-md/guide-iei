@@ -13,6 +13,16 @@ on:
   workflow_dispatch:
 
 jobs:
+  windows-launcher:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Windows launcher regression tests
+        shell: powershell
+        run: powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File test/test_windows_launcher.ps1
+
   smoke:
     strategy:
       fail-fast: false

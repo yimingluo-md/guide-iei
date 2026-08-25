@@ -107,8 +107,11 @@ application files and verified user-space runtimes on first launch; no Python, N
 Docker Desktop, Homebrew, Git, Xcode, or bioinformatics software needs to be
 installed first.
 
-**Windows one-click:** download the repository ZIP, unzip it, and double-click
-`desktop/windows/GUIDE-IEI.bat` after installing WSL2 and Docker Desktop. The
+**Windows one-click:** download and fully extract the repository ZIP, then
+double-click `desktop/windows/GUIDE-IEI.bat`. The launcher checks for a real
+WSL2 Linux environment and offers or explains the one-time Ubuntu installation
+when it is missing. Docker Desktop is optional for reviewing an already
+annotated VCF, but is required to run the VEP annotation engine. The
 [installation chapter](docs/guide/02-install.md) walks through both platforms.
 
 > **Mac, first open:** the current release is unsigned, so macOS blocks it —

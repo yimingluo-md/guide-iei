@@ -27,9 +27,9 @@ route in the appendix.
 - **No administrator rights are required on a Mac**, and nothing is
   installed system-wide: application files go under
   `~/Library/Application Support/GUIDE-IEI/`, while runtimes and workbench
-  state live under `~/.iei-variant-review/`. On Windows, two one-time steps
-  are required — a Linux distribution for WSL2 (one PowerShell line) and
-  the Docker Desktop installer — both described below.
+  state live under `~/.iei-variant-review/`. On a clean Windows computer,
+  installing WSL2/Ubuntu is a one-time administrator-approved Windows change.
+  Docker Desktop is an additional requirement only when running annotation.
 
 ## Get the software
 
@@ -40,8 +40,9 @@ put it in its own `~/Applications` folder or open it from the unzipped folder;
 do this before the first-open approval below.
 
 **Windows:** on the [GUIDE-IEI GitHub page](https://github.com/yimingluo-md/guide-iei),
-use the green **Code** button → **Download ZIP**, then unzip and place the
-`guide-iei` folder somewhere ordinary. Avoid cloud-synced locations
+use the green **Code** button → **Download ZIP**, then choose **Extract All**
+and place the extracted `guide-iei` folder somewhere ordinary. Do not run the
+launcher from inside the ZIP preview. Avoid cloud-synced locations
 (OneDrive, Dropbox, iCloud Drive): sync services interfere with working files.
 
 ## Mac: double-click GUIDE-IEI
@@ -79,43 +80,53 @@ If a personally or institutionally managed Mac does not offer **Open Anyway**,
 its security policy may prohibit unsigned software. An administrator must
 allow the app; there is no safe application-side bypass for that policy.
 
-## Windows: prepare WSL2 and Docker Desktop first, then launch GUIDE-IEI
+## Windows: double-click GUIDE-IEI and follow the one-time WSL2 prompt
 
 GUIDE-IEI runs inside **WSL2** (a Linux environment Windows provides) with
-a Linux distribution, and its annotation engine runs in a container:
+Ubuntu. The launcher checks this environment before copying or starting
+anything:
 
-1. Open **PowerShell** and run the one line
+1. In the fully extracted GUIDE-IEI folder, open `desktop` → `windows` and
+   double-click **GUIDE-IEI.bat**. A window opens immediately and remains
+   visible if anything needs attention.
+2. If WSL2 with Ubuntu is missing, the launcher offers to start the supported
+   installation with administrator approval. Accept it, or open PowerShell as
+   Administrator and run the exact line shown:
 
    ```
    wsl --install -d Ubuntu
    ```
 
-   then restart when asked. This installs both WSL2 and Ubuntu, the Linux
-   environment the workbench runs in. (Docker Desktop's installer enables
-   WSL2 too, but provides only its own internal distribution, which cannot
-   host the workbench — this step is needed either way.)
-2. Install
+   Restart Windows if asked. Open **Ubuntu** once from the Start menu and
+   create its requested Linux username and password, then double-click
+   **GUIDE-IEI.bat** again. Docker Desktop's internal Linux distribution does
+   not count as Ubuntu and cannot host the workbench.
+3. To run VEP annotation, install
    **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
-   and restart if asked. In its settings, confirm **WSL integration** is
-   on (Settings → Resources → WSL integration).
-3. Inside the GUIDE-IEI folder, open `desktop` → `windows` and
-   double-click **GUIDE-IEI.bat**.
+   and enable **Settings → Resources → WSL integration** for the selected
+   Ubuntu distribution. You may skip Docker when you only need to import and
+   review a VCF that is already annotated; the launcher will explain this
+   instead of installing another Docker engine without asking.
 
-The first launch copies GUIDE-IEI into the Linux filesystem (where large
-indexed files are read many times faster than across the Windows/Linux
-boundary), prepares the environment, and opens the workbench in your
-normal Windows browser. As on the Mac: keep the launcher window open while
-you work; closing it stops the workbench.
+The first successful launch copies GUIDE-IEI into the Linux filesystem (where
+large indexed files are read much faster than across the Windows/Linux
+boundary), removes any Windows-specific build files from that copy, prepares
+missing Ubuntu packages and user-space Node.js, and opens the workbench in your
+normal Windows browser. Ubuntu may ask for the password created during its
+first-run setup. Keep the launcher window open while you work; closing it stops
+the workbench. If startup fails, the window remains open and prints the path to
+a diagnostic log under `%LOCALAPPDATA%\GUIDE-IEI\logs`.
 
 ## What the first launch prepares
 
 The preparation step is a **setup check with an installer attached**. It
-reports a green `[ OK ]` line for everything already present and corrects
-what can be corrected without administrator rights:
+reports a green `[ OK ]` line for everything already present and installs
+supported missing prerequisites. A Mac needs no administrator rights;
+Ubuntu/WSL2 may request the Linux user's password for system packages:
 
-- **Python and its single dependency** — a pinned native runtime is verified
-  and installed in the managed tools folder when absent; system Python and
-  Xcode Command Line Tools are not used.
+- **Python and its single dependency** — on a Mac, a pinned native runtime is
+  verified and installed in the managed tools folder; on Ubuntu/WSL2, the
+  standard `python3` and `python3-yaml` packages are installed when absent.
 - **Node.js** (runs the workbench interface) — when no suitable version is
   found, the official build is placed in the managed tools folder, leaving
   the system installation untouched.
@@ -205,7 +216,9 @@ When `C:` is too small, there are two good options and one fallback:
 | The workbench page does not load | The launcher window must remain open — it *is* the application. Start it again and watch for error lines. |
 | A `[FIX]` line about the container daemon | The container runtime is installed but not running. Docker Desktop users: launch Docker Desktop; the setup check otherwise prints the exact start command. |
 | Import or annotation is unexpectedly slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
-| Windows: the launcher window flashes and closes, or reports WSL is not set up | No Linux distribution is installed yet — run `wsl --install -d Ubuntu` in PowerShell (step 1 above), restart, and launch again. |
+| Windows: the launcher reports that WSL2/Ubuntu is not set up | Accept its installation offer, or run `wsl --install -d Ubuntu` in Administrator PowerShell (step 2 above), restart, finish Ubuntu's first-run setup, and launch again. |
+| Windows: Docker Desktop is installed but annotation is unavailable | Start Docker Desktop and enable Settings → Resources → WSL Integration for the Ubuntu distribution named by the launcher. Import and review of already annotated VCFs still works without Docker. |
+| Windows: startup fails for another reason | Read the explanation kept open in the launcher window. Its timestamped diagnostic log is under `%LOCALAPPDATA%\GUIDE-IEI\logs`. |
 | The folder lives in OneDrive/Dropbox and behaves oddly | Cloud-synced folders may cause synchronization conflicts, poor performance, or incomplete working files. Use an ordinary local folder whenever possible. |
 | Uncertain what state the installation is in | Run the setup check from the appendix below (no options). It changes nothing and reports exactly what is present and missing. |
 

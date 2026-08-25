@@ -34,6 +34,23 @@ in Privacy & Security.
   ad-hoc bundle seal, payload install, architecture metadata, and translocated
   launch behavior.
 
+**Windows installation and launch**
+
+- The double-click launcher now opens with immediate visible status, remains
+  open after errors, and records timestamped diagnostic logs under the user's
+  local application-data folder.
+- It requires a genuine WSL2 distribution with Bash, ignores application-owned
+  internal distributions, and offers or explains the supported Ubuntu install
+  when WSL is absent.
+- First launch copies only portable source state into WSL, safely handles
+  Windows folder names containing shell metacharacters, and installs missing
+  Ubuntu Python/core prerequisites. Windows `node_modules` and Next.js build
+  output can no longer contaminate the Linux setup.
+- Docker Desktop availability is checked inside the selected distribution.
+  The graphical launcher never installs a second native Docker engine behind
+  the user's back; annotated-VCF review remains available without Docker.
+- Windows CI parses the launcher and tests its clean-machine failure guidance.
+
 **Known limitation**
 
 - Until the project adopts Apple Developer ID signing and notarization, macOS

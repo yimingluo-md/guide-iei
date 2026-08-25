@@ -51,7 +51,11 @@ if [[ "$BOOTSTRAP" == "1" ]]; then
     if ! bash "${HERE}/setup_environment.sh" --check; then
         echo
         echo "== First-time preparation: installing the environment."
-        echo "   This happens once and needs no administrator password on a Mac."
+        if grep -qi microsoft /proc/version 2>/dev/null; then
+            echo "   Ubuntu may ask for the password created during its first-run setup."
+        else
+            echo "   This happens once and needs no administrator password on a Mac."
+        fi
         # A container item that cannot be fixed unattended (Docker Desktop
         # installed but not running, say) must not brick the launch: the
         # review workbench works without the annotation runtime.
@@ -99,7 +103,7 @@ if [[ -z "$PYTHON_BIN" ]]; then
     cat >&2 <<'MESSAGE'
 ERROR: A usable Python 3 runtime was not found.
 
-The setup script installs a native runtime without Xcode or admin rights:
+The setup script installs the required runtime for this platform:
   bash scripts/setup_environment.sh --install
 MESSAGE
     exit 127

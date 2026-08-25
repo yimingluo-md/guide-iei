@@ -2,17 +2,18 @@
 # setup_environment.sh — host-environment doctor and bootstrapper.
 #
 #   bash scripts/setup_environment.sh              # doctor: report PASS/FIX, change nothing
-#   bash scripts/setup_environment.sh --install    # fix what can be fixed without admin rights
+#   bash scripts/setup_environment.sh --install    # install supported missing prerequisites
 #
 # Modes and tiers:
 #   1. Detect existing tools first (PATH plus known locations). Anything already
 #      present and version-adequate is used as-is; nothing is downloaded.
 #   2. --install places missing user-space tools in a managed directory
-#      (~/.iei-variant-review/tools by default): a relocatable CPython build,
-#      Node.js from nodejs.org, and on macOS a container stack (Lima + Colima
-#      + Docker CLI). No admin rights, Homebrew, Docker Desktop, or Xcode
-#      Command Line Tools are required. Every direct download is version-
-#      pinned and SHA-256-verified.
+#      (~/.iei-variant-review/tools by default): Node.js from nodejs.org and,
+#      on macOS, a relocatable CPython build plus a container stack (Lima +
+#      Colima + Docker CLI). No admin rights, Homebrew, Docker Desktop, or Xcode
+#      Command Line Tools are required on a Mac. On Ubuntu/WSL2, missing core
+#      tools, Python, and PyYAML use apt and may request the Linux user's sudo
+#      password. Every direct download is version-pinned and SHA-256-verified.
 #   3. On Linux/WSL2 a container runtime is a system component (kernel
 #      namespaces need root to wire up); the script prints the exact commands
 #      and runs them only after an explicit yes. Existing docker/podman/
@@ -134,6 +135,20 @@ download_verified() { # download_verified <url> <dest> <sha256>
     mv "$dest.part" "$dest"
 }
 
+APT_UPDATED=0
+apt_install_packages() { # apt_install_packages <description> <package>...
+    local description="$1"
+    shift
+    [ "$OS" = "Linux" ] && command -v apt-get >/dev/null 2>&1 || return 1
+    confirm "Install $description? Runs: sudo apt-get install -y $*" || return 1
+    if [ "$APT_UPDATED" = 0 ]; then
+        echo "  refreshing Ubuntu/Debian package information ..."
+        sudo apt-get update -qq || return 1
+        APT_UPDATED=1
+    fi
+    sudo apt-get install -y "$@"
+}
+
 # ---------------------------------------------------------------- platform
 OS="$(uname -s)"
 ARCH="$(uname -m)"
@@ -159,12 +174,22 @@ if [ "$IS_WSL" = 1 ]; then
 fi
 
 # ---------------------------------------------------------------- core tools
-missing_core=""
-for tool in tar gzip awk sed sort; do
-    command -v "$tool" >/dev/null 2>&1 || missing_core="$missing_core $tool"
-done
-if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then :; else
-    missing_core="$missing_core curl-or-wget"
+find_missing_core() {
+    local missing="" tool
+    for tool in tar gzip awk sed sort; do
+        command -v "$tool" >/dev/null 2>&1 || missing="$missing $tool"
+    done
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then :; else
+        missing="$missing curl-or-wget"
+    fi
+    printf '%s' "$missing"
+}
+missing_core="$(find_missing_core)"
+if [ -n "$missing_core" ] && [ "$MODE" = "install" ] && [ "$OS" = "Linux" ]; then
+    echo "  installing required Ubuntu/Debian command-line tools ..."
+    apt_install_packages "required GUIDE-IEI command-line tools" \
+        ca-certificates curl tar gzip gawk sed coreutils || true
+    missing_core="$(find_missing_core)"
 fi
 if [ -z "$missing_core" ]; then
     ok "core tools (tar, curl/wget, awk, sed, sort, gzip)"
@@ -265,6 +290,12 @@ elif [ "$MODE" = "install" ] && [ "$OS" = "Darwin" ]; then
     if install_python_macos && PYTHON_BIN="$(resolve_python)"; then
         PYTHON_OK=1
     fi
+elif [ "$MODE" = "install" ] && [ "$OS" = "Linux" ] && command -v apt-get >/dev/null 2>&1; then
+    echo "  installing Python and PyYAML with Ubuntu/Debian packages ..."
+    apt_install_packages "Python and its GUIDE-IEI configuration parser" python3 python3-yaml || true
+    if PYTHON_BIN="$(resolve_python)"; then
+        PYTHON_OK=1
+    fi
 fi
 
 if [ "$PYTHON_OK" = 1 ]; then
@@ -287,8 +318,17 @@ if [ "$PYTHON_OK" = 1 ]; then
         ok "PyYAML importable (config parser dependency)"
         PYYAML_OK=1
     elif [ "$MODE" = "install" ]; then
-        echo "  installing PyYAML for $PYTHON_BIN ..."
-        if case "$PYTHON_BIN" in
+        if [ "$OS" = "Linux" ] && command -v apt-get >/dev/null 2>&1; then
+            echo "  installing PyYAML with the Ubuntu/Debian package manager ..."
+            apt_install_packages "the GUIDE-IEI configuration parser" python3-yaml || true
+        fi
+        if "$PYTHON_BIN" -c 'import yaml' 2>/dev/null; then
+            ok "PyYAML installed"
+            PYYAML_OK=1
+        else
+            echo "  installing PyYAML for $PYTHON_BIN ..."
+        fi
+        if [ "$PYYAML_OK" = 0 ] && case "$PYTHON_BIN" in
                "$TOOLS_DIR"/*) "$PYTHON_BIN" -m pip install --disable-pip-version-check -r "$ROOT/requirements.txt" >/dev/null 2>&1 ;;
                *) "$PYTHON_BIN" -m pip install --user -r "$ROOT/requirements.txt" >/dev/null 2>&1 \
                   || "$PYTHON_BIN" -m pip install --user --break-system-packages -r "$ROOT/requirements.txt" >/dev/null 2>&1 ;;
@@ -296,8 +336,8 @@ if [ "$PYTHON_OK" = 1 ]; then
         then
             ok "PyYAML installed"
             PYYAML_OK=1
-        else
-            fix "PyYAML install failed" "$PYTHON_BIN -m pip install pyyaml"
+        elif [ "$PYYAML_OK" = 0 ]; then
+            fix "PyYAML install failed" "sudo apt-get install -y python3-yaml  (or: $PYTHON_BIN -m pip install pyyaml)"
         fi
     else
         fix "PyYAML not importable" "rerun with --install"
@@ -519,6 +559,15 @@ else
             fi
         elif [ "$OS" = "Darwin" ]; then
             fix "no container runtime found (docker/podman/singularity)" "rerun with --install for a no-admin Lima+Colima stack, or install Docker Desktop"
+        elif [ "$IS_WSL" = 1 ] && [ "${IEI_WSL_LAUNCHER:-0}" = 1 ]; then
+            # The Windows double-click launcher must never install a second,
+            # native Docker engine just because Docker Desktop integration is
+            # off. The workbench itself is useful without VEP/container work.
+            if [ "${IEI_WSL_DOCKER_DESKTOP:-0}" = 1 ]; then
+                fix "Docker Desktop is not reachable inside this WSL2 distribution" "start Docker Desktop and enable Settings > Resources > WSL Integration for this distribution"
+            else
+                fix "no container runtime found in WSL2" "install Docker Desktop and enable WSL Integration, or install Docker manually inside WSL2"
+            fi
         else
             # Linux/WSL2: a runtime is a system component (kernel namespaces
             # need root to wire up) — consented commands only.
@@ -574,6 +623,12 @@ else
                     fi
                 elif [ "$OS" = "Darwin" ]; then
                     fix "$CONTAINER_RUNTIME daemon not running" "start Docker Desktop (or rerun with --install for the no-admin Colima stack)"
+                elif [ "$IS_WSL" = 1 ] && [ "${IEI_WSL_LAUNCHER:-0}" = 1 ]; then
+                    if [ "${IEI_WSL_DOCKER_DESKTOP:-0}" = 1 ]; then
+                        fix "Docker Desktop is not reachable inside this WSL2 distribution" "start Docker Desktop and enable Settings > Resources > WSL Integration for this distribution"
+                    else
+                        fix "$CONTAINER_RUNTIME is installed but not running in WSL2" "start it manually, or install Docker Desktop and enable WSL Integration"
+                    fi
                 else
                     fix "$CONTAINER_RUNTIME daemon not running" "sudo systemctl enable --now docker   # then log out/in if you were just added to the docker group"
                 fi

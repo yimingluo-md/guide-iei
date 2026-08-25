@@ -10,16 +10,17 @@ nav_order: 1
 
 ## The setup check
 
-The standalone Mac app runs the setup check automatically. For source
-checkouts, run it yourself: it checks everything below, prints an exact fix
-for anything missing, and `--install` fixes the user-space items without
-admin rights or Homebrew:
+The standalone Mac app and Windows launcher run the setup check automatically.
+For source checkouts, run it yourself: it checks everything below, prints an
+exact fix for anything missing, and `--install` installs supported missing
+prerequisites. A Mac needs no administrator rights or Homebrew; Ubuntu/WSL2
+may request the Linux user's sudo password for system packages:
 
 ```bash
 # report what is present / missing (changes nothing)
 bash scripts/setup_environment.sh
 
-# fix what can be fixed without admin rights
+# install supported missing prerequisites
 bash scripts/setup_environment.sh --install
 ```
 
@@ -33,7 +34,9 @@ What it needs to find (or install):
   - *Linux / WSL2:* a container runtime is a system component, so the script
     prints the exact install commands and runs them only after an explicit
     yes (existing docker/podman/singularity installs are always preferred —
-    Docker Desktop is **not** required on WSL2).
+    Docker Desktop is **not** required on WSL2). The Windows double-click
+    launcher does not automatically install a second native Docker engine;
+    it points Docker Desktop users to WSL integration instead.
 - **Python 3.9+** with **PyYAML** (`requirements.txt`; `--install` handles it)
   — for the config parser and local service. On a clean Mac, `--install`
   downloads a pinned, checksum-verified, relocatable native CPython build into
@@ -77,12 +80,18 @@ scripts need a real Unix shell + coreutils, and the VEP image is Linux-only.
 The supported route is **WSL2** (Windows Subsystem for Linux 2), which is a real
 Linux kernel:
 
-1. Install WSL2 with a Linux distro (e.g. Ubuntu): `wsl --install` in an
-   elevated PowerShell, then reboot (~1–2 GB download).
-2. Install **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
-   and enable its **WSL2 backend** (Settings → Resources → WSL integration).
-3. Open the WSL2 (Ubuntu) shell and clone + run the pipeline there exactly as a
-   Linux user would.
+For the graphical route, fully extract the repository ZIP and double-click
+`desktop\windows\GUIDE-IEI.bat`. It validates a real WSL2 distribution with
+Bash, offers or explains `wsl --install -d Ubuntu` when missing, copies a clean
+snapshot to `~/guide-iei`, installs missing Ubuntu prerequisites, and opens the
+Windows browser. Errors remain visible and are logged under
+`%LOCALAPPDATA%\GUIDE-IEI\logs`.
+
+Install **[Docker Desktop](https://www.docker.com/products/docker-desktop/)**
+and enable its **WSL2 backend** (Settings → Resources → WSL integration) before
+running VEP annotation. Docker is not needed merely to import and review an
+already annotated VCF. Terminal users may instead install WSL2/Ubuntu and a
+container runtime themselves, then run the Linux commands above inside Ubuntu.
 
 > **Performance caveat.** Keep the clone **and** the large reference files on
 > the **WSL2 filesystem** (`~/...` inside the distro), *not* on a Windows drive
