@@ -8,10 +8,11 @@
 #   1. Detect existing tools first (PATH plus known locations). Anything already
 #      present and version-adequate is used as-is; nothing is downloaded.
 #   2. --install places missing user-space tools in a managed directory
-#      (~/.iei-variant-review/tools by default): Node.js from the official
-#      nodejs.org tarball, and on macOS a container stack (Lima + Colima +
-#      Docker CLI) that needs no admin rights, no Homebrew, and no Docker
-#      Desktop. Every download is version-pinned and SHA-256-verified.
+#      (~/.iei-variant-review/tools by default): a relocatable CPython build,
+#      Node.js from nodejs.org, and on macOS a container stack (Lima + Colima
+#      + Docker CLI). No admin rights, Homebrew, Docker Desktop, or Xcode
+#      Command Line Tools are required. Every direct download is version-
+#      pinned and SHA-256-verified.
 #   3. On Linux/WSL2 a container runtime is a system component (kernel
 #      namespaces need root to wire up); the script prints the exact commands
 #      and runs them only after an explicit yes. Existing docker/podman/
@@ -32,6 +33,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 
 # ---------------------------------------------------------------- pinned tools
+PYTHON_VERSION="3.13.15"
+PYTHON_BUILD_TAG="20260807"
+PYTHON_SHA_DARWIN_ARM64="dbadb0ffe46f8bace50daaf8a0c5fc6903c003690776da9eb5269e33c856bb53"
+PYTHON_SHA_DARWIN_X64="187eed2282e9c3a5b6b14953d564ee25a9f35cf2c209c9fa292186ee48b0e4a1"
+
 NODE_VERSION="22.23.2"
 NODE_SHA_DARWIN_ARM64="61130f394c1630d211dd50aecc4353d379480f36d3ac913cd85dbba1aed585c6"
 NODE_SHA_DARWIN_X64="58e99022c2ff89395576cc7fd4d98cea24bb68081475d5f88b801ee8729fb026"
@@ -154,14 +160,14 @@ fi
 
 # ---------------------------------------------------------------- core tools
 missing_core=""
-for tool in git tar gzip awk sed sort; do
+for tool in tar gzip awk sed sort; do
     command -v "$tool" >/dev/null 2>&1 || missing_core="$missing_core $tool"
 done
 if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then :; else
     missing_core="$missing_core curl-or-wget"
 fi
 if [ -z "$missing_core" ]; then
-    ok "core tools (git, tar, curl/wget, awk, sed, sort, gzip)"
+    ok "core tools (tar, curl/wget, awk, sed, sort, gzip)"
 else
     if [ "$OS" = "Darwin" ]; then
         fix "missing core tools:$missing_core" "xcode-select --install"
@@ -170,47 +176,131 @@ else
     fi
 fi
 
+# Git is needed only for developer source checkouts and terminal updates. The
+# standalone app and its in-app updater do not require it. /usr/bin/git is an
+# unusable Xcode-installation stub on a factory-fresh Mac, so test it instead
+# of treating command discovery as success.
+GIT_OK=0
+if [ "$OS" = "Darwin" ] && ! xcode-select -p >/dev/null 2>&1; then
+    note "git is unavailable without Xcode Command Line Tools (not required by the standalone app)"
+elif command -v git >/dev/null 2>&1 && git --version >/dev/null 2>&1; then
+    GIT_OK=1
+    ok "git available (optional for the standalone app)"
+else
+    note "git not found (not required by the standalone app)"
+fi
+
 # ---------------------------------------------------------------- python + pyyaml
 PYTHON_OK=0
 PYYAML_OK=0
-if command -v python3 >/dev/null 2>&1; then
-    if python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; then
-        ok "python3 $(python3 -c 'import platform; print(platform.python_version())') (>= 3.9)"
-        PYTHON_OK=1
-        # An x86_64 Python on Apple Silicon runs under Rosetta emulation:
-        # measured 3-6x slower on this pipeline's per-record work (hashing,
-        # whole-genome review filtering). Everything works — just slower.
-        if [ "$OS" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
-            PY_ARCH="$(python3 -c 'import platform; print(platform.machine())' 2>/dev/null)"
-            if [ "$PY_ARCH" = "x86_64" ]; then
-                warn "python3 is an Intel build running under Rosetta on this Apple Silicon Mac — whole-genome filtering and hashing run 3-6x slower. A native arm64 Python (e.g. a fresh conda arm64 environment, or /usr/bin/python3 with PyYAML) removes the penalty."
-            fi
+python_version_ok() {
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+        >/dev/null 2>&1
+}
+
+resolve_python() {
+    local candidate
+    if [ -n "${IEI_PYTHON_BIN:-}" ] && [ -x "$IEI_PYTHON_BIN" ] \
+       && python_version_ok "$IEI_PYTHON_BIN"; then
+        echo "$IEI_PYTHON_BIN"; return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        candidate="$(command -v python3)"
+        if python_version_ok "$candidate"; then
+            echo "$candidate"; return 0
         fi
-    else
-        fix "python3 is older than 3.9" "install a current Python 3"
+    fi
+    for candidate in \
+        "$TOOLS_DIR/bin/python3" \
+        "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+    do
+        if [ -x "$candidate" ] && python_version_ok "$candidate"; then
+            echo "$candidate"; return 0
+        fi
+    done
+    return 1
+}
+
+install_python_macos() {
+    local target_triple sha archive url target temporary
+    case "$ARCH" in
+        arm64)  target_triple="aarch64-apple-darwin"; sha="$PYTHON_SHA_DARWIN_ARM64" ;;
+        x86_64) target_triple="x86_64-apple-darwin";  sha="$PYTHON_SHA_DARWIN_X64" ;;
+        *) fix "no pinned Python build for macOS/$ARCH" "install Python >= 3.9"; return 1 ;;
+    esac
+    archive="$TOOLS_DIR/downloads/cpython-${PYTHON_VERSION}+${PYTHON_BUILD_TAG}-${target_triple}-install_only_stripped.tar.gz"
+    url="https://github.com/astral-sh/python-build-standalone/releases/download/${PYTHON_BUILD_TAG}/$(basename "$archive" | sed 's/+/%2B/')"
+    download_verified "$url" "$archive" "$sha" || {
+        fix "managed Python download failed" "$url"
+        return 1
+    }
+    target="$TOOLS_DIR/python-${PYTHON_VERSION}-${target_triple}"
+    temporary="$TOOLS_DIR/.python-install-${PYTHON_VERSION}-${target_triple}"
+    rm -rf "$temporary"
+    mkdir -p "$temporary"
+    tar -xzf "$archive" -C "$temporary" || {
+        rm -rf "$temporary"
+        fix "managed Python extraction failed" "remove $archive and rerun"
+        return 1
+    }
+    [ -x "$temporary/python/bin/python3" ] || {
+        rm -rf "$temporary"
+        fix "managed Python archive has an unexpected layout" "remove $archive and rerun"
+        return 1
+    }
+    rm -rf "$target"
+    mv "$temporary/python" "$target"
+    rmdir "$temporary" 2>/dev/null || true
+    mkdir -p "$TOOLS_DIR/bin"
+    ln -sfn "$target/bin/python3" "$TOOLS_DIR/bin/python3"
+    [ -x "$target/bin/pip3" ] && ln -sfn "$target/bin/pip3" "$TOOLS_DIR/bin/pip3"
+    return 0
+}
+
+PYTHON_BIN=""
+if PYTHON_BIN="$(resolve_python)"; then
+    PYTHON_OK=1
+elif [ "$MODE" = "install" ] && [ "$OS" = "Darwin" ]; then
+    echo "  installing Python ${PYTHON_VERSION} into $TOOLS_DIR (relocatable, no Xcode or admin rights) ..."
+    if install_python_macos && PYTHON_BIN="$(resolve_python)"; then
+        PYTHON_OK=1
+    fi
+fi
+
+if [ "$PYTHON_OK" = 1 ]; then
+    ok "python3 $("$PYTHON_BIN" -c 'import platform; print(platform.python_version())') at $PYTHON_BIN (>= 3.9)"
+    if [ "$OS" = "Darwin" ] && [ "$(uname -m)" = "arm64" ]; then
+        PY_ARCH="$("$PYTHON_BIN" -c 'import platform; print(platform.machine())' 2>/dev/null)"
+        if [ "$PY_ARCH" = "x86_64" ]; then
+            wrn "python3 is an Intel build running under Rosetta on this Apple Silicon Mac — use the managed native Python by rerunning with --install"
+        fi
     fi
 else
     if [ "$OS" = "Darwin" ]; then
-        fix "python3 not found" "xcode-select --install  (Apple's command line tools include python3)"
+        fix "usable Python >= 3.9 not found" "rerun with --install (managed native Python; no Xcode or admin rights)"
     else
-        fix "python3 not found" "sudo apt-get install -y python3 python3-pip  (or your distro's equivalent)"
+        fix "usable Python >= 3.9 not found" "sudo apt-get install -y python3 python3-pip  (or your distro's equivalent)"
     fi
 fi
 if [ "$PYTHON_OK" = 1 ]; then
-    if python3 -c 'import yaml' 2>/dev/null; then
+    if "$PYTHON_BIN" -c 'import yaml' 2>/dev/null; then
         ok "PyYAML importable (config parser dependency)"
         PYYAML_OK=1
     elif [ "$MODE" = "install" ]; then
-        echo "  installing PyYAML into the user site-packages ..."
-        if python3 -m pip install --user pyyaml >/dev/null 2>&1 \
-           || python3 -m pip install --user --break-system-packages pyyaml >/dev/null 2>&1; then
-            ok "PyYAML installed (pip --user)"
+        echo "  installing PyYAML for $PYTHON_BIN ..."
+        if case "$PYTHON_BIN" in
+               "$TOOLS_DIR"/*) "$PYTHON_BIN" -m pip install --disable-pip-version-check -r "$ROOT/requirements.txt" >/dev/null 2>&1 ;;
+               *) "$PYTHON_BIN" -m pip install --user -r "$ROOT/requirements.txt" >/dev/null 2>&1 \
+                  || "$PYTHON_BIN" -m pip install --user --break-system-packages -r "$ROOT/requirements.txt" >/dev/null 2>&1 ;;
+           esac
+        then
+            ok "PyYAML installed"
             PYYAML_OK=1
         else
-            fix "PyYAML install failed" "python3 -m pip install --user pyyaml"
+            fix "PyYAML install failed" "$PYTHON_BIN -m pip install pyyaml"
         fi
     else
-        fix "PyYAML not importable" "python3 -m pip install --user pyyaml  (or rerun with --install)"
+        fix "PyYAML not importable" "rerun with --install"
     fi
 fi
 
@@ -295,14 +385,14 @@ fi
 if [ -d "$ROOT/webui/node_modules" ]; then
     ok "webui/node_modules present"
 elif [ "$MODE" = "install" ] && [ -n "$NPM_BIN" ]; then
-    echo "  installing webui dependencies (npm install) ..."
-    if (cd "$ROOT/webui" && PATH="$(dirname "$NODE_BIN"):$PATH" "$NPM_BIN" install --no-fund --no-audit >/dev/null 2>&1); then
+    echo "  installing webui dependencies (npm ci) ..."
+    if (cd "$ROOT/webui" && PATH="$(dirname "$NODE_BIN"):$PATH" "$NPM_BIN" ci --no-fund --no-audit >/dev/null 2>&1); then
         ok "webui dependencies installed"
     else
-        fix "npm install failed in webui/" "cd webui && npm install  (rerun to see the error output)"
+        fix "npm ci failed in webui/" "cd webui && npm ci  (rerun to see the error output)"
     fi
 else
-    fix "webui dependencies not installed" "rerun with --install, or: cd webui && npm install"
+    fix "webui dependencies not installed" "rerun with --install, or: cd webui && npm ci"
 fi
 
 # ------------------------------------------------- native htslib tools (optional)
@@ -353,7 +443,7 @@ fi
 # ---------------------------------------------------------------- container runtime
 read_config_scalar() { # best-effort: needs python3 + pyyaml, else prints nothing
     [ "$PYYAML_OK" = 1 ] || return 0
-    python3 - "$ROOT/config/annotation.config.yaml" "$1" <<'PYEOF' 2>/dev/null
+    "$PYTHON_BIN" - "$ROOT/config/annotation.config.yaml" "$1" <<'PYEOF' 2>/dev/null
 import sys, yaml
 try:
     with open(sys.argv[1]) as handle:
@@ -511,7 +601,7 @@ else
             wrn "container engine has < 8 GiB RAM; large tabix references (dbNSFP, SpliceAI) need memory — resize the VM (colima: --memory 8+; Docker Desktop: Settings -> Resources)"
         fi
         if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ] && echo "$engine_arch" | grep -qi "aarch64\|arm64"; then
-            note "Apple Silicon: the amd64 VEP image runs via emulation (works, but slower); Colima enables Rosetta automatically on macOS 13+"
+            note "Apple Silicon: the amd64 VEP image runs through Colima's default binfmt emulation (works, but slower); advanced users may enable Rosetta with 'colima stop && colima start --vm-type vz --vz-rosetta'"
         fi
 
         # ---- image + reference mount reachability
@@ -548,7 +638,7 @@ fi
 
 # ---------------------------------------------------------------- smoke test
 if [ "$PYYAML_OK" = 1 ]; then
-    if (cd "$ROOT" && bash test/test_dry_run.sh >/dev/null 2>&1); then
+    if (cd "$ROOT" && PATH="$(dirname "$PYTHON_BIN"):$PATH" bash test/test_dry_run.sh >/dev/null 2>&1); then
         ok "pipeline smoke test passed (test/test_dry_run.sh — no container or references needed)"
     else
         fix "pipeline smoke test failed" "bash test/test_dry_run.sh   (rerun to see the failure)"

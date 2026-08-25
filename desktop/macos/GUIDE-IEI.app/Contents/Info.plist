@@ -5,12 +5,20 @@
     <key>CFBundleName</key><string>GUIDE-IEI</string>
     <key>CFBundleDisplayName</key><string>GUIDE-IEI</string>
     <key>CFBundleIdentifier</key><string>org.guide-iei.workbench</string>
-    <key>CFBundleVersion</key><string>1.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key><string>0.6.1</string>
+    <key>CFBundleShortVersionString</key><string>0.6.1</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleExecutable</key><string>GUIDE-IEI</string>
     <key>CFBundleIconFile</key><string>GUIDE-IEI</string>
-    <key>LSMinimumSystemVersion</key><string>11.0</string>
+    <key>LSMinimumSystemVersion</key><string>13.0</string>
+    <!-- Script-only development copies otherwise default to Rosetta on Apple
+         silicon. Release builds replace the script with a universal native
+         shim, but keep this declaration for source/ZIP checkouts. -->
+    <key>LSArchitecturePriority</key>
+    <array>
+        <string>arm64</string>
+        <string>x86_64</string>
+    </array>
     <key>NSHighResolutionCapable</key><true/>
 </dict>
 </plist>

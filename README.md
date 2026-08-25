@@ -98,22 +98,30 @@ laboratory framework in the user's jurisdiction.
 
 ## Quickstart
 
-**One-click:** download the repository ([Code → Download ZIP](https://github.com/yimingluo-md/guide-iei/archive/refs/heads/main.zip)),
-unzip, and double-click `desktop/macos/GUIDE-IEI.app` (Mac) or
-`desktop/windows/GUIDE-IEI.bat` (Windows, after installing Docker
-Desktop). The first launch prepares the environment and opens the
-workbench in the browser; the [installation chapter](docs/guide/02-install.md)
-walks through it.
+**Mac one-click:** open the [latest release](https://github.com/yimingluo-md/guide-iei/releases/latest),
+download `GUIDE-IEI-macOS-<version>.zip`, unzip it, move
+`GUIDE-IEI.app` to Applications if desired (a standard account can use its
+own `~/Applications` folder), and double-click it. This standalone app works
+on macOS 13 or newer on Intel and Apple-silicon Macs and installs its writable
+application files and verified user-space runtimes on first launch; no Python, Node,
+Docker Desktop, Homebrew, Git, Xcode, or bioinformatics software needs to be
+installed first.
 
-> **Mac, first open:** macOS blocks downloaded apps it cannot verify —
+**Windows one-click:** download the repository ZIP, unzip it, and double-click
+`desktop/windows/GUIDE-IEI.bat` after installing WSL2 and Docker Desktop. The
+[installation chapter](docs/guide/02-install.md) walks through both platforms.
+
+> **Mac, first open:** the current release is unsigned, so macOS blocks it —
 > a dialog says *"GUIDE-IEI" Not Opened* with only **Move to Trash** and
 > **Done**. Click **Done** (not Move to Trash), open **System Settings →
 > Privacy & Security**, scroll to the Security section where it says
-> *"GUIDE-IEI" was blocked*, click **Open Anyway**, then double-click
-> the app once more and confirm. One time only.
+> *"GUIDE-IEI" was blocked*, click **Open Anyway**, authenticate, and confirm
+> **Open**. This is required once for each newly downloaded unsigned release.
 
-**Terminal:** three commands; nothing is installed outside one managed
-folder, and no administrator rights are required on macOS:
+**Developer/terminal route:** three commands; nothing is installed outside
+managed user folders, and no administrator rights are required on macOS
+(a factory-fresh Mac should use the graphical release because `git clone`
+itself requires Git):
 
 ```bash
 git clone https://github.com/yimingluo-md/guide-iei.git && cd guide-iei
@@ -132,7 +140,7 @@ walkthrough, including the command-line route, is in the
 | Platform | Status | Notes |
 |----------|--------|-------|
 | **Linux** | ✅ native | Primary target. |
-| **macOS** (Intel or Apple Silicon) | ✅ native | Container via Docker Desktop, Podman, or the bundled no-admin Colima setup. |
+| **macOS 13+** (Intel or Apple Silicon) | ✅ native | Container via Docker Desktop, Podman, or the bundled no-admin Colima setup. |
 | **Windows** | ✅ via **WSL2** | Not supported from native Windows shells. [Setup guide](docs/INSTALLATION.md#windows-use-wsl2). |
 
 ## Documentation

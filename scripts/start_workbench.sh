@@ -69,6 +69,44 @@ if [[ ! "$SERVICE_START_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
     exit 2
 fi
 
+# A factory-fresh Mac exposes /usr/bin/python3 as an Xcode installation stub,
+# not a usable interpreter. Prefer any real host Python, then the managed
+# native runtime installed by setup_environment.sh.
+PYTHON_BIN="${IEI_PYTHON_BIN:-}"
+python_is_usable() {
+    "$1" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+        >/dev/null 2>&1
+}
+if [[ -n "$PYTHON_BIN" ]] && ! python_is_usable "$PYTHON_BIN"; then
+    PYTHON_BIN=""
+fi
+if [[ -z "$PYTHON_BIN" ]] && command -v python3 >/dev/null 2>&1 \
+   && python_is_usable "$(command -v python3)"; then
+    PYTHON_BIN="$(command -v python3)"
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+    for candidate in \
+        "${IEI_TOOLS_DIR:-$HOME/.iei-variant-review/tools}/bin/python3" \
+        "${HOME}/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+    do
+        if [[ -x "$candidate" ]] && python_is_usable "$candidate"; then
+            PYTHON_BIN="$candidate"
+            break
+        fi
+    done
+fi
+if [[ -z "$PYTHON_BIN" ]]; then
+    cat >&2 <<'MESSAGE'
+ERROR: A usable Python 3 runtime was not found.
+
+The setup script installs a native runtime without Xcode or admin rights:
+  bash scripts/setup_environment.sh --install
+MESSAGE
+    exit 127
+fi
+PYTHON_DIR="$(dirname "$PYTHON_BIN")"
+export PATH="${PYTHON_DIR}:${PATH}"
+
 # npm is not always on PATH in macOS GUI/managed shells. Find a compatible
 # Node runtime first; the Codex desktop runtime is a useful last-resort fallback
 # when this project is being developed from Codex.
@@ -119,7 +157,7 @@ cd "$ROOT"
     rapid_failures=0
     while :; do
         launched_at=$SECONDS
-        python3 -m local_service.workbench_service --port "$SERVICE_PORT" &
+        "$PYTHON_BIN" -m local_service.workbench_service --port "$SERVICE_PORT" &
         child=$!
         # Under set -e a nonzero `wait` would abort this subshell before the
         # status is ever inspected — killing both crash-restart and the
@@ -166,7 +204,7 @@ while (( SECONDS < SERVICE_START_DEADLINE )); do
         echo "Set a different port with IEI_SERVICE_PORT if that port is already in use." >&2
         exit 1
     fi
-    if python3 -c 'import json,sys,urllib.request; data=json.load(urllib.request.urlopen("http://127.0.0.1:"+sys.argv[1]+"/api/health", timeout=.5)); raise SystemExit(0 if data.get("ok") else 1)' "$SERVICE_PORT" 2>/dev/null; then
+    if "$PYTHON_BIN" -c 'import json,sys,urllib.request; data=json.load(urllib.request.urlopen("http://127.0.0.1:"+sys.argv[1]+"/api/health", timeout=.5)); raise SystemExit(0 if data.get("ok") else 1)' "$SERVICE_PORT" 2>/dev/null; then
         SERVICE_READY=1
         break
     fi
@@ -192,22 +230,35 @@ MESSAGE
     exit 127
 fi
 if [[ ! -d "${ROOT}/webui/node_modules" ]]; then
-    echo "webui dependencies are not installed yet; running npm install (one-time)..."
-    npm install --no-fund --no-audit || {
-        echo "ERROR: npm install failed. Run 'bash scripts/setup_environment.sh' for diagnostics." >&2
+    echo "webui dependencies are not installed yet; running npm ci (one-time)..."
+    npm ci --no-fund --no-audit || {
+        echo "ERROR: npm ci failed. Run 'bash scripts/setup_environment.sh' for diagnostics." >&2
         exit 1
     }
 fi
+WEB_BUILD_REQUIRED=0
 if [[ -f "${ROOT}/webui/.dependencies-updated" ]]; then
     # A software update changed the web UI dependency manifest; the
     # installed node_modules would otherwise run silently stale.
-    echo "a software update changed the web UI dependencies; running npm install..."
-    if npm install --no-fund --no-audit; then
+    echo "a software update changed the web UI dependencies; running npm ci..."
+    if npm ci --no-fund --no-audit; then
         rm -f "${ROOT}/webui/.dependencies-updated"
+        WEB_BUILD_REQUIRED=1
     else
-        echo "ERROR: npm install failed after the software update. Run 'bash scripts/setup_environment.sh' for diagnostics." >&2
+        echo "ERROR: npm ci failed after the software update. Run 'bash scripts/setup_environment.sh' for diagnostics." >&2
         exit 1
     fi
+fi
+if [[ ! -f "${ROOT}/webui/.next/BUILD_ID" || -f "${ROOT}/webui/.build-required" ]]; then
+    WEB_BUILD_REQUIRED=1
+fi
+if [[ "${IEI_WEB_MODE:-production}" != "dev" && "$WEB_BUILD_REQUIRED" == "1" ]]; then
+    echo "building the production workbench interface (one-time after install/update)..."
+    npm run build || {
+        echo "ERROR: the web UI production build failed." >&2
+        exit 1
+    }
+    rm -f "${ROOT}/webui/.build-required"
 fi
 # Open the browser once the UI answers; the poller waits in the background
 # while Next.js occupies the foreground below.
@@ -223,9 +274,11 @@ if [[ "$BOOTSTRAP" == "1" ]]; then
     ) &
 fi
 
-if command -v npm >/dev/null 2>&1; then
+if [[ "${IEI_WEB_MODE:-production}" == "dev" ]]; then
     npm run dev -- -p "$UI_PORT"
+elif command -v npm >/dev/null 2>&1; then
+    npm run start -- -p "$UI_PORT"
 else
-    echo "npm is not on PATH; starting Next.js with ${NODE_BIN}."
-    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" dev --hostname 127.0.0.1 -p "$UI_PORT"
+    echo "npm is not on PATH; starting the production interface with ${NODE_BIN}."
+    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" start --hostname 127.0.0.1 -p "$UI_PORT"
 fi

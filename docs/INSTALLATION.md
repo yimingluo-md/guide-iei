@@ -10,9 +10,10 @@ nav_order: 1
 
 ## The setup check
 
-Run the setup check after cloning — it checks everything below, prints
-an exact fix for anything missing, and `--install` fixes the user-space items
-itself (no admin rights, no Homebrew, nothing outside one managed folder):
+The standalone Mac app runs the setup check automatically. For source
+checkouts, run it yourself: it checks everything below, prints an exact fix
+for anything missing, and `--install` fixes the user-space items without
+admin rights or Homebrew:
 
 ```bash
 # report what is present / missing (changes nothing)
@@ -33,8 +34,10 @@ What it needs to find (or install):
     prints the exact install commands and runs them only after an explicit
     yes (existing docker/podman/singularity installs are always preferred —
     Docker Desktop is **not** required on WSL2).
-- **Python 3.8+** with **PyYAML** (`requirements.txt`; `--install` handles it)
-  — for the config parser.
+- **Python 3.9+** with **PyYAML** (`requirements.txt`; `--install` handles it)
+  — for the config parser and local service. On a clean Mac, `--install`
+  downloads a pinned, checksum-verified, relocatable native CPython build into
+  the managed tools folder; Xcode Command Line Tools are not required.
 - **Node.js 22.13+** with npm — for the local review UI. `--install` places
   the official nodejs.org build in the managed tools folder when no suitable
   Node is found; `scripts/start_workbench.sh` finds it there automatically.
@@ -43,8 +46,9 @@ What it needs to find (or install):
   [Annotation dataset setup](DATASET_SETUP.md)); SpliceAI (if enabled) adds
   tens of GB more.
 
-No VEP, LOFTEE, bgtools, or Perl installation on the host — everything runs in
-the container. The setup script never edits your shell profile; remove
+No Git, Xcode, system Python, VEP, LOFTEE, bgtools, or Perl installation is
+needed by the standalone Mac app — annotation software runs in the container.
+The setup script never edits your shell profile; remove
 `~/.iei-variant-review/tools/` to uninstall everything it added.
 
 Optional but recommended: **native `bcftools`/`tabix`/`bgzip`** on the host.
@@ -58,7 +62,7 @@ in-container BCFtools/liftover used for GRCh37 intake is unaffected.
 | Platform | Status | Notes |
 |----------|--------|-------|
 | **Linux** | ✅ native | Primary target. Run directly. |
-| **macOS** (Intel or Apple Silicon) | ✅ native | Scripts are Bash-3.2-compatible (macOS ships Bash 3.2); run the Linux container with Docker Desktop, Podman, or Colima. |
+| **macOS 13+** (Intel or Apple Silicon) | ✅ native | Scripts are Bash-3.2-compatible (macOS ships Bash 3.2); run the Linux container with Docker Desktop, Podman, or Colima. The bundled Colima release requires macOS 13 or newer. |
 | **Windows** | ✅ via **WSL2** only | Not supported from native Windows shells or Git Bash. See below. |
 
 The runner is a set of **Bash** scripts that call standard Unix tools

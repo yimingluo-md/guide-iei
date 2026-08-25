@@ -54,6 +54,7 @@ test/out/
 # Software updates (in-app updater and release build artifacts)
 .wsl-origin
 webui/.dependencies-updated
+webui/.build-required
 config/annotation.config.yaml.new
 release-manifest.txt
 dist/

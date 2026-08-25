@@ -3,6 +3,43 @@
 Each entry describes what changed for the people using GUIDE-IEI. The
 version here, in the `VERSION` file, and in the release tag always agree.
 
+## 0.6.1 — 2026-08-25
+
+The Mac release now starts reliably on a factory-fresh Intel or Apple-silicon
+Mac running macOS 13 or newer after the documented one-time manual approval
+in Privacy & Security.
+
+**Mac installation and launch**
+
+- The downloadable app is now a self-contained standalone release rather than
+  a shortcut that depends on finding the source repository beside it. Its
+  checksum-verified application payload is installed in the user's Application
+  Support folder, so macOS App Translocation cannot break its paths.
+- A tiny native universal launcher contains both arm64 and x86_64 code. Release
+  builds receive a free ad-hoc signature and bundle seal; no paid Apple
+  Developer membership or signing secret is required to build or publish them.
+- A clean Mac receives pinned, checksum-verified native Python and Node.js
+  runtimes in the user's own tools folder. System Python, Xcode Command Line
+  Tools, Git, Homebrew, Docker Desktop, and administrator rights are not
+  prerequisites.
+- The interface runs as an optimized production build. Software updates mark
+  it for a one-time rebuild whenever web source files change.
+- First-launch errors now appear in a visible macOS alert instead of causing a
+  silent exit.
+
+**Release engineering**
+
+- Tagged releases are built on macOS and publish both the source/update archive
+  and the standalone Mac application. CI verifies the universal executable,
+  ad-hoc bundle seal, payload install, architecture metadata, and translocated
+  launch behavior.
+
+**Known limitation**
+
+- Until the project adopts Apple Developer ID signing and notarization, macOS
+  requires **System Settings → Privacy & Security → Open Anyway** once for each
+  newly downloaded release. Organization-managed Macs may disable that option.
+
 ## 0.6.0 — 2026-08-23
 
 The first release installable through the built-in updater.

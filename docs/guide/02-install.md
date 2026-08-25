@@ -6,10 +6,10 @@ nav_order: 2
 
 # Install it on your computer
 
-GUIDE-IEI is launched from the downloaded project folder. On first use, it
-prepares a local working environment and verifies that the annotation and
-review components can communicate correctly. Later launches open the
-workbench directly.
+On a Mac, GUIDE-IEI is distributed as a standalone application. On first use,
+it installs its writable application payload and prepares a local working
+environment, then verifies that the annotation and review components can
+communicate correctly. Later launches open the workbench directly.
 
 Most Mac and Windows users can follow the graphical instructions below.
 Linux users and users comfortable with a terminal can use the command-line
@@ -17,53 +17,57 @@ route in the appendix.
 
 ## Requirements
 
-- A reasonably modern computer: **Mac** (Intel or Apple Silicon), **Windows
-  10/11** (via WSL2, which the launcher arranges), or **Linux**.
+- A reasonably modern computer: **Mac running macOS 13 or newer** (Intel or
+  Apple Silicon), **Windows 10/11** (via WSL2, which the launcher arranges),
+  or **Linux**.
 - **Disk space**: approximately 110 GB for the exome reference datasets and
   more for whole-genome work ([the next chapter](03-datasets.md) provides
   the planning table). Datasets may reside on an external SSD when the
   internal drive is small.
 - **No administrator rights are required on a Mac**, and nothing is
-  installed system-wide: everything the first launch adds is contained in
-  one managed folder (`~/.iei-variant-review/tools/`), and removing that
-  folder uninstalls it completely. On Windows, two one-time steps are
-  required — a Linux distribution for WSL2 (one PowerShell line) and the
-  Docker Desktop installer — both described below.
+  installed system-wide: application files go under
+  `~/Library/Application Support/GUIDE-IEI/`, while runtimes and workbench
+  state live under `~/.iei-variant-review/`. On Windows, two one-time steps
+  are required — a Linux distribution for WSL2 (one PowerShell line) and
+  the Docker Desktop installer — both described below.
 
 ## Get the software
 
-On the [GUIDE-IEI GitHub page](https://github.com/yimingluo-md/guide-iei),
+**Mac:** open the [latest GUIDE-IEI release](https://github.com/yimingluo-md/guide-iei/releases/latest)
+and download `GUIDE-IEI-macOS-<version>.zip`. Unzip it and drag
+`GUIDE-IEI.app` to Applications if desired. A standard account can instead
+put it in its own `~/Applications` folder or open it from the unzipped folder;
+do this before the first-open approval below.
+
+**Windows:** on the [GUIDE-IEI GitHub page](https://github.com/yimingluo-md/guide-iei),
 use the green **Code** button → **Download ZIP**, then unzip and place the
-`guide-iei` folder somewhere ordinary — the home folder or Documents.
-Avoid cloud-synced locations (OneDrive, Dropbox, iCloud Drive): sync
-services interfere with the workbench's working files.
+`guide-iei` folder somewhere ordinary. Avoid cloud-synced locations
+(OneDrive, Dropbox, iCloud Drive): sync services interfere with working files.
 
 ## Mac: double-click GUIDE-IEI
 
-Inside the folder, open `desktop` → `macos` and double-click
-**GUIDE-IEI.app** (drag it to the Dock if you like — it stays connected to
-the folder it came from).
+Double-click **GUIDE-IEI.app** wherever you placed it.
 
 - **The first time only**, macOS refuses the app with *"GUIDE-IEI" Not
   Opened — Apple could not verify…*, offering only **Move to Trash** and
-  **Done**. This is the standard treatment of any downloaded app outside
-  the App Store, and the resolution is one time only:
+  **Done**. This is macOS's expected treatment of this unsigned and
+  unnotarized release, and the resolution is one time only:
   1. Click **Done** (not Move to Trash).
   2. Open **System Settings → Privacy & Security** and scroll down to
      the **Security** section, which now says *"GUIDE-IEI" was blocked to
      protect your Mac*.
-  3. Click **Open Anyway** (your login password or Touch ID confirms
-     it), then double-click the app again and confirm **Open Anyway**
-     once more.
+  3. Click **Open Anyway**, authenticate with your login password or Touch ID,
+     and confirm **Open** in the final warning.
 
-  On older macOS versions, right-clicking the app and choosing **Open**
-  achieves the same in one step.
+  This approval is required once for each newly downloaded unsigned release.
+  The **Open Anyway** button is available for about an hour after the blocked
+  launch attempt.
 - **The first launch prepares the environment**: a Terminal window opens
-  and reports progress while Python is checked, Node.js and the interface
-  dependencies are installed into the managed folder, and a smoke test
-  verifies the wiring — no administrator password, nothing outside the
-  managed folder. This usually takes a few minutes and is required only on
-  first launch or after certain updates.
+  and reports progress while native Python, Node.js, interface dependencies,
+  and the container runtime are installed into managed user folders and a
+  smoke test verifies the wiring. No administrator password, Xcode, Homebrew,
+  Docker Desktop, or preinstalled bioinformatics software is required. The
+  first launch downloads several components and can take several minutes.
 - The browser then opens the workbench at **`http://127.0.0.1:3000`** — a
   local address; the workbench runs on your machine and uses the browser
   as its display.
@@ -71,10 +75,9 @@ the folder it came from).
   the local workbench service. Later launches skip the preparation and open
   in seconds.
 
-If the app itself refuses to open even after Open Anyway (a rare unzip
-quirk), double-click `GUIDE-IEI-Workbench.command` in the same folder —
-it is the same launcher in plainer clothing, and macOS may ask for the
-same one-time Open Anyway approval for it.
+If a personally or institutionally managed Mac does not offer **Open Anyway**,
+its security policy may prohibit unsigned software. An administrator must
+allow the app; there is no safe application-side bypass for that policy.
 
 ## Windows: prepare WSL2 and Docker Desktop first, then launch GUIDE-IEI
 
@@ -110,7 +113,9 @@ The preparation step is a **setup check with an installer attached**. It
 reports a green `[ OK ]` line for everything already present and corrects
 what can be corrected without administrator rights:
 
-- **Python and its single dependency** — verified, installed if absent.
+- **Python and its single dependency** — a pinned native runtime is verified
+  and installed in the managed tools folder when absent; system Python and
+  Xcode Command Line Tools are not used.
 - **Node.js** (runs the workbench interface) — when no suitable version is
   found, the official build is placed in the managed tools folder, leaving
   the system installation untouched.
@@ -132,8 +137,9 @@ Its summary looks like this:
 ```text
 == IEI pipeline environment check — macOS (arm64)
 
-[ OK ] core tools (git, tar, curl/wget, awk, sed, sort, gzip)
-[ OK ] python3 3.9.12 (>= 3.9)
+[ OK ] core tools (tar, curl/wget, awk, sed, sort, gzip)
+[NOTE] git is unavailable without Xcode Command Line Tools (not required by the standalone app)
+[ OK ] python3 3.13.15 at ~/.iei-variant-review/tools/bin/python3 (>= 3.9)
 [ OK ] PyYAML importable (config parser dependency)
 [ OK ] node v26.7.0 (>= 22.13)
 [ OK ] webui/node_modules present
@@ -195,7 +201,7 @@ When `C:` is too small, there are two good options and one fallback:
 
 | Symptom | Cause and remedy |
 |---|---|
-| macOS: *"GUIDE-IEI" Not Opened* with only Move to Trash / Done | Expected once for a downloaded app: **Done** → System Settings → Privacy & Security → Security section → **Open Anyway** → open the app again. Never needed twice. |
+| macOS: *"GUIDE-IEI" Not Opened* with only Move to Trash / Done | Expected for the unsigned release: **Done** → System Settings → Privacy & Security → Security → **Open Anyway** → authenticate → **Open**. Repeat for each newly downloaded release. |
 | The workbench page does not load | The launcher window must remain open — it *is* the application. Start it again and watch for error lines. |
 | A `[FIX]` line about the container daemon | The container runtime is installed but not running. Docker Desktop users: launch Docker Desktop; the setup check otherwise prints the exact start command. |
 | Import or annotation is unexpectedly slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
@@ -242,16 +248,18 @@ On the terminal route, updating is `git pull` in the repository folder,
 with two caveats the in-app updater handles for you: git refuses to pull
 over a hand-edited `config/annotation.config.yaml` (stash or commit your
 edits first), and when `webui/package.json` changed you must run
-`npm install` inside `webui/` before restarting `start_workbench.sh`.
+`npm ci` and `npm run build` inside `webui/` before restarting
+`start_workbench.sh`.
 The two routes do not mix — after using the in-app updater, keep using
 it (the folder no longer matches git's records).
 
 ## Uninstalling
 
-Delete the `guide-iei` folder (the launcher app lives inside it) and the
-managed folder `~/.iei-variant-review/` — noting that the latter also
-contains the sample library, so export anything worth keeping first.
-Nothing else on the system was modified.
+Delete `GUIDE-IEI.app` and
+`~/Library/Application Support/GUIDE-IEI/` to remove the installed Mac
+application. The separate `~/.iei-variant-review/` folder contains managed
+tools **and the sample library**, so export anything worth keeping before
+removing it. Nothing was installed system-wide.
 
 ## Appendix: the terminal route
 

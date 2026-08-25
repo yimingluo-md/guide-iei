@@ -50,7 +50,11 @@ PRESERVED_USER_FILES = ("config/annotation.config.yaml",)
 # Local machine state that must never arrive from a release archive: a
 # hostile archive shipping these could redirect the origin mirror or
 # force scripted work on the next launch.
-FORBIDDEN_RELEASE_PATHS = (".wsl-origin", "webui/.dependencies-updated")
+FORBIDDEN_RELEASE_PATHS = (
+    ".wsl-origin",
+    "webui/.dependencies-updated",
+    "webui/.build-required",
+)
 # Changes to these mean the next start must do extra work; the updater
 # reports them so the UI can set expectations honestly.
 DEPENDENCY_FILES = ("webui/package.json", "webui/package-lock.json")
@@ -338,6 +342,10 @@ class SoftwareUpdater:
         dependencies_changed = dependency_before != self._dependency_bytes()
         if dependencies_changed:
             (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
+        # A rollback changes application code even when package manifests are
+        # identical. The next start must not serve a stale production build.
+        if any(path.startswith("webui/") for path in [*restored, *added]):
+            (self.repo_root / "webui" / ".build-required").write_text("1\n")
         synced = self._sync_wsl_origin(
             origin, restored, [*restored, *added]
         )
@@ -479,6 +487,7 @@ class SoftwareUpdater:
         )
 
         deps_changed = False
+        web_changed = False
         container_changed = False
         config_review: list[str] = []
         # VERSION is applied LAST: a crash mid-swap must leave a tree that
@@ -489,6 +498,12 @@ class SoftwareUpdater:
             staged = staging / path
             destination = self.repo_root / path
             new_bytes = staged.read_bytes()
+            content_changed = (
+                not destination.is_file()
+                or destination.read_bytes() != new_bytes
+            )
+            if path.startswith("webui/") and content_changed:
+                web_changed = True
             if path in PRESERVED_USER_FILES and destination.is_file():
                 if destination.read_bytes() != new_bytes:
                     self._replace_file(
@@ -525,15 +540,23 @@ class SoftwareUpdater:
                 if target.is_file():
                     target.unlink()
                     removed.append(path)
+                    if path.startswith("webui/"):
+                        web_changed = True
             self._prune_empty_dirs(removed, self.repo_root)
 
         if deps_changed:
-            # The launcher runs npm install on the next full start when
+            # The launcher runs npm ci on the next full start when
             # this flag exists; the UI directs a full relaunch.
             (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
+        if web_changed:
+            # start_workbench.sh rebuilds the production Next.js output before
+            # it reopens the browser, so application updates cannot serve old
+            # JavaScript from a previous release.
+            (self.repo_root / "webui" / ".build-required").write_text("1\n")
         return {
             "config_review_needed": config_review,
             "dependencies_changed": deps_changed,
+            "web_build_required": web_changed,
             "container_changed": container_changed,
             "files_replaced": len(manifest) - len(config_review),
             "files_removed": removed,

@@ -6,9 +6,10 @@
 #   scripts/make_release.sh --publish  also create the GitHub release (gh)
 #
 # Produces, in dist/:
-#   guide-iei-<version>.zip   every git-tracked file at HEAD, plus
-#                             release-manifest.txt (the updater's file list)
-#   sha256sums.txt            checksum the updater verifies before installing
+#   guide-iei-<version>.zip          every git-tracked file at HEAD, plus
+#                                    release-manifest.txt (updater file list)
+#   GUIDE-IEI-macOS-<version>.zip    standalone unsigned Mac application
+#   sha256sums.txt                   checksums for both archives
 #   release-notes.md          this version's CHANGELOG section
 #
 # The zip is built from git's index (git archive), so nothing untracked —
@@ -35,7 +36,8 @@ grep -q "^## ${VERSION} " CHANGELOG.md \
 
 mkdir -p dist
 ZIP="dist/guide-iei-${VERSION}.zip"
-rm -f "$ZIP" dist/sha256sums.txt dist/release-notes.md release-manifest.txt
+MAC_ZIP="dist/GUIDE-IEI-macOS-${VERSION}.zip"
+rm -f "$ZIP" "$MAC_ZIP" dist/sha256sums.txt dist/release-notes.md release-manifest.txt
 
 # The manifest is the exact list of files this release owns: the updater
 # replaces these, deletes what a previous release owned that this one no
@@ -55,6 +57,13 @@ PY
 shasum -a 256 "$ZIP" | awk -v name="$(basename "$ZIP")" '{print $1 "  " name}' \
     > dist/sha256sums.txt
 
+# The standalone app embeds the same git-tracked source as a verified payload,
+# installs it into Application Support on first launch, and therefore works
+# even when Gatekeeper translocates the unsigned .app.
+bash scripts/build_macos_release.sh dist
+shasum -a 256 "$MAC_ZIP" | awk -v name="$(basename "$MAC_ZIP")" '{print $1 "  " name}' \
+    >> dist/sha256sums.txt
+
 # This version's CHANGELOG section becomes the release notes.
 awk -v version="$VERSION" '
     $0 ~ "^## " version " " { active = 1; next }
@@ -73,7 +82,7 @@ if [[ "$PUBLISH" == "1" ]]; then
     # gh release create makes the tag on the remote itself; pushing a bare
     # tag first would trigger the release workflow and the two publishers
     # would race to create the same release.
-    gh release create "$TAG" "$ZIP" dist/sha256sums.txt \
+    gh release create "$TAG" "$ZIP" "$MAC_ZIP" dist/sha256sums.txt \
         --target "$(git rev-parse HEAD)" \
         --title "GUIDE-IEI ${VERSION}" --notes-file dist/release-notes.md
     echo "release ${TAG} published (the workflow skips tags that already have a release)"

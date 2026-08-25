@@ -6,6 +6,7 @@
 *.mjs text eol=lf
 *.ts text eol=lf
 *.tsx text eol=lf
+*.c text eol=lf
 # Windows launcher files use native CRLF endings.
 *.bat text eol=crlf
 *.ps1 text eol=crlf

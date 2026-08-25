@@ -213,6 +213,16 @@ class SoftwareUpdateTests(unittest.TestCase):
         summary = self.updater(bumped).install()
         self.assertTrue(summary["dependencies_changed"])
         self.assertTrue((self.repo / "webui" / ".dependencies-updated").is_file())
+        self.assertTrue(summary["web_build_required"])
+        self.assertTrue((self.repo / "webui" / ".build-required").is_file())
+
+    def test_web_source_change_requires_a_fresh_production_build(self):
+        github = FakeGitHub("0.6.0", self.release_files(
+            **{"webui/app/page.tsx": b"export default function Page() { return null }\n"}
+        ))
+        summary = self.updater(github).install()
+        self.assertTrue(summary["web_build_required"])
+        self.assertTrue((self.repo / "webui" / ".build-required").is_file())
 
     def test_rollback_restores_the_previous_version(self):
         github = FakeGitHub("0.6.0", self.release_files())
@@ -283,9 +293,11 @@ class SoftwareUpdateTests(unittest.TestCase):
         summary = updater.install()
         self.assertTrue(summary["dependencies_changed"])
         (self.repo / "webui" / ".dependencies-updated").unlink()  # consumed
+        (self.repo / "webui" / ".build-required").unlink()  # consumed
         result = updater.rollback()
         self.assertTrue(result["dependencies_changed"])
         self.assertTrue((self.repo / "webui" / ".dependencies-updated").is_file())
+        self.assertTrue((self.repo / "webui" / ".build-required").is_file())
 
     def test_rollback_mirrors_to_the_wsl_origin(self):
         origin = Path(self.temp.name) / "windows-folder"
