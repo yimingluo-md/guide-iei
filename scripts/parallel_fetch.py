@@ -28,16 +28,31 @@ def remote_metadata(url: str) -> tuple[int, str, str]:
     # whose signature is valid for GET but not HEAD.  A one-byte ranged GET
     # follows that redirect and reports both the object size and range support
     # without downloading the file.
-    result = subprocess.run(
-        [
-            "curl", "-fsSL", "--max-time", "60", "--range", "0-0",
-            "--dump-header", "-", "--output", "/dev/null", "--config", "-",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        input=curl_url_config(url),
-    )
+    try:
+        result = subprocess.run(
+            [
+                "curl", "-fsSL", "--connect-timeout", "30",
+                "--max-time", "300", "--retry", "3", "--retry-delay", "5",
+                "--retry-all-errors", "--range", "0-0", "--dump-header", "-",
+                "--output", "/dev/null", "--config", "-",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            input=curl_url_config(url),
+        )
+    except subprocess.CalledProcessError as error:
+        if error.returncode == 28:
+            raise RuntimeError(
+                "the download server did not answer the range probe after "
+                "repeated five-minute attempts; select Retry to try again"
+            ) from None
+        raise RuntimeError(
+            f"the download server rejected the metadata probe "
+            f"(curl exit {error.returncode}); check that the link is current"
+        ) from None
+    except OSError as error:
+        raise RuntimeError(f"curl could not be started: {error}") from None
     ranges = re.findall(
         r"^content-range:\s*bytes\s+0-0/(\d+)\s*$",
         result.stdout,
@@ -236,7 +251,10 @@ def main() -> int:
     os.ftruncate(lock_descriptor, 0)
     os.write(lock_descriptor, f"{os.getpid()}\n".encode())
 
-    total, etag, remote_modified = remote_metadata(source_url)
+    try:
+        total, etag, remote_modified = remote_metadata(source_url)
+    except RuntimeError as error:
+        raise SystemExit(f"download could not start: {error}") from None
     version_sidecar = Path(f"{output}.etag")
 
     def stored_version() -> tuple[str, str]:

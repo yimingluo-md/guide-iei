@@ -87,7 +87,9 @@ each user registers once:
 1. At **[dbnsfp.org/download](https://www.dbnsfp.org/download)**, request
    the free **academic** access using an institutional email address.
 2. The instruction email links the current academic release. Copy the private
-   link for `dbNSFP5.4a_grch38.gz`; an Outlook Safe Link is accepted as-is.
+   link whose filename ends in `_grch38.gz`, not the similarly named
+   `_grch37.gz` link. The release number may change over time. An Outlook Safe
+   Link is accepted as-is.
 3. On the dataset screen, paste that link into the **dbNSFP** card and select
    **Download and install dbNSFP**. GUIDE-IEI derives the matching `.tbi` and
    `.md5` links, downloads all three files with eight resumable connections,

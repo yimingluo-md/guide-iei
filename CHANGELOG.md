@@ -59,6 +59,11 @@ in Privacy & Security.
   GUIDE-IEI privately derives the `.tbi` and `.md5` companions, downloads with
   eight resumable connections, verifies the MD5 and tabix index, and installs
   the published file without rebuilding or making a second 52 GB copy.
+- The dbNSFP link field accepts future official release filenames ending in
+  `_grch38.gz`, rejects the similarly named `_grch37.gz` file, and records the
+  installed filename/version for subsequent jobs. Slow academic-server range
+  probes now allow five minutes per attempt and retry instead of failing at the
+  former 60-second limit with a Python traceback.
 - One-click setup now validates the indexing tools before large transfers. If
   a clean machine lacks native bioinformatics tools, GUIDE-IEI builds its
   configured local annotation-tool image first, so a missing backend cannot

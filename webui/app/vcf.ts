@@ -101,7 +101,7 @@ export type DbnsfpPredictorValue = {
   prediction: string;
 };
 
-// Optional dbNSFP 5.3.1a fields exposed by the annotation UI. The core
+// Optional dbNSFP fields exposed by the annotation UI. The core
 // diagnostic set (AlphaMissense, CADD, REVEL, MetaRNN, PrimateAI, SIFT,
 // PolyPhen HDIV and conservation scores) retains dedicated fields below.
 export const ADDITIONAL_DBNSFP_PREDICTORS: DbnsfpPredictorDefinition[] = [

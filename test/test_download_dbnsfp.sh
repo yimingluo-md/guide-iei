@@ -18,8 +18,8 @@ container:
   image: vep-test:local
 plugins:
   dbNSFP:
-    version: "5.4a"
-    path: "$TEST_ROOT/data/dbNSFP5.4a_grch38.gz"
+    version: "6.0b"
+    path: "$TEST_ROOT/data/dbNSFP6.0b_grch38.gz"
 YAML
 
 cat > "$TEST_ROOT/scripts/parallel_fetch.py" <<'PY'
@@ -36,10 +36,10 @@ assert "authorized-code" in url
 assert "authorized-code" not in state_key
 output.parent.mkdir(parents=True, exist_ok=True)
 if output.name.endswith(".tbi"):
-    assert url.endswith("dbNSFP5.4a_grch38.gz.tbi")
+    assert url.endswith("dbNSFP6.0b_grch38.gz.tbi")
     output.write_bytes(b"test-index")
 else:
-    assert url.endswith("dbNSFP5.4a_grch38.gz")
+    assert url.endswith("dbNSFP6.0b_grch38.gz")
     output.write_bytes(bytes.fromhex("1f8b0804") + b"test-bgzf")
 print(" 99.5%  fake verified download")
 PY
@@ -56,8 +56,8 @@ while [[ $# -gt 0 ]]; do
     *) shift ;;
   esac
 done
-grep -F 'dbNSFP5.4a_grch38.gz.md5' "$config" >/dev/null
-printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  dbNSFP5.4a_grch38.gz\n' > "$output"
+grep -F 'dbNSFP6.0b_grch38.gz.md5' "$config" >/dev/null
+printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  dbNSFP6.0b_grch38.gz\n' > "$output"
 SH
 
 cat > "$WORK/bin/tabix" <<'SH'
@@ -72,7 +72,7 @@ chmod +x "$TEST_ROOT/scripts/download_dbnsfp.sh" \
 
 SECRET="$WORK/dbnsfp-url.secret"
 printf '%s\n' \
-  'https://dist.genos.us/academic/authorized-code/dbNSFP5.4a_grch38.gz' \
+  'https://dist.genos.us/academic/authorized-code/dbNSFP6.0b_grch38.gz' \
   > "$SECRET"
 chmod 600 "$SECRET"
 
@@ -80,12 +80,16 @@ PATH="$WORK/bin:/usr/local/bin:/usr/bin:/bin" \
   bash "$TEST_ROOT/scripts/download_dbnsfp.sh" \
   "$SECRET" "$TEST_ROOT/config/test.yaml" > "$WORK/job.log" 2>&1
 
-test -s "$TEST_ROOT/data/dbNSFP5.4a_grch38.gz"
-test -s "$TEST_ROOT/data/dbNSFP5.4a_grch38.gz.tbi"
-test -s "$TEST_ROOT/data/dbNSFP5.4a_grch38.gz.md5"
+test -s "$TEST_ROOT/data/dbNSFP6.0b_grch38.gz"
+test -s "$TEST_ROOT/data/dbNSFP6.0b_grch38.gz.tbi"
+test -s "$TEST_ROOT/data/dbNSFP6.0b_grch38.gz.md5"
+grep -F '"filename": "dbNSFP6.0b_grch38.gz"' \
+  "$TEST_ROOT/data/dbnsfp.installed.json" >/dev/null
+grep -F '"version": "6.0b"' "$TEST_ROOT/data/dbnsfp.installed.json" >/dev/null
 test ! -e "$SECRET"
 test ! -e "${SECRET}.tbi"
 test ! -e "${SECRET}.md5.curl"
+test ! -e "${SECRET}.release"
 grep -F 'downloaded, MD5-verified, indexed, and installed' "$WORK/job.log" >/dev/null
 if grep -F 'authorized-code' "$WORK/job.log" >/dev/null; then
   echo "private dbNSFP access path leaked into the job log" >&2

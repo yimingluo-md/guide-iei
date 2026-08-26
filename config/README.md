@@ -30,7 +30,7 @@ crashing VEP. Turn a source off entirely with `enabled: false`.
 | `run` | `fork` (parallelism), buffer size |
 | `output` | `format: vcf` (preserves zygosity) or `tab`; bgzip; VEP stats html |
 | `core` | pick, symbol, hgvs, sift, polyphen, gnomAD AFs — mirrors `vep_hg38.sh` |
-| `plugins` | dbNSFP 5.3.1a, required LoF (LOFTEE), required SpliceAI, optional WGS-only CADD/PromoterAI, optional LoGoFunc |
+| `plugins` | dbNSFP, required LoF (LOFTEE), required SpliceAI, optional WGS-only CADD/PromoterAI, optional LoGoFunc |
 | `custom_tracks` | RepeatMasker, SegDup, ClinVar (`--custom`) |
 | `wgs_review` | native import resources, including the pinned SCREEN cCRE BED and release-matched Ensembl gene-TSS context |
 | `clinvar` | auto-fetch latest NCBI ClinVar per run |

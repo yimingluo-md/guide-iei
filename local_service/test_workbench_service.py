@@ -1006,11 +1006,11 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertTrue(result["cancelled"])
 
     def test_dbnsfp_download_accepts_safelink_and_keeps_authorized_url_secret(self):
-        target = "https://dist.genos.us/academic/authorized/dbNSFP5.4a_grch38.gz"
+        target = "https://dist.genos.us/academic/authorized/dbNSFP6.0b_grch38.gz"
         safe_link = (
             "https://nam02.safelinks.protection.outlook.com/"
             "?url=https%3A%2F%2Fdist.genos.us%2Facademic%2Fauthorized%2F"
-            "dbNSFP5.4a_grch38.gz&data=opaque"
+            "dbNSFP6.0b_grch38.gz&data=opaque"
         )
         with patch.object(
             self.service, "_ensure_annotation_download_space"
@@ -1021,7 +1021,10 @@ class AnnotationJobServiceTests(unittest.TestCase):
         ) as start:
             result = self.service.start_dbnsfp_download({"download_url": safe_link})
         self.assertEqual(result["id"], "dbnsfp-job")
-        ensure_space.assert_called_once_with("dbnsfp_download")
+        ensure_space.assert_called_once()
+        self.assertEqual(ensure_space.call_args.args[0], "dbnsfp_download")
+        destination = ensure_space.call_args.args[1][("plugins", "dbNSFP", "path")]
+        self.assertEqual(destination.name, "dbNSFP6.0b_grch38.gz")
         command = start.call_args.args[1]
         self.assertEqual(command[0], "bash")
         self.assertTrue(command[1].endswith("scripts/download_dbnsfp.sh"))
@@ -1030,6 +1033,9 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(secret_path.stat().st_mode & 0o777, 0o600)
         self.assertNotIn(target, json.dumps(command))
         self.assertNotIn(safe_link, json.dumps(command))
+        generated_config = Path(command[3]).read_text(encoding="utf-8")
+        self.assertIn("dbNSFP6.0b_grch38.gz", generated_config)
+        self.assertIn("version: 6.0b", generated_config)
         self.assertEqual(start.call_args.kwargs["sensitive_paths"], (secret_path,))
         secret_path.unlink()
 
@@ -1037,7 +1043,8 @@ class AnnotationJobServiceTests(unittest.TestCase):
         cases = (
             "http://dist.genos.us/academic/code/dbNSFP5.4a_grch38.gz",
             "https://example.org/academic/code/dbNSFP5.4a_grch38.gz",
-            "https://dist.genos.us/academic/code/dbNSFP5.3a_grch38.gz",
+            "https://dist.genos.us/academic/code/dbNSFP6.0b_grch37.gz",
+            "https://dist.genos.us/academic/code/unrelated_grch38.gz",
         )
         for value in cases:
             with self.subTest(value=value), self.assertRaises(ValueError):
@@ -1101,6 +1108,13 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 self.assertEqual(result["path"], str(selected.resolve()))
 
     def test_user_supplied_dataset_preparation_targets_managed_annotation_storage(self):
+        dbnsfp_card = next(
+            source
+            for source in self.service.capabilities()["annotation_profile"]["sources"]
+            if source["id"] == "dbnsfp"
+        )
+        self.assertEqual(dbnsfp_card["version"], "")
+
         generated = self.service._write_resource_config("dbnsfp")
         text = generated.read_text()
         expected = self.service.annotation_root / "dbnsfp" / "dbNSFP5.4a_grch38.gz"
@@ -1109,6 +1123,23 @@ class AnnotationJobServiceTests(unittest.TestCase):
         generated = self.service._write_resource_config("logofunc")
         text = generated.read_text()
         self.assertIn(str(self.service.annotation_root / "logofunc"), text)
+
+    def test_dbnsfp_installed_manifest_selects_the_downloaded_release(self):
+        root = self.service.annotation_root / "dbnsfp"
+        root.mkdir(parents=True, exist_ok=True)
+        data = root / "dbNSFP6.0b_grch38.gz"
+        data.write_bytes(b"data")
+        Path(str(data) + ".tbi").write_bytes(b"index")
+        (root / "dbnsfp.installed.json").write_text(json.dumps({
+            "filename": data.name,
+            "version": "6.0b",
+        }))
+        config = self.service._load_config(
+            self.service.pipeline_root / "config" / "annotation.config.yaml"
+        )
+        paths = self.service._managed_preparation_paths(config, "dbnsfp")
+        self.assertEqual(paths["path"], str(data))
+        self.assertEqual(paths["version"], "6.0b")
 
     def test_derived_aa_match_feature_reports_installed(self):
         # Regression for the P4-9 follow-up: clinvar_aa_match ships with the

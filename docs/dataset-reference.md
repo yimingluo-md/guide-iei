@@ -11,8 +11,8 @@ clinician-focused language pass (2026-08). This file seeds the future user
 webpage; each section holds the process detail the UI no longer shows.
 
 ## dbNSFP
-- The UI accepts the authorized `dbNSFP5.4a_grch38.gz` link from the academic
-  instruction email, including an Outlook Safe Links wrapper. It appends
+- The UI accepts any authorized dbNSFP release whose filename ends in
+  `_grch38.gz` (not `_grch37.gz`), including an Outlook Safe Links wrapper. It appends
   `.tbi` and `.md5` to the unwrapped path to obtain the matching companions.
 - The bundled downloader uses eight concurrent HTTP ranges, retains verified
   ranges for resume, verifies the published MD5 and tabix index, and installs

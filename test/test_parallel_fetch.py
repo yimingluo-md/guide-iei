@@ -7,6 +7,7 @@ recreated a zero-filled sparse file and published it as complete.
 """
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -135,7 +136,15 @@ class ResumeStateTests(unittest.TestCase):
         command = run.call_args.args[0]
         self.assertNotIn(private_url, command)
         self.assertEqual(command[-2:], ["--config", "-"])
+        self.assertIn("--retry-all-errors", command)
+        self.assertEqual(command[command.index("--max-time") + 1], "300")
         self.assertIn(private_url, run.call_args.kwargs["input"])
+
+    def test_metadata_timeout_has_readable_retry_guidance(self):
+        timeout = subprocess.CalledProcessError(28, ["curl"])
+        with patch("parallel_fetch.subprocess.run", side_effect=timeout):
+            with self.assertRaisesRegex(RuntimeError, "repeated five-minute attempts"):
+                remote_metadata("https://example.test/data.gz")
 
     def test_curl_url_config_rejects_multiline_input(self):
         with self.assertRaises(ValueError):

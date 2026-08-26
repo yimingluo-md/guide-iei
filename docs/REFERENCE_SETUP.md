@@ -60,7 +60,7 @@ silently moved when the central root changes. See
 [`docs/SAMPLE_LIBRARY_AND_STORAGE.md`](SAMPLE_LIBRARY_AND_STORAGE.md#configurable-workstation-locations)
 for safe migration and external-disk guidance.
 
-## dbNSFP 5.4a — paste the academic download link
+## dbNSFP — paste the academic GRCh38 download link
 
 dbNSFP is required by the diagnostic profile. GUIDE-IEI cannot obtain access
 on a user's behalf because the academic distribution requires registration,
@@ -69,8 +69,10 @@ but it handles the download and installation after the user supplies the link.
 1. Open the [dbNSFP academic download page](https://www.dbnsfp.org/download).
 2. Register with an institutional email address.
 3. Use the access code sent by email to request the academic download link.
-4. Copy the link for `dbNSFP5.4a_grch38.gz`. It may be the long Outlook Safe
-   Links address shown by an institutional email client.
+4. Copy the link whose filename ends in `_grch38.gz`. The email also lists a
+   similarly named `_grch37.gz` file; do not use that GRCh37 link. The release
+   version in the filename may change over time. The correct link may be a long
+   Outlook Safe Links address shown by an institutional email client.
 5. Paste it into the dbNSFP dataset card and select **Download and install
    dbNSFP**. GUIDE-IEI unwraps Safe Links, derives the matching `.tbi` and
    `.md5` URLs, downloads with eight resumable connections, verifies the

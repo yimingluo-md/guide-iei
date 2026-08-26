@@ -135,6 +135,9 @@ _PRIVATE_DATABASES = (
     "cohort.sqlite3", "workbench.sqlite3", "bulk-intake.sqlite3",
     "spliceai-lookup-cache.sqlite3",
 )
+_DBNSFP_GRCH38_FILENAME = re.compile(
+    r"^dbNSFP(?P<version>[A-Za-z0-9._-]+)_grch38\.gz$"
+)
 
 ANNOTATION_SOURCE_SETUP = {
     "dbnsfp": {
@@ -147,7 +150,7 @@ ANNOTATION_SOURCE_SETUP = {
         "size_hint": "approximately 52 GB download; installed as-is",
         "instructions": [
             "Register with your institutional email at the dbNSFP academic download page (free for academic use).",
-            "Copy the dbNSFP5.4a_grch38.gz download link from the instruction email and paste it here; an Outlook Safe Links URL is accepted.",
+            "Copy the link ending in dbNSFP<version>_grch38.gz from the instruction email and paste it here; do not choose the similarly named _grch37.gz link. An Outlook Safe Links URL is accepted.",
             "GUIDE-IEI derives the matching .tbi and .md5 links, downloads all three files with eight resumable connections, verifies the published checksum and index, and installs them automatically.",
             "The private academic link is used only for this local download, is never written to the job log or configuration, and is deleted from temporary storage when the job ends.",
             "Coding-region CADD, AlphaMissense, REVEL and the other bundled predictors all come from this one dataset.",
@@ -1985,7 +1988,11 @@ class AnnotationJobService:
             ]
         return self._start_resource_job(resource_id, command, "download")
 
-    def _ensure_annotation_download_space(self, resource_id: str) -> None:
+    def _ensure_annotation_download_space(
+        self,
+        resource_id: str,
+        output_overrides: dict[tuple[str, ...], Path] | None = None,
+    ) -> None:
         output_specs = RESOURCE_DOWNLOAD_OUTPUTS.get(resource_id)
         if not output_specs:
             return
@@ -1994,10 +2001,12 @@ class AnnotationJobService:
         )
         locations: dict[int, dict] = {}
         for key_path, required, is_directory in output_specs:
-            value: object = config
-            for key in key_path:
-                value = value.get(key) if isinstance(value, dict) else None
-            resolved = self._resolved_reference_path(value)
+            resolved = (output_overrides or {}).get(key_path)
+            if resolved is None:
+                value: object = config
+                for key in key_path:
+                    value = value.get(key) if isinstance(value, dict) else None
+                resolved = self._resolved_reference_path(value)
             destination = (
                 resolved
                 if resolved is not None and is_directory
@@ -2238,7 +2247,7 @@ class AnnotationJobService:
         }
 
     @staticmethod
-    def _authorized_dbnsfp_url(raw: str, expected_name: str) -> str:
+    def _authorized_dbnsfp_url(raw: str) -> tuple[str, str, str]:
         """Unwrap and constrain a user-authorized dbNSFP academic link."""
         value = html.unescape(raw.strip()).strip("<>").strip()
         if not value or len(value) > 20_000:
@@ -2267,9 +2276,14 @@ class AnnotationJobService:
                 "paste the authorized dbNSFP link from the instruction email "
                 "(it must resolve to https://dist.genos.us/academic/…)"
             )
-        if unquote(Path(parsed.path).name) != expected_name:
-            raise ValueError(f"the authorized link must be for {expected_name}")
-        return parsed._replace(fragment="").geturl()
+        filename = unquote(Path(parsed.path).name)
+        match = _DBNSFP_GRCH38_FILENAME.fullmatch(filename)
+        if not match:
+            raise ValueError(
+                "the authorized link must end in dbNSFP<version>_grch38.gz; "
+                "do not use the similarly named _grch37.gz link"
+            )
+        return parsed._replace(fragment="").geturl(), filename, match.group("version")
 
     def _write_resource_secret(self, prefix: str, value: str) -> Path:
         self.resource_secrets_dir.mkdir(parents=True, exist_ok=True)
@@ -2286,13 +2300,17 @@ class AnnotationJobService:
         raw_url = payload.get("download_url") if isinstance(payload, dict) else None
         if not isinstance(raw_url, str):
             raise ValueError("paste the dbNSFP download link from the academic instruction email")
-        config = self._load_config(self.pipeline_root / "config" / "annotation.config.yaml")
-        expected_name = Path(self._managed_preparation_paths(config, "dbnsfp")["path"]).name
-        authorized_url = self._authorized_dbnsfp_url(raw_url, expected_name)
-        self._ensure_annotation_download_space("dbnsfp_download")
+        authorized_url, filename, _version = self._authorized_dbnsfp_url(raw_url)
+        destination = self.annotation_root / "dbnsfp" / filename
+        self._ensure_annotation_download_space(
+            "dbnsfp_download",
+            {("plugins", "dbNSFP", "path"): destination},
+        )
         secret_path = self._write_resource_secret("dbnsfp-url", authorized_url)
         try:
-            config_path = self._write_resource_config("dbnsfp")
+            config_path = self._write_resource_config(
+                "dbnsfp", dbnsfp_filename=filename
+            )
             command = [
                 "bash",
                 str(self.pipeline_root / "scripts" / "download_dbnsfp.sh"),
@@ -3751,15 +3769,38 @@ class AnnotationJobService:
                 return str(resolved) if resolved else value
         return value
 
-    def _managed_preparation_paths(self, config: dict, resource_id: str) -> dict[str, str]:
+    def _managed_preparation_paths(
+        self,
+        config: dict,
+        resource_id: str,
+        preferred_name: str | None = None,
+    ) -> dict[str, str]:
         """Canonical destinations for user-supplied annotation datasets."""
         if resource_id == "dbnsfp":
+            root = self.annotation_root / "dbnsfp"
             current = str(
                 ((config.get("plugins") or {}).get("dbNSFP") or {}).get("path")
                 or "dbNSFP5.4a_grch38.gz"
             )
-            name = Path(current).name
-            return {"path": str(self.annotation_root / "dbnsfp" / name)}
+            name = preferred_name or Path(current).name
+            manifest = root / "dbnsfp.installed.json"
+            if preferred_name is None and manifest.is_file():
+                try:
+                    installed = json.loads(manifest.read_text(encoding="utf-8"))
+                    candidate = str(installed.get("filename") or "")
+                    if (
+                        _DBNSFP_GRCH38_FILENAME.fullmatch(candidate)
+                        and (root / candidate).is_file()
+                        and Path(str(root / candidate) + ".tbi").is_file()
+                    ):
+                        name = candidate
+                except (OSError, ValueError, TypeError):
+                    pass
+            match = _DBNSFP_GRCH38_FILENAME.fullmatch(name)
+            result = {"path": str(root / name)}
+            if match:
+                result["version"] = match.group("version")
+            return result
         if resource_id == "promoterai":
             root = self.annotation_root / "promoterai"
             return {
@@ -3780,9 +3821,16 @@ class AnnotationJobService:
         return {}
 
     def _set_managed_preparation_paths(
-        self, config: dict, resource_id: str, *, require_installed: bool
+        self,
+        config: dict,
+        resource_id: str,
+        *,
+        require_installed: bool,
+        preferred_name: str | None = None,
     ) -> None:
-        paths = self._managed_preparation_paths(config, resource_id)
+        paths = self._managed_preparation_paths(
+            config, resource_id, preferred_name=preferred_name
+        )
         if not paths:
             return
         primary = Path(paths["path"] if resource_id == "dbnsfp" else paths["file"])
@@ -4113,6 +4161,10 @@ class AnnotationJobService:
                 or ("required" if required else "optional")
             )
             source_version = str(block.get("version") or "")
+            if source_id == "dbnsfp" and not installed:
+                # The stock config's initial release is only a fallback path;
+                # do not present it as the version the user must download.
+                source_version = ""
             if source_id == "clingen_erepo" and installed:
                 generated = str(self.clingen_erepo.status().get("generated_utc") or "")
                 source_version = generated[:10]
@@ -4359,7 +4411,9 @@ class AnnotationJobService:
         )
         return destination
 
-    def _write_resource_config(self, resource_id: str) -> Path:
+    def _write_resource_config(
+        self, resource_id: str, *, dbnsfp_filename: str | None = None
+    ) -> Path:
         """Write a short-lived, root-resolved config for a UI resource action."""
         import yaml
 
@@ -4368,7 +4422,10 @@ class AnnotationJobService:
         )
         if resource_id in {"dbnsfp", "promoterai", "logofunc"}:
             self._set_managed_preparation_paths(
-                config, resource_id, require_installed=False
+                config,
+                resource_id,
+                require_installed=False,
+                preferred_name=dbnsfp_filename if resource_id == "dbnsfp" else None,
             )
         else:
             config = self._prefer_installed_managed_resources(config)

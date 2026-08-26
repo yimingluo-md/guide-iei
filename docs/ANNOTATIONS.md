@@ -65,7 +65,7 @@ VEP.
 
 | Plugin | Config key | File | Notes |
 |--------|-----------|------|-------|
-| dbNSFP | `plugins.dbNSFP` | `path` + `columns` | One file, dozens of scores (CADD, REVEL, AlphaMissense, SIFT, PolyPhen, PrimateAI, MetaRNN, GERP++, phyloP/phastCons…). Core fields are always included; each annotation job can add curated predictors from the local UI. The diagnostic profile pins **v5.4a**, distributed as a single GRCh38-sorted BGZF file ready for VEP. Download from dbnsfp.org, then run `scripts/prepare_dbnsfp.sh` (verify + install). |
+| dbNSFP | `plugins.dbNSFP` | `path` + `columns` | One file, dozens of scores (CADD, REVEL, AlphaMissense, SIFT, PolyPhen, PrimateAI, MetaRNN, GERP++, phyloP/phastCons…). Core fields are always included; each annotation job can add curated predictors from the local UI. Paste the current single-file GRCh38 BGZF link into the dataset card; GUIDE-IEI records the installed release version. |
 | LoF (LOFTEE) | `plugins.LoF` | `human_ancestor_fa`, `conservation_file`, `gerp_bigwig` | Required by the diagnostic profile. **Must use the LOFTEE `grch38` branch** (baked into the image). `loftee_path: auto` resolves to `$LOFTEE_DIR` (`/opt/vep/src/loftee`) inside the container. |
 | SpliceAI | `plugins.SpliceAI` | `snv` (optional `indel`) | Required by default. `scripts/download_references.sh` fetches Ensembl's GRCh38 masked SNV scores for MANE v1.4. A lab may additionally configure a compatible indexed indel VCF. |
 | CADD v1.7 whole genome | `plugins.CADD_WGS` | `snv`, `indels` | Optional, WGS-only standard CADD plugin. The UI downloads only the official score tables and indexes and emits `CADD_RAW`/`CADD_PHRED`; CADD is licensed for non-commercial use. |
@@ -113,10 +113,11 @@ entire download and installation:
    after verification (free for academic / non-commercial use under
    CC BY-NC-ND 4.0).
 2. **Request the download links** using that email + access code.
-3. **Copy the single GRCh38 BGZF link.** Since v5.1 the project
+3. **Copy the single GRCh38 BGZF link.** Select the filename ending in
+   `_grch38.gz`, not `_grch37.gz`; the version portion can change. Since v5.1 the project
    distributes the variant table as one tabix-indexed BGZF file per genome
    build, ready for VEP: `dbNSFP<ver>_grch38.gz` plus its `.tbi` and `.md5`
-   sidecars (the diagnostic profile pins **v5.4a**).
+   sidecars. GUIDE-IEI records the release version from the filename.
 4. **Paste that `.gz` link into the dbNSFP card.** An Outlook Safe Links URL
    is accepted. GUIDE-IEI derives the two companion URLs, downloads the table
    with eight resumable connections, MD5-verifies it, validates the supplied
