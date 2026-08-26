@@ -3735,6 +3735,13 @@ function annotationSourceIsEnabled(
     || (analysisScope === "whole_genome" && DEFAULT_WGS_ANNOTATION_SOURCES.has(source.id));
 }
 
+function resourceProgressMessage(
+  job: ResourceDownloadJob | undefined,
+  fallback: string,
+) {
+  return job?.message?.trim() || fallback;
+}
+
 function DatasetSetupCard({
   source,
   analysisScope,
@@ -3813,7 +3820,7 @@ function DatasetSetupCard({
       <span className={`dataset-status ${activeDownload ? "working" : source.installed ? "ready" : "missing"}`}>{status}</span>
     </div>
     <div className="dataset-meta"><span>{setupLabels[source.setup_mode]}</span>{source.access === "registration" && <span>Registration required</span>}{source.access === "license" && <span>License required</span>}{source.access === "terms" && <span>Usage terms apply</span>}{source.recommendation === "optional" && <span>Optional</span>}{source.size_hint && <span>{source.size_hint}</span>}</div>
-    {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span>{downloadJob?.progress !== null && downloadJob?.progress !== undefined ? `${downloadJob.progress.toFixed(1)}%` : "Working…"} · {downloadJob?.operation === "preparation" ? "Preparing local dataset" : "Downloading dataset"}</span></div>}
+    {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(downloadJob, downloadJob?.operation === "preparation" ? "Preparing local dataset…" : "Starting dataset download…")}</span></div>}
     {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Download log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
     {source.prepare_id && <div className="dataset-preparation"><span className="dataset-preparation-label">{preparationLabel}</span><div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "logofunc" ? "Choose file" : "Choose folder"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div><button type="button" disabled={activeDownload || choosingPreparationPath || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Preparing…" : preparationButton}</button><small>{preparationHelp}</small></div>}
     <div className="dataset-actions">
@@ -4179,7 +4186,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
             <button type="button" disabled={resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "WGS public core installed" : failedQuickSetupJob?.resource_id === "recommended_wgs" ? "Retry WGS setup" : "Recommended for WGS"}</strong><span>{wgsDatasetsInstalled ? "No download needed · exome set and SCREEN contexts are present" : "Exome set plus SCREEN tissue/immune contexts · up to ~92 GiB"}</span></button>
             <button type="button" className="dataset-update-all" disabled={resourceSetupBusy} onClick={() => void downloadResource("refresh_updates")}><strong>{failedQuickSetupJob?.resource_id === "refresh_updates" ? "Retry dataset update" : "Update installed datasets"}</strong><span>Refresh ClinVar and ClinGen; pinned resources stay unchanged</span></button>
           </div>
-          {quickSetupJob && <><div className="resource-progress"><progress max={100} value={quickSetupJob.progress ?? undefined}/><span>{quickSetupJob.progress !== null && quickSetupJob.progress !== undefined ? `${quickSetupJob.progress.toFixed(1)}%` : "Working…"} · Preparing recommended datasets</span></div><details className="dataset-instructions"><summary>Dataset details</summary><div className="dataset-technical-status"><span>Technical status</span><code>{quickSetupJob.status}</code>{quickSetupJob.message && <p>{quickSetupJob.message}</p>}</div></details></>}
+          {quickSetupJob && <><div className="resource-progress"><progress max={100} value={quickSetupJob.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(quickSetupJob, "Preparing recommended datasets…")}</span></div><details className="dataset-instructions"><summary>Dataset details</summary><div className="dataset-technical-status"><span>Technical status</span><code>{quickSetupJob.status}</code>{quickSetupJob.message && <p>{quickSetupJob.message}</p>}</div></details></>}
           {failedQuickSetupJob && <div className="resource-download-error"><strong>Setup stopped before completion.</strong><span>{failedQuickSetupJob.error || failedQuickSetupJob.message}</span><span>Files that completed successfully are preserved; retry resumes only missing work.</span><button type="button" disabled={resourceSetupBusy} onClick={() => void downloadResource(failedQuickSetupJob.resource_id)}>{failedQuickSetupJob.resource_id === "recommended_wgs" ? "Retry WGS setup" : failedQuickSetupJob.resource_id === "refresh_updates" ? "Retry dataset update" : "Retry exome setup"}</button><details><summary>Setup log</summary><pre>{failedQuickSetupJob.log || "No log output was captured."}</pre></details></div>}
         </div>
         {accessRequiredSources.length > 0 && <div className="dataset-group access-required"><div className="dataset-group-head"><div><p className="eyebrow">User action needed</p><h4>Needs a one-time registration or license</h4></div><span>Start here for dbNSFP or PromoterAI</span></div><div className="dataset-grid">{datasetCards(accessRequiredSources)}</div></div>}

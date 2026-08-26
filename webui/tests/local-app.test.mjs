@@ -160,7 +160,10 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Configured location/);
   assert.match(source, /WGS public core installed/);
   assert.match(source, /<summary>Dataset details<\/summary>/);
-  assert.match(source, /downloadJob\.progress/);
+  assert.match(source, /downloadJob\?\.progress/);
+  assert.match(source, /resourceProgressMessage\(quickSetupJob/);
+  assert.match(source, /resourceProgressMessage\(downloadJob/);
+  assert.match(source, /aria-live="polite"/);
   assert.match(service, /\/api\/resource-downloads/);
   assert.match(service, /startResourceDownload/);
   assert.match(service, /\/api\/resource-preparations\/dbnsfp/);

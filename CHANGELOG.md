@@ -78,6 +78,10 @@ in Privacy & Security.
   liftover files) through the same recommended setup. The required frameshift
   dataset card also exposes a working repair action instead of an unactionable
   **Needs repair** state.
+- Dataset progress now shows the live dataset and operation (for example,
+  cCRE download, gene-TSS construction, or hg19 liftover preparation) in the
+  visible progress row instead of a generic **Preparing recommended datasets**
+  label. The same live detail is exposed to screen readers.
 
 **Known limitation**
 
