@@ -51,6 +51,25 @@ in Privacy & Security.
   the user's back; annotated-VCF review remains available without Docker.
 - Windows CI parses the launcher and tests its clean-machine failure guidance.
 
+**Faster, safer initial dataset setup**
+
+- One-click setup now validates the indexing tools before large transfers. If
+  a clean machine lacks native bioinformatics tools, GUIDE-IEI builds its
+  configured local annotation-tool image first, so a missing backend cannot
+  surface after hours of downloading.
+- Independent mirror-backed and canonical-source reference groups download in
+  two bounded parallel lanes. SpliceAI's source, contents, verification, and
+  per-file connection count are unchanged.
+- Docker fallback is explicitly local-only and never attempts to pull the
+  project image from a registry. Deterministic container startup failures are
+  no longer retried after a delay.
+- VEP cache installation no longer decompresses the verified multi-gigabyte
+  archive once to list it and again to extract it. ClinVar release detection
+  reads only its header after checksum verification, and publishing the
+  `latest` copy uses a hard link when the filesystem supports one.
+- Clean-clone CI now exercises tool-image preflight, the no-pull guarantee, and
+  concurrent reference scheduling.
+
 **Known limitation**
 
 - Until the project adopts Apple Developer ID signing and notarization, macOS

@@ -9,7 +9,7 @@
 #   scripts/fetch_clinvar.sh [config.yaml]
 #
 # Result: references/clinvar/clinvar_<releasedate>.GRCh38.vcf.gz (+ .tbi),
-# and a stable symlink/copy clinvar_latest.GRCh38.vcf.gz that the config's
+# and a stable hard-link/copy clinvar_latest.GRCh38.vcf.gz that the config's
 # ClinVar track points to.
 # =============================================================================
 set -euo pipefail
@@ -83,11 +83,25 @@ python3 "${HERE}/parallel_fetch.py" "${URL}.tbi" "${TMP_VCF}.tbi" \
 
 # Extract the ClinVar release date from the VCF header
 #   ##fileDate=2026-02-18  (or a source-stamped line). Fall back to today.
-# macOS zcat expects legacy .Z files; gzip -cd is portable. Keep every stage
-# consuming its input fully so `set -o pipefail` does not turn SIGPIPE into a
-# false download failure.
-RELEASE="$(gzip -cd "$TMP_VCF" 2>/dev/null | \
-           sed -n 's/^##fileDate=\([0-9-]*\).*/\1/p' | sed -n '1p' | tr -d '-')"
+# With an upstream MD5, reading the small header is sufficient: decompressing
+# the entire VCF just to find fileDate needlessly scans it again. If the MD5
+# was unavailable, retain a full gzip integrity check before the header read.
+if [[ ${#MD5_ARGS[@]} -eq 0 ]]; then
+    gzip -t "$TMP_VCF" 2>/dev/null || die "ClinVar VCF failed gzip integrity validation"
+fi
+RELEASE="$(python3 - "$TMP_VCF" <<'PY'
+import gzip, re, sys
+with gzip.open(sys.argv[1], "rb") as handle:
+    for raw in handle:
+        if raw.startswith(b"##fileDate="):
+            match = re.search(rb"##fileDate=([0-9-]+)", raw)
+            if match:
+                print(match.group(1).decode().replace("-", ""))
+            break
+        if not raw.startswith(b"#"):
+            break
+PY
+)"
 [[ -n "$RELEASE" ]] || RELEASE="$(date +%Y%m%d)"
 log "ClinVar release date: $RELEASE"
 
@@ -103,9 +117,19 @@ if [[ ! -f "${DATED}.tbi" ]]; then
     hts tabix -p vcf "$DATED"
 fi
 
-# Point 'latest' at the dated file (copy for portability across FS without symlink support).
-cp -f "$DATED" "$LATEST"
-cp -f "${DATED}.tbi" "${LATEST}.tbi"
+# Point 'latest' at the dated file. A hard link avoids reading and rewriting
+# the complete VCF on APFS/ext4; filesystems without hard-link support fall
+# back to a portable copy. Publish through a temporary sibling either way.
+publish_alias() {
+    local source="$1" destination="$2" temporary="${2}.new.$$"
+    rm -f "$temporary"
+    if ! ln "$source" "$temporary" 2>/dev/null; then
+        cp -f "$source" "$temporary"
+    fi
+    mv -f "$temporary" "$destination"
+}
+publish_alias "$DATED" "$LATEST"
+publish_alias "${DATED}.tbi" "${LATEST}.tbi"
 
 if [[ "${KEEP_DATED}" == "false" ]]; then
     log "keep_dated_copy=false — removing dated copy, keeping only latest"

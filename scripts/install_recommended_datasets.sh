@@ -63,16 +63,121 @@ indexed_ready "$SPLICEAI" || missing_references+=(spliceai)
 indexed_ready "$REPEATMASKER" || missing_references+=(repeatmasker)
 indexed_ready "$SEGDUP" || missing_references+=(segdup)
 
+CLINVAR="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.ClinVar.file)")"
+clinvar_missing=0
+indexed_ready "$CLINVAR" || clinvar_missing=1
+
+# Preparing reference files needs bgzip, tabix, and samtools. On clean machines
+# these are normally supplied by the GUIDE-IEI annotation image. Validate that backend
+# before transferring tens of gigabytes; if the configured local image is
+# absent, build it now rather than allowing Docker to attempt an implicit pull
+# only after all reference downloads have finished.
+ensure_dataset_hts_backend() {
+  if [[ "${HTS_VIA_CONTAINER:-0}" != "1" ]] \
+    && command -v bgzip >/dev/null 2>&1 \
+    && command -v tabix >/dev/null 2>&1 \
+    && command -v samtools >/dev/null 2>&1; then
+    echo "Dataset indexing backend ready (native bgzip, tabix, and samtools)."
+    return 0
+  fi
+
+  local runtime image image_name image_tag image_tail managed_tools_bin docker_app_bin
+  runtime="$(yaml_get "$CONFIG" container.runtime)"; runtime="${runtime:-docker}"
+  image="$(yaml_get "$CONFIG" container.image)"; image="${image:-vep-annotate:latest}"
+  managed_tools_bin="${IEI_TOOLS_DIR:-$HOME/.iei-variant-review/tools}/bin"
+  docker_app_bin="/Applications/Docker.app/Contents/Resources/bin"
+  if ! command -v "$runtime" >/dev/null 2>&1; then
+    if [[ -x "${managed_tools_bin}/${runtime}" ]]; then
+      export PATH="${managed_tools_bin}:${PATH}"
+    elif [[ "$runtime" == "docker" && -x "${docker_app_bin}/docker" ]]; then
+      export PATH="${docker_app_bin}:${PATH}"
+    fi
+  fi
+  command -v "$runtime" >/dev/null 2>&1 \
+    || die "dataset setup needs native bgzip/tabix/samtools or the configured '$runtime' runtime"
+
+  case "$runtime" in
+    docker|podman)
+      "$runtime" info >/dev/null 2>&1 \
+        || die "$runtime is installed but is not running; start it and retry dataset setup"
+      if "$runtime" image inspect "$image" >/dev/null 2>&1; then
+        echo "Dataset indexing backend ready (${runtime} image ${image})."
+        return 0
+      fi
+
+      [[ "$image" != *@* ]] \
+        || die "configured image $image is digest-pinned but is not available locally"
+      image_name="$image"
+      image_tag="latest"
+      image_tail="${image##*/}"
+      if [[ "$image_tail" == *:* ]]; then
+        image_name="${image%:*}"
+        image_tag="${image##*:}"
+      fi
+
+      echo "=== preparing the annotation tools (one-time setup) ==="
+      echo "Building ${image} before large reference downloads begin."
+      RUNTIME="$runtime" IMAGE_NAME="$image_name" IMAGE_TAG="$image_tag" \
+        bash "${ROOT}/docker/build.sh" "$CONFIG"
+      "$runtime" image inspect "$image" >/dev/null 2>&1 \
+        || die "annotation tool build completed but image $image is unavailable"
+      echo "Dataset indexing backend ready (${runtime} image ${image})."
+      ;;
+    singularity|apptainer)
+      [[ -s "$image" ]] \
+        || die "configured $runtime image is unavailable: $image"
+      echo "Dataset indexing backend ready (${runtime} image ${image})."
+      ;;
+    *) die "unsupported dataset container runtime: $runtime" ;;
+  esac
+}
+
+if ((${#missing_references[@]} || clinvar_missing)); then
+  ensure_dataset_hts_backend
+fi
+
 if ((${#missing_references[@]})); then
-  only="$(IFS=,; printf '%s' "${missing_references[*]}")"
-  echo "Installing missing pinned resources: ${only}"
-  bash "${HERE}/download_references.sh" "${CONFIG}" --only "$only"
+  # Two lanes overlap independent network/disk work while keeping concurrency
+  # deliberately bounded. SpliceAI's source, payload, and own connection count
+  # are unchanged; it can simply proceed while the mirror-backed lane runs.
+  mirror_lane=()
+  canonical_lane=()
+  for reference in "${missing_references[@]}"; do
+    case "$reference" in
+      vep_cache|fasta|loftee) mirror_lane+=("$reference") ;;
+      spliceai|repeatmasker|segdup) canonical_lane+=("$reference") ;;
+    esac
+  done
+
+  mirror_only="$(IFS=,; printf '%s' "${mirror_lane[*]}")"
+  canonical_only="$(IFS=,; printf '%s' "${canonical_lane[*]}")"
+  if ((${#mirror_lane[@]} && ${#canonical_lane[@]})); then
+    echo "=== downloading two independent reference groups in parallel ==="
+    echo "Mirror group: ${mirror_only}"
+    echo "Canonical group: ${canonical_only}"
+    bash "${HERE}/download_references.sh" "$CONFIG" \
+      --only "$mirror_only" --skip-final-status &
+    mirror_pid=$!
+    bash "${HERE}/download_references.sh" "$CONFIG" \
+      --only "$canonical_only" --skip-final-status &
+    canonical_pid=$!
+    reference_failure=0
+    wait "$mirror_pid" || reference_failure=1
+    wait "$canonical_pid" || reference_failure=1
+    [[ "$reference_failure" == "0" ]] \
+      || die "one or more reference download groups failed; completed downloads remain resumable"
+    python3 "${ROOT}/pipeline/check_dbnsfp_version.py" --config "$CONFIG" \
+      || warn "dbNSFP update check could not be completed"
+  else
+    only="${mirror_only}${canonical_only}"
+    echo "Installing missing pinned resources: ${only}"
+    bash "${HERE}/download_references.sh" "$CONFIG" --only "$only"
+  fi
 else
   echo "Pinned exome resources already installed; skipping downloads and checksum scans."
 fi
 
-CLINVAR="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.ClinVar.file)")"
-if indexed_ready "$CLINVAR"; then
+if [[ "$clinvar_missing" == "0" ]]; then
   echo "ClinVar already installed; use 'Update installed datasets' to refresh it."
 else
   bash "${HERE}/fetch_clinvar.sh" "${CONFIG}"

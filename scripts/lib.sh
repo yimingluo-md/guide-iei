@@ -116,20 +116,25 @@ hts() {
     local rc=0
     case "$rt" in
         docker|podman)
+            # IMAGE is a locally built GUIDE-IEI image, not a registry name.
+            # Without this guard, `docker run` implicitly tries to pull a
+            # missing image and can wait for network timeouts before failing.
+            "$rt" image inspect "$img" >/dev/null 2>&1 \
+                || die "container image $img is not available locally; run bash docker/build.sh before preparing indexed resources"
             mount_flags=(-v "$PWD:/w")
             for i in "${!hosts[@]}"; do mount_flags+=(-v "${hosts[$i]}:${conts[$i]}:rw"); done
-            "$rt" run --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+            "$rt" run --pull=never --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
             # A file written by the host or another container can be
             # incompletely visible to a container started moments later
             # (Docker Desktop VirtioFS bind caching; worse on FSKit-exFAT
             # drives), which fails tabix/bcftools/bgzip on perfectly valid
             # files. Settle and retry once; genuine failures (unsorted input,
             # non-BGZF, malformed records) fail identically on retry.
-            if [[ "$rc" -ne 0 ]]; then
+            if [[ "$rc" -ne 0 && "$rc" -ne 125 ]]; then
                 log "WARN  containerized $tool failed (rc=$rc); retrying once after write settling"
                 sleep 5
                 rc=0
-                "$rt" run --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+                "$rt" run --pull=never --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
             fi
             return "$rc"
             ;;

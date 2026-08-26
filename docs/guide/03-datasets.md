@@ -45,6 +45,12 @@ Downloads are fetched from a checksum-verified fast mirror first, with the
 official sources as automatic fallback. Interrupted downloads resume rather
 than restart.
 
+Before a large first-time transfer, GUIDE-IEI checks that the annotation and
+indexing tools are ready. On a clean machine it builds the configured local
+tool image at this point, so this one-time preparation happens before any
+multi-hour downloads. No separate installation of bioinformatics command-line
+tools is required.
+
 ## Step 1 — One click for the public datasets
 
 Two actions install everything that is freely downloadable:
@@ -61,6 +67,11 @@ Progress is reported per dataset. A third action, **Refresh changing
 sources**, checks for updated ClinVar and ClinGen resources. Annotation runs
 record the source versions used, allowing results from different dates to be
 compared explicitly.
+
+During the first installation, two independent groups can download at the
+same time, so progress messages may alternate between datasets. Concurrency is
+limited to two groups to avoid overwhelming a typical workstation or external
+drive. All existing checksum and archive validation remains in place.
 
 ## Step 2 — dbNSFP: the one registration
 

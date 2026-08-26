@@ -58,6 +58,8 @@ jobs:
       - name: Shell test helpers
         run: |
           bash test/test_hts_helper.sh
+          bash test/test_dataset_installer.sh
+          bash test/test_fetch_clinvar.sh
           bash test/test_macos_launcher.sh
 
       - name: Standalone universal Mac release

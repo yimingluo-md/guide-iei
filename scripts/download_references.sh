@@ -23,6 +23,7 @@
 #
 # Usage:
 #   scripts/download_references.sh [config.yaml] [--only vep_cache,fasta,loftee,spliceai,repeatmasker,segdup,ccre,liftover]
+#       [--skip-final-status]  # internal: bulk install reports status once
 #
 # Idempotent: existing non-empty files are skipped. Re-run to resume.
 # =============================================================================
@@ -35,9 +36,11 @@ cd "$ROOT"
 CONFIG="${1:-${ROOT}/config/annotation.config.yaml}"
 shift || true
 ONLY=""
+SKIP_FINAL_STATUS=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --only) ONLY="$2"; shift 2 ;;
+        --skip-final-status) SKIP_FINAL_STATUS=1; shift ;;
         *) shift ;;
     esac
 done
@@ -189,11 +192,14 @@ if want vep_cache; then
                 --connections 8 --chunk-mib 128 --sum-check "$CHECKSUM_ENTRY" \
                 || die "VEP cache download or checksum validation failed"
         fi
-        log "checking VEP cache archive integrity..."
-        tar -tzf "$CACHE_TARBALL" >/dev/null || die "VEP cache archive integrity check failed"
         EXTRACT_STAGE="$(mktemp -d "${VEP_CACHE_DIR}/.vep-extract.XXXXXX")"
-        log "extracting VEP cache to staging directory..."
-        tar -xzf "$CACHE_TARBALL" -C "$EXTRACT_STAGE"
+        # The archive already passed its pinned SHA-256/BSD checksum. tar's
+        # extraction also validates the gzip stream and exits nonzero on
+        # corruption, so a separate full `tar -t` pass only decompresses the
+        # multi-GB archive twice. Staging + structure checks preserve atomicity.
+        log "extracting verified VEP cache to staging directory..."
+        tar -xzf "$CACHE_TARBALL" -C "$EXTRACT_STAGE" \
+            || { rm -rf "$EXTRACT_STAGE"; die "VEP cache archive extraction failed"; }
         [[ -d "${EXTRACT_STAGE}/homo_sapiens/${VEP_REL}_${ASSEMBLY}" ]] \
             || die "VEP cache archive did not contain the expected directory"
         [[ ! -e "${VEP_CACHE_DIR}/homo_sapiens" ]] \
@@ -519,27 +525,29 @@ fi
 # ============================================================================ #
 # dbNSFP status reminder (cannot be auto-downloaded — academic registration).
 # ============================================================================ #
-DBNSFP_ENABLED="$(yaml_get "$CONFIG" plugins.dbNSFP.enabled)"
-DBNSFP_PATH="$(absdir "$(yaml_get "$CONFIG" plugins.dbNSFP.path)")"
-if [[ "$DBNSFP_ENABLED" == "true" && ! -s "$DBNSFP_PATH" ]]; then
-    warn "-------------------------------------------------------------------"
-    warn "dbNSFP is enabled but not present at: $DBNSFP_PATH"
-    warn "dbNSFP (~50 GB) CANNOT be auto-downloaded. One-time manual steps:"
-    warn "  1. Register (institutional email) at https://www.dbnsfp.org/download"
-    warn "     -> you receive an academic access code after verification."
-    warn "  2. Request the download links with that email + access code."
-    warn "  3. Download + unzip the academic release (currently v5.3.1a)."
-    warn "  4. Build the GRCh38 file for VEP:"
-    warn "       scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir"
-    warn "dbNSFP is required by the diagnostic profile, so annotation will stop"
-    warn "until the configured file and tabix index are present."
-    warn "-------------------------------------------------------------------"
+if [[ "$SKIP_FINAL_STATUS" != "1" ]]; then
+    DBNSFP_ENABLED="$(yaml_get "$CONFIG" plugins.dbNSFP.enabled)"
+    DBNSFP_PATH="$(absdir "$(yaml_get "$CONFIG" plugins.dbNSFP.path)")"
+    if [[ "$DBNSFP_ENABLED" == "true" && ! -s "$DBNSFP_PATH" ]]; then
+        warn "-------------------------------------------------------------------"
+        warn "dbNSFP is enabled but not present at: $DBNSFP_PATH"
+        warn "dbNSFP (~50 GB) CANNOT be auto-downloaded. One-time manual steps:"
+        warn "  1. Register (institutional email) at https://www.dbnsfp.org/download"
+        warn "     -> you receive an academic access code after verification."
+        warn "  2. Request the download links with that email + access code."
+        warn "  3. Download + unzip the academic release (currently v5.3.1a)."
+        warn "  4. Build the GRCh38 file for VEP:"
+        warn "       scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir"
+        warn "dbNSFP is required by the diagnostic profile, so annotation will stop"
+        warn "until the configured file and tabix index are present."
+        warn "-------------------------------------------------------------------"
+    fi
+
+    python3 "${ROOT}/pipeline/check_dbnsfp_version.py" --config "$CONFIG" \
+        || warn "dbNSFP update check could not be completed"
+
+    log "download_references.sh done. Review WARNs above for sources needing manual fetch."
+    log "Still to supply manually: dbNSFP and PromoterAI (scripts/prepare_promoterai.sh)."
+    log "Optional LoGoFunc: scripts/download_logofunc.sh or use the dataset setup UI."
+    log "Run scripts/fetch_clinvar.sh (or the main run script) to get ClinVar."
 fi
-
-python3 "${ROOT}/pipeline/check_dbnsfp_version.py" --config "$CONFIG" \
-    || warn "dbNSFP update check could not be completed"
-
-log "download_references.sh done. Review WARNs above for sources needing manual fetch."
-log "Still to supply manually: dbNSFP and PromoterAI (scripts/prepare_promoterai.sh)."
-log "Optional LoGoFunc: scripts/download_logofunc.sh or use the dataset setup UI."
-log "Run scripts/fetch_clinvar.sh (or the main run script) to get ClinVar."

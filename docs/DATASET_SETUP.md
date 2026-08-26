@@ -29,6 +29,12 @@ bash docker/build.sh
 
 (`scripts/setup_environment.sh --install` offers this too.)
 
+The application's one-click recommended-dataset action performs this check
+automatically: when the native `bgzip`, `tabix`, and `samtools` set is absent
+and the configured local image has not been built, it builds the image before
+starting large downloads. Direct command-line users can still build it
+explicitly as shown above.
+
 ## 2. Freely downloadable references
 
 ```bash
@@ -41,6 +47,12 @@ Large downloads are fetched from a pinned, checksum-verified Hugging Face
 mirror first (much faster than the canonical EBI/Ensembl servers), falling
 back to the canonical sources automatically. Set `IEI_REFERENCE_MIRROR=off` to
 force canonical sources only.
+
+The one-click installer runs the mirror-backed and canonical-source reference
+groups in two bounded parallel lanes. This changes only scheduling: the
+SpliceAI source, payload, validation, and download connection count are not
+changed. Docker fallback uses only the locally built project image and never
+pulls a same-named image implicitly from a registry.
 
 ## 3. dbNSFP (registration required, ~52 GB)
 
