@@ -209,10 +209,10 @@ plugins:
   # Get the file (manual, one-time) from https://www.dbnsfp.org/ — academic
   # registration required. Since v5.1 the project distributes the variant
   # table as ONE tabix-indexed BGZF file per genome build, ready for VEP;
-  # download dbNSFP<ver>_grch38.gz (+ .tbi + .md5) and install it with
-  # scripts/prepare_dbnsfp.sh or the UI's Choose-folder flow (fast: verify +
-  # move, no rebuild). Legacy per-chromosome ZIPs are still supported and are
-  # re-sorted on GRCh38 coordinates by the same script (~200 GB scratch).
+  # paste the dbNSFP<ver>_grch38.gz link into the UI, which derives .tbi/.md5,
+  # resumes eight ranged connections, verifies, and installs without a second
+  # copy. scripts/prepare_dbnsfp.sh remains available for an existing local
+  # download or legacy per-chromosome ZIPs (~200 GB scratch for the latter).
   dbNSFP:                     # tier: bring-your-own-large
     enabled: true
     required: true

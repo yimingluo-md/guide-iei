@@ -523,7 +523,7 @@ if want liftover; then
 fi
 
 # ============================================================================ #
-# dbNSFP status reminder (cannot be auto-downloaded — academic registration).
+# dbNSFP status reminder (automatic after the user supplies an academic link).
 # ============================================================================ #
 if [[ "$SKIP_FINAL_STATUS" != "1" ]]; then
     DBNSFP_ENABLED="$(yaml_get "$CONFIG" plugins.dbNSFP.enabled)"
@@ -531,13 +531,13 @@ if [[ "$SKIP_FINAL_STATUS" != "1" ]]; then
     if [[ "$DBNSFP_ENABLED" == "true" && ! -s "$DBNSFP_PATH" ]]; then
         warn "-------------------------------------------------------------------"
         warn "dbNSFP is enabled but not present at: $DBNSFP_PATH"
-        warn "dbNSFP (~50 GB) CANNOT be auto-downloaded. One-time manual steps:"
+        warn "dbNSFP (~52 GB) requires one-time academic registration:"
         warn "  1. Register (institutional email) at https://www.dbnsfp.org/download"
         warn "     -> you receive an academic access code after verification."
-        warn "  2. Request the download links with that email + access code."
-        warn "  3. Download + unzip the academic release (currently v5.3.1a)."
-        warn "  4. Build the GRCh38 file for VEP:"
-        warn "       scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir"
+        warn "  2. Request the current single-file GRCh38 download link."
+        warn "  3. Paste that link into the dbNSFP card on Annotation datasets."
+        warn "GUIDE-IEI then downloads, resumes, verifies, and installs the"
+        warn "published .gz plus its .tbi index and .md5 checksum automatically."
         warn "dbNSFP is required by the diagnostic profile, so annotation will stop"
         warn "until the configured file and tabix index are present."
         warn "-------------------------------------------------------------------"
@@ -547,7 +547,7 @@ if [[ "$SKIP_FINAL_STATUS" != "1" ]]; then
         || warn "dbNSFP update check could not be completed"
 
     log "download_references.sh done. Review WARNs above for sources needing manual fetch."
-    log "Still to supply manually: dbNSFP and PromoterAI (scripts/prepare_promoterai.sh)."
+    log "Still registration-gated: dbNSFP (paste its link in the UI) and PromoterAI."
     log "Optional LoGoFunc: scripts/download_logofunc.sh or use the dataset setup UI."
     log "Run scripts/fetch_clinvar.sh (or the main run script) to get ClinVar."
 fi

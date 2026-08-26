@@ -1033,10 +1033,10 @@ export async function startPromoterAiPreparation(sourceDir: string) {
   });
 }
 
-export async function startDbnsfpPreparation(sourceDir: string) {
+export async function startDbnsfpDownload(downloadUrl: string) {
   return request<ResourceDownloadJob>("/api/resource-preparations/dbnsfp", {
     method: "POST",
-    body: JSON.stringify({ source_dir: sourceDir }),
+    body: JSON.stringify({ download_url: downloadUrl }),
   });
 }
 

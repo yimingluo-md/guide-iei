@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Resumable validated HTTP range downloader for very large public references."""
+"""Resumable validated HTTP range downloader for very large references."""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +15,14 @@ import time
 from pathlib import Path
 
 
+def curl_url_config(url: str) -> str:
+    """Pass a possibly private URL to curl without exposing it in argv."""
+    if not url or any(character in url for character in ("\r", "\n", "\0")):
+        raise ValueError("download URL must be one non-empty line")
+    escaped = url.replace("\\", "\\\\").replace('"', '\\"')
+    return f'url = "{escaped}"\n'
+
+
 def remote_metadata(url: str) -> tuple[int, str, str]:
     # Some archives (notably ENCODE) redirect downloads to a signed object URL
     # whose signature is valid for GET but not HEAD.  A one-byte ranged GET
@@ -23,11 +31,12 @@ def remote_metadata(url: str) -> tuple[int, str, str]:
     result = subprocess.run(
         [
             "curl", "-fsSL", "--max-time", "60", "--range", "0-0",
-            "--dump-header", "-", "--output", "/dev/null", url,
+            "--dump-header", "-", "--output", "/dev/null", "--config", "-",
         ],
         check=True,
         capture_output=True,
         text=True,
+        input=curl_url_config(url),
     )
     ranges = re.findall(
         r"^content-range:\s*bytes\s+0-0/(\d+)\s*$",
@@ -128,10 +137,48 @@ def load_resume_state(state_path: Path, partial: Path, url: str,
     return set(state.get("completed", []))
 
 
+def migrate_resume_url_key(state_path: Path, source_url: str,
+                           state_url_key: str) -> None:
+    """Replace a persisted access URL with a caller-provided stable key.
+
+    Registration links can expire while a large download is incomplete. When
+    the caller explicitly supplies a non-secret identity, retain the completed
+    ranges and let the normal size/ETag/Last-Modified checks below decide
+    whether they still belong to the current remote object.
+    """
+    if source_url == state_url_key or not state_path.is_file():
+        return
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    old_url = state.get("url")
+    if not isinstance(old_url, str) or not old_url.startswith(("http://", "https://")):
+        return
+    state["url"] = state_url_key
+    temporary = Path(f"{state_path}.migrate.tmp")
+    temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    temporary.replace(state_path)
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("url")
     parser.add_argument("output")
+    parser.add_argument(
+        "--url-file",
+        help=(
+            "read the source URL from a private file; pass '-' as the positional "
+            "URL so credentials never appear in process arguments"
+        ),
+    )
+    parser.add_argument(
+        "--state-url-key",
+        help=(
+            "non-secret stable URL identity stored in resume metadata; useful "
+            "for registration links whose access token may be renewed"
+        ),
+    )
     parser.add_argument("--connections", type=int, default=8)
     parser.add_argument("--chunk-mib", type=int, default=128)
     parser.add_argument(
@@ -146,6 +193,20 @@ def main() -> int:
     parser.add_argument("--progress-start", type=float, default=0.0)
     parser.add_argument("--progress-scale", type=float, default=100.0)
     args = parser.parse_args()
+
+    if args.url_file:
+        if args.url != "-":
+            raise SystemExit("pass '-' as URL when --url-file is used")
+        source_url = Path(args.url_file).read_text(encoding="utf-8").strip()
+    else:
+        source_url = args.url.strip()
+    try:
+        curl_url_config(source_url)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
+    state_url_key = (args.state_url_key or source_url).strip()
+    if not state_url_key:
+        raise SystemExit("--state-url-key cannot be empty")
 
     output = Path(args.output)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -175,7 +236,7 @@ def main() -> int:
     os.ftruncate(lock_descriptor, 0)
     os.write(lock_descriptor, f"{os.getpid()}\n".encode())
 
-    total, etag, remote_modified = remote_metadata(args.url)
+    total, etag, remote_modified = remote_metadata(source_url)
     version_sidecar = Path(f"{output}.etag")
 
     def stored_version() -> tuple[str, str]:
@@ -259,7 +320,7 @@ def main() -> int:
             except ValueError:
                 prior = {}
             if (
-                prior.get("url") != args.url
+                prior.get("url") != state_url_key
                 or prior.get("size") != total
                 or prior.get("etag") != etag
                 or ("last_modified" in prior
@@ -272,9 +333,11 @@ def main() -> int:
     state_path = Path(f"{output}.ranges.json")
     chunk_size = args.chunk_mib * 1024 * 1024
     chunks = [(start, min(total - 1, start + chunk_size - 1)) for start in range(0, total, chunk_size)]
-    completed = load_resume_state(state_path, partial, args.url, total, etag,
+    if args.state_url_key:
+        migrate_resume_url_key(state_path, source_url, state_url_key)
+    completed = load_resume_state(state_path, partial, state_url_key, total, etag,
                                   chunk_size, remote_modified)
-    state = {"url": args.url, "size": total, "etag": etag,
+    state = {"url": state_url_key, "size": total, "etag": etag,
              "last_modified": remote_modified, "chunk_size": chunk_size,
              "completed": sorted(completed)}
 
@@ -310,11 +373,12 @@ def main() -> int:
                         "--speed-limit", "10240", "--speed-time", "20", "--retry", "2",
                         "--range", f"{start}-{end}", "--output", str(range_file),
                         "--dump-header", str(header_file),
-                        "--write-out", "%{http_code}", args.url,
+                        "--write-out", "%{http_code}", "--config", "-",
                     ],
                     check=True,
                     capture_output=True,
                     text=True,
+                    input=curl_url_config(source_url),
                 )
                 if result.stdout.strip() != "206":
                     raise RuntimeError(f"range {index}: expected HTTP 206, received {result.stdout.strip()}")

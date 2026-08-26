@@ -60,28 +60,28 @@ silently moved when the central root changes. See
 [`docs/SAMPLE_LIBRARY_AND_STORAGE.md`](SAMPLE_LIBRARY_AND_STORAGE.md#configurable-workstation-locations)
 for safe migration and external-disk guidance.
 
-## dbNSFP 5.3.1a — manual academic registration
+## dbNSFP 5.4a — paste the academic download link
 
-dbNSFP is required by the diagnostic profile and cannot be downloaded
-automatically because its academic distribution requires registration.
+dbNSFP is required by the diagnostic profile. GUIDE-IEI cannot obtain access
+on a user's behalf because the academic distribution requires registration,
+but it handles the download and installation after the user supplies the link.
 
 1. Open the [dbNSFP academic download page](https://www.dbnsfp.org/download).
 2. Register with an institutional email address.
-3. Use the access code sent by email to request the academic download links.
-4. Download and extract the GRCh38 files for release 5.3.1a.
-5. In the dataset card, enter the extracted folder and select **Prepare
-   downloaded dbNSFP**. The workbench runs the long preparation locally and
-   keeps its progress and log visible. Allow approximately 220 GiB of
-   temporary/output space. The command-line equivalent remains:
+3. Use the access code sent by email to request the academic download link.
+4. Copy the link for `dbNSFP5.4a_grch38.gz`. It may be the long Outlook Safe
+   Links address shown by an institutional email client.
+5. Paste it into the dbNSFP dataset card and select **Download and install
+   dbNSFP**. GUIDE-IEI unwraps Safe Links, derives the matching `.tbi` and
+   `.md5` URLs, downloads with eight resumable connections, verifies the
+   published MD5 and tabix index, and installs the files into Annotation
+   datasets storage.
 
-   ```bash
-   bash scripts/prepare_dbnsfp.sh /path/to/dbNSFP5.3.1a_unzipped_dir
-   ```
+The link is never placed in a job log or configuration file and its private
+temporary file is removed when the job ends. A retry can resume completed
+ranges even if the user has to request a refreshed academic link.
 
-6. Return to the dataset setup screen. It must detect both the configured
-   `dbNSFP5.3.1a_grch38.gz` and `dbNSFP5.3.1a_grch38.gz.tbi`.
-
-The prepared dataset is approximately 50 GB. Keep it on fast local storage
+The installed dataset is approximately 52 GB. Keep it on fast local storage
 when possible. Do not select every dbNSFP column by default; the annotation UI
 provides a curated set of additional predictors for each run.
 

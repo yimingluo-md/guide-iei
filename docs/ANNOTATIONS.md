@@ -103,39 +103,31 @@ LOFTEE calls. See [Bayrak et al., Genome Medicine (2023)](https://pubmed.ncbi.nl
 
 ## Preparing the bring-your-own sources
 
-### dbNSFP (one-time, ~52 GB — manual registration)
-dbNSFP **cannot be auto-downloaded** — it is behind an academic registration.
-`scripts/download_references.sh` therefore does not fetch it; it prints these
-steps when dbNSFP is enabled but missing:
+### dbNSFP (one-time, ~52 GB — user-authorized download)
+dbNSFP is behind academic registration, so GUIDE-IEI cannot obtain the access
+link for a user. Once the user pastes that link, the workstation performs the
+entire download and installation:
 
 1. **Register** with your institutional email at
    <https://www.dbnsfp.org/download> — you receive an academic access code
    after verification (free for academic / non-commercial use under
    CC BY-NC-ND 4.0).
 2. **Request the download links** using that email + access code.
-3. **Download the single GRCh38 BGZF file.** Since v5.1 the project
+3. **Copy the single GRCh38 BGZF link.** Since v5.1 the project
    distributes the variant table as one tabix-indexed BGZF file per genome
    build, ready for VEP: `dbNSFP<ver>_grch38.gz` plus its `.tbi` and `.md5`
-   sidecars (the diagnostic profile pins **v5.4a**). The maintainers'
-   recommended fast download:
+   sidecars (the diagnostic profile pins **v5.4a**).
+4. **Paste that `.gz` link into the dbNSFP card.** An Outlook Safe Links URL
+   is accepted. GUIDE-IEI derives the two companion URLs, downloads the table
+   with eight resumable connections, MD5-verifies it, validates the supplied
+   tabix index, and installs it as-is. No `aria2c`, terminal, rebuild, or
+   scratch copy is required.
 
-```bash
-aria2c -c -x8 -s8 -k8M -m0 --retry-wait=5 <download_link>
-```
-
-   (`scripts/parallel_fetch.py <url> <dest> --connections 8 --md5 <md5>` is a
-   bundled no-install alternative.)
-4. **Install it:**
-
-```bash
-scripts/prepare_dbnsfp.sh /path/to/download_folder
-```
-
-   The pre-built file is MD5-verified against the published sidecar, checked
-   for BGZF/tabix integrity, and installed as-is — no rebuild, no scratch
-   space. Legacy per-chromosome ZIP downloads (hg19-sorted) are still
-   supported by the same script, which then merges and re-sorts them on the
-   GRCh38 columns (~200 GB scratch, several hours).
+The access link is sent only to the authorized dbNSFP distribution host. It is
+kept out of process arguments, job logs, and configuration, and its mode-0600
+temporary file is deleted when the job ends. Legacy per-chromosome ZIP
+downloads (hg19-sorted) remain supported by `scripts/prepare_dbnsfp.sh`, which
+merges and re-sorts them on the GRCh38 columns (~200 GB scratch, several hours).
 
 This writes the configured `plugins.dbNSFP.path` (+ `.tbi`). The default
 `plugins.dbNSFP.columns` list is a deliberately small always-on core: CADD,

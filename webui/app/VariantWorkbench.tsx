@@ -66,7 +66,7 @@ import {
   savePhenotypeIndividual,
   stageAnnotationFile,
   startResourceDownload,
-  startDbnsfpPreparation,
+  startDbnsfpDownload,
   startLoGoFuncPreparation,
   startPromoterAiPreparation,
   startCohortImport,
@@ -3750,6 +3750,7 @@ function DatasetSetupCard({
   downloadJob,
   onDownload,
   preparationPath,
+  onPreparationPath,
   choosingPreparationPath,
   onChoosePreparationPath,
   onPrepare,
@@ -3761,6 +3762,7 @@ function DatasetSetupCard({
   downloadJob?: ResourceDownloadJob;
   onDownload: (resourceId: ResourceDownloadJob["resource_id"]) => void;
   preparationPath: string;
+  onPreparationPath: (value: string) => void;
   choosingPreparationPath: boolean;
   onChoosePreparationPath: () => void;
   onPrepare: () => void;
@@ -3792,22 +3794,16 @@ function DatasetSetupCard({
     : source.id === "cadd_wgs" ? source.installed ? "Verify 83 GiB files" : "Download / resume 83 GiB"
     : source.id === "logofunc" ? source.installed ? "Re-download from Zenodo" : "Download from Zenodo"
     : source.installed ? "Verify files" : "Download / resume";
-  const preparationLabel = source.prepare_id === "dbnsfp"
-    ? "Choose the downloaded dbNSFP folder"
-    : source.prepare_id === "logofunc"
+  const preparationLabel = source.prepare_id === "logofunc"
     ? "Choose the downloaded LoGoFunc file"
     : "Choose the licensed PromoterAI source folder";
   const chosenSourceName = preparationPath
     ? preparationPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Selected source"
     : "";
-  const preparationButton = source.prepare_id === "dbnsfp"
-    ? "Prepare and install dbNSFP"
-    : source.prepare_id === "logofunc"
+  const preparationButton = source.prepare_id === "logofunc"
     ? "Import LoGoFunc"
     : source.installed ? "Prepare and replace" : "Prepare and install";
-  const preparationHelp = source.prepare_id === "dbnsfp"
-    ? "The prepared indexed table is written to Annotation datasets storage. After successful installation, the large downloaded chromosome files are removed. Preparation may need about 220 GiB and several hours."
-    : source.prepare_id === "logofunc"
+  const preparationHelp = source.prepare_id === "logofunc"
     ? "The checksum-verified 3.66 GB table and index are moved into Annotation datasets storage; they are removed from the selected download location."
     : "Prepared files are written to Annotation datasets storage. After successful installation, the two large licensed source files are removed from the selected folder. Nothing is uploaded.";
   return <article className={`dataset-card ${source.installed ? "installed" : "missing"} ${source.setup_mode} ${supported ? "" : "profile-unavailable"}`}>
@@ -3822,7 +3818,8 @@ function DatasetSetupCard({
     <div className="dataset-meta"><span>{setupLabels[source.setup_mode]}</span>{source.access === "registration" && <span>Registration required</span>}{source.access === "license" && <span>License required</span>}{source.access === "terms" && <span>Usage terms apply</span>}{source.recommendation === "optional" && <span>Optional</span>}{source.size_hint && <span>{source.size_hint}</span>}</div>
     {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(downloadJob, downloadJob?.operation === "preparation" ? "Preparing local dataset…" : "Starting dataset download…")}</span></div>}
     {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Download log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
-    {source.prepare_id && <div className="dataset-preparation"><span className="dataset-preparation-label">{preparationLabel}</span><div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "logofunc" ? "Choose file" : "Choose folder"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div><button type="button" disabled={activeDownload || choosingPreparationPath || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Preparing…" : preparationButton}</button><small>{preparationHelp}</small></div>}
+    {source.prepare_id === "dbnsfp" && <div className="dataset-preparation"><label className="dataset-download-link"><span>Paste the private dbNSFP5.4a GRCh38 download link</span><input type="url" value={preparationPath} autoComplete="off" spellCheck={false} disabled={activeDownload} placeholder="https://…/dbNSFP5.4a_grch38.gz" onChange={(event) => onPreparationPath(event.target.value)}/></label><button type="button" disabled={activeDownload || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Downloading and installing…" : source.installed ? "Download and replace dbNSFP" : "Download and install dbNSFP"}</button><small>Paste only the main .gz link from the academic email. GUIDE-IEI accepts Outlook Safe Links, derives the .tbi and .md5 links, resumes interrupted transfers with eight connections, and keeps the private link out of logs and configuration.</small></div>}
+    {source.prepare_id && source.prepare_id !== "dbnsfp" && <div className="dataset-preparation"><span className="dataset-preparation-label">{preparationLabel}</span><div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "logofunc" ? "Choose file" : "Choose folder"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div><button type="button" disabled={activeDownload || choosingPreparationPath || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Preparing…" : preparationButton}</button><small>{preparationHelp}</small></div>}
     <div className="dataset-actions">
       {downloadId && (source.setup_mode !== "bundled" || !source.installed) && <button type="button" disabled={activeDownload} onClick={() => onDownload(downloadId)}>{activeDownload ? "Downloading…" : buttonLabel}</button>}
       {source.reference_url && <a href={source.reference_url} target="_blank" rel="noreferrer">{source.reference_label || "Official reference"} ↗</a>}
@@ -3846,7 +3843,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   const [passOnly, setPassOnly] = useState(true);
   const [useClinvar, setUseClinvar] = useState(true);
   const [sourceEnabled, setSourceEnabled] = useState<Record<string, boolean>>({});
-  const [dbnsfpSourceDir, setDbnsfpSourceDir] = useState("");
+  const [dbnsfpDownloadUrl, setDbnsfpDownloadUrl] = useState("");
   const [promoterAiSourceDir, setPromoterAiSourceDir] = useState("");
   const [loGoFuncSourcePath, setLoGoFuncSourcePath] = useState("");
   const [choosingResourceSource, setChoosingResourceSource] = useState<string | null>(null);
@@ -4005,14 +4002,13 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     }
   }
 
-  async function choosePreparationSource(resourceId: "dbnsfp" | "promoterai" | "logofunc") {
+  async function choosePreparationSource(resourceId: "promoterai" | "logofunc") {
     setServiceError("");
     setChoosingResourceSource(resourceId);
     try {
       const selection = await chooseLocalResourceSource(resourceId);
       if (selection.cancelled || !selection.path) return;
-      if (resourceId === "dbnsfp") setDbnsfpSourceDir(selection.path);
-      else if (resourceId === "promoterai") setPromoterAiSourceDir(selection.path);
+      if (resourceId === "promoterai") setPromoterAiSourceDir(selection.path);
       else setLoGoFuncSourcePath(selection.path);
     } catch (error) {
       setServiceError(
@@ -4041,14 +4037,15 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   async function prepareDbnsfp() {
     setServiceError("");
     try {
-      const job = await startDbnsfpPreparation(dbnsfpSourceDir.trim());
+      const job = await startDbnsfpDownload(dbnsfpDownloadUrl.trim());
+      setDbnsfpDownloadUrl("");
       setResourceJobs((current) => [
         job,
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
       setServiceError(
-        error instanceof Error ? error.message : "Could not prepare dbNSFP.",
+        error instanceof Error ? error.message : "Could not download and install dbNSFP.",
       );
     }
   }
@@ -4144,7 +4141,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       && !bundledSources.includes(source)
       && !optionalSources.includes(source),
   );
-  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpSourceDir : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => void choosePreparationSource(source.id as "dbnsfp" | "promoterai" | "logofunc")} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>);
+  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpDownloadUrl : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "dbnsfp" ? setDbnsfpDownloadUrl : () => undefined} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => { if (source.id === "promoterai" || source.id === "logofunc") void choosePreparationSource(source.id); }} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>);
   return <section className="intake-card annotate-card intake-primary-card">
     <div className="intake-card-head"><span className="step-number">{step}</span><div><p className="eyebrow">Local VEP</p><h2>{step === 1 ? "Select raw VCF files" : setupOnly ? "Set up annotation datasets" : "Check annotation settings"}</h2></div><span className={`service-badge ${capabilities ? "online" : "offline"}`}>{capabilities ? "service ready" : "service offline"}</span></div>
     {step === 1 ? <>

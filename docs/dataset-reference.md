@@ -11,11 +11,14 @@ clinician-focused language pass (2026-08). This file seeds the future user
 webpage; each section holds the process detail the UI no longer shows.
 
 ## dbNSFP
-- Faster download option from the instruction email:
-  `aria2c -c -x8 -s8 -k8M -m0 --retry-wait=5 <download_link>`
-  (or `scripts/parallel_fetch.py <url> <dest> --connections 8 --md5 <md5>`).
-- Installation verifies the published MD5 sidecar and the tabix index, then
-  moves the file into Annotation datasets storage.
+- The UI accepts the authorized `dbNSFP5.4a_grch38.gz` link from the academic
+  instruction email, including an Outlook Safe Links wrapper. It appends
+  `.tbi` and `.md5` to the unwrapped path to obtain the matching companions.
+- The bundled downloader uses eight concurrent HTTP ranges, retains verified
+  ranges for resume, verifies the published MD5 and tabix index, and installs
+  directly into Annotation datasets storage without a second 52 GB copy.
+- The private URL is supplied to curl through mode-0600 files rather than
+  process arguments and is never written to the job log or configuration.
 - Legacy per-chromosome ZIP releases remain supported: they are merged and
   re-sorted on GRCh38 coordinates (needs ~220 GiB of temporary space and
   several hours) by `scripts/prepare_dbnsfp.sh`.

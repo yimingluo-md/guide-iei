@@ -16,6 +16,7 @@ scripts/install_recommended_datasets.sh  one-click exome/WGS public dataset setu
 scripts/update_refreshable_datasets.sh  refresh ClinVar + ClinGen variant curations
 scripts/build_native_reference_bundle.sh  package shipped SCREEN + hg19 resources
 scripts/build_coding_bed.sh     build coding+splice BED (Ensembl GTF)
+scripts/download_dbnsfp.sh      resume + verify a user-authorized dbNSFP download
 scripts/prepare_dbnsfp.sh       verify + install a downloaded dbNSFP release
 scripts/fetch_clinvar.sh        download + version-stamp the latest ClinVar
 scripts/run_annotation.sh       main entry point: config -> VEP -> annotated VCF

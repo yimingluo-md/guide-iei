@@ -53,6 +53,12 @@ in Privacy & Security.
 
 **Faster, safer initial dataset setup**
 
+- dbNSFP no longer asks nontechnical users to install `aria2c`, download three
+  files, or choose a source folder. After academic registration, users paste
+  the main GRCh38 link (including an Outlook Safe Link) into the dataset card;
+  GUIDE-IEI privately derives the `.tbi` and `.md5` companions, downloads with
+  eight resumable connections, verifies the MD5 and tabix index, and installs
+  the published file without rebuilding or making a second 52 GB copy.
 - One-click setup now validates the indexing tools before large transfers. If
   a clean machine lacks native bioinformatics tools, GUIDE-IEI builds its
   configured local annotation-tool image first, so a missing backend cannot

@@ -1005,6 +1005,44 @@ class AnnotationJobServiceTests(unittest.TestCase):
             result = self.service.choose_local_resource_source({"resource_id": "promoterai"})
         self.assertTrue(result["cancelled"])
 
+    def test_dbnsfp_download_accepts_safelink_and_keeps_authorized_url_secret(self):
+        target = "https://dist.genos.us/academic/authorized/dbNSFP5.4a_grch38.gz"
+        safe_link = (
+            "https://nam02.safelinks.protection.outlook.com/"
+            "?url=https%3A%2F%2Fdist.genos.us%2Facademic%2Fauthorized%2F"
+            "dbNSFP5.4a_grch38.gz&data=opaque"
+        )
+        with patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ) as ensure_space, patch.object(
+            self.service,
+            "_start_resource_job",
+            return_value={"id": "dbnsfp-job", "status": "queued"},
+        ) as start:
+            result = self.service.start_dbnsfp_download({"download_url": safe_link})
+        self.assertEqual(result["id"], "dbnsfp-job")
+        ensure_space.assert_called_once_with("dbnsfp_download")
+        command = start.call_args.args[1]
+        self.assertEqual(command[0], "bash")
+        self.assertTrue(command[1].endswith("scripts/download_dbnsfp.sh"))
+        secret_path = Path(command[2])
+        self.assertEqual(secret_path.read_text().strip(), target)
+        self.assertEqual(secret_path.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn(target, json.dumps(command))
+        self.assertNotIn(safe_link, json.dumps(command))
+        self.assertEqual(start.call_args.kwargs["sensitive_paths"], (secret_path,))
+        secret_path.unlink()
+
+    def test_dbnsfp_download_rejects_untrusted_or_wrong_release_links(self):
+        cases = (
+            "http://dist.genos.us/academic/code/dbNSFP5.4a_grch38.gz",
+            "https://example.org/academic/code/dbNSFP5.4a_grch38.gz",
+            "https://dist.genos.us/academic/code/dbNSFP5.3a_grch38.gz",
+        )
+        for value in cases:
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                self.service.start_dbnsfp_download({"download_url": value})
+
     def test_resource_progress_lines_become_readable_stage_messages(self):
         update = AnnotationJobService._resource_progress_update
         # A section marker sets the stage and resets the bar.

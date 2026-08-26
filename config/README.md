@@ -53,8 +53,9 @@ genotypes.
 See [`../docs/ANNOTATIONS.md`](../docs/ANNOTATIONS.md) for the full table of
 which sources the download helper fetches automatically vs. which you must
 supply yourself. SpliceAI MANE SNVs and score-only CADD v1.7 WGS files are
-downloadable in the UI; dbNSFP is large/registered; PromoterAI is prepared from
-user-licensed Illumina files. LoGoFunc is a public,
+downloadable in the UI; dbNSFP registration still happens on the official site,
+then the UI downloads from the pasted authorized link; PromoterAI is prepared
+from user-licensed Illumina files. LoGoFunc is a public,
 optional Zenodo download installed from the local UI or with
 `scripts/download_logofunc.sh` / `scripts/prepare_logofunc.sh`.
 

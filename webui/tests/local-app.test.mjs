@@ -148,11 +148,12 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Optional add-ons/);
   assert.match(source, /Repair bundled files/);
   assert.match(source, /Registration and setup instructions/);
-  assert.match(source, /Prepare and install dbNSFP/);
+  assert.match(source, /Paste the private dbNSFP5\.4a GRCh38 download link/);
+  assert.match(source, /Download and install dbNSFP/);
+  assert.match(source, /derives the \.tbi and \.md5 links/);
   assert.match(source, /Choose folder/);
   assert.match(service, /\/api\/local-resource-source\/choose/);
   assert.match(service, /chooseLocalResourceSource/);
-  assert.match(source, /220 GiB/);
   assert.match(source, /Download \/ resume/);
   assert.match(source, /Download \/ resume 83 GiB/);
   assert.match(service, /"cadd_wgs"/);
@@ -167,7 +168,7 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(service, /\/api\/resource-downloads/);
   assert.match(service, /startResourceDownload/);
   assert.match(service, /\/api\/resource-preparations\/dbnsfp/);
-  assert.match(service, /startDbnsfpPreparation/);
+  assert.match(service, /startDbnsfpDownload/);
   assert.match(source, /Prepare and install/);
   assert.match(source, /Choose the licensed PromoterAI source folder/);
   assert.match(service, /\/api\/resource-preparations\/promoterai/);

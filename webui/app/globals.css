@@ -358,6 +358,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .dataset-preparation button:disabled { opacity: .55; cursor: not-allowed; }
 .dataset-preparation small { margin-top: 6px; }
 .dataset-preparation-label { display: block; margin-bottom: 5px; color: #53645f; font-size: 8px; font-weight: 650; }
+.dataset-download-link { display: block; margin-bottom: 7px; }
+.dataset-download-link > span { margin-bottom: 5px; color: #53645f; font-weight: 650; }
+.dataset-download-link input { width: 100%; padding: 7px 8px; border: 1px solid #cbdad5; border-radius: 4px; background: white; color: #40534d; font: 8px/1.4 var(--font-geist-mono); }
+.dataset-download-link input:focus { outline: 2px solid #9bcabe; outline-offset: 1px; }
 .dataset-source-picker { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; padding: 6px; border: 1px solid #d6e2de; border-radius: 4px; background: white; }
 .dataset-source-picker > span { min-width: 0; }
 .dataset-source-picker strong { display: block; overflow: hidden; color: #40534d; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }

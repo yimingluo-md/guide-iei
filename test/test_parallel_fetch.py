@@ -11,9 +11,15 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "scripts"))
-from parallel_fetch import load_resume_state  # noqa: E402
+from parallel_fetch import (  # noqa: E402
+    curl_url_config,
+    load_resume_state,
+    migrate_resume_url_key,
+    remote_metadata,
+)
 
 
 class ResumeStateTests(unittest.TestCase):
@@ -110,6 +116,49 @@ class ResumeStateTests(unittest.TestCase):
             self.call("Tue, 18 Aug 2026 07:00:00 GMT"), set()
         )
         self.assertFalse(self.state.exists())
+
+    def test_private_url_is_passed_to_curl_config_not_process_arguments(self):
+        private_url = "https://example.test/academic/private/data.gz?token=secret"
+        completed = Mock(
+            stdout=(
+                "HTTP/2 206\r\n"
+                "content-range: bytes 0-0/4096\r\n"
+                "etag: test-etag\r\n"
+                "last-modified: Wed, 26 Aug 2026 12:00:00 GMT\r\n\r\n"
+            )
+        )
+        with patch("parallel_fetch.subprocess.run", return_value=completed) as run:
+            self.assertEqual(
+                remote_metadata(private_url),
+                (4096, "test-etag", "Wed, 26 Aug 2026 12:00:00 GMT"),
+            )
+        command = run.call_args.args[0]
+        self.assertNotIn(private_url, command)
+        self.assertEqual(command[-2:], ["--config", "-"])
+        self.assertIn(private_url, run.call_args.kwargs["input"])
+
+    def test_curl_url_config_rejects_multiline_input(self):
+        with self.assertRaises(ValueError):
+            curl_url_config("https://example.test/data\nurl=https://attacker.test")
+
+    def test_private_resume_url_migrates_to_stable_key(self):
+        private_url = "https://example.test/academic/data.gz?token=expired"
+        stable_key = "dbnsfp:data.gz"
+        self.state.write_text(json.dumps({
+            **self.meta, "url": private_url, "completed": [0, 2],
+        }))
+        self.partial.write_bytes(b"\0" * 4096)
+        migrate_resume_url_key(self.state, "https://example.test/new", stable_key)
+        persisted = json.loads(self.state.read_text())
+        self.assertEqual(persisted["url"], stable_key)
+        self.assertNotIn("expired", self.state.read_text())
+        self.assertEqual(
+            load_resume_state(
+                self.state, self.partial, stable_key, self.meta["size"],
+                self.meta["etag"], self.meta["chunk_size"],
+            ),
+            {0, 2},
+        )
 
 
 if __name__ == "__main__":

@@ -86,16 +86,16 @@ each user registers once:
 
 1. At **[dbnsfp.org/download](https://www.dbnsfp.org/download)**, request
    the free **academic** access using an institutional email address.
-2. The instruction email links the current academic release. Download the
-   three GRCh38 files of the single-file release —
-   `dbNSFP5.4a_grch38.gz`, its `.tbi` index, and its `.md5` checksum —
-   into one folder (~52 GB; a download manager such as `aria2c` is
-   convenient, but a browser suffices).
-3. On the dataset screen, point the **dbNSFP** card at that folder. The
-   application verifies the checksum, validates the format, and installs
-   the file; no rebuild is needed.
+2. The instruction email links the current academic release. Copy the private
+   link for `dbNSFP5.4a_grch38.gz`; an Outlook Safe Link is accepted as-is.
+3. On the dataset screen, paste that link into the **dbNSFP** card and select
+   **Download and install dbNSFP**. GUIDE-IEI derives the matching `.tbi` and
+   `.md5` links, downloads all three files with eight resumable connections,
+   verifies the published checksum and index, and installs the resource. The
+   private link is removed after the job and is not written to the job log or
+   configuration.
 
-![The dbNSFP card: choose the downloaded folder and the workstation validates and installs it; the PromoterAI card follows the same pattern](../assets/img/dataset-dbnsfp-card.png)
+![The annotation-dataset screen groups registration-gated resources and their setup controls](../assets/img/dataset-dbnsfp-card.png)
 
 ## Step 3 — PromoterAI: recommended for whole-genome work
 

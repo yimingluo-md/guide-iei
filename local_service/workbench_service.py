@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import gzip
 import hashlib
+import html
 import json
 import os
 import platform
@@ -146,8 +147,9 @@ ANNOTATION_SOURCE_SETUP = {
         "size_hint": "approximately 52 GB download; installed as-is",
         "instructions": [
             "Register with your institutional email at the dbNSFP academic download page (free for academic use).",
-            "From the instruction email, download the single GRCh38 file (dbNSFP5.4a_grch38.gz) together with its .tbi and .md5 companion files.",
-            "Click Choose folder and pick where they landed — verification and installation are automatic; no rebuild or extra disk space is needed.",
+            "Copy the dbNSFP5.4a_grch38.gz download link from the instruction email and paste it here; an Outlook Safe Links URL is accepted.",
+            "GUIDE-IEI derives the matching .tbi and .md5 links, downloads all three files with eight resumable connections, verifies the published checksum and index, and installs them automatically.",
+            "The private academic link is used only for this local download, is never written to the job log or configuration, and is deleted from temporary storage when the job ends.",
             "Coding-region CADD, AlphaMissense, REVEL and the other bundled predictors all come from this one dataset.",
         ],
     },
@@ -402,8 +404,8 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
         (("clinvar", "dest_dir"), 2 * GIB, True),
         (("clingen_erepo", "dest_dir"), 1 * GIB, True),
     ],
-    "dbnsfp_prepare": [
-        (("plugins", "dbNSFP", "path"), 220 * GIB, False),
+    "dbnsfp_download": [
+        (("plugins", "dbNSFP", "path"), 60 * GIB, False),
     ],
 }
 
@@ -649,6 +651,8 @@ class AnnotationJobService:
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.resource_logs_dir = self.state_dir / "resource-logs"
         self.resource_logs_dir.mkdir(parents=True, exist_ok=True)
+        self.resource_secrets_dir = self.state_dir / "resource-secrets"
+        self.resource_secrets_dir.mkdir(parents=True, exist_ok=True)
         self.store = JobStore(self.state_dir / "workbench.sqlite3")
         self.cohort = CohortStore(
             self.state_dir / "cohort.sqlite3",
@@ -708,6 +712,7 @@ class AnnotationJobService:
         self._stop = threading.Event()
         self._recover_stale_storage_migrations()
         self._terminate_orphaned_resource_jobs()
+        self._remove_stale_resource_secrets()
         self._bulk_intake_lock = threading.Lock()
         self._bulk_intake_thread: threading.Thread | None = None
         self._bulk_intake_cancelled: set[str] = set()
@@ -2232,34 +2237,76 @@ class AnnotationJobService:
             "name": path.name,
         }
 
-    def start_dbnsfp_preparation(self, payload: dict) -> dict:
-        self._ensure_active_storage_available(require_annotation_root=True)
-        source_value = payload.get("source_dir") if isinstance(payload, dict) else None
-        if not isinstance(source_value, str) or not source_value.strip():
-            raise ValueError("select the unzipped dbNSFP release folder")
-        source_dir = Path(source_value).expanduser().resolve()
-        if not source_dir.is_dir():
-            raise ValueError(f"dbNSFP source folder does not exist: {source_dir}")
-        prebuilt_files = list(source_dir.glob("dbNSFP*grch38.gz"))
-        chromosome_files = list(source_dir.glob("dbNSFP*variant.chr*"))
-        if not prebuilt_files and not chromosome_files:
+    @staticmethod
+    def _authorized_dbnsfp_url(raw: str, expected_name: str) -> str:
+        """Unwrap and constrain a user-authorized dbNSFP academic link."""
+        value = html.unescape(raw.strip()).strip("<>").strip()
+        if not value or len(value) > 20_000:
+            raise ValueError("paste the dbNSFP download link from the academic instruction email")
+        parsed = urlparse(value)
+        host = (parsed.hostname or "").lower()
+        if host == "safelinks.protection.outlook.com" or host.endswith(
+            ".safelinks.protection.outlook.com"
+        ):
+            target = (parse_qs(parsed.query).get("url") or [""])[0].strip()
+            parsed = urlparse(target)
+            host = (parsed.hostname or "").lower()
+        try:
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("the dbNSFP download link has an invalid port") from exc
+        if (
+            parsed.scheme.lower() != "https"
+            or host != "dist.genos.us"
+            or port not in {None, 443}
+            or parsed.username is not None
+            or parsed.password is not None
+            or not parsed.path.startswith("/academic/")
+        ):
             raise ValueError(
-                "the selected folder contains neither a pre-built dbNSFP*_grch38.gz "
-                "file nor dbNSFP per-chromosome variant files"
+                "paste the authorized dbNSFP link from the instruction email "
+                "(it must resolve to https://dist.genos.us/academic/…)"
             )
-        # The pre-built single-file release installs by verified move — the
-        # legacy scratch-space requirement applies only to the re-sort path.
-        if not prebuilt_files:
-            self._ensure_annotation_download_space("dbnsfp_prepare")
-        config_path = self._write_resource_config("dbnsfp")
-        command = [
-            "bash",
-            str(self.pipeline_root / "scripts" / "prepare_dbnsfp.sh"),
-            str(source_dir),
-            str(config_path),
-            "--remove-source-after-success",
-        ]
-        return self._start_resource_job("dbnsfp", command, "preparation")
+        if unquote(Path(parsed.path).name) != expected_name:
+            raise ValueError(f"the authorized link must be for {expected_name}")
+        return parsed._replace(fragment="").geturl()
+
+    def _write_resource_secret(self, prefix: str, value: str) -> Path:
+        self.resource_secrets_dir.mkdir(parents=True, exist_ok=True)
+        if os.name == "posix":
+            os.chmod(self.resource_secrets_dir, 0o700)
+        path = self.resource_secrets_dir / f"{prefix}.{uuid.uuid4().hex}.secret"
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(value + "\n")
+        return path
+
+    def start_dbnsfp_download(self, payload: dict) -> dict:
+        self._ensure_active_storage_available(require_annotation_root=True)
+        raw_url = payload.get("download_url") if isinstance(payload, dict) else None
+        if not isinstance(raw_url, str):
+            raise ValueError("paste the dbNSFP download link from the academic instruction email")
+        config = self._load_config(self.pipeline_root / "config" / "annotation.config.yaml")
+        expected_name = Path(self._managed_preparation_paths(config, "dbnsfp")["path"]).name
+        authorized_url = self._authorized_dbnsfp_url(raw_url, expected_name)
+        self._ensure_annotation_download_space("dbnsfp_download")
+        secret_path = self._write_resource_secret("dbnsfp-url", authorized_url)
+        try:
+            config_path = self._write_resource_config("dbnsfp")
+            command = [
+                "bash",
+                str(self.pipeline_root / "scripts" / "download_dbnsfp.sh"),
+                str(secret_path),
+                str(config_path),
+            ]
+            return self._start_resource_job(
+                "dbnsfp", command, "download", sensitive_paths=(secret_path,)
+            )
+        except Exception:
+            # A failure before the worker owns the file must not retain the
+            # private academic access URL until the next service restart.
+            secret_path.unlink(missing_ok=True)
+            raise
 
     def start_logofunc_preparation(self, payload: dict) -> dict:
         self._ensure_active_storage_available(require_annotation_root=True)
@@ -2317,6 +2364,7 @@ class AnnotationJobService:
             return
         for directory in (
             self.state_dir,
+            self.resource_secrets_dir,
             self.state_dir / "sample-library",
             # The workspace root holds upload staging — the first place a
             # patient VCF lands — and may be a separately configured
@@ -2343,6 +2391,18 @@ class AnnotationJobService:
 
     def _active_resource_pids_path(self) -> Path:
         return self.state_dir / "resource-job-pids.json"
+
+    def _remove_stale_resource_secrets(self) -> None:
+        try:
+            paths = list(self.resource_secrets_dir.iterdir())
+        except OSError:
+            return
+        for path in paths:
+            try:
+                if path.is_file() or path.is_symlink():
+                    path.unlink()
+            except OSError:
+                pass
 
     def _rewrite_active_resource_pids(self, mutate) -> None:
         # The write is atomic but the read-modify-write was not: two jobs
@@ -2400,7 +2460,11 @@ class AnnotationJobService:
         path.unlink(missing_ok=True)
 
     def _start_resource_job(
-        self, resource_id: str, command: list[str], operation: str
+        self,
+        resource_id: str,
+        command: list[str],
+        operation: str,
+        sensitive_paths: tuple[Path, ...] = (),
     ) -> dict:
         with self._resource_lock:
             for job in self._resource_jobs.values():
@@ -2408,6 +2472,8 @@ class AnnotationJobService:
                     job["resource_id"] == resource_id
                     and job["status"] in {"queued", "running"}
                 ):
+                    for path in sensitive_paths:
+                        path.unlink(missing_ok=True)
                     return self._resource_job_copy(job)
             job_id = uuid.uuid4().hex
             job = {
@@ -2424,6 +2490,7 @@ class AnnotationJobService:
                 "log_path": str(self.resource_logs_dir / f"{job_id}.log"),
                 "operation": operation,
                 "_command": command,
+                "_sensitive_paths": [str(path) for path in sensitive_paths],
             }
             self._resource_jobs[job_id] = job
             thread = threading.Thread(
@@ -2440,6 +2507,7 @@ class AnnotationJobService:
     def _resource_job_copy(job: dict) -> dict:
         result = dict(job)
         result.pop("_command", None)
+        result.pop("_sensitive_paths", None)
         path = Path(result["log_path"])
         if path.exists():
             with path.open("rb") as handle:
@@ -2581,6 +2649,11 @@ class AnnotationJobService:
         finally:
             with self._resource_lock:
                 self._resource_processes.pop(job_id, None)
+                sensitive_paths = list(
+                    (self._resource_jobs.get(job_id) or {}).get("_sensitive_paths", [])
+                )
+            for path in sensitive_paths:
+                Path(path).unlink(missing_ok=True)
             self._clear_active_resource_pid(job_id)
 
     def review_file(self, job_id: str) -> Path:
@@ -4884,7 +4957,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/resource-preparations/dbnsfp":
                 self._json(
-                    self.service.start_dbnsfp_preparation(self._body()),
+                    self.service.start_dbnsfp_download(self._body()),
                     HTTPStatus.ACCEPTED,
                 )
                 return

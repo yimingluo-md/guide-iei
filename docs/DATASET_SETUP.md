@@ -56,16 +56,17 @@ pulls a same-named image implicitly from a registry.
 
 ## 3. dbNSFP (registration required, ~52 GB)
 
-dbNSFP is **not** auto-downloaded: register at
+Register at
 [dbnsfp.org/download](https://www.dbnsfp.org/download) for an academic access
-code, then download the single GRCh38 BGZF file
-(`dbNSFP5.4a_grch38.gz` + `.tbi` + `.md5`) linked from your instruction email
-and install it:
+code. Copy the `dbNSFP5.4a_grch38.gz` link from the instruction email and paste
+it into the dbNSFP card. GUIDE-IEI automatically derives the `.tbi` and `.md5`
+companions, downloads all three with eight resumable connections, verifies the
+published checksum and index, and installs them. Outlook Safe Links are
+accepted; the private link is not retained in logs or configuration.
 
-```bash
-bash scripts/prepare_dbnsfp.sh /path/to/download_folder
-#   (verify + install, no rebuild; legacy per-chromosome ZIPs still work)
-```
+Advanced users who already have a complete local release can still run
+`scripts/prepare_dbnsfp.sh /path/to/download_folder`. Legacy per-chromosome ZIP
+releases remain supported through that command-line path.
 
 Advisory only — report whether a newer academic dbNSFP release exists:
 
