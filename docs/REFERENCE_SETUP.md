@@ -36,6 +36,13 @@ kept together in the prominent **Registration or license required** section.
 LoGoFunc is shown under optional research annotations and is not installed or
 enabled by either recommended profile.
 
+When GUIDE-IEI is launched from a clean source checkout rather than a packaged
+release, the same recommended action also downloads any release reference
+payload that is absent from the checkout: the Ensembl gene model used by the
+frameshift rule, the SCREEN cCRE/gene-TSS files, and the GRCh37 liftover bundle.
+An interrupted repair keeps completed files and can be retried from the same
+button.
+
 ## Choose the annotation-data location first
 
 For a normal workstation setup, use **Storage → Annotation datasets → Change

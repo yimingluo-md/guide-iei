@@ -38,6 +38,18 @@ custom_tracks:
     file: data/tracks/segdup.bed.gz
   ClinVar:
     file: data/clinvar/clinvar_latest.GRCh38.vcf.gz
+post_processing:
+  loftee_ptc_50bp:
+    gtf: data/regions/genes.gtf.gz
+liftover:
+  grch37_to_grch38:
+    source_fasta: data/liftover/hg19.fa.gz
+    chain: data/liftover/hg19ToGRCh38.chain.gz
+wgs_review:
+  ccre:
+    bed: data/regions/ccre.bed.gz
+  gene_tss:
+    path: data/regions/gene_tss.tsv
 clingen_erepo:
   database: data/clingen/erepo.sqlite
   vcf: data/clingen/erepo.vcf.gz
@@ -76,7 +88,7 @@ while [[ $# -gt 0 ]]; do
 done
 [[ -n "$only" ]]
 if [[ "${TEST_EXPECT_SINGLE:-0}" == "1" ]]; then
-  [[ "$only" == "repeatmasker,segdup" && "$skip" == "0" ]]
+  [[ "$only" == "repeatmasker,segdup,ccre,liftover" && "$skip" == "0" ]]
   printf '%s\n' "$only" > "$TEST_ROOT/single-lane.args"
   exit 0
 fi
@@ -114,7 +126,7 @@ PATH="$WORK/bin:$PATH" HTS_VIA_CONTAINER=1 \
 
 grep -Fx 'docker vep-test:local' "$TEST_ROOT/build.args" >/dev/null
 test -f "$TEST_ROOT/lane.vep_cache,fasta,loftee.started"
-test -f "$TEST_ROOT/lane.spliceai,repeatmasker,segdup.started"
+test -f "$TEST_ROOT/lane.spliceai,repeatmasker,segdup,ccre,liftover.started"
 test -f "$TEST_ROOT/clinvar.called"
 test -f "$TEST_ROOT/clingen.called"
 grep -F 'downloading two independent reference groups in parallel' "$WORK/install.log" >/dev/null
@@ -134,6 +146,6 @@ printf 'ready\n' > "$TEST_ROOT/data/spliceai/snv.vcf.gz.tbi"
 TEST_EXPECT_SINGLE=1 PATH="$WORK/bin:$PATH" HTS_VIA_CONTAINER=1 \
   bash "$TEST_ROOT/scripts/install_recommended_datasets.sh" \
     "$TEST_ROOT/config/test.yaml" exome > "$WORK/repair.log" 2>&1
-grep -Fx 'repeatmasker,segdup' "$TEST_ROOT/single-lane.args" >/dev/null
+grep -Fx 'repeatmasker,segdup,ccre,liftover' "$TEST_ROOT/single-lane.args" >/dev/null
 
 echo "PASS  dataset installer preflight, parallel groups, and one-lane repair"

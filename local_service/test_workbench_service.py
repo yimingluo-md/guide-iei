@@ -1086,9 +1086,10 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertTrue(sources["clinvar_aa_match"]["installed"])
 
     def test_annotation_scope_controls_wgs_only_sources(self):
+        profile = self.service.capabilities()["annotation_profile"]
         sources = {
             source["id"]: source
-            for source in self.service.capabilities()["annotation_profile"]["sources"]
+            for source in profile["sources"]
         }
         self.assertEqual(sources["promoterai"]["available_in"], ["whole_genome"])
         self.assertEqual(sources["cadd_wgs"]["available_in"], ["whole_genome"])
@@ -1099,6 +1100,11 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(sources["ccre"]["available_in"], ["whole_genome"])
         self.assertEqual(sources["ccre"]["download_id"], "ccre")
         self.assertEqual(sources["ccre"]["setup_mode"], "bundled")
+        self.assertEqual(sources["loftee_ptc_50bp"]["download_id"], "ccre")
+        self.assertIn(
+            "loftee_ptc_50bp",
+            profile["recommended_profiles"]["exome"]["missing"],
+        )
         self.assertEqual(sources["liftover"]["setup_mode"], "bundled")
         self.assertEqual(sources["dbnsfp"]["access"], "registration")
         self.assertEqual(sources["dbnsfp"]["prepare_id"], "dbnsfp")

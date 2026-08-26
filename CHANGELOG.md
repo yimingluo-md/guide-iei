@@ -73,6 +73,11 @@ in Privacy & Security.
   downloads are complete and only small indexed tracks remain. A failed
   one-click setup stays visible with its error, retained-data explanation,
   log, and an explicit Retry action.
+- Clean source checkouts now restore any absent release reference payloads
+  (the frameshift gene model, SCREEN cCRE map, gene-TSS table, and GRCh37
+  liftover files) through the same recommended setup. The required frameshift
+  dataset card also exposes a working repair action instead of an unactionable
+  **Needs repair** state.
 
 **Known limitation**
 

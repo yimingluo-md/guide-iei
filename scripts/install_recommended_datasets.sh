@@ -25,6 +25,15 @@ abs_path() {
   printf '%s\n' "$path"
 }
 
+abs_path_optional() {
+  local path="$1"
+  if [[ -z "$path" ]]; then
+    printf '\n'
+    return 0
+  fi
+  abs_path "$path"
+}
+
 indexed_ready() {
   local path="$1"
   [[ -s "$path" ]] && { [[ -s "${path}.tbi" ]] || [[ -s "${path}.csi" ]]; }
@@ -51,6 +60,11 @@ GERP="$(abs_path "$(yaml_get "$CONFIG" plugins.LoF.gerp_bigwig)")"
 SPLICEAI="$(abs_path "$(yaml_get "$CONFIG" plugins.SpliceAI.snv)")"
 REPEATMASKER="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.RepeatMasker.file)")"
 SEGDUP="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.SegDup.file)")"
+PTC_GTF="$(abs_path_optional "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.gtf)")"
+CCRE="$(abs_path_optional "$(yaml_get "$CONFIG" wgs_review.ccre.bed)")"
+GENE_TSS="$(abs_path_optional "$(yaml_get "$CONFIG" wgs_review.gene_tss.path)")"
+LIFTOVER_FASTA="$(abs_path_optional "$(yaml_get "$CONFIG" liftover.grch37_to_grch38.source_fasta)")"
+LIFTOVER_CHAIN="$(abs_path_optional "$(yaml_get "$CONFIG" liftover.grch37_to_grch38.chain)")"
 
 missing_references=()
 if [[ ! -f "${VEP_CACHE}/.homo_sapiens_vep_${VEP_RELEASE}_${ASSEMBLY}.complete" ]] \
@@ -62,6 +76,21 @@ files_ready "$ANCESTOR" "$LOFTEE_SQL" "$GERP" || missing_references+=(loftee)
 indexed_ready "$SPLICEAI" || missing_references+=(spliceai)
 indexed_ready "$REPEATMASKER" || missing_references+=(repeatmasker)
 indexed_ready "$SEGDUP" || missing_references+=(segdup)
+ccre_missing=0
+if [[ -n "$PTC_GTF" ]] && [[ ! -s "$PTC_GTF" ]]; then
+  ccre_missing=1
+fi
+if [[ -n "$GENE_TSS" ]] && [[ ! -s "$GENE_TSS" ]]; then
+  ccre_missing=1
+fi
+if [[ -n "$CCRE" ]] && ! indexed_ready "$CCRE"; then
+  ccre_missing=1
+fi
+((ccre_missing)) && missing_references+=(ccre)
+if [[ -n "$LIFTOVER_FASTA" && -n "$LIFTOVER_CHAIN" ]]; then
+  files_ready "$LIFTOVER_FASTA" "${LIFTOVER_FASTA}.fai" \
+    "${LIFTOVER_FASTA}.gzi" "$LIFTOVER_CHAIN" || missing_references+=(liftover)
+fi
 
 CLINVAR="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.ClinVar.file)")"
 clinvar_missing=0
@@ -145,7 +174,7 @@ if ((${#missing_references[@]})); then
   for reference in "${missing_references[@]}"; do
     case "$reference" in
       vep_cache|fasta|loftee) mirror_lane+=("$reference") ;;
-      spliceai|repeatmasker|segdup) canonical_lane+=("$reference") ;;
+      spliceai|repeatmasker|segdup|ccre|liftover) canonical_lane+=("$reference") ;;
     esac
   done
 

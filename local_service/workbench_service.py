@@ -257,6 +257,10 @@ ANNOTATION_SOURCE_SETUP = {
     },
     "loftee_ptc_50bp": {
         "setup_mode": "bundled",
+        # The source clone does not carry the release payload's large native
+        # reference bundle. The cCRE repair also fetches the release-matched
+        # GTF used by this required frameshift postprocessor.
+        "download_id": "ccre",
         "reference_url": "",
         "reference_label": "",
         "size_hint": "",
@@ -4118,7 +4122,7 @@ class AnnotationJobService:
         source_by_id = {source["id"]: source for source in sources}
         automatic_exome_ids = (
             "loftee", "spliceai", "repeatmasker", "segdup", "clinvar",
-            "clingen_erepo",
+            "clingen_erepo", "loftee_ptc_50bp",
         )
 
         def automatic_profile(source_ids: tuple[str, ...]) -> dict:
@@ -4139,7 +4143,7 @@ class AnnotationJobService:
             # installed from its own card. The SCREEN context layer powers the
             # whole-genome Regulatory evidence tab and is small, so it is.
             "whole_genome": automatic_profile(
-                automatic_exome_ids + ("screen_context",)
+                automatic_exome_ids + ("ccre", "screen_context")
             ),
         }
         dbnsfp_header = self._dbnsfp_header_columns(config)
