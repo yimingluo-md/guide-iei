@@ -149,8 +149,18 @@ if ((${#missing_references[@]})); then
     esac
   done
 
-  mirror_only="$(IFS=,; printf '%s' "${mirror_lane[*]}")"
-  canonical_only="$(IFS=,; printf '%s' "${canonical_lane[*]}")"
+  # macOS still ships Bash 3.2, where expanding an explicitly empty array
+  # under `set -u` raises "unbound variable". Build each CSV only when that
+  # lane has members so a resumed installation with just one lane remaining
+  # is a normal, supported path.
+  mirror_only=""
+  canonical_only=""
+  if ((${#mirror_lane[@]})); then
+    mirror_only="$(IFS=,; printf '%s' "${mirror_lane[*]}")"
+  fi
+  if ((${#canonical_lane[@]})); then
+    canonical_only="$(IFS=,; printf '%s' "${canonical_lane[*]}")"
+  fi
   if ((${#mirror_lane[@]} && ${#canonical_lane[@]})); then
     echo "=== downloading two independent reference groups in parallel ==="
     echo "Mirror group: ${mirror_only}"

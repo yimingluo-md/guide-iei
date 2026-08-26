@@ -69,6 +69,10 @@ in Privacy & Security.
   `latest` copy uses a hard link when the filesystem supports one.
 - Clean-clone CI now exercises tool-image preflight, the no-pull guarantee, and
   concurrent reference scheduling.
+- Resuming on macOS now handles the common one-lane case where the large core
+  downloads are complete and only small indexed tracks remain. A failed
+  one-click setup stays visible with its error, retained-data explanation,
+  log, and an explicit Retry action.
 
 **Known limitation**
 

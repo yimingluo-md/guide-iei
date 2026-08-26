@@ -74,7 +74,13 @@ while [[ $# -gt 0 ]]; do
     *) shift ;;
   esac
 done
-[[ -n "$only" && "$skip" == "1" ]]
+[[ -n "$only" ]]
+if [[ "${TEST_EXPECT_SINGLE:-0}" == "1" ]]; then
+  [[ "$only" == "repeatmasker,segdup" && "$skip" == "0" ]]
+  printf '%s\n' "$only" > "$TEST_ROOT/single-lane.args"
+  exit 0
+fi
+[[ "$skip" == "1" ]]
 printf '%s\n' "$only" > "$TEST_ROOT/lane.${only}.args"
 touch "$TEST_ROOT/lane.${only}.started"
 for unused in $(seq 1 200); do
@@ -113,4 +119,21 @@ test -f "$TEST_ROOT/clinvar.called"
 test -f "$TEST_ROOT/clingen.called"
 grep -F 'downloading two independent reference groups in parallel' "$WORK/install.log" >/dev/null
 
-echo "PASS  dataset installer preflight and bounded parallel groups"
+# A real repair commonly has the mirror-backed payloads and SpliceAI already
+# installed, leaving only the small UCSC tracks. This is also the empty-array
+# case that macOS Bash 3.2 must accept under `set -u`.
+mkdir -p "$TEST_ROOT/data/vep_cache/homo_sapiens/113_GRCh38" \
+  "$TEST_ROOT/data/fasta" "$TEST_ROOT/data/loftee" "$TEST_ROOT/data/spliceai"
+touch "$TEST_ROOT/data/vep_cache/.homo_sapiens_vep_113_GRCh38.complete"
+printf 'ready\n' > "$TEST_ROOT/data/fasta/reference.fa.gz"
+printf 'ready\n' > "$TEST_ROOT/data/loftee/human_ancestor.fa.gz"
+printf 'ready\n' > "$TEST_ROOT/data/loftee/loftee.sql"
+printf 'ready\n' > "$TEST_ROOT/data/loftee/gerp.bw"
+printf 'ready\n' > "$TEST_ROOT/data/spliceai/snv.vcf.gz"
+printf 'ready\n' > "$TEST_ROOT/data/spliceai/snv.vcf.gz.tbi"
+TEST_EXPECT_SINGLE=1 PATH="$WORK/bin:$PATH" HTS_VIA_CONTAINER=1 \
+  bash "$TEST_ROOT/scripts/install_recommended_datasets.sh" \
+    "$TEST_ROOT/config/test.yaml" exome > "$WORK/repair.log" 2>&1
+grep -Fx 'repeatmasker,segdup' "$TEST_ROOT/single-lane.args" >/dev/null
+
+echo "PASS  dataset installer preflight, parallel groups, and one-lane repair"

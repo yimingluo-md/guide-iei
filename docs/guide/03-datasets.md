@@ -73,6 +73,10 @@ same time, so progress messages may alternate between datasets. Concurrency is
 limited to two groups to avoid overwhelming a typical workstation or external
 drive. All existing checksum and archive validation remains in place.
 
+If setup is interrupted or stops on an error, completed and verified files are
+kept. The setup panel shows the error and a **Retry** action; retrying checks
+what is already ready and resumes only the missing work.
+
 ## Step 2 — dbNSFP: the one registration
 
 dbNSFP assembles the field's protein-effect predictors (AlphaMissense,

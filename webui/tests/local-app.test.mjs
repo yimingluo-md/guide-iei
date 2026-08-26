@@ -139,6 +139,8 @@ test("provides annotation dataset setup and constrained local downloads", async 
   const service = await readFile(new URL("app/local-service.ts", root), "utf8");
   assert.match(source, /Set up annotation datasets/);
   assert.match(source, /Recommended for exome/);
+  assert.match(source, /Retry exome setup/);
+  assert.match(source, /Files that completed successfully are preserved/);
   assert.match(source, /Recommended for WGS/);
   assert.match(source, /Update installed datasets/);
   assert.match(source, /Needs a one-time registration or license/);
