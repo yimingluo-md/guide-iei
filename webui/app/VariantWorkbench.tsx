@@ -3748,6 +3748,7 @@ function DatasetSetupCard({
   enabled,
   onEnabled,
   downloadJob,
+  actionError,
   onDownload,
   preparationPath,
   onPreparationPath,
@@ -3760,6 +3761,7 @@ function DatasetSetupCard({
   enabled: boolean;
   onEnabled: (value: boolean) => void;
   downloadJob?: ResourceDownloadJob;
+  actionError?: string;
   onDownload: (resourceId: ResourceDownloadJob["resource_id"]) => void;
   preparationPath: string;
   onPreparationPath: (value: string) => void;
@@ -3818,6 +3820,7 @@ function DatasetSetupCard({
     <div className="dataset-meta"><span>{setupLabels[source.setup_mode]}</span>{source.access === "registration" && <span>Registration required</span>}{source.access === "license" && <span>License required</span>}{source.access === "terms" && <span>Usage terms apply</span>}{source.recommendation === "optional" && <span>Optional</span>}{source.size_hint && <span>{source.size_hint}</span>}</div>
     {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(downloadJob, downloadJob?.operation === "preparation" ? "Preparing local dataset…" : "Starting dataset download…")}</span></div>}
     {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Download log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
+    {actionError && <div className="resource-download-error" role="alert"><strong>{actionError}</strong></div>}
     {source.prepare_id === "dbnsfp" && <div className="dataset-preparation"><label className="dataset-download-link"><span>Paste the private dbNSFP GRCh38 (.gz) download link</span><input type="url" value={preparationPath} autoComplete="off" spellCheck={false} disabled={activeDownload} placeholder="https://…/dbNSFP…_grch38.gz" onChange={(event) => onPreparationPath(event.target.value)}/></label><button type="button" disabled={activeDownload || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Downloading and installing…" : source.installed ? "Download and replace dbNSFP" : "Download and install dbNSFP"}</button><small>The filename must end in _grch38.gz — not _grch37.gz. GUIDE-IEI accepts any dbNSFP release version and Outlook Safe Links, derives the .tbi and .md5 links, resumes interrupted transfers with eight connections, and keeps the private link out of logs and configuration.</small></div>}
     {source.prepare_id && source.prepare_id !== "dbnsfp" && <div className="dataset-preparation"><span className="dataset-preparation-label">{preparationLabel}</span><div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "logofunc" ? "Choose file" : "Choose folder"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div><button type="button" disabled={activeDownload || choosingPreparationPath || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Preparing…" : preparationButton}</button><small>{preparationHelp}</small></div>}
     <div className="dataset-actions">
@@ -3851,6 +3854,9 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   const [fork, setFork] = useState(8);
   const [workerMode, setWorkerMode] = useState<"automatic" | "custom">("automatic");
   const [serviceError, setServiceError] = useState("");
+  // Errors from starting a dataset action render beside the control that was
+  // clicked (keyed by resource id), not in the page-bottom service alert.
+  const [resourceActionError, setResourceActionError] = useState<{ context: string; message: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [stageProgress, setStageProgress] = useState("");
   const [expandedLog, setExpandedLog] = useState<{ id: string; text: string } | null>(null);
@@ -3989,6 +3995,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
 
   async function downloadResource(resourceId: ResourceDownloadJob["resource_id"]) {
     setServiceError("");
+    setResourceActionError(null);
     try {
       const job = await startResourceDownload(resourceId);
       setResourceJobs((current) => [
@@ -3996,14 +4003,16 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setServiceError(
-        error instanceof Error ? error.message : "Could not start the download.",
-      );
+      setResourceActionError({
+        context: resourceId,
+        message: error instanceof Error ? error.message : "Could not start the download.",
+      });
     }
   }
 
   async function choosePreparationSource(resourceId: "promoterai" | "logofunc") {
     setServiceError("");
+    setResourceActionError(null);
     setChoosingResourceSource(resourceId);
     try {
       const selection = await chooseLocalResourceSource(resourceId);
@@ -4011,9 +4020,10 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       if (resourceId === "promoterai") setPromoterAiSourceDir(selection.path);
       else setLoGoFuncSourcePath(selection.path);
     } catch (error) {
-      setServiceError(
-        error instanceof Error ? error.message : "Could not open the local file chooser.",
-      );
+      setResourceActionError({
+        context: resourceId,
+        message: error instanceof Error ? error.message : "Could not open the local file chooser.",
+      });
     } finally {
       setChoosingResourceSource(null);
     }
@@ -4021,6 +4031,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
 
   async function preparePromoterAi() {
     setServiceError("");
+    setResourceActionError(null);
     try {
       const job = await startPromoterAiPreparation(promoterAiSourceDir.trim());
       setResourceJobs((current) => [
@@ -4028,14 +4039,16 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setServiceError(
-        error instanceof Error ? error.message : "Could not start PromoterAI preparation.",
-      );
+      setResourceActionError({
+        context: "promoterai",
+        message: error instanceof Error ? error.message : "Could not start PromoterAI preparation.",
+      });
     }
   }
 
   async function prepareDbnsfp() {
     setServiceError("");
+    setResourceActionError(null);
     try {
       const job = await startDbnsfpDownload(dbnsfpDownloadUrl.trim());
       setDbnsfpDownloadUrl("");
@@ -4044,14 +4057,16 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setServiceError(
-        error instanceof Error ? error.message : "Could not download and install dbNSFP.",
-      );
+      setResourceActionError({
+        context: "dbnsfp",
+        message: error instanceof Error ? error.message : "Could not download and install dbNSFP.",
+      });
     }
   }
 
   async function prepareLoGoFunc() {
     setServiceError("");
+    setResourceActionError(null);
     try {
       const job = await startLoGoFuncPreparation(loGoFuncSourcePath.trim());
       setResourceJobs((current) => [
@@ -4059,9 +4074,10 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setServiceError(
-        error instanceof Error ? error.message : "Could not install the LoGoFunc source.",
-      );
+      setResourceActionError({
+        context: "logofunc",
+        message: error instanceof Error ? error.message : "Could not install the LoGoFunc source.",
+      });
     }
   }
 
@@ -4141,7 +4157,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       && !bundledSources.includes(source)
       && !optionalSources.includes(source),
   );
-  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpDownloadUrl : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "dbnsfp" ? setDbnsfpDownloadUrl : () => undefined} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => { if (source.id === "promoterai" || source.id === "logofunc") void choosePreparationSource(source.id); }} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>);
+  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} actionError={resourceActionError && [source.id, source.download_id, source.prepare_id].includes(resourceActionError.context) ? resourceActionError.message : undefined} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpDownloadUrl : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "dbnsfp" ? setDbnsfpDownloadUrl : () => undefined} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => { if (source.id === "promoterai" || source.id === "logofunc") void choosePreparationSource(source.id); }} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>);
   return <section className="intake-card annotate-card intake-primary-card">
     <div className="intake-card-head"><span className="step-number">{step}</span><div><p className="eyebrow">Local VEP</p><h2>{step === 1 ? "Select raw VCF files" : setupOnly ? "Set up annotation datasets" : "Check annotation settings"}</h2></div><span className={`service-badge ${capabilities ? "online" : "offline"}`}>{capabilities ? "service ready" : "service offline"}</span></div>
     {step === 1 ? <>
@@ -4183,6 +4199,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
             <button type="button" disabled={resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "WGS public core installed" : failedQuickSetupJob?.resource_id === "recommended_wgs" ? "Retry WGS setup" : "Recommended for WGS"}</strong><span>{wgsDatasetsInstalled ? "No download needed · exome set and SCREEN contexts are present" : "Exome set plus SCREEN tissue/immune contexts · up to ~92 GiB"}</span></button>
             <button type="button" className="dataset-update-all" disabled={resourceSetupBusy} onClick={() => void downloadResource("refresh_updates")}><strong>{failedQuickSetupJob?.resource_id === "refresh_updates" ? "Retry dataset update" : "Update installed datasets"}</strong><span>Refresh ClinVar and ClinGen; pinned resources stay unchanged</span></button>
           </div>
+          {resourceActionError && ["recommended_exome", "recommended_wgs", "refresh_updates"].includes(resourceActionError.context) && <div className="resource-download-error" role="alert"><strong>The setup could not start.</strong><span>{resourceActionError.message}</span></div>}
           {quickSetupJob && <><div className="resource-progress"><progress max={100} value={quickSetupJob.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(quickSetupJob, "Preparing recommended datasets…")}</span></div><details className="dataset-instructions"><summary>Dataset details</summary><div className="dataset-technical-status"><span>Technical status</span><code>{quickSetupJob.status}</code>{quickSetupJob.message && <p>{quickSetupJob.message}</p>}</div></details></>}
           {failedQuickSetupJob && <div className="resource-download-error"><strong>Setup stopped before completion.</strong><span>{failedQuickSetupJob.error || failedQuickSetupJob.message}</span><span>Files that completed successfully are preserved; retry resumes only missing work.</span><button type="button" disabled={resourceSetupBusy} onClick={() => void downloadResource(failedQuickSetupJob.resource_id)}>{failedQuickSetupJob.resource_id === "recommended_wgs" ? "Retry WGS setup" : failedQuickSetupJob.resource_id === "refresh_updates" ? "Retry dataset update" : "Retry exome setup"}</button><details><summary>Setup log</summary><pre>{failedQuickSetupJob.log || "No log output was captured."}</pre></details></div>}
         </div>
