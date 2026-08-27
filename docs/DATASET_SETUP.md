@@ -8,7 +8,7 @@ nav_order: 2
 
 [Manual home](index.md)
 
-The easiest route is inside the application: **Run VEP first → Set up
+The easiest route is inside the application: **Annotate VCF → Set up
 annotation datasets**. One-click actions install the recommended automatic
 downloads for either exome or whole-genome analysis and refresh changing public
 sources such as ClinVar. dbNSFP registration and licensed PromoterAI setup are

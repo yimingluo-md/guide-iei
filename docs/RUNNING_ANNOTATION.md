@@ -10,7 +10,7 @@ nav_order: 3
 
 ## From the application (recommended)
 
-Open **Import VCF → Run VEP first**. After selecting files, the next screen
+Open **Import VCF → Annotate VCF**. After selecting files, the next screen
 shows which required and optional annotation datasets are available and
 provides the per-run switches and performance settings. Users do not need to
 open or edit YAML.

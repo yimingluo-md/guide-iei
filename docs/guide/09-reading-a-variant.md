@@ -163,7 +163,7 @@ size. Everything else dbNSFP offers is available per job.
 
 ### Optional dbNSFP predictors
 
-Any subset can be enabled per job under **Run VEP first → Additional
+Any subset can be enabled per job under **Annotate VCF → Additional
 dbNSFP predictors**; there is no preset — each predictor is a deliberate
 per-job choice. When selecting several, prefer methodological diversity
 over near-duplicates (an ensemble, a conservation score, and a protein

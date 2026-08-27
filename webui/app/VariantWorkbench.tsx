@@ -3595,7 +3595,7 @@ function ImportPanel({ importing, importProgress, wgsImportJob, error, summary, 
         <button role="radio" aria-checked={analysisScope === "whole_genome"} className={analysisScope === "whole_genome" ? "active" : ""} onClick={() => setAnalysisScope("whole_genome")}><strong>Whole genome</strong><span>Local indexed intake with candidate prefiltering</span></button>
       </div>
       <div className="intake-mode-switch" role="tablist" aria-label="VCF intake route">
-        <button role="tab" aria-selected={mode === "annotate"} className={mode === "annotate" ? "active" : ""} onClick={() => setMode("annotate")}><strong>Run VEP first</strong><span>Start with a raw or hard-filtered VCF</span></button>
+        <button role="tab" aria-selected={mode === "annotate"} className={mode === "annotate" ? "active" : ""} onClick={() => setMode("annotate")}><strong>Annotate VCF</strong><span>Start with a raw or hard-filtered VCF</span></button>
         <button role="tab" aria-selected={mode === "review"} className={mode === "review" ? "active" : ""} onClick={() => setMode("review")}><strong>Review annotated VCF</strong><span>My VCF already has VEP annotations</span></button>
       </div>
     </div>

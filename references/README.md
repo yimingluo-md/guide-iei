@@ -4,7 +4,7 @@ This folder is the software-default location for annotation datasets (VEP
 cache, FASTA, LOFTEE, SpliceAI, dbNSFP, CADD, ClinVar, SCREEN, PromoterAI,
 LoGoFunc, liftover bundle). It ships empty; only this README is tracked.
 
-Populate it from **Run VEP first → Set up annotation datasets** in the
+Populate it from **Annotate VCF → Set up annotation datasets** in the
 workbench, or from the command line:
 
 ```bash

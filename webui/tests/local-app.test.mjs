@@ -39,7 +39,7 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   const service = await readFile(new URL("app/local-service.ts", root), "utf8");
   assert.match(source, /useState<View>\("import"\)/);
   assert.match(source, /pendingFiles\.length \? "review" : "annotate"/);
-  assert.match(source, /Run VEP first/);
+  assert.match(source, /Annotate VCF/);
   assert.match(source, /Review annotated VCF/);
   assert.match(source, /Drop \.vcf or \.vcf\.gz files here/);
   assert.match(source, /Compressed VCFs/);

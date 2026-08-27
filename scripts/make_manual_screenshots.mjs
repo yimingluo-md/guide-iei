@@ -84,8 +84,8 @@ await page.goto(uiUrl, { waitUntil: "networkidle2", timeout: 60_000 });
 await awaitServiceReady();
 await new Promise((resolve) => setTimeout(resolve, 800));
 
-// 1. Import screen with "Run VEP first" selected (chapter 4).
-await clickText("button", "Run VEP first");
+// 1. Import screen with "Annotate VCF" selected (chapter 4).
+await clickText("button", "Annotate VCF");
 await shot("import-run-vep-first");
 
 // 2. Back to review intake, stage the demo exome, review once.
@@ -151,7 +151,7 @@ await shot("variant-evidence-sections");
 await page.goto(uiUrl, { waitUntil: "networkidle2" });
 await awaitServiceReady();
 await new Promise((resolve) => setTimeout(resolve, 800));
-await clickText("button", "Run VEP first");
+await clickText("button", "Annotate VCF");
 await clickText("button", "Set up annotation datasets");
 await new Promise((resolve) => setTimeout(resolve, 2500));
 await shot("dataset-cards");
@@ -170,11 +170,11 @@ await page.evaluate(() => {
 await new Promise((resolve) => setTimeout(resolve, 900));
 await shot("dataset-dbnsfp-card");
 
-// 8. "Check annotation settings" step of Run VEP first (chapter 4).
+// 8. "Check annotation settings" step of Annotate VCF (chapter 4).
 await page.goto(uiUrl, { waitUntil: "networkidle2" });
 await awaitServiceReady();
 await new Promise((resolve) => setTimeout(resolve, 800));
-await clickText("button", "Run VEP first");
+await clickText("button", "Annotate VCF");
 const vepInput = await page.$("input[type=file]");
 await vepInput.uploadFile(demoVcf);
 await new Promise((resolve) => setTimeout(resolve, 1500));

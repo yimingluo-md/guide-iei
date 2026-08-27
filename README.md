@@ -133,7 +133,7 @@ bash scripts/start_workbench.sh               # launch the workbench
 ```
 
 The workbench then opens in the browser; annotation datasets are installed
-from **Run VEP first → Set up annotation datasets**, with one-click
+from **Annotate VCF → Set up annotation datasets**, with one-click
 recommended sets for exome or whole-genome analysis. The complete
 walkthrough, including the command-line route, is in the
 **[manual](docs/index.md)**.

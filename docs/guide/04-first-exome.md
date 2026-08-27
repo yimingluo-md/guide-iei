@@ -32,14 +32,14 @@ control variants and one artificial sample, no patient data.
 The application opens on the **Import VCF** screen, which offers two
 routes:
 
-- **Run VEP first** (the default) — the VCF has not yet been annotated.
+- **Annotate VCF** (the default) — the VCF has not yet been annotated.
   This walkthrough takes this route.
 - **Review annotated VCF** — the file was already annotated by GUIDE-IEI or
   a compatible VEP pipeline and only review is needed.
 
 Drag the `.vcf`/`.vcf.gz` file onto the drop zone, or click to browse.
 
-![The import screen with the Exome scope and Run VEP first route selected](../assets/img/import-run-vep-first.png)
+![The import screen with the Exome scope and Annotate VCF route selected](../assets/img/import-run-vep-first.png)
 
 ## Step 2 — Confirm readiness and settings
 

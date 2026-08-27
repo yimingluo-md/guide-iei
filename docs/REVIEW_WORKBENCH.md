@@ -16,7 +16,7 @@ bash scripts/start_workbench.sh
 
 This starts the loopback-only annotation queue at `127.0.0.1:43117` and the
 review UI at `127.0.0.1:3000`. The application lands on **Import VCF**. Choose
-**Run VEP first** (the default) or **Review annotated VCF**. The VEP route
+**Annotate VCF** (the default) or **Review annotated VCF**. The VEP route
 accepts dropped `.vcf` / `.vcf.gz` files or a selected folder, then opens a
 second screen for parameters and dataset readiness. See `webui/README.md` for
 the workflow and WSL2 instructions.

@@ -15,7 +15,7 @@ type?
 This chapter explains which datasets are required, which are optional, and
 which require registration or a separate license.
 
-All of this is done inside the application, at **Run VEP first → Set up
+All of this is done inside the application, at **Annotate VCF → Set up
 annotation datasets**. Each dataset is presented as a card describing in
 plain language what it contributes; this chapter is a tour of those cards.
 

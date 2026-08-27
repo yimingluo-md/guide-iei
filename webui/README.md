@@ -21,7 +21,7 @@ hosted website.
   rebuildable derivative in `~/.iei-variant-review/cohort.sqlite3`.
 - This is local workstation software, not a hosted website.
 
-The application lands on **Import VCF**, with **Run VEP first** selected by
+The application lands on **Import VCF**, with **Annotate VCF** selected by
 default and two deliberately separate paths:
 
 1. **Raw VCF → local VEP annotation** through a persistent SQLite-backed queue.
