@@ -253,7 +253,18 @@ if [[ -f "${ROOT}/webui/.dependencies-updated" ]]; then
         exit 1
     fi
 fi
+# A git pull changes application code without leaving the in-app
+# updater's sentinel, so the built interface is also compared against
+# the commit it was built from. Installs without git (the standalone
+# app) have no commit to compare and rely on the sentinel alone.
+SOURCE_STAMP=""
+if command -v git >/dev/null 2>&1; then
+    SOURCE_STAMP="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
+fi
 if [[ ! -f "${ROOT}/webui/.next/BUILD_ID" || -f "${ROOT}/webui/.build-required" ]]; then
+    WEB_BUILD_REQUIRED=1
+elif [[ -n "$SOURCE_STAMP" && "$(cat "${ROOT}/webui/.next/.iei-source-stamp" 2>/dev/null)" != "$SOURCE_STAMP" ]]; then
+    echo "the built interface predates the current source (e.g. after git pull); rebuilding..."
     WEB_BUILD_REQUIRED=1
 fi
 if [[ "${IEI_WEB_MODE:-production}" != "dev" && "$WEB_BUILD_REQUIRED" == "1" ]]; then
@@ -263,6 +274,9 @@ if [[ "${IEI_WEB_MODE:-production}" != "dev" && "$WEB_BUILD_REQUIRED" == "1" ]];
         exit 1
     }
     rm -f "${ROOT}/webui/.build-required"
+    if [[ -n "$SOURCE_STAMP" ]]; then
+        printf '%s\n' "$SOURCE_STAMP" > "${ROOT}/webui/.next/.iei-source-stamp"
+    fi
 fi
 # Open the browser once the UI answers; the poller waits in the background
 # while Next.js occupies the foreground below.
