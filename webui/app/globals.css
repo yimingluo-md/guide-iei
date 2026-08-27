@@ -454,6 +454,17 @@ tbody tr:last-child td { border-bottom: 0; }
 .gene-resource-grid a { margin-top: 7px; color: #26705d; font-size: 8px; }
 .gene-resource-section .form-field { margin: 10px 0; }
 .resource-reference-link { display: inline-block; margin: 0 0 4px; color: #26705d; font-size: 9px; }
+.omim-dataset-preparation label > span { margin-bottom: 5px; color: #53645f; font-weight: 650; }
+.omim-dataset-preparation textarea { width: 100%; min-height: 104px; padding: 9px 10px; resize: vertical; border: 1px solid #cbdad5; border-radius: 5px; background: white; color: #40534d; font: 8px/1.45 var(--font-geist-mono); }
+.omim-dataset-preparation textarea:focus { outline: 2px solid #9bcabe; outline-offset: 1px; }
+.omim-dataset-preparation > button { margin-top: 9px; }
+.omim-file-checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 5px; margin-top: 8px; }
+.omim-file-checklist span { padding: 5px 7px; border: 1px solid #e1e7e5; border-radius: 4px; background: white; color: #7b8884; font: 8px var(--font-geist-mono); }
+.omim-file-checklist span.found { border-color: #bcd9cf; background: #edf7f3; color: #256957; }
+.omim-folder-fallback { margin-top: 12px; padding-top: 10px; border-top: 1px solid #e3e9e7; }
+.omim-folder-fallback > summary { color: #356e60; font-size: 9px; font-weight: 650; cursor: pointer; }
+.omim-folder-fallback > p { margin: 7px 0; color: #75837e; font-size: 8px; }
+.omim-folder-fallback > button { margin-top: 2px; }
 .gene-lookup { display: flex; gap: 8px; margin-top: 10px; }
 .gene-lookup input { flex: 1; padding: 8px 10px; border: 1px solid #ccd9d4; border-radius: 5px; }
 .dbnsfp-options { margin-top: 10px; border: 1px solid #dfe7e4; border-radius: 6px; background: #fbfcfc; }

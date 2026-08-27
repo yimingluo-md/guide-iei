@@ -128,8 +128,8 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
-  operation?: "download" | "preparation";
+  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
+  operation?: "download" | "preparation" | "installation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;
   message: string;
@@ -139,6 +139,8 @@ export type ResourceDownloadJob = {
   exit_code: number | null;
   error: string;
   log: string;
+  files?: string[];
+  result?: { counts?: { genes: number; phenotypes: number } };
 };
 
 export type GeneKnowledgeResource = {
@@ -157,7 +159,6 @@ export type GeneKnowledgeStatus = {
   omim: {
     installed: boolean;
     installed_at?: string;
-    source_dir?: string;
     genes?: number;
     phenotypes?: number;
     license: string;
@@ -988,6 +989,13 @@ export async function installOmimGeneKnowledge(sourceDir: string) {
     "/api/gene-knowledge/omim/install",
     { method: "POST", body: JSON.stringify({ source_dir: sourceDir }) },
   );
+}
+
+export async function startOmimGeneKnowledgeDownload(linkBlock: string) {
+  return request<ResourceDownloadJob>("/api/gene-knowledge/omim/download", {
+    method: "POST",
+    body: JSON.stringify({ link_block: linkBlock }),
+  });
 }
 
 export async function startResourceDownload(resourceId: ResourceDownloadJob["resource_id"]) {

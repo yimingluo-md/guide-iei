@@ -37,24 +37,31 @@ constraint metrics and are displayed separately from ClinGen dosage evidence.
 
 ## OMIM licensing and local installation
 
-OMIM data are **not included** in the source repository, public bundle, release
-artifacts, or automatic downloads. A user with appropriate OMIM data access can
-open **Gene knowledge** and select a local directory containing all four
-official flat files:
+OMIM data are **not included** in the source repository, public bundle, or
+release artifacts. A user with appropriate OMIM data access can open **Import
+& QC**, choose **Set up annotation datasets**, and use the **OMIM** card under
+**Optional add-ons**, directly after CADD non-coding and LoGoFunc. Paste the
+complete data-account email or the four authorized download links there.
+GUIDE-IEI recognizes direct OMIM links and Outlook Safe Links, downloads the
+following files into private temporary storage, validates them, and creates a
+local private index:
 
 - `mim2gene.txt`
 - `mimTitles.txt`
 - `genemap2.txt`
 - `morbidmap.txt`
 
-The importer validates the four schemas, records local file checksums, and
-creates a private index under the selected Sample Library & Cohort storage
-root. Source files remain in their user-managed directory. Credential-bearing
-download URLs are never requested, stored, logged, or copied by the software.
+The pasted text and credential-bearing URLs remain in memory only. They are not
+placed in command arguments, logs, configuration, job history, or index
+metadata. Temporary raw files are removed after the attempt; the derived index
+and filename-keyed checksums remain under the selected Sample Library & Cohort
+storage root. Users who already downloaded the files can instead select their
+containing folder; those user-managed source files are not changed.
 
 If the private index is absent, the UI says **OMIM dataset not installed**. It
 must not imply that a gene lacks an OMIM association. Reinstalling replaces the
-private index atomically after successful parsing.
+private index atomically only after all four schemas, record counts, and SQLite
+integrity have been validated.
 
 ## Identity and assertion handling
 

@@ -23,12 +23,14 @@ import socketserver
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
 from contextlib import closing, contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -40,7 +42,13 @@ from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from local_service.ccre_context import CcreContextStore
 from local_service.clingen_erepo import ClinGenErepoStore
 from local_service.cohort_store import CohortStore
-from local_service.gene_knowledge import GeneKnowledgeStore
+from local_service.gene_knowledge import (
+    OMIM_FILES,
+    GeneKnowledgeStore,
+    build_omim_database,
+    extract_omim_download_urls,
+    validate_omim_download_url,
+)
 from local_service.phenotype_store import PhenotypeStore
 from local_service.screen_context import ScreenContextStore
 from local_service.job_progress import JobProgressTracker
@@ -138,6 +146,29 @@ _PRIVATE_DATABASES = (
 _DBNSFP_GRCH38_FILENAME = re.compile(
     r"^dbNSFP(?P<version>[A-Za-z0-9._-]+)_grch38\.gz$"
 )
+_OMIM_MAX_FILE_BYTES = 1024 * 1024 * 1024
+_OMIM_BETWEEN_FILES_DELAY = 2.0
+_OMIM_RATE_LIMIT_RETRY_DELAYS = (10.0, 30.0, 60.0)
+_OMIM_MAX_RETRY_AFTER = 300.0
+
+
+class _OmimRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Permit an OMIM download to redirect only to the expected OMIM file."""
+
+    def __init__(self, filename: str):
+        super().__init__()
+        self.filename = filename
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        try:
+            validate_omim_download_url(newurl, self.filename)
+        except ValueError as exc:
+            # The caller converts this into a filename-only error. Keeping the
+            # credential out of the exception message prevents accidental logs.
+            raise urllib.error.HTTPError(
+                req.full_url, code, "unsafe OMIM redirect refused", headers, fp
+            ) from exc
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 ANNOTATION_SOURCE_SETUP = {
     "dbnsfp": {
@@ -2352,6 +2383,207 @@ class AnnotationJobService:
         ]
         return self._start_resource_job("logofunc", command, "preparation")
 
+    def _download_omim_file(
+        self,
+        url: str,
+        filename: str,
+        destination: Path,
+        progress: Callable[[float], None],
+        on_rate_limit: Callable[[float, int, int], None] | None = None,
+    ) -> None:
+        """Download one licensed OMIM file without exposing its URL."""
+        validate_omim_download_url(url, filename)
+        opener = urllib.request.build_opener(_OmimRedirectHandler(filename))
+        rate_limit_attempts = 0
+        while True:
+            request = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": f"GUIDE-IEI/{SERVICE_VERSION}",
+                    "Accept": "text/plain, application/octet-stream;q=0.9, */*;q=0.1",
+                },
+            )
+            try:
+                with opener.open(request, timeout=30) as response:
+                    final_url = response.geturl() if hasattr(response, "geturl") else url
+                    validate_omim_download_url(final_url, filename)
+                    raw_length = response.headers.get("Content-Length") if response.headers else None
+                    try:
+                        expected = int(raw_length) if raw_length else 0
+                    except (TypeError, ValueError):
+                        expected = 0
+                    if expected > _OMIM_MAX_FILE_BYTES:
+                        raise ValueError(f"{filename} is unexpectedly larger than 1 GiB")
+                    descriptor = os.open(
+                        destination,
+                        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+                        0o600,
+                    )
+                    written = 0
+                    last_bucket = -1
+                    with os.fdopen(descriptor, "wb") as handle:
+                        while True:
+                            if self._stop.is_set():
+                                raise RuntimeError("the local service stopped during OMIM installation")
+                            chunk = response.read(1024 * 1024)
+                            if not chunk:
+                                break
+                            handle.write(chunk)
+                            written += len(chunk)
+                            if written > _OMIM_MAX_FILE_BYTES:
+                                raise ValueError(f"{filename} is unexpectedly larger than 1 GiB")
+                            if expected:
+                                bucket = min(20, int((written / expected) * 20))
+                                if bucket != last_bucket:
+                                    last_bucket = bucket
+                                    progress(min(1.0, written / expected))
+                    if written == 0:
+                        raise ValueError(f"{filename} downloaded as an empty file")
+                    if expected and written != expected:
+                        raise ValueError(f"{filename} download ended before all bytes arrived")
+                    progress(1.0)
+                    return
+            except urllib.error.HTTPError as exc:
+                if (
+                    exc.code == HTTPStatus.TOO_MANY_REQUESTS
+                    and rate_limit_attempts < len(_OMIM_RATE_LIMIT_RETRY_DELAYS)
+                ):
+                    destination.unlink(missing_ok=True)
+                    fallback = _OMIM_RATE_LIMIT_RETRY_DELAYS[rate_limit_attempts]
+                    delay = self._omim_retry_after(exc, fallback)
+                    rate_limit_attempts += 1
+                    if on_rate_limit:
+                        on_rate_limit(
+                            delay,
+                            rate_limit_attempts,
+                            len(_OMIM_RATE_LIMIT_RETRY_DELAYS),
+                        )
+                    self._wait_for_omim_download(delay)
+                    continue
+                if exc.code == HTTPStatus.TOO_MANY_REQUESTS:
+                    raise ValueError(
+                        f"{filename} was rate-limited by OMIM (HTTP 429) after "
+                        f"{rate_limit_attempts} automatic retries; wait a few minutes "
+                        "and try the same link block again"
+                    ) from None
+                raise ValueError(
+                    f"{filename} could not be downloaded (OMIM returned HTTP {exc.code}); "
+                    "the account link may be expired or unauthorized"
+                ) from None
+            except urllib.error.URLError:
+                raise ValueError(
+                    f"{filename} could not connect to OMIM; check the internet connection and retry"
+                ) from None
+            except TimeoutError:
+                raise ValueError(
+                    f"{filename} timed out while connecting to OMIM; retry the installation"
+                ) from None
+            except (ValueError, RuntimeError):
+                raise
+            except Exception:
+                raise ValueError(
+                    f"{filename} download failed unexpectedly; retry with links from the OMIM data-account email"
+                ) from None
+
+    @staticmethod
+    def _omim_retry_after(error: urllib.error.HTTPError, fallback: float) -> float:
+        """Return a bounded Retry-After delay without including a private URL."""
+        raw_value = error.headers.get("Retry-After") if error.headers else None
+        if raw_value:
+            try:
+                seconds = float(raw_value.strip())
+            except (TypeError, ValueError):
+                try:
+                    retry_at = parsedate_to_datetime(raw_value)
+                    if retry_at.tzinfo is None:
+                        retry_at = retry_at.replace(tzinfo=timezone.utc)
+                    seconds = (retry_at - datetime.now(timezone.utc)).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    seconds = fallback
+            if seconds >= 0:
+                return max(1.0, min(_OMIM_MAX_RETRY_AFTER, seconds))
+        return fallback
+
+    def _wait_for_omim_download(self, seconds: float) -> None:
+        """Wait interruptibly so service shutdown does not hang on backoff."""
+        if self._stop.wait(seconds):
+            raise RuntimeError("the local service stopped during OMIM installation")
+
+    def start_omim_download(self, payload: dict) -> dict:
+        """Download and install a user's four licensed OMIM files.
+
+        The pasted block and extracted URLs are captured only by the in-memory
+        worker closure. They are never placed in argv, a job record, a config,
+        a log, or the generated OMIM database.
+        """
+        self._ensure_active_storage_available()
+        raw_block = payload.get("link_block") if isinstance(payload, dict) else None
+        urls = extract_omim_download_urls(raw_block)
+
+        def install(report: Callable[[str, float | None], None]) -> dict:
+            private_root = self.state_dir / "gene-knowledge"
+            private_root.mkdir(parents=True, exist_ok=True)
+            if os.name == "posix":
+                os.chmod(private_root, 0o700)
+            report("Preparing private OMIM download space…", 0.0)
+            with tempfile.TemporaryDirectory(
+                prefix=".omim-staging-", dir=private_root
+            ) as staging_value:
+                staging = Path(staging_value)
+                if os.name == "posix":
+                    os.chmod(staging, 0o700)
+                download_weight = 60.0 / len(OMIM_FILES)
+                for index, filename in enumerate(OMIM_FILES):
+                    base = index * download_weight
+                    if index:
+                        report(
+                            f"Waiting briefly before downloading {filename} to respect OMIM request limits…",
+                            base,
+                        )
+                        self._wait_for_omim_download(_OMIM_BETWEEN_FILES_DELAY)
+                    report(f"Downloading {filename}…", base)
+
+                    def file_progress(fraction: float, *, name=filename, start=base):
+                        report(
+                            f"Downloading {name} — {fraction * 100:.0f}%",
+                            start + fraction * download_weight,
+                        )
+
+                    def rate_limit_progress(
+                        delay: float,
+                        attempt: int,
+                        attempts: int,
+                        *,
+                        name=filename,
+                        start=base,
+                    ):
+                        report(
+                            f"OMIM rate-limited {name}; retrying in {delay:.0f} seconds "
+                            f"({attempt} of {attempts})…",
+                            start,
+                        )
+
+                    self._download_omim_file(
+                        urls[filename],
+                        filename,
+                        staging / filename,
+                        file_progress,
+                        rate_limit_progress,
+                    )
+                report("Validating the four OMIM file schemas…", 65.0)
+                result = build_omim_database(
+                    staging, self.gene_knowledge.private_database
+                )
+                report("Checking the private OMIM index…", 95.0)
+            return {"counts": result["counts"]}
+
+        return self._start_internal_resource_job(
+            "omim",
+            "installation",
+            install,
+            files=list(OMIM_FILES),
+        )
+
     # ------------------------------------------------------------------
     # Persistent registry of live resource-job process groups. A service that
     # dies without running shutdown() (SIGKILL, crash, closed terminal) must
@@ -2530,10 +2762,54 @@ class AnnotationJobService:
             thread.start()
             return self._resource_job_copy(job)
 
+    def _start_internal_resource_job(
+        self,
+        resource_id: str,
+        operation: str,
+        runner: Callable[[Callable[[str, float | None], None]], dict],
+        **public_values,
+    ) -> dict:
+        """Start a memory-only resource worker with no credential-bearing argv."""
+        with self._resource_lock:
+            for job in self._resource_jobs.values():
+                if (
+                    job["resource_id"] == resource_id
+                    and job["status"] in {"queued", "running"}
+                ):
+                    return self._resource_job_copy(job)
+            job_id = uuid.uuid4().hex
+            job = {
+                "id": job_id,
+                "resource_id": resource_id,
+                "status": "queued",
+                "progress": None,
+                "message": "Waiting to start…",
+                "created_at": utc_now(),
+                "started_at": None,
+                "finished_at": None,
+                "exit_code": None,
+                "error": "",
+                "log_path": str(self.resource_logs_dir / f"{job_id}.log"),
+                "operation": operation,
+                "_runner": runner,
+                **public_values,
+            }
+            self._resource_jobs[job_id] = job
+            thread = threading.Thread(
+                target=self._run_internal_resource_job,
+                args=(job_id,),
+                name=f"resource-{resource_id}",
+                daemon=True,
+            )
+            self._resource_threads[job_id] = thread
+            thread.start()
+            return self._resource_job_copy(job)
+
     @staticmethod
     def _resource_job_copy(job: dict) -> dict:
         result = dict(job)
         result.pop("_command", None)
+        result.pop("_runner", None)
         result.pop("_sensitive_paths", None)
         path = Path(result["log_path"])
         if path.exists():
@@ -2551,6 +2827,82 @@ class AnnotationJobService:
             job = self._resource_jobs.get(job_id)
             if job:
                 job.update(values)
+
+    def _run_internal_resource_job(self, job_id: str) -> None:
+        with self._resource_lock:
+            job = self._resource_jobs.get(job_id)
+            if not job:
+                return
+            runner = job.get("_runner")
+            operation = str(job.get("operation") or "installation")
+        if not callable(runner):
+            self._update_resource_job(
+                job_id,
+                status="failed",
+                finished_at=utc_now(),
+                exit_code=1,
+                error="internal resource worker is unavailable",
+            )
+            return
+        self._update_resource_job(
+            job_id,
+            status="running",
+            started_at=utc_now(),
+            message=f"Starting {operation}…",
+        )
+        log_path = self.resource_logs_dir / f"{job_id}.log"
+        last_message = ""
+        try:
+            with log_path.open("a", encoding="utf-8", buffering=1) as log:
+                log.write("Local credential-safe resource worker started.\n")
+
+                def report(message: str, progress: float | None = None) -> None:
+                    nonlocal last_message
+                    last_message = message
+                    log.write(message + "\n")
+                    self._update_resource_job(
+                        job_id,
+                        message=message,
+                        progress=(
+                            max(0.0, min(100.0, float(progress)))
+                            if progress is not None else None
+                        ),
+                    )
+
+                result = runner(report)
+                log.write(f"{operation.capitalize()} complete.\n")
+            self._update_resource_job(
+                job_id,
+                status="succeeded",
+                progress=100.0,
+                message=f"{operation.capitalize()} complete.",
+                finished_at=utc_now(),
+                exit_code=0,
+                error="",
+                result=result,
+            )
+        except Exception as exc:
+            safe_error = str(exc) or f"{operation.capitalize()} failed"
+            try:
+                with log_path.open("a", encoding="utf-8", buffering=1) as log:
+                    log.write("ERROR: " + safe_error + "\n")
+            except OSError:
+                pass
+            self._update_resource_job(
+                job_id,
+                status="failed",
+                message=last_message or f"{operation.capitalize()} failed.",
+                finished_at=utc_now(),
+                exit_code=1,
+                error=safe_error,
+            )
+        finally:
+            # Release the closure holding the private links as soon as the
+            # worker completes. The public job copy never exposed it.
+            with self._resource_lock:
+                current = self._resource_jobs.get(job_id)
+                if current:
+                    current.pop("_runner", None)
 
     _RESOURCE_STAGE_LINE = re.compile(r"===\s*(.+?)\s*===\s*$")
     _RESOURCE_PERCENT = re.compile(r"(\d{1,3}(?:\.\d+)?)\s*%")
@@ -3591,7 +3943,10 @@ class AnnotationJobService:
             downloading = [
                 job["resource_id"]
                 for job in self._resource_jobs.values()
-                if job["status"] in {"queued", "running"}
+                if (
+                    job["status"] in {"queued", "running"}
+                    and job["resource_id"] != "omim"
+                )
             ]
         if downloading:
             raise ValueError(
@@ -4936,6 +5291,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     "/api/cohort/samples/remove",
                     "/api/phenotypes/import",
                     "/api/phenotypes/individual",
+                    "/api/gene-knowledge/omim/download",
                     "/api/gene-knowledge/omim/install",
                     "/api/screen-context/install",
                     "/api/software-update/install",
@@ -5030,6 +5386,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/resource-preparations/logofunc":
                 self._json(
                     self.service.start_logofunc_preparation(self._body()),
+                    HTTPStatus.ACCEPTED,
+                )
+                return
+            if path == "/api/gene-knowledge/omim/download":
+                self._json(
+                    self.service.start_omim_download(self._body()),
                     HTTPStatus.ACCEPTED,
                 )
                 return

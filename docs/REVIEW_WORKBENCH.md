@@ -262,8 +262,10 @@ The workbench includes compact, versioned gnomAD v4.1.1 constraint, HGNC,
 IUIS October 2024, and ClinGen gene-disease-validity/dosage resources. The
 variant screen provides source-specific filters and a dedicated **Gene** tab;
 these resources are joined during review and do not need to be added to the
-VCF. Licensed OMIM files are never shipped or downloaded automatically, but
-can be indexed from a user-selected local folder under **Gene knowledge**. See
+VCF. Licensed OMIM files are never shipped. An authorized user can paste the
+four private download links for one-time, memory-only download and indexing,
+or index files already downloaded from a local folder under **Import & QC →
+Set up annotation datasets → Optional add-ons**. See
 [Bundled workbench references](BUNDLED_WORKBENCH_REFERENCES.md) and
 [Gene knowledge](GENE_KNOWLEDGE.md).
 

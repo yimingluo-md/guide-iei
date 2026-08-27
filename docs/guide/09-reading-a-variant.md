@@ -130,8 +130,8 @@ dbNSFP predictors that are off by default.
 
 ### The standing panel
 
-These columns are pulled from dbNSFP 5.4a (and the genome-wide sources)
-on every annotation:
+These columns are pulled from the installed dbNSFP release and, where
+applicable, the genome-wide sources on every annotation:
 
 - **AlphaMissense** ([Cheng et al., *Science* 2023](https://www.science.org/doi/10.1126/science.adg7492)) — DeepMind's missense classifier: a protein language
   model fine-tuned with structural context from AlphaFold and weak labels
