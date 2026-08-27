@@ -1,7 +1,9 @@
 import csv
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from urllib.parse import quote
 
 import sys
 
@@ -9,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from local_service.gene_knowledge import (
     GeneKnowledgeStore, build_omim_database, build_public_database,
+    extract_omim_download_urls,
     summarize_iuis_measure, summarize_iuis_other_cells,
 )
 
@@ -98,8 +101,8 @@ class GeneKnowledgeTests(unittest.TestCase):
             "*\t164011\tNUCLEAR FACTOR OF KAPPA LIGHT POLYPEPTIDE GENE ENHANCER IN B-CELLS 1; NFKB1\t\t\n"
         )
         (source / "morbidmap.txt").write_text(
-            "# Phenotype\tGene Symbols\tMIM Number\tCyto Location\n"
-            "Immunodeficiency 123, 616576 (3), Autosomal dominant\tNFKB1\t164011\t4q24\n"
+            "# Phenotype\tGene/Locus And Other Related Symbols\tMIM Number\tCyto Location\n"
+            "Immunodeficiency 123, 616576 (3), Autosomal dominant\tNFKB1, EBP1\t164011\t4q24\n"
         )
         (source / "genemap2.txt").write_text(
             "# Chromosome\tMim Number\tGene Symbols\tApproved Gene Symbol\tPhenotypes\n"
@@ -113,6 +116,60 @@ class GeneKnowledgeTests(unittest.TestCase):
         self.assertTrue(gene["omim_installed"])
         self.assertEqual(len(gene["omim"]), 1)
         self.assertEqual(gene["omim"][0]["mapping_key"], "3")
+        with sqlite3.connect(private) as connection:
+            self.assertEqual(
+                connection.execute("SELECT DISTINCT symbol FROM phenotypes").fetchall(),
+                [("NFKB1",)],
+            )
+            metadata = dict(connection.execute("SELECT key,value FROM metadata"))
+            self.assertNotIn("source_dir", metadata)
+
+    def test_extracts_the_four_omim_links_from_a_complete_email_block(self):
+        private_base = "https://data.omim.org/downloads/private-account-key"
+        direct = {
+            "mim2gene.txt": "https://omim.org/static/omim/data/mim2gene.txt",
+            "mimTitles.txt": f"{private_base}/mimTitles.txt",
+            "genemap2.txt": f"{private_base}/genemap2.txt",
+            "morbidmap.txt": f"{private_base}/morbidmap.txt",
+        }
+        safe = (
+            "https://nam02.safelinks.protection.outlook.com/"
+            f"?url={quote(direct['genemap2.txt'], safe='')}\\&data=tracking"
+        )
+        block = "\n".join([
+            "OMIM data account activation",
+            direct["mim2gene.txt"],
+            direct["mimTitles.txt"],
+            f"[{safe}]({safe})",
+            direct["morbidmap.txt"],
+            "https://omim.org/contact",
+            "https://aka.ms/LearnAboutSenderIdentification",
+        ])
+        extracted = extract_omim_download_urls(block)
+        self.assertEqual(tuple(extracted), (
+            "mim2gene.txt", "mimTitles.txt", "genemap2.txt", "morbidmap.txt",
+        ))
+        self.assertEqual(extracted["genemap2.txt"], direct["genemap2.txt"])
+
+    def test_missing_omim_link_error_never_echoes_private_input(self):
+        secret = "never-show-this-account-key"
+        with self.assertRaises(ValueError) as raised:
+            extract_omim_download_urls(
+                f"https://data.omim.org/downloads/{secret}/mimTitles.txt"
+            )
+        self.assertNotIn(secret, str(raised.exception))
+        self.assertIn("mim2gene.txt", str(raised.exception))
+
+    def test_omim_import_rejects_a_downloaded_html_error_page(self):
+        source = self.root / "invalid-omim"
+        source.mkdir()
+        for filename in ("mim2gene.txt", "mimTitles.txt", "genemap2.txt", "morbidmap.txt"):
+            (source / filename).write_text("<!doctype html><title>Access denied</title>")
+        destination = self.root / "private.sqlite3"
+        destination.write_bytes(b"previous working index")
+        with self.assertRaisesRegex(ValueError, "web page instead of OMIM data"):
+            build_omim_database(source, destination)
+        self.assertEqual(destination.read_bytes(), b"previous working index")
 
 
 if __name__ == "__main__":

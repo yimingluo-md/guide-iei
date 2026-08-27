@@ -9,8 +9,10 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 import urllib.request
 from contextlib import closing
+from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import Mock, patch
 
@@ -1325,6 +1327,146 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(completed["operation"], "preparation")
         self.assertEqual(completed["status"], "succeeded")
         self.assertEqual(completed["progress"], 100.0)
+
+    def test_omim_email_block_download_stays_out_of_jobs_and_logs(self):
+        secret = "private-omim-account-key"
+        base = f"https://data.omim.org/downloads/{secret}"
+        link_block = "\n".join([
+            "OMIM data account activation",
+            "https://omim.org/static/omim/data/mim2gene.txt",
+            f"{base}/mimTitles.txt",
+            f"{base}/genemap2.txt",
+            f"{base}/morbidmap.txt",
+            "https://omim.org/contact",
+        ])
+        content = {
+            "mim2gene.txt": (
+                "# MIM Number\tMIM Entry Type\tEntrez Gene ID\tApproved Gene Symbol\tEnsembl Gene ID\n"
+                "164011\tgene/phenotype\t4790\tNFKB1\tENSG00000109320\n"
+            ).encode(),
+            "mimTitles.txt": (
+                "# Prefix\tMIM Number\tPreferred Title; symbol\n"
+                "*\t164011\tNUCLEAR FACTOR; NFKB1\n"
+            ).encode(),
+            "genemap2.txt": (
+                "# Chromosome\tMim Number\tGene Symbols\tApproved Gene Symbol\tPhenotypes\n"
+                "4\t164011\tNFKB1, EBP1\tNFKB1\tImmunodeficiency, 616576 (3), Autosomal dominant\n"
+            ).encode(),
+            "morbidmap.txt": (
+                "# Phenotype\tGene Symbols\tMIM Number\tCyto Location\n"
+                "Immunodeficiency, 616576 (3), Autosomal dominant\tNFKB1, EBP1\t164011\t4q24\n"
+            ).encode(),
+        }
+
+        class FakeResponse(io.BytesIO):
+            def __init__(self, data, url):
+                super().__init__(data)
+                self.headers = {"Content-Length": str(len(data))}
+                self.url = url
+
+            def geturl(self):
+                return self.url
+
+        opener = Mock()
+
+        def open_response(request, timeout):
+            del timeout
+            filename = request.full_url.rsplit("/", 1)[-1]
+            return FakeResponse(content[filename], request.full_url)
+
+        opener.open.side_effect = open_response
+        with patch(
+            "local_service.workbench_service.urllib.request.build_opener",
+            return_value=opener,
+        ), patch.object(self.service, "_wait_for_omim_download", return_value=None):
+            started = self.service.start_omim_download({"link_block": link_block})
+            self.assertEqual(started["files"], list(content))
+            self.assertNotIn(secret, json.dumps(started))
+            completed = self._wait_resource(started["id"])
+
+        self.assertEqual(completed["status"], "succeeded")
+        self.assertEqual(completed["result"]["counts"], {"genes": 1, "phenotypes": 1})
+        self.assertNotIn(secret, json.dumps(completed))
+        self.assertNotIn(secret, completed["log"])
+        self.assertTrue((self.state / "gene-knowledge" / "omim.sqlite3").is_file())
+        self.assertEqual(
+            list((self.state / "gene-knowledge").glob(".omim-staging-*")), []
+        )
+        with self.service._resource_lock:
+            self.assertNotIn("_runner", self.service._resource_jobs[started["id"]])
+
+    def test_omim_download_paces_files_and_retries_http_429(self):
+        filename = "mimTitles.txt"
+        secret_url = f"https://data.omim.org/downloads/private-key/{filename}"
+        payload = b"# Prefix\tMIM Number\tPreferred Title; symbol\n*\t164011\tNUCLEAR FACTOR; NFKB1\n"
+
+        class FakeResponse(io.BytesIO):
+            def __init__(self):
+                super().__init__(payload)
+                self.headers = {"Content-Length": str(len(payload))}
+
+            def geturl(self):
+                return secret_url
+
+        rate_limit = urllib.error.HTTPError(
+            secret_url,
+            HTTPStatus.TOO_MANY_REQUESTS,
+            "Too Many Requests",
+            {"Retry-After": "17"},
+            None,
+        )
+        opener = Mock()
+        opener.open.side_effect = [rate_limit, FakeResponse()]
+        waits = []
+        retries = []
+        destination = self.root / filename
+        with patch(
+            "local_service.workbench_service.urllib.request.build_opener",
+            return_value=opener,
+        ), patch.object(
+            self.service,
+            "_wait_for_omim_download",
+            side_effect=lambda seconds: waits.append(seconds),
+        ):
+            self.service._download_omim_file(
+                secret_url,
+                filename,
+                destination,
+                lambda _fraction: None,
+                lambda delay, attempt, total: retries.append((delay, attempt, total)),
+            )
+
+        self.assertEqual(destination.read_bytes(), payload)
+        self.assertEqual(waits, [17.0])
+        self.assertEqual(retries, [(17.0, 1, 3)])
+        self.assertEqual(opener.open.call_count, 2)
+
+    def test_omim_http_429_exhaustion_is_not_reported_as_expired_access(self):
+        filename = "mimTitles.txt"
+        secret_url = f"https://data.omim.org/downloads/private-key/{filename}"
+        opener = Mock()
+        opener.open.side_effect = [
+            urllib.error.HTTPError(
+                secret_url,
+                HTTPStatus.TOO_MANY_REQUESTS,
+                "Too Many Requests",
+                {"Retry-After": "0"},
+                None,
+            )
+            for _ in range(4)
+        ]
+        with patch(
+            "local_service.workbench_service.urllib.request.build_opener",
+            return_value=opener,
+        ), patch.object(self.service, "_wait_for_omim_download", return_value=None):
+            with self.assertRaisesRegex(ValueError, "rate-limited.*automatic retries") as raised:
+                self.service._download_omim_file(
+                    secret_url,
+                    filename,
+                    self.root / filename,
+                    lambda _fraction: None,
+                )
+        self.assertNotIn("expired", str(raised.exception))
 
     def test_logofunc_preparation_accepts_an_existing_source_file_or_folder(self):
         source = self.root / "LoGoFuncVotingEnsemble_metadata_preds_final.csv.gz"

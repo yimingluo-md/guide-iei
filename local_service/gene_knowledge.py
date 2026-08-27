@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import csv
 import hashlib
+import html
 import json
 import re
 import sqlite3
@@ -16,6 +17,7 @@ import uuid
 from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, unquote, urlparse
 
 
 
@@ -32,6 +34,80 @@ def _open_ro(path):
 
 SCHEMA_VERSION = 2
 OMIM_FILES = ("mim2gene.txt", "mimTitles.txt", "genemap2.txt", "morbidmap.txt")
+OMIM_SCHEMA_VERSION = 3
+OMIM_DOWNLOAD_HOSTS = frozenset({"omim.org", "www.omim.org", "data.omim.org"})
+_OMIM_URL = re.compile(r"https://[^\s<>{}\[\]()\"']+", re.I)
+
+
+def _unwrap_outlook_safe_link(value: str) -> str:
+    """Return the target of an Outlook Safe Link without requesting it."""
+    candidate = html.unescape(value).replace("\\&", "&").strip()
+    for _ in range(2):
+        parsed = urlparse(candidate)
+        host = (parsed.hostname or "").lower()
+        if not host.endswith(".safelinks.protection.outlook.com"):
+            return candidate
+        target = (parse_qs(parsed.query).get("url") or [""])[0].strip()
+        if not target:
+            raise ValueError("an Outlook Safe Link does not contain its destination")
+        candidate = target
+    return candidate
+
+
+def validate_omim_download_url(value: str, expected_filename: str | None = None) -> tuple[str, str]:
+    """Validate a credential-bearing OMIM URL without returning it in errors."""
+    candidate = _unwrap_outlook_safe_link(value)
+    parsed = urlparse(candidate)
+    host = (parsed.hostname or "").lower()
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("an OMIM download link has an invalid port") from exc
+    filename = unquote(Path(parsed.path).name)
+    if (
+        parsed.scheme.lower() != "https"
+        or host not in OMIM_DOWNLOAD_HOSTS
+        or port not in {None, 443}
+        or parsed.username is not None
+        or parsed.password is not None
+        or filename not in OMIM_FILES
+    ):
+        raise ValueError("a recognized OMIM file must use its official HTTPS download link")
+    if expected_filename and filename != expected_filename:
+        raise ValueError(f"the OMIM response did not match {expected_filename}")
+    return parsed._replace(fragment="").geturl(), filename
+
+
+def extract_omim_download_urls(value: str) -> dict[str, str]:
+    """Extract the four official files from a pasted email or link block.
+
+    The returned URLs are intentionally for immediate, in-memory use only.
+    Errors name files but never echo credential-bearing input.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("paste the OMIM download email or the four download links")
+    if len(value) > 250_000:
+        raise ValueError("the pasted OMIM link block is unexpectedly large")
+    normalized = html.unescape(value).replace("\\&", "&")
+    recognized: dict[str, str] = {}
+    for raw in _OMIM_URL.findall(normalized):
+        candidate = raw.rstrip(".,;:)]}")
+        try:
+            download_url, filename = validate_omim_download_url(candidate)
+        except ValueError:
+            # A copied email normally contains help, contact, and account-page
+            # links in addition to the four data-file links. Ignore those.
+            continue
+        previous = recognized.get(filename)
+        if previous and previous != download_url:
+            raise ValueError(f"the pasted text contains conflicting links for {filename}")
+        recognized[filename] = download_url
+    missing = [filename for filename in OMIM_FILES if filename not in recognized]
+    if missing:
+        raise ValueError(
+            "the pasted OMIM text is missing: " + ", ".join(missing)
+        )
+    return {filename: recognized[filename] for filename in OMIM_FILES}
 
 
 def utc_now() -> str:
@@ -138,6 +214,41 @@ def _dict_rows(path: Path, delimiter: str = "\t") -> list[dict[str, str]]:
     return [
         {header[index]: _clean(row[index]) if index < len(row) else "" for index in range(len(header))}
         for row in rows
+    ]
+
+
+def _omim_rows(path: Path, required: tuple[tuple[str, ...], ...]) -> list[dict[str, str]]:
+    """Read one official OMIM flat file and reject common bad downloads."""
+    if not path.is_file() or path.stat().st_size == 0:
+        raise ValueError(f"{path.name} is missing or empty")
+    with path.open("rb") as handle:
+        prefix = handle.read(4096).lstrip().lower()
+    if prefix.startswith(b"<!doctype html") or prefix.startswith(b"<html"):
+        raise ValueError(
+            f"{path.name} contains a web page instead of OMIM data; "
+            "the account link may be expired or unauthorized"
+        )
+    header, source_rows = _source_rows(path)
+    missing: list[str] = []
+    for alternatives in required:
+        if not any(
+            any(column == name or column.startswith(name) for column in header)
+            for name in alternatives
+        ):
+            missing.append(" or ".join(alternatives))
+    if missing:
+        raise ValueError(
+            f"{path.name} has an unrecognized OMIM schema; missing "
+            + ", ".join(missing)
+        )
+    if not source_rows:
+        raise ValueError(f"{path.name} contains no OMIM data rows")
+    return [
+        {
+            header[index]: _clean(row[index]) if index < len(row) else ""
+            for index in range(len(header))
+        }
+        for row in source_rows
     ]
 
 
@@ -312,7 +423,7 @@ CREATE TABLE genes(gene_mim TEXT, symbol TEXT, entrez_id TEXT, ensembl_gene_id T
 CREATE INDEX omim_symbol_lookup ON genes(symbol COLLATE NOCASE);
 CREATE TABLE phenotypes(id INTEGER PRIMARY KEY, gene_mim TEXT, symbol TEXT,
   phenotype_mim TEXT, phenotype TEXT, mapping_key TEXT, inheritance TEXT,
-  cytoband TEXT, raw_phenotype TEXT);
+  cytoband TEXT, raw_phenotype TEXT, source_file TEXT);
 CREATE INDEX omim_phenotype_symbol_lookup ON phenotypes(symbol COLLATE NOCASE);
 """
 
@@ -348,15 +459,41 @@ def build_omim_database(source_dir: Path, destination: Path) -> dict[str, object
     temporary = destination.with_suffix(f"{destination.suffix}.{uuid.uuid4().hex}.new")
     destination.parent.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(temporary)
+    built = False
     try:
         connection.executescript(OMIM_SCHEMA)
+        rows = {
+            "mimTitles.txt": _omim_rows(files["mimTitles.txt"], (
+                (("MIM Number", "Mim Number")),
+                (("Preferred Title; symbol", "Preferred Title")),
+            )),
+            "mim2gene.txt": _omim_rows(files["mim2gene.txt"], (
+                (("MIM Number", "Mim Number")),
+                (("MIM Entry Type",)),
+                (("Approved Gene Symbol",)),
+            )),
+            "genemap2.txt": _omim_rows(files["genemap2.txt"], (
+                (("MIM Number", "Mim Number")),
+                (("Phenotypes", "Phenotype")),
+                (("Approved Gene Symbol", "Gene Symbols")),
+            )),
+            "morbidmap.txt": _omim_rows(files["morbidmap.txt"], (
+                (("MIM Number", "Mim Number")),
+                (("Phenotype", "Phenotypes")),
+                ((
+                    "Gene/Locus And Other Related Symbols",
+                    "Gene Symbols",
+                    "Approved Gene Symbol",
+                )),
+            )),
+        }
         titles: dict[str, str] = {}
-        for row in _dict_rows(files["mimTitles.txt"]):
+        for row in rows["mimTitles.txt"]:
             mim = _omim_field(row, "MIM Number", "Mim Number")
             titles[mim] = row.get("Preferred Title; symbol", "") or row.get("Preferred Title", "")
         genes: dict[str, tuple[str, str, str]] = {}
-        for row in _dict_rows(files["mim2gene.txt"]):
-            mim = _omim_field(row, "MIM Number")
+        for row in rows["mim2gene.txt"]:
+            mim = _omim_field(row, "MIM Number", "Mim Number")
             if _omim_field(row, "MIM Entry Type").lower() not in {"gene", "gene/phenotype"}:
                 continue
             genes[mim] = (
@@ -368,29 +505,36 @@ def build_omim_database(source_dir: Path, destination: Path) -> dict[str, object
             if symbol:
                 connection.execute("INSERT OR REPLACE INTO genes VALUES(?,?,?,?,?)", (mim, symbol, entrez, ensembl, titles.get(mim, "")))
 
-        seen: set[tuple[str, str, str, str]] = set()
-        for filename in ("morbidmap.txt", "genemap2.txt"):
-            for row in _dict_rows(files[filename]):
-                gene_mim = row.get("MIM Number", "") or row.get("Mim Number", "")
-                source_symbols = row.get("Gene Symbols", "") or row.get("Approved Gene Symbol", "")
-                symbols = [item.strip().upper() for item in source_symbols.split(",") if item.strip()]
+        seen: set[tuple[str, str, str, str, str]] = set()
+        # genemap2 is the primary map. morbidmap is retained as a compatible
+        # fallback, with stable approved symbols anchored through mim2gene so
+        # aliases are not presented as independent associated genes.
+        for filename in ("genemap2.txt", "morbidmap.txt"):
+            for row in rows[filename]:
+                gene_mim = _omim_field(row, "MIM Number", "Mim Number")
+                approved = _omim_field(row, "Approved Gene Symbol").upper()
+                mapped = genes.get(gene_mim, ("", "", ""))[0]
+                symbol = mapped or approved
+                if not symbol:
+                    continue
                 raw_values = row.get("Phenotype", "") or row.get("Phenotypes", "")
                 phenotypes = [item.strip() for item in raw_values.split(";") if item.strip()]
                 for raw in phenotypes:
                     phenotype, phenotype_mim, mapping_key, inheritance = _parse_omim_phenotype(raw)
-                    for symbol in symbols:
-                        key = (symbol, gene_mim, phenotype_mim, raw)
-                        if key in seen:
-                            continue
-                        seen.add(key)
-                        connection.execute(
-                            "INSERT INTO phenotypes(gene_mim,symbol,phenotype_mim,phenotype,mapping_key,inheritance,cytoband,raw_phenotype) VALUES(?,?,?,?,?,?,?,?)",
-                            (gene_mim, symbol, phenotype_mim, phenotype, mapping_key, inheritance,
-                             row.get("Cyto Location", ""), raw),
-                        )
+                    key = (
+                        symbol, gene_mim, phenotype_mim or phenotype.casefold(),
+                        mapping_key, inheritance.casefold(),
+                    )
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    connection.execute(
+                        "INSERT INTO phenotypes(gene_mim,symbol,phenotype_mim,phenotype,mapping_key,inheritance,cytoband,raw_phenotype,source_file) VALUES(?,?,?,?,?,?,?,?,?)",
+                        (gene_mim, symbol, phenotype_mim, phenotype, mapping_key, inheritance,
+                         row.get("Cyto Location", ""), raw, filename),
+                    )
         metadata = {
-            "schema_version": str(SCHEMA_VERSION), "installed_at": utc_now(),
-            "source_dir": str(source_dir.resolve()),
+            "schema_version": str(OMIM_SCHEMA_VERSION), "installed_at": utc_now(),
             "source_checksums": json.dumps({name: sha256(path) for name, path in files.items()}, sort_keys=True),
             "license": "User-provided OMIM data; not redistributed by this software",
         }
@@ -400,9 +544,25 @@ def build_omim_database(source_dir: Path, destination: Path) -> dict[str, object
             "genes": connection.execute("SELECT count(*) FROM genes").fetchone()[0],
             "phenotypes": connection.execute("SELECT count(*) FROM phenotypes").fetchone()[0],
         }
+        if not counts["genes"] or not counts["phenotypes"]:
+            raise ValueError("the OMIM files produced an empty gene or phenotype index")
+        integrity = connection.execute("PRAGMA integrity_check").fetchone()[0]
+        if integrity != "ok":
+            raise ValueError("the prepared OMIM index failed its integrity check")
+        built = True
     finally:
         connection.close()
-    temporary.replace(destination)
+        if not built:
+            temporary.unlink(missing_ok=True)
+    try:
+        temporary.replace(destination)
+        try:
+            destination.chmod(0o600)
+        except OSError:
+            pass
+    except Exception:
+        temporary.unlink(missing_ok=True)
+        raise
     return {"installed": True, "counts": counts, "path": str(destination)}
 
 
@@ -434,7 +594,6 @@ class GeneKnowledgeStore:
                     metadata = dict(connection.execute("SELECT key,value FROM metadata"))
                     omim = {
                         "installed": True, "installed_at": metadata.get("installed_at", ""),
-                        "source_dir": metadata.get("source_dir", ""),
                         "genes": connection.execute("SELECT count(*) FROM genes").fetchone()[0],
                         "phenotypes": connection.execute("SELECT count(*) FROM phenotypes").fetchone()[0],
                         "license": metadata.get("license", ""),

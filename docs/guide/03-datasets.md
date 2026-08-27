@@ -139,9 +139,11 @@ lying outside the exome's coding scope.
 Already bundled with the software, requiring no download: the ENCODE SCREEN
 cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge
 resources (gnomAD constraint, HGNC, the IUIS IEI classification, and
-ClinGen gene–disease validity and dosage). Licensed OMIM files are never
-downloaded, but an institution's own copy can be indexed under **Gene
-knowledge**.
+ClinGen gene–disease validity and dosage). Licensed OMIM data are never
+shipped. An authorized user can paste their four private links for local
+download and indexing, or select an institution's already-downloaded copy,
+under **Import & QC → Set up annotation datasets → Optional add-ons**, after
+CADD non-coding and LoGoFunc.
 
 ## Verifying the installation
 

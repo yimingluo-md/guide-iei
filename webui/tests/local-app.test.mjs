@@ -147,10 +147,17 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Installed with the one-click setup/);
   assert.match(source, /Optional add-ons/);
   assert.match(source, /Download bundled files/);
+  assert.match(source, /<div className="dataset-grid">{datasetCards\(optionalSources\)}<OmimDatasetSetupCard downloadJob={latestResourceJobs\.get\("omim"\)}/);
+  assert.equal((source.match(/<OmimDatasetSetupCard /g) ?? []).length, 1);
+  assert.match(source, /Paste the complete OMIM email or four-link block/);
+  assert.match(source, /Direct OMIM links and Outlook Safe Links are accepted/);
+  assert.match(source, /Download and install OMIM/);
+  assert.match(source, /Already downloaded the four files/);
   assert.match(source, /Registration and setup instructions/);
   assert.match(source, /Paste the private dbNSFP GRCh38 \(\.gz\) download link/);
   assert.match(source, /must end in _grch38\.gz — not _grch37\.gz/);
   assert.match(source, /accepts any dbNSFP release version/);
+  assert.match(source, /source\.id !== "dbnsfp" && source\.version/);
   assert.match(source, /Download and install dbNSFP/);
   assert.match(source, /derives the \.tbi and \.md5 links/);
   assert.match(source, /Choose folder/);
@@ -310,7 +317,10 @@ test("keeps source-specific gene knowledge local and reviewable", async () => {
   assert.doesNotMatch(source, /ClinGen sufficient HI evidence/);
   assert.doesNotMatch(source, /ClinGen sufficient TS evidence/);
   assert.match(source, /OMIM dataset not installed/);
-  assert.match(source, /OMIM data are not shipped or downloaded by this software/);
+  assert.match(source, /Install them under Import &amp; QC → Set up annotation datasets → Optional add-ons/);
+  assert.doesNotMatch(source, /Open OMIM setup/);
+  assert.doesNotMatch(source, /Set up OMIM/);
+  assert.doesNotMatch(source, /OMIM is gene-level knowledge rather than a VEP annotation dataset/);
   assert.match(source, /Gene evidence is not variant evidence/);
   assert.match(source, /Score 30 denotes a gene associated with an autosomal-recessive phenotype/);
   assert.doesNotMatch(source, /Inheritance and GOF\/DN are preserved per IUIS disease row/);
@@ -321,6 +331,7 @@ test("keeps source-specific gene knowledge local and reviewable", async () => {
   assert.match(service, /\/api\/gene-knowledge\/status/);
   assert.match(service, /\/api\/gene-knowledge\/filters/);
   assert.match(service, /\/api\/gene-knowledge\/omim\/install/);
+  assert.match(service, /\/api\/gene-knowledge\/omim\/download/);
 });
 
 test("provides persistent genotype-first cohort indexing and carrier search", async () => {

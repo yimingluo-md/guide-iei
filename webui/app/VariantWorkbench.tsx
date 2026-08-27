@@ -21,6 +21,7 @@ import {
   getGeneKnowledgeGene,
   getClinGenErepoVariant,
   installOmimGeneKnowledge,
+  startOmimGeneKnowledgeDownload,
   getWgsReviewJob,
   getPhenotypeIndividuals,
   getPhenotypeProfiles,
@@ -3742,13 +3743,14 @@ function resourceProgressMessage(
   return job?.message?.trim() || fallback;
 }
 
+const OMIM_FILE_NAMES = ["mim2gene.txt", "mimTitles.txt", "genemap2.txt", "morbidmap.txt"] as const;
+
 function DatasetSetupCard({
   source,
   analysisScope,
   enabled,
   onEnabled,
   downloadJob,
-  actionError,
   onDownload,
   preparationPath,
   onPreparationPath,
@@ -3761,7 +3763,6 @@ function DatasetSetupCard({
   enabled: boolean;
   onEnabled: (value: boolean) => void;
   downloadJob?: ResourceDownloadJob;
-  actionError?: string;
   onDownload: (resourceId: ResourceDownloadJob["resource_id"]) => void;
   preparationPath: string;
   onPreparationPath: (value: string) => void;
@@ -3814,13 +3815,12 @@ function DatasetSetupCard({
         <input type="checkbox" checked={supported && enabled} disabled={!canToggle} onChange={(event) => onEnabled(event.target.checked)}/>
         <span className="custom-check"/>
       </label>
-      <div className="dataset-card-title"><strong>{source.label}{source.version ? ` ${source.version}` : ""}</strong><small><GlossaryText text={source.description} /></small></div>
+      <div className="dataset-card-title"><strong>{source.label}{source.id !== "dbnsfp" && source.version ? ` ${source.version}` : ""}</strong><small><GlossaryText text={source.description} /></small></div>
       <span className={`dataset-status ${activeDownload ? "working" : source.installed ? "ready" : "missing"}`}>{status}</span>
     </div>
     <div className="dataset-meta"><span>{setupLabels[source.setup_mode]}</span>{source.access === "registration" && <span>Registration required</span>}{source.access === "license" && <span>License required</span>}{source.access === "terms" && <span>Usage terms apply</span>}{source.recommendation === "optional" && <span>Optional</span>}{source.size_hint && <span>{source.size_hint}</span>}</div>
     {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(downloadJob, downloadJob?.operation === "preparation" ? "Preparing local dataset…" : "Starting dataset download…")}</span></div>}
     {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Download log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
-    {actionError && <div className="resource-download-error" role="alert"><strong>{actionError}</strong></div>}
     {source.prepare_id === "dbnsfp" && <div className="dataset-preparation"><label className="dataset-download-link"><span>Paste the private dbNSFP GRCh38 (.gz) download link</span><input type="url" value={preparationPath} autoComplete="off" spellCheck={false} disabled={activeDownload} placeholder="https://…/dbNSFP…_grch38.gz" onChange={(event) => onPreparationPath(event.target.value)}/></label><button type="button" disabled={activeDownload || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Downloading and installing…" : source.installed ? "Download and replace dbNSFP" : "Download and install dbNSFP"}</button><small>The filename must end in _grch38.gz — not _grch37.gz. GUIDE-IEI accepts any dbNSFP release version and Outlook Safe Links, derives the .tbi and .md5 links, resumes interrupted transfers with eight connections, and keeps the private link out of logs and configuration.</small></div>}
     {source.prepare_id && source.prepare_id !== "dbnsfp" && <div className="dataset-preparation"><span className="dataset-preparation-label">{preparationLabel}</span><div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "logofunc" ? "Choose file" : "Choose folder"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div><button type="button" disabled={activeDownload || choosingPreparationPath || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Preparing…" : preparationButton}</button><small>{preparationHelp}</small></div>}
     <div className="dataset-actions">
@@ -3828,6 +3828,88 @@ function DatasetSetupCard({
       {source.reference_url && <a href={source.reference_url} target="_blank" rel="noreferrer">{source.reference_label || "Official reference"} ↗</a>}
     </div>
     <details className="dataset-instructions"><summary>Dataset details</summary>{source.access === "registration" && <strong className="dataset-detail-heading">Registration and setup instructions</strong>}{source.access === "license" && <strong className="dataset-detail-heading">License and local setup instructions</strong>}<ol>{(source.instructions ?? []).map((instruction) => <li key={instruction}><GlossaryText text={instruction} /></li>)}</ol>{downloadJob && <div className="dataset-technical-status"><span>Technical status</span><code>{downloadJob.status}</code>{downloadJob.message && <p>{downloadJob.message}</p>}</div>}{(source.configured_paths?.length ?? 0) > 0 && <div className="configured-locations"><span>Configured location{source.configured_paths?.length === 1 ? "" : "s"}</span>{source.configured_paths?.map((path) => <code key={path}>{path}</code>)}</div>}</details>
+  </article>;
+}
+
+function OmimDatasetSetupCard({
+  downloadJob,
+  onJobStarted,
+}: {
+  downloadJob?: ResourceDownloadJob;
+  onJobStarted: (job: ResourceDownloadJob) => void;
+}) {
+  const [status, setStatus] = useState<GeneKnowledgeStatus["omim"] | null>(null);
+  const [linkBlock, setLinkBlock] = useState("");
+  const [sourceDir, setSourceDir] = useState("");
+  const [working, setWorking] = useState<"" | "download" | "choose" | "folder">("");
+  const [message, setMessage] = useState("");
+  const active = downloadJob?.status === "queued" || downloadJob?.status === "running";
+  useEffect(() => {
+    let mounted = true;
+    getGeneKnowledgeStatus()
+      .then((next) => {
+        if (!mounted) return;
+        setStatus(next.omim);
+        if (downloadJob?.status === "succeeded") {
+          const counts = downloadJob.result?.counts;
+          setMessage(counts
+            ? `Installed ${counts.genes.toLocaleString()} OMIM genes and ${counts.phenotypes.toLocaleString()} phenotype associations.`
+            : "OMIM download and installation complete.");
+          window.dispatchEvent(new Event("gene-knowledge-updated"));
+        }
+      })
+      .catch((error: unknown) => { if (mounted) setMessage(error instanceof Error ? error.message : "OMIM status unavailable"); });
+    return () => { mounted = false; };
+  }, [downloadJob?.id, downloadJob?.status]);
+  const pastedFileNames = OMIM_FILE_NAMES.filter((filename) =>
+    linkBlock.toLowerCase().includes(filename.toLowerCase()),
+  );
+  const recognizedFileNames = linkBlock.trim() ? pastedFileNames : downloadJob?.files ?? [];
+  async function downloadAndInstall() {
+    setWorking("download"); setMessage("");
+    try {
+      const job = await startOmimGeneKnowledgeDownload(linkBlock);
+      onJobStarted(job);
+      setLinkBlock("");
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not start the private OMIM download");
+    } finally { setWorking(""); }
+  }
+  async function chooseFolder() {
+    setWorking("choose"); setMessage("");
+    try {
+      const selection = await chooseLocalResourceSource("omim");
+      if (!selection.cancelled && selection.path) setSourceDir(selection.path);
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "Could not open the OMIM folder chooser");
+    } finally { setWorking(""); }
+  }
+  async function installFolder() {
+    setWorking("folder"); setMessage("");
+    try {
+      const installed = await installOmimGeneKnowledge(sourceDir);
+      setStatus((current) => ({
+        installed: true,
+        installed_at: new Date().toISOString(),
+        genes: installed.counts.genes,
+        phenotypes: installed.counts.phenotypes,
+        license: current?.license ?? "User-provided OMIM data",
+      }));
+      setMessage(`Installed ${installed.counts.genes.toLocaleString()} OMIM genes and ${installed.counts.phenotypes.toLocaleString()} phenotype associations.`);
+      window.dispatchEvent(new Event("gene-knowledge-updated"));
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : "OMIM installation failed");
+    } finally { setWorking(""); }
+  }
+  return <article className={`dataset-card omim-dataset-card ${status?.installed ? "installed" : "missing"}`}>
+    <div className="dataset-card-top"><span aria-hidden="true"/><div className="dataset-card-title"><strong>OMIM</strong><small>Optional licensed gene–disease knowledge, indexed locally for review and gene filtering.</small></div><span className={`dataset-status ${active ? "working" : status?.installed ? "ready" : "missing"}`}>{active ? "Installing" : status?.installed ? "Installed" : "Optional · not installed"}</span></div>
+    <div className="dataset-meta"><span>License required</span><span>User-provided links</span><span>Gene-level resource</span></div>
+    <div className="dataset-preparation omim-dataset-preparation"><label htmlFor="omim-dataset-link-block"><span>Paste the complete OMIM email or four-link block</span><textarea id="omim-dataset-link-block" value={linkBlock} disabled={Boolean(working) || active} autoComplete="off" spellCheck={false} placeholder="Paste the OMIM data-account email or its four file links here…" onChange={(event) => setLinkBlock(event.target.value)}/></label><div className="omim-file-checklist">{OMIM_FILE_NAMES.map((filename) => { const found = recognizedFileNames.includes(filename); return <span className={found ? "found" : "missing"} key={filename}>{found ? "✓" : "○"} {filename}</span>; })}</div><button type="button" disabled={Boolean(working) || active || !linkBlock.trim()} onClick={() => void downloadAndInstall()}>{working === "download" || active ? "Downloading and installing…" : status?.installed ? "Download and replace OMIM" : "Download and install OMIM"}</button><small>Direct OMIM links and Outlook Safe Links are accepted. The private links stay memory-only; temporary raw files are removed after local validation and indexing.</small><details className="omim-folder-fallback"><summary>Already downloaded the four files?</summary><div className="dataset-source-picker"><button type="button" disabled={Boolean(working) || active} onClick={() => void chooseFolder()}>{working === "choose" ? "Opening chooser…" : sourceDir ? "Choose another folder" : "Choose downloaded folder"}</button><span><strong>{sourceDir ? sourceDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() : "No folder selected"}</strong><small>{sourceDir ? "Selected from this computer" : "Folder containing all four OMIM .txt files"}</small></span></div><button type="button" disabled={Boolean(working) || active || !sourceDir.trim()} onClick={() => void installFolder()}>{working === "folder" ? "Validating and indexing…" : "Install from downloaded files"}</button></details></div>
+    {active && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span role="status" aria-live="polite">{downloadJob?.message || "Starting private OMIM installation…"}</span></div>}
+    {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Installation log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
+    {message && <div className="alert">{message}</div>}
+    {status?.installed && <p className="constraint-note">{status.genes?.toLocaleString()} genes · {status.phenotypes?.toLocaleString()} phenotype associations</p>}
+    <div className="dataset-actions"><a href="https://omim.org/downloads" target="_blank" rel="noreferrer">OMIM data access and official downloads ↗</a></div>
   </article>;
 }
 
@@ -3854,9 +3936,6 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   const [fork, setFork] = useState(8);
   const [workerMode, setWorkerMode] = useState<"automatic" | "custom">("automatic");
   const [serviceError, setServiceError] = useState("");
-  // Errors from starting a dataset action render beside the control that was
-  // clicked (keyed by resource id), not in the page-bottom service alert.
-  const [resourceActionError, setResourceActionError] = useState<{ context: string; message: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const [stageProgress, setStageProgress] = useState("");
   const [expandedLog, setExpandedLog] = useState<{ id: string; text: string } | null>(null);
@@ -3995,7 +4074,6 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
 
   async function downloadResource(resourceId: ResourceDownloadJob["resource_id"]) {
     setServiceError("");
-    setResourceActionError(null);
     try {
       const job = await startResourceDownload(resourceId);
       setResourceJobs((current) => [
@@ -4003,16 +4081,14 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setResourceActionError({
-        context: resourceId,
-        message: error instanceof Error ? error.message : "Could not start the download.",
-      });
+      setServiceError(
+        error instanceof Error ? error.message : "Could not start the download.",
+      );
     }
   }
 
   async function choosePreparationSource(resourceId: "promoterai" | "logofunc") {
     setServiceError("");
-    setResourceActionError(null);
     setChoosingResourceSource(resourceId);
     try {
       const selection = await chooseLocalResourceSource(resourceId);
@@ -4020,10 +4096,9 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       if (resourceId === "promoterai") setPromoterAiSourceDir(selection.path);
       else setLoGoFuncSourcePath(selection.path);
     } catch (error) {
-      setResourceActionError({
-        context: resourceId,
-        message: error instanceof Error ? error.message : "Could not open the local file chooser.",
-      });
+      setServiceError(
+        error instanceof Error ? error.message : "Could not open the local file chooser.",
+      );
     } finally {
       setChoosingResourceSource(null);
     }
@@ -4031,7 +4106,6 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
 
   async function preparePromoterAi() {
     setServiceError("");
-    setResourceActionError(null);
     try {
       const job = await startPromoterAiPreparation(promoterAiSourceDir.trim());
       setResourceJobs((current) => [
@@ -4039,16 +4113,14 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setResourceActionError({
-        context: "promoterai",
-        message: error instanceof Error ? error.message : "Could not start PromoterAI preparation.",
-      });
+      setServiceError(
+        error instanceof Error ? error.message : "Could not start PromoterAI preparation.",
+      );
     }
   }
 
   async function prepareDbnsfp() {
     setServiceError("");
-    setResourceActionError(null);
     try {
       const job = await startDbnsfpDownload(dbnsfpDownloadUrl.trim());
       setDbnsfpDownloadUrl("");
@@ -4057,16 +4129,14 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setResourceActionError({
-        context: "dbnsfp",
-        message: error instanceof Error ? error.message : "Could not download and install dbNSFP.",
-      });
+      setServiceError(
+        error instanceof Error ? error.message : "Could not download and install dbNSFP.",
+      );
     }
   }
 
   async function prepareLoGoFunc() {
     setServiceError("");
-    setResourceActionError(null);
     try {
       const job = await startLoGoFuncPreparation(loGoFuncSourcePath.trim());
       setResourceJobs((current) => [
@@ -4074,10 +4144,9 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         ...current.filter((item) => item.id !== job.id),
       ]);
     } catch (error) {
-      setResourceActionError({
-        context: "logofunc",
-        message: error instanceof Error ? error.message : "Could not install the LoGoFunc source.",
-      });
+      setServiceError(
+        error instanceof Error ? error.message : "Could not install the LoGoFunc source.",
+      );
     }
   }
 
@@ -4129,7 +4198,8 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     }
   });
   const resourceSetupBusy = resourceJobs.some(
-    (job) => job.status === "queued" || job.status === "running",
+    (job) => job.resource_id !== "omim"
+      && (job.status === "queued" || job.status === "running"),
   );
   const quickSetupResourceIds = ["recommended_exome", "recommended_wgs", "refresh_updates"];
   const latestQuickSetupJob = resourceJobs.find((job) => quickSetupResourceIds.includes(job.resource_id));
@@ -4157,7 +4227,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       && !bundledSources.includes(source)
       && !optionalSources.includes(source),
   );
-  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} actionError={resourceActionError && [source.id, source.download_id, source.prepare_id].includes(resourceActionError.context) ? resourceActionError.message : undefined} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpDownloadUrl : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "dbnsfp" ? setDbnsfpDownloadUrl : () => undefined} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => { if (source.id === "promoterai" || source.id === "logofunc") void choosePreparationSource(source.id); }} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>);
+  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpDownloadUrl : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "dbnsfp" ? setDbnsfpDownloadUrl : () => undefined} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => { if (source.id === "promoterai" || source.id === "logofunc") void choosePreparationSource(source.id); }} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>);
   return <section className="intake-card annotate-card intake-primary-card">
     <div className="intake-card-head"><span className="step-number">{step}</span><div><p className="eyebrow">Local VEP</p><h2>{step === 1 ? "Select raw VCF files" : setupOnly ? "Set up annotation datasets" : "Check annotation settings"}</h2></div><span className={`service-badge ${capabilities ? "online" : "offline"}`}>{capabilities ? "service ready" : "service offline"}</span></div>
     {step === 1 ? <>
@@ -4199,14 +4269,13 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
             <button type="button" disabled={resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "WGS public core installed" : failedQuickSetupJob?.resource_id === "recommended_wgs" ? "Retry WGS setup" : "Recommended for WGS"}</strong><span>{wgsDatasetsInstalled ? "No download needed · exome set and SCREEN contexts are present" : "Exome set plus SCREEN tissue/immune contexts · up to ~92 GiB"}</span></button>
             <button type="button" className="dataset-update-all" disabled={resourceSetupBusy} onClick={() => void downloadResource("refresh_updates")}><strong>{failedQuickSetupJob?.resource_id === "refresh_updates" ? "Retry dataset update" : "Update installed datasets"}</strong><span>Refresh ClinVar and ClinGen; pinned resources stay unchanged</span></button>
           </div>
-          {resourceActionError && ["recommended_exome", "recommended_wgs", "refresh_updates"].includes(resourceActionError.context) && <div className="resource-download-error" role="alert"><strong>The setup could not start.</strong><span>{resourceActionError.message}</span></div>}
           {quickSetupJob && <><div className="resource-progress"><progress max={100} value={quickSetupJob.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(quickSetupJob, "Preparing recommended datasets…")}</span></div><details className="dataset-instructions"><summary>Dataset details</summary><div className="dataset-technical-status"><span>Technical status</span><code>{quickSetupJob.status}</code>{quickSetupJob.message && <p>{quickSetupJob.message}</p>}</div></details></>}
           {failedQuickSetupJob && <div className="resource-download-error"><strong>Setup stopped before completion.</strong><span>{failedQuickSetupJob.error || failedQuickSetupJob.message}</span><span>Files that completed successfully are preserved; retry resumes only missing work.</span><button type="button" disabled={resourceSetupBusy} onClick={() => void downloadResource(failedQuickSetupJob.resource_id)}>{failedQuickSetupJob.resource_id === "recommended_wgs" ? "Retry WGS setup" : failedQuickSetupJob.resource_id === "refresh_updates" ? "Retry dataset update" : "Retry exome setup"}</button><details><summary>Setup log</summary><pre>{failedQuickSetupJob.log || "No log output was captured."}</pre></details></div>}
         </div>
         {accessRequiredSources.length > 0 && <div className="dataset-group access-required"><div className="dataset-group-head"><div><p className="eyebrow">User action needed</p><h4>Needs a one-time registration or license</h4></div><span>Start here for dbNSFP or PromoterAI</span></div><div className="dataset-grid">{datasetCards(accessRequiredSources)}</div></div>}
         {standardSources.length > 0 && <div className="dataset-group"><div className="dataset-group-head"><div><p className="eyebrow">Public downloads</p><h4>One-click downloads</h4></div></div><div className="dataset-grid">{datasetCards(standardSources)}</div></div>}
         {bundledSources.length > 0 && <div className="dataset-group"><div className="dataset-group-head"><div><p className="eyebrow">Included</p><h4>Installed with the one-click setup</h4></div><span>Each card can re-download its own files if any are reported missing</span></div><div className="dataset-grid">{datasetCards(bundledSources)}</div></div>}
-        {optionalSources.length > 0 && <div className="dataset-group optional"><div className="dataset-group-head"><div><p className="eyebrow">Optional</p><h4>Optional add-ons</h4></div></div><div className="dataset-grid">{datasetCards(optionalSources)}</div></div>}
+        <div className="dataset-group optional"><div className="dataset-group-head"><div><p className="eyebrow">Optional</p><h4>Optional add-ons</h4></div></div><div className="dataset-grid">{datasetCards(optionalSources)}<OmimDatasetSetupCard downloadJob={latestResourceJobs.get("omim")} onJobStarted={(job) => setResourceJobs((current) => [job, ...current.filter((item) => item.id !== job.id)])}/></div></div>
         {!setupOnly && <details className="dbnsfp-options" open><summary><span><strong>Additional dbNSFP predictors</strong><small>Optional; the core panel — AlphaMissense, CADD, REVEL, SIFT, PolyPhen-2 — is always included.</small></span><em>{selectedDbnsfpPredictors.size} selected</em></summary><div className="dbnsfp-options-body"><div className="dbnsfp-option-actions"><p>Select only predictors useful to your analysis. More columns increase output size and annotation work.</p><div><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set(availableDbnsfpOptions.map((item) => item.id)))}>Select all available</button><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set())}>Clear</button></div></div><div className="dbnsfp-predictor-grid">{dbnsfpOptions.map((item) => <label className={!item.available ? "unavailable" : ""} key={item.id}><input type="checkbox" checked={selectedDbnsfpPredictors.has(item.id)} disabled={!item.available} onChange={(event) => setSelectedDbnsfpPredictors((current) => toggleSet(current, item.id, event.target.checked))}/><span className="custom-check"/><span><strong>{item.label}</strong><small>{item.category}</small></span></label>)}</div>{dbnsfpOptions.some((item) => !item.available) && <p className="dbnsfp-unavailable-note">Unavailable choices are not present in the installed dbNSFP header and cannot be queued.</p>}</div></details>}
       </section>
       {!setupOnly && <details className="advanced-paths"><summary>Output and execution</summary><div className="form-pair simple"><label className="form-field"><span>Output folder</span><input value={outputDirectory} onChange={(event) => setOutputDirectory(event.target.value)} /></label><label className="form-field"><span>Execution</span><select value={profile} onChange={(event) => setProfile(event.target.value)} disabled={!capabilities}>{capabilities?.profiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option>Local workstation</option>}</select></label></div></details>}
@@ -4344,39 +4413,21 @@ function GeneKnowledgePanel({ gene, constraintRow, relatedRows = [] }: { gene: s
     <article className="gene-knowledge-card iuis-card"><div className="section-title"><div><p className="eyebrow">Inborn errors of immunity</p><h3>IUIS classification</h3></div><span>{knowledge.iuis.length} assertion{knowledge.iuis.length === 1 ? "" : "s"}</span></div>{knowledge.iuis.length ? <div className="iuis-assertion-list">{knowledge.iuis.map((item, index) => <section className="iuis-assertion" key={`${item.disease}:${index}`}><header><div><strong>{item.disease}</strong><small>Source gene: {item.source_gene || gene}{item.omim ? ` · OMIM ${item.omim}` : ""}</small></div><div className="iuis-mechanism-badges">{item.inheritance && <span>{item.inheritance}</span>}{item.mechanism && <span className="mechanism">{item.mechanism}</span>}</div></header><div className="iuis-category-path"><div><span>Major category</span><strong>{item.major_category || "Not reported"}</strong></div><div><span>Subcategory</span><strong>{item.subcategory || "Not reported"}</strong></div></div><div className="iuis-immune-profile"><IuisImmuneFinding label="T cells" raw={item.t_cell_count} summary={item.t_cell_summary}/><IuisImmuneFinding label="B cells" raw={item.b_cell_count} summary={item.b_cell_summary}/><IuisImmuneFinding label="Immunoglobulins" raw={item.immunoglobulin_levels} summary={item.immunoglobulin_summary}/><IuisImmuneFinding label="Neutrophils" raw={item.neutrophil_count} summary={item.neutrophil_summary}/><IuisImmuneFinding label="Other affected cells" raw={item.other_affected_cells} summary={item.other_affected_cell_groups}/></div><div className="iuis-associated-features"><span>Associated features</span><p>{item.associated_features || "Not reported in the IUIS source table."}</p></div></section>)}</div> : <p className="knowledge-empty">No IUIS association was found for this gene.</p>}</article>
     <article className="gene-knowledge-card"><div className="section-title"><div><p className="eyebrow">Expert gene–disease curation</p><h3>ClinGen validity</h3></div><span>{knowledge.clingen_validity.length} assertion{knowledge.clingen_validity.length === 1 ? "" : "s"}</span></div>{knowledge.clingen_validity.length ? <div className="knowledge-table-wrap"><table className="knowledge-table"><thead><tr><th>Disease</th><th>Inheritance</th><th>Classification</th><th>Expert panel / date</th></tr></thead><tbody>{knowledge.clingen_validity.map((item, index) => <tr key={`${item.mondo_id}:${item.moi}:${index}`}><td><strong>{item.disease}</strong><small>{item.mondo_id}</small></td><td>{item.moi || "—"}</td><td><strong>{item.classification}</strong>{item.report_url && <a href={item.report_url} target="_blank" rel="noreferrer">Open report</a>}</td><td>{item.expert_panel || "—"}<small>{item.classification_date}</small></td></tr>)}</tbody></table></div> : <p className="knowledge-empty">No ClinGen gene–disease validity assertion was found.</p>}</article>
     <article className="gene-knowledge-card"><div className="section-title"><div><p className="eyebrow">Dosage sensitivity</p><h3>ClinGen dosage</h3></div></div>{knowledge.clingen_dosage ? <><EvidenceGrid items={[["Haploinsufficiency", `${knowledge.clingen_dosage.hi_score || "—"} · ${knowledge.clingen_dosage.hi_description || "No description"}`], ["HI disease", knowledge.clingen_dosage.hi_disease_id || "—"], ["Triplosensitivity", `${knowledge.clingen_dosage.ts_score || "—"} · ${knowledge.clingen_dosage.ts_description || "No description"}`], ["TS disease", knowledge.clingen_dosage.ts_disease_id || "—"], ["Last evaluated", knowledge.clingen_dosage.date_last_evaluated || "—"]]}/><p className="constraint-note">ClinGen score 3 means sufficient evidence for dosage pathogenicity. Score 30 denotes a gene associated with an autosomal-recessive phenotype and must not be treated as haploinsufficiency evidence.</p></> : <p className="knowledge-empty">No ClinGen dosage evaluation was found.</p>}</article>
-    <article className="gene-knowledge-card"><div className="section-title"><div><p className="eyebrow">Mendelian disease catalog</p><h3>OMIM</h3></div><span>{knowledge.omim.length || "—"}</span></div>{!knowledge.omim_installed ? <div className="knowledge-license-note"><strong>OMIM dataset not installed</strong><span>OMIM data are licensed and are not shipped with this software. Install the official files locally from Gene knowledge setup.</span></div> : knowledge.omim.length ? <><div className="knowledge-table-wrap"><table className="knowledge-table"><thead><tr><th>Phenotype</th><th>Phenotype MIM</th><th>Gene MIM</th><th>Mapping / inheritance</th></tr></thead><tbody>{knowledge.omim.map((item, index) => <tr key={`${item.phenotype_mim}:${index}`}><td><strong>{item.phenotype}</strong></td><td>{item.phenotype_mim || "—"}</td><td>{item.gene_mim || "—"}</td><td>{[`Mapping key ${item.mapping_key || "—"}`, item.inheritance].filter(Boolean).join(" · ")}</td></tr>)}</tbody></table></div><p className="constraint-note">OMIM mapping keys describe the evidence basis for a gene–phenotype map (1–4); they are not pathogenicity grades for this variant.</p></> : <p className="knowledge-empty">The installed OMIM dataset contains no association for this gene.</p>}</article>
+    <article className="gene-knowledge-card"><div className="section-title"><div><p className="eyebrow">Mendelian disease catalog</p><h3>OMIM</h3></div><span>{knowledge.omim.length || "—"}</span></div>{!knowledge.omim_installed ? <div className="knowledge-license-note"><strong>OMIM dataset not installed</strong><span>OMIM data are licensed and are not shipped with this software. Install them under Import &amp; QC → Set up annotation datasets → Optional add-ons.</span></div> : knowledge.omim.length ? <><div className="knowledge-table-wrap"><table className="knowledge-table"><thead><tr><th>Phenotype</th><th>Phenotype MIM</th><th>Gene MIM</th><th>Mapping / inheritance</th></tr></thead><tbody>{knowledge.omim.map((item, index) => <tr key={`${item.phenotype_mim}:${index}`}><td><strong>{item.phenotype}</strong></td><td>{item.phenotype_mim || "—"}</td><td>{item.gene_mim || "—"}</td><td>{[`Mapping key ${item.mapping_key || "—"}`, item.inheritance].filter(Boolean).join(" · ")}</td></tr>)}</tbody></table></div><p className="constraint-note">OMIM mapping keys describe the evidence basis for a gene–phenotype map (1–4); they are not pathogenicity grades for this variant.</p></> : <p className="knowledge-empty">The installed OMIM dataset contains no association for this gene.</p>}</article>
     <div className="interpretation-banner"><strong>Gene evidence is not variant evidence</strong><span>A gene–disease or dosage association does not establish pathogenicity, mechanism, or relevance of the selected variant. Sources are shown separately and are not merged into one classification.</span></div>
   </section>;
 }
 
 function GeneKnowledgeSettingsPanel() {
   const [status, setStatus] = useState<GeneKnowledgeStatus | null>(null);
-  const [sourceDir, setSourceDir] = useState("");
   const [query, setQuery] = useState("NFKB1");
   const [result, setResult] = useState<GeneKnowledgeGene | null>(null);
-  const [working, setWorking] = useState<"" | "choose_omim" | "omim" | "update">("");
+  const [working, setWorking] = useState(false);
   const [message, setMessage] = useState("");
   const refresh = () => getGeneKnowledgeStatus().then(setStatus).catch((error) => setMessage(error instanceof Error ? error.message : "Gene resource status failed"));
   useEffect(() => { void refresh(); }, []);
-  async function chooseOmimSource() {
-    setWorking("choose_omim"); setMessage("");
-    try {
-      const selection = await chooseLocalResourceSource("omim");
-      if (!selection.cancelled && selection.path) setSourceDir(selection.path);
-    } catch (error) { setMessage(error instanceof Error ? error.message : "Could not open the local folder chooser"); }
-    finally { setWorking(""); }
-  }
-  async function installOmim() {
-    setWorking("omim"); setMessage("");
-    try {
-      const installed = await installOmimGeneKnowledge(sourceDir);
-      setMessage(`Installed ${installed.counts.genes.toLocaleString()} OMIM genes and ${installed.counts.phenotypes.toLocaleString()} phenotype associations.`);
-      await refresh(); window.dispatchEvent(new Event("gene-knowledge-updated"));
-    } catch (error) { setMessage(error instanceof Error ? error.message : "OMIM installation failed"); }
-    finally { setWorking(""); }
-  }
   async function updatePublic() {
-    setWorking("update"); setMessage("");
+    setWorking(true); setMessage("");
     try {
       const job = await startResourceDownload("gene_knowledge");
       let current = job;
@@ -4388,7 +4439,7 @@ function GeneKnowledgeSettingsPanel() {
       setMessage("HGNC and ClinGen public resources were updated and switched atomically.");
       await refresh(); window.dispatchEvent(new Event("gene-knowledge-updated"));
     } catch (error) { setMessage(error instanceof Error ? error.message : "Public resource update failed"); }
-    finally { setWorking(""); }
+    finally { setWorking(false); }
   }
   async function search() {
     setMessage("");
@@ -4397,8 +4448,7 @@ function GeneKnowledgeSettingsPanel() {
   }
   return <div className="gene-knowledge-settings"><div className="content-header"><div><p className="eyebrow">Versioned local resources</p><h1>Gene knowledge</h1><p className="subtitle">HGNC identity, full IUIS associations, ClinGen validity and dosage, plus optional locally licensed OMIM data. These resources are joined during review and never duplicated into a VCF.</p></div></div>
     {message && <div className="alert">{message}</div>}
-    <section className="gene-resource-section"><div className="section-title"><div><p className="eyebrow">Redistributable bundle</p><h2>HGNC · IUIS · ClinGen</h2></div><button className="secondary-button" disabled={Boolean(working)} onClick={() => void updatePublic()}>{working === "update" ? "Updating…" : "Check and update now"}</button></div>{status?.error && <div className="alert error">{status.error}</div>}<div className="gene-resource-grid">{status?.resources.map((resource) => <article key={resource.id}><strong>{resource.id === "clingen_validity" ? "ClinGen validity" : resource.id === "clingen_dosage" ? "ClinGen dosage" : resource.id.toUpperCase()}</strong><span>{resource.release || "release not labeled"}</span><small>{resource.record_count.toLocaleString()} records</small><a href={resource.source_url} target="_blank" rel="noreferrer">Official source</a></article>)}</div><p className="constraint-note">Updates download only official HGNC and ClinGen public releases, validate their schemas, build a new local database, and switch only after a successful build. IUIS remains pinned to the reviewed October 2024 classification until a new IUIS release is intentionally adopted.</p></section>
-    <section className="gene-resource-section"><div className="section-title"><div><p className="eyebrow">Licensed local resource</p><h2>OMIM</h2></div><span className={`dataset-status ${status?.omim.installed ? "ready" : "missing"}`}>{status?.omim.installed ? "Installed" : "Not installed"}</span></div><div className="knowledge-license-note"><strong>OMIM data are not shipped or downloaded by this software</strong><span>Obtain access directly from OMIM and keep the four official files together. Choose that folder below; the local importer records checksums and creates a private index in Annotation datasets storage.</span></div><a className="resource-reference-link" href="https://omim.org/downloads" target="_blank" rel="noreferrer">OMIM data access and official downloads</a><div className="dataset-source-picker"><button className="secondary-button" disabled={Boolean(working)} onClick={() => void chooseOmimSource()}>{working === "choose_omim" ? "Opening chooser…" : sourceDir ? "Choose another folder" : "Choose downloaded folder"}</button><span><strong>{sourceDir ? sourceDir.replace(/[\\/]+$/, "").split(/[\\/]/).pop() : "No folder selected"}</strong><small>{sourceDir ? "Selected from this computer" : "Folder containing mim2gene.txt, mimTitles.txt, genemap2.txt and morbidmap.txt"}</small></span></div><button className="primary-button dark" disabled={Boolean(working) || !sourceDir.trim()} onClick={() => void installOmim()}>{working === "omim" ? "Validating and indexing…" : status?.omim.installed ? "Replace local OMIM index" : "Install local OMIM data"}</button>{status?.omim.installed && <p className="constraint-note">{status.omim.genes?.toLocaleString()} genes · {status.omim.phenotypes?.toLocaleString()} phenotype associations · installed {status.omim.installed_at ? new Date(status.omim.installed_at).toLocaleString() : "locally"}</p>}</section>
+    <section className="gene-resource-section"><div className="section-title"><div><p className="eyebrow">Redistributable bundle</p><h2>HGNC · IUIS · ClinGen</h2></div><button className="secondary-button" disabled={working} onClick={() => void updatePublic()}>{working ? "Updating…" : "Check and update now"}</button></div>{status?.error && <div className="alert error">{status.error}</div>}<div className="gene-resource-grid">{status?.resources.map((resource) => <article key={resource.id}><strong>{resource.id === "clingen_validity" ? "ClinGen validity" : resource.id === "clingen_dosage" ? "ClinGen dosage" : resource.id.toUpperCase()}</strong><span>{resource.release || "release not labeled"}</span><small>{resource.record_count.toLocaleString()} records</small><a href={resource.source_url} target="_blank" rel="noreferrer">Official source</a></article>)}</div><p className="constraint-note">Updates download only official HGNC and ClinGen public releases, validate their schemas, build a new local database, and switch only after a successful build. IUIS remains pinned to the reviewed October 2024 classification until a new IUIS release is intentionally adopted.</p></section>
     <section className="gene-resource-section"><div className="section-title"><div><p className="eyebrow">Lookup</p><h2>Open a gene</h2></div></div><div className="gene-lookup"><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") void search(); }} placeholder="Approved symbol, alias, HGNC or Ensembl ID"/><button className="secondary-button" onClick={() => void search()}>Open</button></div>{result && <GeneKnowledgePanel gene={result.identity?.symbol || query}/>}</section>
   </div>;
 }
