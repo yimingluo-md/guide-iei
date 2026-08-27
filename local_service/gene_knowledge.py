@@ -34,7 +34,7 @@ def _open_ro(path):
 
 SCHEMA_VERSION = 2
 OMIM_FILES = ("mim2gene.txt", "mimTitles.txt", "genemap2.txt", "morbidmap.txt")
-OMIM_SCHEMA_VERSION = 3
+OMIM_SCHEMA_VERSION = 4
 OMIM_DOWNLOAD_HOSTS = frozenset({"omim.org", "www.omim.org", "data.omim.org"})
 _OMIM_URL = re.compile(r"https://[^\s<>{}\[\]()\"']+", re.I)
 
@@ -521,9 +521,13 @@ def build_omim_database(source_dir: Path, destination: Path) -> dict[str, object
                 phenotypes = [item.strip() for item in raw_values.split(";") if item.strip()]
                 for raw in phenotypes:
                     phenotype, phenotype_mim, mapping_key, inheritance = _parse_omim_phenotype(raw)
+                    # Inheritance is data, not identity: genemap2 carries it in
+                    # the phenotype string while morbidmap's format never does,
+                    # so keying on it would store the same association twice.
+                    # genemap2 is processed first, so its richer row wins.
                     key = (
                         symbol, gene_mim, phenotype_mim or phenotype.casefold(),
-                        mapping_key, inheritance.casefold(),
+                        mapping_key,
                     )
                     if key in seen:
                         continue
@@ -641,9 +645,20 @@ class GeneKnowledgeStore:
             result["clingen_dosage"] = dosage[0] if dosage else None
         if self.private_database.is_file():
             with closing(_open_ro(self.private_database)) as connection:
+                # Group at read time as well: databases built before the
+                # ingestion dedup keyed on inheritance hold the same
+                # association twice (a genemap2 row carrying inheritance and
+                # a bare morbidmap row); max() keeps the informative one.
                 result["omim"] = self._rows(
                     connection,
-                    "SELECT p.*,g.title AS gene_title FROM phenotypes p LEFT JOIN genes g USING(gene_mim,symbol) WHERE p.symbol=? COLLATE NOCASE ORDER BY p.phenotype",
+                    "SELECT p.gene_mim,p.symbol,p.phenotype_mim,p.phenotype,p.mapping_key,"
+                    "max(p.inheritance) AS inheritance,max(p.cytoband) AS cytoband,"
+                    "max(p.raw_phenotype) AS raw_phenotype,min(p.source_file) AS source_file,"
+                    "max(g.title) AS gene_title "
+                    "FROM phenotypes p LEFT JOIN genes g USING(gene_mim,symbol) "
+                    "WHERE p.symbol=? COLLATE NOCASE "
+                    "GROUP BY p.gene_mim,p.symbol,p.phenotype_mim,p.phenotype,p.mapping_key "
+                    "ORDER BY p.phenotype",
                     (symbol,),
                 )
         return result

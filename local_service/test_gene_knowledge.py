@@ -100,9 +100,11 @@ class GeneKnowledgeTests(unittest.TestCase):
             "# Prefix\tMIM Number\tPreferred Title; symbol\tAlternative Title(s); symbol(s)\tIncluded Title(s); symbols\n"
             "*\t164011\tNUCLEAR FACTOR OF KAPPA LIGHT POLYPEPTIDE GENE ENHANCER IN B-CELLS 1; NFKB1\t\t\n"
         )
+        # morbidmap's format carries no inheritance in the phenotype string;
+        # the same association must not be stored a second time because of it.
         (source / "morbidmap.txt").write_text(
             "# Phenotype\tGene/Locus And Other Related Symbols\tMIM Number\tCyto Location\n"
-            "Immunodeficiency 123, 616576 (3), Autosomal dominant\tNFKB1, EBP1\t164011\t4q24\n"
+            "Immunodeficiency 123, 616576 (3)\tNFKB1, EBP1\t164011\t4q24\n"
         )
         (source / "genemap2.txt").write_text(
             "# Chromosome\tMim Number\tGene Symbols\tApproved Gene Symbol\tPhenotypes\n"
@@ -111,11 +113,24 @@ class GeneKnowledgeTests(unittest.TestCase):
         private = self.root / "private.sqlite3"
         result = build_omim_database(source, private)
         self.assertEqual(result["counts"]["genes"], 1)
+        self.assertEqual(result["counts"]["phenotypes"], 1)
         store = GeneKnowledgeStore(self.public, private)
         gene = store.gene("NFKB1")
         self.assertTrue(gene["omim_installed"])
         self.assertEqual(len(gene["omim"]), 1)
         self.assertEqual(gene["omim"][0]["mapping_key"], "3")
+        self.assertEqual(gene["omim"][0]["inheritance"], "Autosomal dominant")
+        # A database built before the ingestion fix holds the bare morbidmap
+        # duplicate; the read-time grouping must still collapse it.
+        with sqlite3.connect(private) as connection:
+            connection.execute(
+                "INSERT INTO phenotypes(gene_mim,symbol,phenotype_mim,phenotype,mapping_key,inheritance,cytoband,raw_phenotype,source_file) "
+                "VALUES('164011','NFKB1','616576','Immunodeficiency 123','3','','4q24','Immunodeficiency 123, 616576 (3)','morbidmap.txt')",
+            )
+            connection.commit()
+        legacy = store.gene("NFKB1")
+        self.assertEqual(len(legacy["omim"]), 1)
+        self.assertEqual(legacy["omim"][0]["inheritance"], "Autosomal dominant")
         with sqlite3.connect(private) as connection:
             self.assertEqual(
                 connection.execute("SELECT DISTINCT symbol FROM phenotypes").fetchall(),
