@@ -158,11 +158,12 @@ ANNOTATION_SOURCE_SETUP = {
     },
     "loftee": {
         "setup_mode": "bundled",
+        "download_id": "loftee",
         "reference_url": "https://github.com/konradjk/loftee",
         "reference_label": "LOFTEE project",
-        "size_hint": "",
+        "size_hint": "approximately 15 GB",
         "instructions": [
-            "Included with the software — no action needed.",
+            "Installed by the one-click dataset setup; the button here re-downloads only LOFTEE's data files if they are reported missing.",
         ],
     },
     "spliceai": {
@@ -182,24 +183,26 @@ ANNOTATION_SOURCE_SETUP = {
     },
     "repeatmasker": {
         "setup_mode": "bundled",
+        "download_id": "repeatmasker",
         "reference_url": "https://www.repeatmasker.org/",
         "reference_label": "RepeatMasker project",
-        "size_hint": "",
+        "size_hint": "approximately 50 MB",
         "instructions": [
-            "Included with the software — no action needed.",
+            "Installed by the one-click dataset setup; the button here re-downloads only this track if it is reported missing.",
             "Variants inside repetitive DNA are flagged in the review workspace so call quality can be weighed.",
         ],
     },
     "segdup": {
         "setup_mode": "bundled",
+        "download_id": "segdup",
         "reference_url": (
             "https://genome.ucsc.edu/cgi-bin/hgTables?db=hg38&"
             "hgta_group=varRep&hgta_track=genomicSuperDups"
         ),
         "reference_label": "UCSC hg38 genomicSuperDups",
-        "size_hint": "",
+        "size_hint": "approximately 2 MB",
         "instructions": [
-            "Included with the software — no action needed.",
+            "Installed by the one-click dataset setup; the button here re-downloads only this track if it is reported missing.",
             "Variants inside segmental duplications — near-identical genomic copies — are flagged in the review workspace so call quality can be weighed.",
         ],
     },
@@ -293,7 +296,7 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "BCFtools/liftover documentation and publication",
         "size_hint": "approximately 915 MB; included with the software",
         "instructions": [
-            "The exact GRCh37/hg19 reference and conversion chain are included; click Repair bundled files if either is reported missing.",
+            "The exact GRCh37/hg19 reference and conversion chain are part of the standard setup; click Download bundled files if either is reported missing.",
             "Converted variants keep their original GRCh37/hg19 coordinates for review, and calls that only reflect reference differences between the builds are set aside in an audit file instead of entering the analysis.",
             "When raw sequencing reads are available, re-alignment to GRCh38 is preferable to conversion.",
         ],
@@ -320,7 +323,7 @@ ANNOTATION_SOURCE_SETUP = {
         "reference_label": "ENCODE SCREEN Registry V4 GRCh38 cCRE BED",
         "size_hint": "approximately 25 MB; included with the software",
         "instructions": [
-            "Included with the software; click Repair bundled files if it is reported missing.",
+            "Part of the standard setup; click Download bundled files if it is reported missing.",
             "cCREs are candidate cis-regulatory elements — promoters, enhancers and similar regions ENCODE identified as likely to control gene activity.",
             "This map is aggregate-level (combined across samples); the ENCODE tissue and immune contexts dataset adds tissue- and cell-specific activity.",
             "Overlap keeps a variant for whole-genome review; it does not by itself mean the variant is pathogenic, nor that the nearest gene is the regulated one.",
@@ -346,6 +349,9 @@ RESOURCE_DOWNLOAD_COMMANDS = {
     "liftover": ("scripts/download_references.sh", "--only", "liftover"),
     "logofunc": ("scripts/download_logofunc.sh",),
     "ccre": ("scripts/download_references.sh", "--only", "ccre"),
+    "loftee": ("scripts/download_references.sh", "--only", "loftee"),
+    "repeatmasker": ("scripts/download_references.sh", "--only", "repeatmasker"),
+    "segdup": ("scripts/download_references.sh", "--only", "segdup"),
     "gene_knowledge": ("scripts/update_gene_knowledge.sh",),
     "clingen_erepo": ("scripts/update_clingen_erepo.sh",),
     # Default: verified prepared-bundle download from the public mirror
@@ -384,6 +390,9 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
     # SCREEN preparation also downloads the release-matched Ensembl GTF used
     # to derive the bundled +/-500 kb gene-TSS context table.
     "ccre": [(("wgs_review", "ccre", "bed"), 3 * GIB, False)],
+    "loftee": [(("plugins", "LoF", "human_ancestor_fa"), 20 * GIB, False)],
+    "repeatmasker": [(("custom_tracks", "RepeatMasker", "file"), 1 * GIB, False)],
+    "segdup": [(("custom_tracks", "SegDup", "file"), 1 * GIB, False)],
     "clingen_erepo": [(("clingen_erepo", "dest_dir"), 1 * GIB, True)],
     "recommended_exome": [
         (("reference", "vep_cache_dir"), 35 * GIB, True),

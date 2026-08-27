@@ -144,9 +144,9 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Recommended for WGS/);
   assert.match(source, /Update installed datasets/);
   assert.match(source, /Needs a one-time registration or license/);
-  assert.match(source, /Built in — nothing to do/);
+  assert.match(source, /Installed with the one-click setup/);
   assert.match(source, /Optional add-ons/);
-  assert.match(source, /Repair bundled files/);
+  assert.match(source, /Download bundled files/);
   assert.match(source, /Registration and setup instructions/);
   assert.match(source, /Paste the private dbNSFP GRCh38 \(\.gz\) download link/);
   assert.match(source, /must end in _grch38\.gz — not _grch37\.gz/);

@@ -132,7 +132,7 @@ The whole-genome import screen uses the public GRCh38 SCREEN Registry V4 cCRE
 BED as its default noncoding-region route. This is a native region intersection,
 not a VEP plugin or CSQ annotation. The prepared Registry V4 BED, tabix index,
 and Ensembl 113 gene-TSS table ship with the native application bundle. If a
-bundled file is damaged or missing, the dataset card offers **Repair bundled
+bundled file is damaged or missing, the dataset card offers **Download bundled
 files**. The repair command-line equivalent is:
 
 ```bash

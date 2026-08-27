@@ -124,7 +124,7 @@ are cached using input, reference, chain, tool, and policy identities.
 The native application release includes the normalized hg19 primary FASTA,
 indexes, and hg19-to-GRCh38 chain. The workbench validates them under **Run VEP
 first → Set up annotation datasets → Shipped with the software**. If a bundled
-file is missing, select **Repair bundled files**. The command-line repair is:
+file is missing, select **Download bundled files**. The command-line repair is:
 
 ```bash
 bash docker/build.sh

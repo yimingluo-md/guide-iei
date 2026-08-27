@@ -128,7 +128,7 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre" | "gene_knowledge" | "clingen_erepo" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
+  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
   operation?: "download" | "preparation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;

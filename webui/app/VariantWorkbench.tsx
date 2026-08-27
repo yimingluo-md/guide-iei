@@ -3784,7 +3784,7 @@ function DatasetSetupCard({
     ? downloadJob?.status === "queued" ? "Queued" : downloadJob?.operation === "preparation" ? "Preparing" : "Downloading"
     : downloadJob?.status === "failed" ? downloadJob?.operation === "preparation" ? "Preparation failed" : "Download failed"
     : source.installed ? "Installed"
-    : source.setup_mode === "bundled" ? "Needs repair — one click restores it"
+    : source.setup_mode === "bundled" ? (source.download_id ? "Not installed — one click below restores it" : "Rebuilt automatically with each ClinVar download")
     : source.setup_mode === "deferred" ? "Not configured in this release"
     : source.required ? "Action needed" : "Optional · not installed";
   const canToggle = supported && !["liftover", "ccre"].includes(source.id) && !source.required && source.available && source.setup_mode !== "deferred";
@@ -3792,7 +3792,7 @@ function DatasetSetupCard({
   const buttonLabel = source.id === "clinvar"
     ? "Download latest"
     : source.id === "clingen_erepo" ? source.installed ? "Check and update snapshot" : "Install latest snapshot"
-    : source.setup_mode === "bundled" ? "Repair bundled files"
+    : source.setup_mode === "bundled" ? "Download bundled files"
     : source.id === "cadd_wgs" ? source.installed ? "Verify 83 GiB files" : "Download / resume 83 GiB"
     : source.id === "logofunc" ? source.installed ? "Re-download from Zenodo" : "Download from Zenodo"
     : source.installed ? "Verify files" : "Download / resume";
@@ -4205,7 +4205,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         </div>
         {accessRequiredSources.length > 0 && <div className="dataset-group access-required"><div className="dataset-group-head"><div><p className="eyebrow">User action needed</p><h4>Needs a one-time registration or license</h4></div><span>Start here for dbNSFP or PromoterAI</span></div><div className="dataset-grid">{datasetCards(accessRequiredSources)}</div></div>}
         {standardSources.length > 0 && <div className="dataset-group"><div className="dataset-group-head"><div><p className="eyebrow">Public downloads</p><h4>One-click downloads</h4></div></div><div className="dataset-grid">{datasetCards(standardSources)}</div></div>}
-        {bundledSources.length > 0 && <div className="dataset-group"><div className="dataset-group-head"><div><p className="eyebrow">Included</p><h4>Built in — nothing to do</h4></div><span>Repair appears only if a built-in file is missing</span></div><div className="dataset-grid">{datasetCards(bundledSources)}</div></div>}
+        {bundledSources.length > 0 && <div className="dataset-group"><div className="dataset-group-head"><div><p className="eyebrow">Included</p><h4>Installed with the one-click setup</h4></div><span>Each card can re-download its own files if any are reported missing</span></div><div className="dataset-grid">{datasetCards(bundledSources)}</div></div>}
         {optionalSources.length > 0 && <div className="dataset-group optional"><div className="dataset-group-head"><div><p className="eyebrow">Optional</p><h4>Optional add-ons</h4></div></div><div className="dataset-grid">{datasetCards(optionalSources)}</div></div>}
         {!setupOnly && <details className="dbnsfp-options" open><summary><span><strong>Additional dbNSFP predictors</strong><small>Optional; the core panel — AlphaMissense, CADD, REVEL, SIFT, PolyPhen-2 — is always included.</small></span><em>{selectedDbnsfpPredictors.size} selected</em></summary><div className="dbnsfp-options-body"><div className="dbnsfp-option-actions"><p>Select only predictors useful to your analysis. More columns increase output size and annotation work.</p><div><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set(availableDbnsfpOptions.map((item) => item.id)))}>Select all available</button><button type="button" onClick={() => setSelectedDbnsfpPredictors(new Set())}>Clear</button></div></div><div className="dbnsfp-predictor-grid">{dbnsfpOptions.map((item) => <label className={!item.available ? "unavailable" : ""} key={item.id}><input type="checkbox" checked={selectedDbnsfpPredictors.has(item.id)} disabled={!item.available} onChange={(event) => setSelectedDbnsfpPredictors((current) => toggleSet(current, item.id, event.target.checked))}/><span className="custom-check"/><span><strong>{item.label}</strong><small>{item.category}</small></span></label>)}</div>{dbnsfpOptions.some((item) => !item.available) && <p className="dbnsfp-unavailable-note">Unavailable choices are not present in the installed dbNSFP header and cannot be queued.</p>}</div></details>}
       </section>
