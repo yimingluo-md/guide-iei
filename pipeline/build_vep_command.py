@@ -24,6 +24,24 @@ import argparse
 import os
 import sys
 from dataclasses import dataclass, field
+from pathlib import Path
+
+try:
+    from .indexed_scores import (
+        ManifestError,
+        load_manifest,
+        validate_manifest_files,
+        validate_manifest_registry_contract,
+    )
+    from .predictor_registry import Adapter, MatchScope, load_registry
+except ImportError:  # direct script execution
+    from indexed_scores import (
+        ManifestError,
+        load_manifest,
+        validate_manifest_files,
+        validate_manifest_registry_contract,
+    )
+    from predictor_registry import Adapter, MatchScope, load_registry
 
 try:
     import yaml
@@ -283,8 +301,14 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
 
 def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
                  argv: list[str], check_exists: bool) -> None:
+    registry = load_registry()
+
     # dbNSFP — consolidates CADD/REVEL/AlphaMissense/SIFT/PolyPhen/PrimateAI/etc.
-    # Plugin string: dbNSFP,<file>,<col1>,<col2>,...
+    # Transcript-indexed metrics and allele-level metrics require different
+    # official plugin match options, so partition configured columns using the
+    # annotator scopes in the predictor registry. Both invocations select
+    # disjoint fields; VEP can therefore merge their output without one plugin
+    # instance overwriting a field emitted by the other.
     dbnsfp = plugins.get("dbNSFP", {})
     if dbnsfp.get("enabled"):
         cp = _resolve(plan, mapper, dbnsfp["path"], "plugin.dbNSFP",
@@ -293,8 +317,72 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
             cols = dbnsfp.get("columns") or []
             if isinstance(cols, str):          # allow columns: ALL
                 cols = [cols]
-            spec = ",".join([cp] + [str(c) for c in cols]) if cols else cp
-            argv += ["--plugin", "dbNSFP," + spec]
+            unique_cols = list(dict.fromkeys(str(column) for column in cols))
+            if len(unique_cols) != len(cols):
+                plan.warnings.append(
+                    "plugin.dbNSFP.columns contains duplicates; duplicate output "
+                    "fields were removed"
+                )
+
+            if "ALL" in unique_cols:
+                # ALL cannot be split without emitting the registry allele
+                # fields twice. Preserve the historical single-invocation
+                # behavior and make the loss of registry-specific matching
+                # explicit instead of silently producing duplicate CSQ keys.
+                plan.warnings.append(
+                    "plugin.dbNSFP.columns=ALL cannot be partitioned by registry "
+                    "annotator without duplicate output fields; using one "
+                    "transcript-matched dbNSFP invocation"
+                )
+                argv += [
+                    "--plugin",
+                    "dbNSFP," + ",".join([cp, "transcript_match=1", "ALL"]),
+                ]
+            else:
+                transcript_fields: set[str] = set()
+                allele_fields: set[str] = set()
+                for predictor in registry.predictors:
+                    annotator = registry.annotator(predictor.annotator_id)
+                    if (
+                        annotator.resource_id != "dbnsfp"
+                        or annotator.implementation != "dbnsfp"
+                    ):
+                        continue
+                    fields = {metric.field for metric in predictor.metrics}
+                    if annotator.match.scope is MatchScope.ALLELE:
+                        allele_fields.update(fields)
+                    elif annotator.match.scope is MatchScope.ALLELE_TRANSCRIPT:
+                        transcript_fields.update(fields)
+
+                transcript_cols = [
+                    column for column in unique_cols if column not in allele_fields
+                ]
+                allele_cols = [
+                    column for column in unique_cols if column in allele_fields
+                ]
+                unknown_cols = sorted(
+                    set(unique_cols) - transcript_fields - allele_fields
+                )
+                if unknown_cols:
+                    plan.warnings.append(
+                        "plugin.dbNSFP.columns not declared by the predictor registry "
+                        "use legacy transcript matching: " + ", ".join(unknown_cols)
+                    )
+
+                if transcript_cols:
+                    argv += [
+                        "--plugin",
+                        "dbNSFP," + ",".join(
+                            [cp, "transcript_match=1"] + transcript_cols
+                        ),
+                    ]
+                if allele_cols:
+                    argv += [
+                        "--plugin",
+                        "dbNSFP," + ",".join(
+                            ["consequence=ALL", cp, "pep_match=0"] + allele_cols
+                        ),
+                    ]
 
     # LoF (LOFTEE) — multi-key plugin string
     lof = plugins.get("LoF", {})
@@ -398,6 +486,83 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
         )
         if score_path:
             argv += ["--plugin", f"LoGoFunc,file={score_path}"]
+
+    # Manifest-driven indexed predictors. Registry metadata selects trusted
+    # config blocks and the shared adapter; a new conventional allele/gene,
+    # transcript, or protein predictor therefore does not need another Python
+    # command-builder branch or Perl plugin class.
+    for annotator in registry.annotators:
+        if annotator.adapter is not Adapter.GENERIC_INDEXED_LOOKUP:
+            continue
+        config_parts = annotator.config_path.split(".")
+        if len(config_parts) != 2 or config_parts[0] != "plugins":
+            continue
+        block = plugins.get(config_parts[1], {}) or {}
+        if not block.get("enabled"):
+            continue
+        resource = registry.resource(annotator.resource_id)
+        required = block.get("required", False)
+        assets = {asset.id: asset for asset in resource.assets}
+        score_asset = assets.get("scores")
+        manifest_asset = assets.get("manifest")
+        if score_asset is None or manifest_asset is None:
+            plan.errors.append(
+                f"predictor registry resource {resource.id} lacks scores/manifest assets"
+            )
+            continue
+        score_key = score_asset.config_path.rsplit(".", 1)[-1]
+        manifest_key = manifest_asset.config_path.rsplit(".", 1)[-1]
+        raw_manifest_path = block.get(manifest_key, "")
+        raw_score_path = block.get(score_key, "")
+        missing_paths = [
+            (score_key, raw_score_path),
+            (manifest_key, raw_manifest_path),
+        ]
+        missing_paths = [key for key, value in missing_paths if not value]
+        if missing_paths:
+            for key in missing_paths:
+                message = f"plugin.{config_parts[1]}.{key}: no path configured"
+                if required:
+                    plan.errors.append(message)
+                else:
+                    plan.warnings.append(message + "  [skipped]")
+            continue
+        score_path = _resolve_indexed(
+            plan, mapper, raw_score_path,
+            f"plugin.{config_parts[1]}.{score_key}", required, check_exists,
+        )
+        manifest_path = _resolve(
+            plan, mapper, raw_manifest_path,
+            f"plugin.{config_parts[1]}.{manifest_key}", required, check_exists,
+        )
+        if manifest_path and check_exists:
+            try:
+                manifest = load_manifest(Path(mapper.absolutize(raw_manifest_path)))
+                annotator_predictors = tuple(
+                    predictor for predictor in registry.predictors
+                    if predictor.annotator_id == annotator.id
+                )
+                validate_manifest_registry_contract(
+                    manifest,
+                    annotator_predictors,
+                    resource=resource,
+                    annotator=annotator,
+                )
+                host_score = Path(mapper.absolutize(raw_score_path))
+                host_index = Path(str(host_score) + ".tbi")
+                validate_manifest_files(manifest, host_score, host_index)
+            except (OSError, ManifestError) as exc:
+                message = f"plugin.{config_parts[1]}.{manifest_key}: {exc}"
+                if required:
+                    plan.errors.append(message)
+                else:
+                    plan.warnings.append(message + "  [skipped]")
+                manifest_path = None
+        if score_path and manifest_path:
+            argv += [
+                "--plugin",
+                f"IndexedScores,file={score_path},manifest={manifest_path},resource={resource.id}",
+            ]
 
 
 def _add_custom(tracks: dict, plan: VepPlan, mapper: PathMapper,

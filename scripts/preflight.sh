@@ -29,17 +29,26 @@ import os
 import re
 import sys
 import yaml
+from pathlib import Path
 
 config_path, input_path, output_path, root, mode, requested_assembly = sys.argv[1:]
 cfg = yaml.safe_load(open(config_path))
 errors, warnings = [], []
 sys.path.insert(0, os.path.join(root, "pipeline"))
+from indexed_scores import ManifestError, load_manifest, validate_manifest_files
+from predictor_registry import Adapter, RegistryError, load_registry
 from vcf_assembly import resolve_input_assembly
 
 def absolute(path):
     if not path or os.path.isabs(path):
         return path
     return os.path.normpath(os.path.join(root, path))
+
+registry = None
+try:
+    registry = load_registry(os.path.join(root, "config", "predictor-registry.json"))
+except RegistryError as exc:
+    errors.append(f"Predictor registry is invalid: {exc}")
 
 if os.path.realpath(input_path) == os.path.realpath(output_path):
     errors.append("input and output resolve to the same path")
@@ -253,6 +262,48 @@ if mode != "--dry-run":
                 "LoGoFunc provenance manifest missing: "
                 f"{manifest} (run scripts/prepare_logofunc.sh)"
             )
+    if registry is not None:
+        for annotator in registry.annotators:
+            if annotator.adapter is not Adapter.GENERIC_INDEXED_LOOKUP:
+                continue
+            _, block_name = annotator.config_path.split(".")
+            block = plugins.get(block_name, {}) or {}
+            if not block.get("enabled"):
+                continue
+            resource = registry.resource(annotator.resource_id)
+            required = block.get("required", False)
+            assets = {asset.id: asset for asset in resource.assets}
+            score_asset = assets.get("scores")
+            manifest_asset = assets.get("manifest")
+            if score_asset is None or manifest_asset is None:
+                errors.append(
+                    f"predictor registry resource {resource.id} lacks scores/manifest assets"
+                )
+                continue
+            score_key = score_asset.config_path.rsplit(".", 1)[-1]
+            manifest_key = manifest_asset.config_path.rsplit(".", 1)[-1]
+            score_path = absolute(block.get(score_key))
+            manifest_path = absolute(block.get(manifest_key))
+            indexed.append((resource.label, score_path, required))
+            if not manifest_path or not os.path.isfile(manifest_path):
+                message = (
+                    f"{resource.label} manifest missing: {manifest_path} "
+                    f"(prepare the {resource.label} dataset before enabling it)"
+                )
+                (errors if required else warnings).append(message)
+                continue
+            try:
+                payload = load_manifest(Path(manifest_path))
+                if payload["resource"]["id"] != resource.id:
+                    raise ManifestError(
+                        f"manifest resource.id is not {resource.id}"
+                    )
+                index_path = Path(str(score_path) + ".tbi") if score_path else None
+                if score_path and os.path.isfile(score_path) and index_path.is_file():
+                    validate_manifest_files(payload, Path(score_path), index_path)
+            except (OSError, ManifestError) as exc:
+                message = f"{resource.label} manifest is invalid: {exc}"
+                (errors if required else warnings).append(message)
     clingen = cfg.get("clingen_erepo", {}) or {}
     if clingen.get("enabled", False):
         required = clingen.get("required", False)
@@ -294,12 +345,35 @@ fi
 RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
 IMAGE="$(yaml_get "$CONFIG" container.image)"; IMAGE="${IMAGE:-vep-annotate:latest}"
 command -v "$RUNTIME" >/dev/null 2>&1 || die "container runtime not found: $RUNTIME"
+GENERIC_INDEXED_ENABLED="$(python3 - "$CONFIG" "$ROOT" <<'PY'
+import os
+import sys
+import yaml
+
+config_path, root = sys.argv[1:]
+sys.path.insert(0, os.path.join(root, "pipeline"))
+from predictor_registry import Adapter, load_registry
+
+config = yaml.safe_load(open(config_path)) or {}
+plugins = config.get("plugins", {}) or {}
+registry = load_registry(os.path.join(root, "config", "predictor-registry.json"))
+enabled = any(
+    annotator.adapter is Adapter.GENERIC_INDEXED_LOOKUP
+    and bool((plugins.get(annotator.config_path.split(".")[1], {}) or {}).get("enabled"))
+    for annotator in registry.annotators
+)
+print("true" if enabled else "false")
+PY
+)"
 CHECK='for tool in vep haplo bgzip tabix bcftools samtools; do command -v "$tool" >/dev/null || { echo "missing tool: $tool" >&2; exit 2; }; done; bcftools plugin -l 2>&1 | grep -qw liftover || { echo "missing bcftools +liftover plugin" >&2; exit 2; }'
 if [[ "$(yaml_get "$CONFIG" plugins.PromoterAI.enabled)" == "true" ]]; then
     CHECK+='; test -r /plugins/PromoterAI.pm || { echo "missing bundled PromoterAI VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
 fi
 if [[ "$(yaml_get "$CONFIG" plugins.LoGoFunc.enabled)" == "true" ]]; then
     CHECK+='; test -r /plugins/LoGoFunc.pm || { echo "missing bundled LoGoFunc VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
+fi
+if [[ "$GENERIC_INDEXED_ENABLED" == "true" ]]; then
+    CHECK+='; test -r /plugins/IndexedScores.pm || { echo "missing bundled indexed-predictor VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
 fi
 if [[ "$(yaml_get "$CONFIG" plugins.CADD_WGS.enabled)" == "true" ]]; then
     CHECK+='; test -r /plugins/CADD.pm || { echo "missing standard CADD VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'

@@ -49,14 +49,14 @@ pass() { log "ok    $*"; }
 
 # ---------------------------------------------------------------------------
 log "=== [1/5] plugin syntax against the real Bio::EnsEMBL modules ==="
-for plugin in PromoterAI LoGoFunc; do
+for plugin in PromoterAI LoGoFunc IndexedScores; do
     if "$RUNTIME" run --rm \
         -v "${ROOT}/docker:/verify:ro" \
-        --entrypoint perl "$IMAGE" -c "/verify/${plugin}.pm" >/dev/null 2>&1; then
+        --entrypoint perl "$IMAGE" -I /verify -c "/verify/${plugin}.pm" >/dev/null 2>&1; then
         pass "perl -c ${plugin}.pm (in-container)"
     else
         "$RUNTIME" run --rm -v "${ROOT}/docker:/verify:ro" \
-            --entrypoint perl "$IMAGE" -c "/verify/${plugin}.pm" 2>&1 | sed 's/^/      /' || true
+            --entrypoint perl "$IMAGE" -I /verify -c "/verify/${plugin}.pm" 2>&1 | sed 's/^/      /' || true
         fail "perl -c ${plugin}.pm"
     fi
 done
@@ -74,9 +74,9 @@ fi
 
 # ---------------------------------------------------------------------------
 log "=== [3/5] baked plugin files match the repo (image drift) ==="
-for plugin in PromoterAI LoGoFunc; do
+for plugin in PromoterAI LoGoFunc IndexedScores; do
     baked="$("$RUNTIME" run --rm --entrypoint sh "$IMAGE" \
-        -c "sha256sum /plugins/${plugin}.pm" 2>/dev/null | awk '{print $1}')"
+        -c "sha256sum /plugins/${plugin}.pm" 2>/dev/null | awk '{print $1}')" || baked=""
     local_sum="$(shasum -a 256 "${ROOT}/docker/${plugin}.pm" | awk '{print $1}')"
     if [[ -n "$baked" && "$baked" == "$local_sum" ]]; then
         pass "image /plugins/${plugin}.pm is current"

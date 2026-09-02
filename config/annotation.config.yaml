@@ -149,8 +149,9 @@ output:
 # -----------------------------------------------------------------------------
 # Written beside every completed VCF as both JSON (machine/audit use) and HTML
 # (human review). Coverage denominators are annotation-specific: missense for
-# AlphaMissense/CADD, predicted LoF for LOFTEE, and MANE SNVs for the bundled
-# SpliceAI table. A warning does not discard or alter any variant.
+# AlphaMissense/CADD, predicted LoF for LOFTEE, MANE SNVs for the bundled
+# SpliceAI table, and exact allele+gene matches for FuncVEP. A warning does not
+# discard or alter any variant.
 annotation_qc:
   enabled: true
   critical_dbnsfp_fields: ["AlphaMissense_score", "CADD_phred"]
@@ -159,6 +160,7 @@ annotation_qc:
     loftee_plof: 0.90
     loftee_ptc_frameshift: 0.90
     spliceai_mane_snv: 0.90
+    funcvep_missense_snv: 0.80
   max_missing_examples: 20
 
 # -----------------------------------------------------------------------------
@@ -295,6 +297,23 @@ plugins:
     source_doi: "10.5281/zenodo.13835271"
     paper_doi: "10.1186/s13073-023-01261-9"
     md5: "d50a4601227140c295985b87a37cea7d"
+
+  # FuncVEP — functional-effect predictions for all possible GRCh38 missense
+  # variants. After the user acknowledges the terms, the licensed archive can
+  # be downloaded from official Zenodo or selected locally, then transformed
+  # into this compact indexed table; neither the archive nor its data are
+  # distributed with GUIDE-IEI. Matching requires the exact genomic allele
+  # and stable Ensembl gene ID, so scores are not reassigned across genes.
+  FuncVEP:
+    enabled: false            # optional research annotation; enable explicitly in the UI
+    required: false
+    version: "Zenodo 20595206 (v2)"
+    file: "references/funcvep/funcvep_scores.grch38.tsv.gz"
+    manifest: "references/funcvep/funcvep.manifest.json"
+    source_url: "https://zenodo.org/records/20595206"
+    source_doi: "10.5281/zenodo.20595206"
+    paper_doi: "10.1038/s41588-026-02727-3"
+    license: "PolyForm Strict License 1.0.0"
 
 # -----------------------------------------------------------------------------
 # Custom annotation tracks  (VEP --custom)

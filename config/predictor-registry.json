@@ -1,0 +1,1143 @@
+{
+  "schema_version": 1,
+  "resources": [
+    {
+      "id": "vep_core",
+      "label": "Ensembl VEP core predictors",
+      "family": "runtime",
+      "config_path": "core",
+      "assembly": "GRCh38",
+      "distribution": "bundled_runtime",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "Ensembl software and cache terms",
+      "source_url": "https://www.ensembl.org/info/docs/tools/vep/index.html",
+      "assets": []
+    },
+    {
+      "id": "dbnsfp",
+      "label": "dbNSFP",
+      "family": "prediction_database",
+      "config_path": "plugins.dbNSFP",
+      "assembly": "GRCh38",
+      "distribution": "user_supplied",
+      "default_enabled": true,
+      "license_ack_required": true,
+      "license_name": "dbNSFP source and constituent predictor terms",
+      "source_url": "https://www.dbnsfp.org/releases/",
+      "assets": [
+        {"id": "scores", "config_path": "plugins.dbNSFP.path", "role": "score_table", "required": true, "indexed": true}
+      ]
+    },
+    {
+      "id": "loftee",
+      "label": "LOFTEE",
+      "family": "predictor_assets",
+      "config_path": "plugins.LoF",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "LOFTEE upstream terms",
+      "source_url": "https://github.com/konradjk/loftee",
+      "assets": [
+        {"id": "human_ancestor_fasta", "config_path": "plugins.LoF.human_ancestor_fa", "role": "reference_fasta", "required": true, "indexed": false},
+        {"id": "conservation_database", "config_path": "plugins.LoF.conservation_file", "role": "conservation_database", "required": true, "indexed": true},
+        {"id": "gerp_bigwig", "config_path": "plugins.LoF.gerp_bigwig", "role": "conservation_track", "required": true, "indexed": true}
+      ]
+    },
+    {
+      "id": "spliceai",
+      "label": "SpliceAI",
+      "family": "prediction_database",
+      "config_path": "plugins.SpliceAI",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "SpliceAI source dataset terms",
+      "source_url": "https://github.com/Ensembl/VEP_plugins",
+      "assets": [
+        {"id": "snv", "config_path": "plugins.SpliceAI.snv", "role": "score_vcf", "required": true, "indexed": true},
+        {"id": "indel", "config_path": "plugins.SpliceAI.indel", "role": "score_vcf", "required": false, "indexed": true}
+      ]
+    },
+    {
+      "id": "cadd_wgs",
+      "label": "CADD whole-genome scores",
+      "family": "prediction_database",
+      "config_path": "plugins.CADD_WGS",
+      "assembly": "GRCh38",
+      "distribution": "public_optional",
+      "default_enabled": false,
+      "license_ack_required": true,
+      "license_name": "CADD non-commercial use",
+      "source_url": "https://kircherlab.bihealth.org/download/CADD/",
+      "assets": [
+        {"id": "snv", "config_path": "plugins.CADD_WGS.snv", "role": "score_table", "required": true, "indexed": true},
+        {"id": "indels", "config_path": "plugins.CADD_WGS.indels", "role": "score_table", "required": true, "indexed": true}
+      ]
+    },
+    {
+      "id": "promoterai",
+      "label": "PromoterAI",
+      "family": "prediction_database",
+      "config_path": "plugins.PromoterAI",
+      "assembly": "GRCh38",
+      "distribution": "user_supplied",
+      "default_enabled": false,
+      "license_ack_required": true,
+      "license_name": "Illumina PromoterAI data terms",
+      "source_url": "https://promoterai.illumina.com/",
+      "assets": [
+        {"id": "scores", "config_path": "plugins.PromoterAI.file", "role": "score_table", "required": true, "indexed": true},
+        {"id": "transcript_map", "config_path": "plugins.PromoterAI.transcript_map", "role": "transcript_map", "required": true, "indexed": false},
+        {"id": "manifest", "config_path": "plugins.PromoterAI.manifest", "role": "manifest", "required": true, "indexed": false}
+      ]
+    },
+    {
+      "id": "logofunc",
+      "label": "LoGoFunc",
+      "family": "prediction_database",
+      "config_path": "plugins.LoGoFunc",
+      "assembly": "GRCh38",
+      "distribution": "public_optional",
+      "default_enabled": false,
+      "license_ack_required": false,
+      "license_name": "LoGoFunc source dataset terms",
+      "source_url": "https://zenodo.org/records/13835271",
+      "assets": [
+        {"id": "scores", "config_path": "plugins.LoGoFunc.file", "role": "score_table", "required": true, "indexed": true},
+        {"id": "manifest", "config_path": "plugins.LoGoFunc.manifest", "role": "manifest", "required": true, "indexed": false}
+      ]
+    },
+    {
+      "id": "funcvep",
+      "label": "FuncVEP",
+      "family": "prediction_database",
+      "config_path": "plugins.FuncVEP",
+      "assembly": "GRCh38",
+      "distribution": "license_acknowledged_download",
+      "default_enabled": false,
+      "license_ack_required": true,
+      "license_name": "PolyForm Strict License 1.0.0",
+      "source_url": "https://zenodo.org/records/20595206",
+      "assets": [
+        {"id": "scores", "config_path": "plugins.FuncVEP.file", "role": "score_table", "required": true, "indexed": true},
+        {"id": "manifest", "config_path": "plugins.FuncVEP.manifest", "role": "manifest", "required": true, "indexed": false}
+      ]
+    },
+    {
+      "id": "repeatmasker",
+      "label": "RepeatMasker",
+      "family": "regional_context",
+      "config_path": "custom_tracks.RepeatMasker",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "UCSC source data terms",
+      "source_url": "https://genome.ucsc.edu/cgi-bin/hgTables",
+      "assets": [
+        {"id": "intervals", "config_path": "custom_tracks.RepeatMasker.file", "role": "interval_table", "required": false, "indexed": true}
+      ]
+    },
+    {
+      "id": "segdup",
+      "label": "Segmental duplications",
+      "family": "regional_context",
+      "config_path": "custom_tracks.SegDup",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "UCSC source data terms",
+      "source_url": "https://genome.ucsc.edu/cgi-bin/hgTables",
+      "assets": [
+        {"id": "intervals", "config_path": "custom_tracks.SegDup.file", "role": "interval_table", "required": false, "indexed": true}
+      ]
+    },
+    {
+      "id": "clinvar",
+      "label": "ClinVar",
+      "family": "clinical_evidence",
+      "config_path": "custom_tracks.ClinVar",
+      "assembly": "GRCh38",
+      "distribution": "per_run",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "NCBI data-use policies",
+      "source_url": "https://www.ncbi.nlm.nih.gov/clinvar/",
+      "assets": [
+        {"id": "vcf", "config_path": "custom_tracks.ClinVar.file", "role": "clinical_vcf", "required": false, "indexed": true}
+      ]
+    },
+    {
+      "id": "clingen_erepo",
+      "label": "ClinGen Evidence Repository",
+      "family": "clinical_evidence",
+      "config_path": "clingen_erepo",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "ClinGen data-use terms",
+      "source_url": "https://erepo.clinicalgenome.org/evrepo/",
+      "assets": [
+        {"id": "database", "config_path": "clingen_erepo.database", "role": "clinical_database", "required": true, "indexed": true},
+        {"id": "vcf", "config_path": "clingen_erepo.vcf", "role": "clinical_vcf", "required": true, "indexed": false},
+        {"id": "manifest", "config_path": "clingen_erepo.manifest", "role": "manifest", "required": true, "indexed": false}
+      ]
+    },
+    {
+      "id": "loftee_ptc_50bp",
+      "label": "LOFTEE PTC 50-bp recalculation",
+      "family": "derived_annotation",
+      "config_path": "post_processing.loftee_ptc_50bp",
+      "assembly": "GRCh38",
+      "distribution": "derived",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "GUIDE-IEI implementation",
+      "source_url": null,
+      "assets": [
+        {"id": "gtf", "config_path": "post_processing.loftee_ptc_50bp.gtf", "role": "transcript_model", "required": true, "indexed": false}
+      ]
+    },
+    {
+      "id": "haplotype_consequences",
+      "label": "Haplotype consequences",
+      "family": "derived_annotation",
+      "config_path": "post_processing.haplotype_consequences",
+      "assembly": "GRCh38",
+      "distribution": "derived",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "GUIDE-IEI implementation",
+      "source_url": null,
+      "assets": []
+    },
+    {
+      "id": "clinvar_aa_match",
+      "label": "ClinVar amino-acid match",
+      "family": "derived_annotation",
+      "config_path": "post_processing.clinvar_aa_match",
+      "assembly": "GRCh38",
+      "distribution": "derived",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "GUIDE-IEI implementation over ClinVar",
+      "source_url": null,
+      "assets": []
+    },
+    {
+      "id": "liftover",
+      "label": "GRCh37 to GRCh38 liftover",
+      "family": "input_transform",
+      "config_path": "liftover",
+      "assembly": "GRCh37-to-GRCh38",
+      "distribution": "automatic",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "UCSC chain and reference data terms",
+      "source_url": "https://hgdownload.soe.ucsc.edu/goldenPath/hg19/liftOver/",
+      "assets": [
+        {"id": "source_fasta", "config_path": "liftover.grch37_to_grch38.source_fasta", "role": "reference_fasta", "required": true, "indexed": true},
+        {"id": "chain", "config_path": "liftover.grch37_to_grch38.chain", "role": "liftover_chain", "required": true, "indexed": false}
+      ]
+    },
+    {
+      "id": "ccre",
+      "label": "ENCODE SCREEN cCRE regions",
+      "family": "regional_context",
+      "config_path": "wgs_review.ccre",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "ENCODE data-use policy",
+      "source_url": "https://screen.encodeproject.org/",
+      "assets": [
+        {"id": "intervals", "config_path": "wgs_review.ccre.bed", "role": "interval_table", "required": true, "indexed": true}
+      ]
+    },
+    {
+      "id": "screen_context",
+      "label": "ENCODE SCREEN tissue and immune context",
+      "family": "regional_context",
+      "config_path": "wgs_review.screen_context",
+      "assembly": "GRCh38",
+      "distribution": "public_optional",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "ENCODE data-use policy",
+      "source_url": "https://screen.encodeproject.org/",
+      "assets": [
+        {"id": "manifest", "config_path": "wgs_review.screen_context.manifest", "role": "manifest", "required": false, "indexed": false}
+      ]
+    }
+  ],
+  "annotators": [
+    {
+      "id": "vep_core",
+      "label": "VEP built-in transcript predictors",
+      "resource_id": "vep_core",
+      "config_path": "core",
+      "adapter": "vep_builtin",
+      "implementation": "vep_core",
+      "match": {"scope": "transcript_consequence", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_transcript", "consequence"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "exact_then_stable_id", "fallback": "stable_transcript_id", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "dbnsfp",
+      "label": "dbNSFP transcript-specific outputs",
+      "resource_id": "dbnsfp",
+      "config_path": "plugins.dbNSFP",
+      "adapter": "vep_plugin",
+      "implementation": "dbnsfp",
+      "match": {"scope": "allele_transcript", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_transcript"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "exact_then_stable_id", "fallback": "stable_transcript_id", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "dbnsfp_allele",
+      "label": "dbNSFP allele-level outputs",
+      "resource_id": "dbnsfp",
+      "config_path": "plugins.dbNSFP",
+      "adapter": "vep_plugin",
+      "implementation": "dbnsfp",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "loftee",
+      "label": "LOFTEE VEP plugin",
+      "resource_id": "loftee",
+      "config_path": "plugins.LoF",
+      "adapter": "vep_plugin",
+      "implementation": "loftee",
+      "match": {"scope": "transcript_consequence", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_transcript", "consequence"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "exact", "fallback": "none", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "spliceai",
+      "label": "SpliceAI VEP plugin",
+      "resource_id": "spliceai",
+      "config_path": "plugins.SpliceAI",
+      "adapter": "vep_plugin",
+      "implementation": "spliceai",
+      "match": {"scope": "allele_gene_symbol", "dimensions": ["chromosome", "position", "reference", "alternate", "gene_symbol"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "cadd_wgs",
+      "label": "CADD VEP plugin",
+      "resource_id": "cadd_wgs",
+      "config_path": "plugins.CADD_WGS",
+      "adapter": "vep_plugin",
+      "implementation": "cadd",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "promoterai",
+      "label": "PromoterAI VEP plugin",
+      "resource_id": "promoterai",
+      "config_path": "plugins.PromoterAI",
+      "adapter": "vep_plugin",
+      "implementation": "promoterai",
+      "match": {"scope": "allele_transcript_tss_strand", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_transcript", "tss", "strand"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "exact_then_stable_id", "fallback": "stable_transcript_id", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "logofunc",
+      "label": "LoGoFunc VEP plugin",
+      "resource_id": "logofunc",
+      "config_path": "plugins.LoGoFunc",
+      "adapter": "vep_plugin",
+      "implementation": "logofunc",
+      "match": {"scope": "allele_transcript_protein", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_transcript", "protein_position", "amino_acid_change"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "stable_id", "fallback": "report_allele_only", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "funcvep",
+      "label": "Generic indexed FuncVEP lookup",
+      "resource_id": "funcvep",
+      "config_path": "plugins.FuncVEP",
+      "adapter": "generic_indexed_lookup",
+      "implementation": "generic_indexed_table",
+      "match": {"scope": "allele_gene", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_gene"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "repeatmasker",
+      "label": "RepeatMasker VEP custom track",
+      "resource_id": "repeatmasker",
+      "config_path": "custom_tracks.RepeatMasker",
+      "adapter": "vep_custom_track",
+      "implementation": "vep_bed",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "segdup",
+      "label": "Segmental duplication VEP custom track",
+      "resource_id": "segdup",
+      "config_path": "custom_tracks.SegDup",
+      "adapter": "vep_custom_track",
+      "implementation": "vep_bed",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "clinvar",
+      "label": "ClinVar VEP custom track",
+      "resource_id": "clinvar",
+      "config_path": "custom_tracks.ClinVar",
+      "adapter": "vep_custom_track",
+      "implementation": "vep_vcf",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "clingen_erepo",
+      "label": "ClinGen exact-allele postprocessor",
+      "resource_id": "clingen_erepo",
+      "config_path": "clingen_erepo",
+      "adapter": "postprocessor",
+      "implementation": "clingen_erepo",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "loftee_ptc_50bp",
+      "label": "LOFTEE PTC 50-bp postprocessor",
+      "resource_id": "loftee_ptc_50bp",
+      "config_path": "post_processing.loftee_ptc_50bp",
+      "adapter": "postprocessor",
+      "implementation": "loftee_ptc_50bp",
+      "match": {"scope": "transcript_consequence", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_transcript", "consequence"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "exact", "fallback": "none", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "haplotype_consequences",
+      "label": "Haplotype consequence postprocessor",
+      "resource_id": "haplotype_consequences",
+      "config_path": "post_processing.haplotype_consequences",
+      "adapter": "postprocessor",
+      "implementation": "haplotype_consequences",
+      "match": {"scope": "sample_haplotype", "dimensions": ["sample", "chromosome", "position", "reference", "alternate", "phase_set", "ensembl_transcript"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "exact", "fallback": "none", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "clinvar_aa_match",
+      "label": "ClinVar pathogenic amino-acid match postprocessor",
+      "resource_id": "clinvar_aa_match",
+      "config_path": "post_processing.clinvar_aa_match",
+      "adapter": "postprocessor",
+      "implementation": "clinvar_aa_match",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    }
+  ],
+  "predictors": [
+    {
+      "id": "vep_sift",
+      "label": "SIFT (VEP built-in)",
+      "category": "Established",
+      "resource_id": "vep_core",
+      "annotator_id": "vep_core",
+      "applicability": ["missense_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "prediction", "field": "SIFT", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "vep_polyphen",
+      "label": "PolyPhen (VEP built-in)",
+      "category": "Established",
+      "resource_id": "vep_core",
+      "annotator_id": "vep_core",
+      "applicability": ["missense_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "prediction", "field": "PolyPhen", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "alphamissense",
+      "label": "AlphaMissense",
+      "category": "Protein model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "score", "field": "AlphaMissense_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "AlphaMissense_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "cadd_coding",
+      "label": "CADD (dbNSFP coding)",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp_allele",
+      "applicability": ["coding_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "phred", "field": "CADD_phred", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "raw", "field": "CADD_raw", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "revel",
+      "label": "REVEL",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "score", "field": "REVEL_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "sift_dbnsfp",
+      "label": "SIFT (dbNSFP)",
+      "category": "Established",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "score", "field": "SIFT_score", "value_type": "float", "direction": "lower", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "SIFT_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "polyphen2_hdiv",
+      "label": "PolyPhen-2 HDIV",
+      "category": "Established",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "score", "field": "Polyphen2_HDIV_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "Polyphen2_HDIV_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "metarnn",
+      "label": "MetaRNN",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MetaRNN_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "MetaRNN_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "primateai",
+      "label": "PrimateAI",
+      "category": "Protein model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "PrimateAI_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "PrimateAI_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "gerp",
+      "label": "GERP++ RS",
+      "category": "Conservation",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp_allele",
+      "applicability": ["genomic_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "GERP++_RS", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "phylop100",
+      "label": "phyloP 100-way",
+      "category": "Conservation",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp_allele",
+      "applicability": ["genomic_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "phyloP100way_vertebrate", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "phastcons100",
+      "label": "phastCons 100-way",
+      "category": "Conservation",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp_allele",
+      "applicability": ["genomic_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "phastCons100way_vertebrate", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "sift4g",
+      "label": "SIFT4G",
+      "category": "Established",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "SIFT4G_score", "value_type": "float", "direction": "lower", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "SIFT4G_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "polyphen_hvar",
+      "label": "PolyPhen HVAR",
+      "category": "Established",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "Polyphen2_HVAR_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "Polyphen2_HVAR_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "mutation_taster",
+      "label": "MutationTaster",
+      "category": "Established",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp_allele",
+      "applicability": ["coding_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MutationTaster_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "MutationTaster_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "mutation_assessor",
+      "label": "MutationAssessor",
+      "category": "Established",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MutationAssessor_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "prediction", "field": "MutationAssessor_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "provean",
+      "label": "PROVEAN",
+      "category": "Established",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["protein_altering_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "PROVEAN_score", "value_type": "float", "direction": "lower", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "prediction", "field": "PROVEAN_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "vest4",
+      "label": "VEST4",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "VEST4_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "meta_svm",
+      "label": "MetaSVM",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MetaSVM_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "prediction", "field": "MetaSVM_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "meta_lr",
+      "label": "MetaLR",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MetaLR_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "MetaLR_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "m_cap",
+      "label": "M-CAP",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "M-CAP_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "M-CAP_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "mutpred2",
+      "label": "MutPred2",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MutPred2_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "MutPred2_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "mvp",
+      "label": "MVP",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MVP_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "gmvp",
+      "label": "gMVP",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "gMVP_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "mpc",
+      "label": "MPC",
+      "category": "Regional constraint",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MPC_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "deogen2",
+      "label": "DEOGEN2",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "DEOGEN2_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "DEOGEN2_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "bayesdel_addaf",
+      "label": "BayesDel addAF",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["coding_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "BayesDel_addAF_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "prediction", "field": "BayesDel_addAF_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "bayesdel_noaf",
+      "label": "BayesDel noAF",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["coding_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "BayesDel_noAF_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "prediction", "field": "BayesDel_noAF_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "clinpred",
+      "label": "ClinPred",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "ClinPred_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "ClinPred_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "list_s2",
+      "label": "LIST-S2",
+      "category": "Ensemble",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "LIST-S2_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "prediction", "field": "LIST-S2_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "varity_r",
+      "label": "VARITY R",
+      "category": "Protein model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "VARITY_R_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "varity_er",
+      "label": "VARITY ER",
+      "category": "Protein model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "VARITY_ER_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "esm1b",
+      "label": "ESM1b",
+      "category": "Protein language model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "ESM1b_score", "value_type": "float", "direction": "lower", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "prediction", "field": "ESM1b_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "phactboost",
+      "label": "PHACTboost",
+      "category": "Protein model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "PHACTboost_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "mutformer",
+      "label": "MutFormer",
+      "category": "Protein language model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MutFormer_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "mutscore",
+      "label": "MutScore",
+      "category": "Protein model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "MutScore_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "popeve",
+      "label": "popEVE",
+      "category": "Protein model",
+      "resource_id": "dbnsfp",
+      "annotator_id": "dbnsfp",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "popEVE_score", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "prediction", "field": "popEVE_pred", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "loftee",
+      "label": "LOFTEE",
+      "category": "Loss-of-function consequence",
+      "resource_id": "loftee",
+      "annotator_id": "loftee",
+      "applicability": ["predicted_lof_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "classification", "field": "LoF", "value_type": "category", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": true},
+        {"id": "filter", "field": "LoF_filter", "value_type": "category", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": true},
+        {"id": "flags", "field": "LoF_flags", "value_type": "text", "direction": "none", "role": "flag", "value_range": null, "derived": false, "filterable": false},
+        {"id": "info", "field": "LoF_info", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false}
+      ]
+    },
+    {
+      "id": "spliceai",
+      "label": "SpliceAI",
+      "category": "Splicing",
+      "resource_id": "spliceai",
+      "annotator_id": "spliceai",
+      "applicability": ["snv", "short_indel", "gene_symbol_match"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "source_gene_symbol", "field": "SpliceAI_pred_SYMBOL", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false},
+        {"id": "delta_acceptor_gain", "field": "SpliceAI_pred_DS_AG", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "delta_acceptor_loss", "field": "SpliceAI_pred_DS_AL", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "delta_donor_gain", "field": "SpliceAI_pred_DS_DG", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "delta_donor_loss", "field": "SpliceAI_pred_DS_DL", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "delta_position_acceptor_gain", "field": "SpliceAI_pred_DP_AG", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false},
+        {"id": "delta_position_acceptor_loss", "field": "SpliceAI_pred_DP_AL", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false},
+        {"id": "delta_position_donor_gain", "field": "SpliceAI_pred_DP_DG", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false},
+        {"id": "delta_position_donor_loss", "field": "SpliceAI_pred_DP_DL", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false}
+      ]
+    },
+    {
+      "id": "cadd_wgs",
+      "label": "CADD whole-genome",
+      "category": "Ensemble",
+      "resource_id": "cadd_wgs",
+      "annotator_id": "cadd_wgs",
+      "applicability": ["genomic_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "raw", "field": "CADD_RAW", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "phred", "field": "CADD_PHRED", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "promoterai",
+      "label": "PromoterAI",
+      "category": "Regulatory effect",
+      "resource_id": "promoterai",
+      "annotator_id": "promoterai",
+      "applicability": ["promoter_region_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "score", "field": "PromoterAI_score", "value_type": "float", "direction": "absolute", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "tss", "field": "PromoterAI_TSS", "value_type": "integer", "direction": "none", "role": "coordinate", "value_range": null, "derived": false, "filterable": false},
+        {"id": "strand", "field": "PromoterAI_strand", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false},
+        {"id": "distance", "field": "PromoterAI_distance", "value_type": "integer", "direction": "none", "role": "distance", "value_range": null, "derived": true, "filterable": false},
+        {"id": "source_transcript", "field": "PromoterAI_source_transcript", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false},
+        {"id": "match", "field": "PromoterAI_match", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false}
+      ]
+    },
+    {
+      "id": "logofunc",
+      "label": "LoGoFunc",
+      "category": "Mechanism prediction",
+      "resource_id": "logofunc",
+      "annotator_id": "logofunc",
+      "applicability": ["canonical_missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "prediction", "field": "LoGoFunc_prediction", "value_type": "category", "direction": "none", "role": "prediction", "value_range": null, "derived": false, "filterable": true},
+        {"id": "neutral", "field": "LoGoFunc_neutral", "value_type": "float", "direction": "higher", "role": "probability", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "gof", "field": "LoGoFunc_GOF", "value_type": "float", "direction": "higher", "role": "probability", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "lof", "field": "LoGoFunc_LOF", "value_type": "float", "direction": "higher", "role": "probability", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "allele_available", "field": "LoGoFunc_allele_available", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": false},
+        {"id": "source_transcript", "field": "LoGoFunc_source_transcript", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false},
+        {"id": "source_hgvsp", "field": "LoGoFunc_source_HGVSp", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false},
+        {"id": "match", "field": "LoGoFunc_match", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false}
+      ]
+    },
+    {
+      "id": "funcvep",
+      "label": "FuncVEP",
+      "category": "Functional effect",
+      "resource_id": "funcvep",
+      "annotator_id": "funcvep",
+      "applicability": ["missense_variant"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "cti", "field": "FuncVEP_CTI", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "cte", "field": "FuncVEP_CTE", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "sp", "field": "FuncVEP_SP", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
+        {"id": "allele_available", "field": "FuncVEP_allele_available", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": false},
+        {"id": "match", "field": "FuncVEP_match", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false},
+        {"id": "match_status", "field": "FuncVEP_match_status", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false},
+        {"id": "source_gene", "field": "FuncVEP_source_gene", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false}
+      ]
+    },
+    {
+      "id": "repeatmasker_context",
+      "label": "RepeatMasker overlap",
+      "category": "Regional context",
+      "resource_id": "repeatmasker",
+      "annotator_id": "repeatmasker",
+      "applicability": ["genomic_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "overlap", "field": "RepeatMasker", "value_type": "text", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "segdup_context",
+      "label": "Segmental duplication overlap",
+      "category": "Regional context",
+      "resource_id": "segdup",
+      "annotator_id": "segdup",
+      "applicability": ["genomic_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "overlap", "field": "SegDup", "value_type": "text", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": true}
+      ]
+    },
+    {
+      "id": "clinvar_assertions",
+      "label": "ClinVar assertions",
+      "category": "Clinical evidence",
+      "resource_id": "clinvar",
+      "annotator_id": "clinvar",
+      "applicability": ["genomic_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "clinical_significance", "field": "ClinVar_CLNSIG", "value_type": "category", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": true},
+        {"id": "conflicting_significance", "field": "ClinVar_CLNSIGCONF", "value_type": "text", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": false},
+        {"id": "review_status", "field": "ClinVar_CLNREVSTAT", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": true},
+        {"id": "disease", "field": "ClinVar_CLNDN", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false}
+      ]
+    },
+    {
+      "id": "clingen_erepo_assertions",
+      "label": "ClinGen Evidence Repository assertions",
+      "category": "Clinical evidence",
+      "resource_id": "clingen_erepo",
+      "annotator_id": "clingen_erepo",
+      "applicability": ["genomic_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "assertions", "field": "ClinGen_ERepo", "value_type": "text", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": false},
+        {"id": "count", "field": "ClinGen_ERepo_count", "value_type": "integer", "direction": "none", "role": "count", "value_range": [0, 1000000], "derived": true, "filterable": true}
+      ]
+    },
+    {
+      "id": "loftee_ptc_50bp",
+      "label": "LOFTEE PTC 50-bp recalculation",
+      "category": "Loss-of-function consequence",
+      "resource_id": "loftee_ptc_50bp",
+      "annotator_id": "loftee_ptc_50bp",
+      "applicability": ["frameshift_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "ptc_cds_position", "field": "PTC_cds_pos", "value_type": "integer", "direction": "none", "role": "coordinate", "value_range": null, "derived": true, "filterable": false},
+        {"id": "ptc_amino_acid_position", "field": "PTC_aa_pos", "value_type": "integer", "direction": "none", "role": "coordinate", "value_range": null, "derived": true, "filterable": false},
+        {"id": "ptc_distance", "field": "PTC_dist_from_last_exon", "value_type": "integer", "direction": "none", "role": "distance", "value_range": null, "derived": true, "filterable": true},
+        {"id": "original_rule", "field": "LoF_50_BP_RULE_original", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false},
+        {"id": "ptc_rule", "field": "LoF_50_BP_RULE_PTC", "value_type": "category", "direction": "none", "role": "classification", "value_range": null, "derived": true, "filterable": true},
+        {"id": "rule_changed", "field": "LoF_50_BP_RULE_changed", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
+        {"id": "ptc_distance_from_last_coding_exon", "field": "PTC_dist_from_last_coding_exon", "value_type": "integer", "direction": "none", "role": "distance", "value_range": null, "derived": true, "filterable": true},
+        {"id": "loftee_anchor_rule", "field": "LoF_50_BP_RULE_LOFTEE_anchor", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false},
+        {"id": "calculation_status", "field": "PTC_calc_status", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false}
+      ]
+    },
+    {
+      "id": "haplotype_frame",
+      "label": "Haplotype frame consequence",
+      "category": "Haplotype consequence",
+      "resource_id": "haplotype_consequences",
+      "annotator_id": "haplotype_consequences",
+      "applicability": ["sample_variant", "frameshift_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "frame_evidence", "field": "IEI_HAPLOTYPE_FRAME", "value_type": "text", "direction": "none", "role": "classification", "value_range": null, "derived": true, "filterable": true}
+      ]
+    },
+    {
+      "id": "clinvar_aa_match",
+      "label": "ClinVar pathogenic amino-acid match",
+      "category": "Clinical evidence",
+      "resource_id": "clinvar_aa_match",
+      "annotator_id": "clinvar_aa_match",
+      "applicability": ["protein_altering_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "residue_match", "field": "ClinVar_path_aa_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
+        {"id": "change_match", "field": "ClinVar_path_aa_change_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true}
+      ]
+    }
+  ]
+}

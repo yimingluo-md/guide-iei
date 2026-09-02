@@ -62,7 +62,7 @@ python3 "${ROOT}/pipeline/prepare_promoterai.py" \
     --temporary-directory "${WORK_DIR}"
 
 log "BGZF-compressing compact PromoterAI table"
-hts bgzip -@ 2 -c "${PLAIN_SCORES}" > "${TEMP_BGZF}"
+hts bgzip -@ 2 -f "${PLAIN_SCORES}"
 hts tabix -f -s 1 -b 2 -e 2 "${TEMP_BGZF}"
 
 python3 "${ROOT}/pipeline/finalize_promoterai_manifest.py" \

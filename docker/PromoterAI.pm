@@ -78,6 +78,7 @@ sub get_header_info {
   return {
     PromoterAI_score => 'PromoterAI signed promoter-effect score for this allele and transcript TSS',
     PromoterAI_TSS => 'PromoterAI source TSS coordinate on GRCh38 (1-based)',
+    PromoterAI_strand => 'PromoterAI source TSS strand used for the exact score match (1 or -1)',
     PromoterAI_distance => 'Variant distance from TSS in the direction of transcription',
     PromoterAI_source_transcript => 'Transcript identifier in the licensed PromoterAI TSS table',
     PromoterAI_match => 'Transcript match mode: exact_version or stable_id',
@@ -144,6 +145,10 @@ sub run {
       return {
         PromoterAI_score => $candidate->{score},
         PromoterAI_TSS => $mapping->{tss_pos},
+        # VEP's VCF serializer reserves a bare '-' as its missing-value
+        # sentinel for every CSQ field except Allele. Use the standard VEP
+        # strand encoding so minus-strand evidence survives VCF output.
+        PromoterAI_strand => ($mapping->{strand} eq '+' ? '1' : '-1'),
         PromoterAI_distance => ($start - $mapping->{tss_pos}) * $direction,
         PromoterAI_source_transcript => $mapping->{transcript_id},
         PromoterAI_match => $match,

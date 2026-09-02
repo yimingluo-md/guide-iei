@@ -69,6 +69,7 @@ import {
   startResourceDownload,
   startDbnsfpDownload,
   startLoGoFuncPreparation,
+  startFuncVepPreparation,
   startPromoterAiPreparation,
   startCohortImport,
   submitJob,
@@ -125,6 +126,7 @@ import {
   STANDARD_VARIANT_QC,
   variantQcFailures, genotypeQcFailures, type GenotypeEvidence,
   type ImportSummary,
+  type PredictorObservation,
   type VariantQcSettings,
   type VariantRow,
 } from "./vcf";
@@ -169,6 +171,7 @@ type Zygosity = "all" | "hom" | "compound" | "de_novo";
 type DisplayItem =
   | "quality" | "population" | "gnomadPopulations" | "clinvar" | "transcript" | "geneConstraint"
   | "alphaMissense" | "cadd" | "spliceAI" | "promoterAI" | "loGoFunc"
+  | "funcVepCti" | "funcVepCte" | "funcVepSp"
   | "revel" | "metaRnn" | "primateAi" | "sift" | "polyPhen"
   | "caddRaw" | "gerp" | "phyloP" | "phastCons" | "loftee";
 
@@ -189,9 +192,10 @@ const CODING_CONSEQUENCES = new Set([
 ]);
 const DEFAULT_DISPLAY = new Set<DisplayItem>([
   "quality", "population", "clinvar", "transcript", "geneConstraint",
-  "alphaMissense", "cadd", "spliceAI", "promoterAI", "loGoFunc", "loftee",
+  "alphaMissense", "cadd", "spliceAI", "promoterAI", "loGoFunc", "funcVepCti", "loftee",
 ]);
-const DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v1";
+const DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v2";
+const LEGACY_DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v1";
 const DBNSFP_DISPLAY_STORAGE_KEY = "iei-review-visible-dbnsfp-predictors-v1";
 const GENE_SET_STORAGE_KEYS = {
   iei: "iei-review-gene-set-iei-v1",
@@ -768,8 +772,19 @@ export default function VariantWorkbench() {
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
       try {
-        const stored = JSON.parse(localStorage.getItem(DISPLAY_STORAGE_KEY) ?? "null");
-        if (Array.isArray(stored)) setVisibleInfo(new Set(stored as DisplayItem[]));
+        const currentPreference = localStorage.getItem(DISPLAY_STORAGE_KEY);
+        const stored = JSON.parse(
+          currentPreference ?? localStorage.getItem(LEGACY_DISPLAY_STORAGE_KEY) ?? "null",
+        );
+        if (Array.isArray(stored)) {
+          const migrated = stored.flatMap((item: unknown) =>
+            item === "funcVep" ? ["funcVepCti"] : typeof item === "string" ? [item] : [],
+          );
+          if (currentPreference === null && !migrated.includes("funcVepCti")) {
+            migrated.push("funcVepCti");
+          }
+          setVisibleInfo(new Set(migrated as DisplayItem[]));
+        }
         const storedDbnsfp = JSON.parse(localStorage.getItem(DBNSFP_DISPLAY_STORAGE_KEY) ?? "null");
         if (Array.isArray(storedDbnsfp)) setVisibleDbnsfpPredictors(new Set(storedDbnsfp as string[]));
       } catch {
@@ -1532,7 +1547,7 @@ function VariantTable({ rows, hasImportedData, saved, setSaved, setSelected, com
       <td>{visibleInfo.has("loftee") && row.haplotypeFrameStatus === "FRAME_RESTORED_CONFIRMED" ? <><span className="mini-badge amber">Not LoF after haplotype</span><span className="cell-sub">per-variant LOFTEE {row.loftee || "—"}</span></> : visibleInfo.has("loftee") && row.loftee ? <><span className={`mini-badge ${row.loftee === "HC" ? "teal" : ""}`}>{row.loftee}</span>{lofteeCodes(row.lofteeFilter)[0] && <span className="cell-sub" title={lofteeExplanation(lofteeCodes(row.lofteeFilter)[0], "filter")}>{cleanLabel(lofteeCodes(row.lofteeFilter)[0])}</span>}{row.haplotypeFrameStatus && <span className="cell-sub">{haplotypeFrameLabel(row.haplotypeFrameStatus)}</span>}</> : visibleInfo.has("loftee") && isReferenceDisruptedTranscript(row) ? <><span className="mini-badge amber">Not applicable</span><span className="cell-sub">reference-disrupted transcript</span></> : visibleInfo.has("loftee") && isStartLostVariant(row) ? <><span className="mini-badge">Not applicable</span><span className="cell-sub">start-loss outside LOFTEE scope</span></> : "—"}</td>
       <td>{row.clinvar ? <><span className={`clinvar ${isPathogenic(row.clinvar) || isClinvarConflictWithPathogenic(row.clinvar, row.clinvarConflictingEvidence) ? "pathogenic" : ""}`}>{row.clinvar.replaceAll("_", " ")}</span>{isClinvarConflictWithPathogenic(row.clinvar, row.clinvarConflictingEvidence) && <span className="cell-sub">includes ≥1 P / LP submission</span>}</> : "—"}</td>
       <td>{visibleInfo.has("spliceAI") ? <Score label="" value={row.spliceAI} strong={(row.spliceAI ?? 0) >= 0.2} /> : "—"}</td>
-      <td><div className="flags">{qcFailures.length > 0 && <span className="qc-fail-flag" title={qcFailures.join("; ")}>QC fail</span>}{row.unscoredIndelReasons?.length ? <span className="qc-warn-flag" title={row.unscoredIndelReasons.map(unscoredIndelReasonLabel).join("; ")}>Unscored indel</span> : null}{row.duplicateRecord && <span className="qc-warn-flag" title={duplicateRecordLabel(row)}>{row.duplicateRecordKind === "liftover_collision" ? "Lift-over collision" : "Duplicate record"}</span>}{deNovo && ["high_confidence", "possible", "possible_parental_mosaicism"].includes(deNovo.status) && <span className={`family-flag ${deNovo.status}`}>{deNovoLabel(deNovo.status)}</span>}{row.haplotypeFrameStatus && <span>{haplotypeFrameLabel(row.haplotypeFrameStatus)}</span>}{isReferenceDisruptedTranscript(row) && <span className="qc-warn-flag" title="The reference transcript is protein_coding_LoF; its reference haplotype already has a disrupted ORF.">Reference-disrupted transcript</span>}{row.liftedFromGrch37 && <span>Lifted from GRCh37</span>}{row.assemblyAlleleSwap && <span title="A source allele became the GRCh38 reference; genotype and allele-indexed annotations were remapped">Assembly allele swap</span>}{row.mane && <span title={row.maneSelect ? "MANE Select transcript" : "MANE Plus Clinical transcript — an additional clinically designated transcript alongside MANE Select"}>{row.maneSelect ? "MANE Select" : "MANE Plus Clinical"}</span>}{row.picked && !row.mane && <span>PICK fallback</span>}{row.collapsedTranscriptRows?.length ? <span className="collapse-chip" title={"Also annotated on:\n" + row.collapsedTranscriptRows.map((other) => `${other.gene} · ${other.transcript || "—"}${other.maneSelect ? " · MANE Select" : other.mane ? " · MANE Plus Clinical" : ""}`).join("\n") + "\nOpen the variant for the full transcript table."}>+{row.collapsedTranscriptRows.length}</span> : null}{visibleInfo.has("loGoFunc") && row.loGoFuncPrediction && <span title={`Source ${row.loGoFuncSourceTranscript}`}>LoGoFunc {row.loGoFuncPrediction}</span>}{row.promoterAI !== null && <span>promoterAI</span>}{row.repeat && <span>Repeat</span>}{row.segdup && <span>SegDup</span>}</div></td>
+      <td><div className="flags">{qcFailures.length > 0 && <span className="qc-fail-flag" title={qcFailures.join("; ")}>QC fail</span>}{row.unscoredIndelReasons?.length ? <span className="qc-warn-flag" title={row.unscoredIndelReasons.map(unscoredIndelReasonLabel).join("; ")}>Unscored indel</span> : null}{row.duplicateRecord && <span className="qc-warn-flag" title={duplicateRecordLabel(row)}>{row.duplicateRecordKind === "liftover_collision" ? "Lift-over collision" : "Duplicate record"}</span>}{deNovo && ["high_confidence", "possible", "possible_parental_mosaicism"].includes(deNovo.status) && <span className={`family-flag ${deNovo.status}`}>{deNovoLabel(deNovo.status)}</span>}{row.haplotypeFrameStatus && <span>{haplotypeFrameLabel(row.haplotypeFrameStatus)}</span>}{isReferenceDisruptedTranscript(row) && <span className="qc-warn-flag" title="The reference transcript is protein_coding_LoF; its reference haplotype already has a disrupted ORF.">Reference-disrupted transcript</span>}{row.liftedFromGrch37 && <span>Lifted from GRCh37</span>}{row.assemblyAlleleSwap && <span title="A source allele became the GRCh38 reference; genotype and allele-indexed annotations were remapped">Assembly allele swap</span>}{row.mane && <span title={row.maneSelect ? "MANE Select transcript" : "MANE Plus Clinical transcript — an additional clinically designated transcript alongside MANE Select"}>{row.maneSelect ? "MANE Select" : "MANE Plus Clinical"}</span>}{row.picked && !row.mane && <span>PICK fallback</span>}{row.collapsedTranscriptRows?.length ? <span className="collapse-chip" title={"Also annotated on:\n" + row.collapsedTranscriptRows.map((other) => `${other.gene} · ${other.transcript || "—"}${other.maneSelect ? " · MANE Select" : other.mane ? " · MANE Plus Clinical" : ""}`).join("\n") + "\nOpen the variant for the full transcript table."}>+{row.collapsedTranscriptRows.length}</span> : null}{visibleInfo.has("loGoFunc") && row.loGoFuncPrediction && <span title={`Source ${row.loGoFuncSourceTranscript}`}>LoGoFunc {row.loGoFuncPrediction}</span>}{hasVisibleFuncVepScore(row, visibleInfo) && <span>FuncVEP</span>}{row.promoterAI !== null && <span>promoterAI</span>}{row.repeat && <span>Repeat</span>}{row.segdup && <span>SegDup</span>}</div></td>
     </tr>;
   })}</tbody></table></div></div>;
 }
@@ -1569,11 +1584,89 @@ function DisplaySettingsButton({
     ["revel", "REVEL"], ["metaRnn", "MetaRNN"], ["primateAi", "PrimateAI"], ["sift", "SIFT"], ["polyPhen", "PolyPhen"], ["loftee", "LOFTEE"],
     ["caddRaw", "CADD raw"], ["gerp", "GERP++ RS"], ["phyloP", "phyloP 100-way"], ["phastCons", "phastCons 100-way"],
   ];
+  const funcVepModels: [DisplayItem, string][] = [
+    ["funcVepCti", "CTI — default"],
+    ["funcVepCte", "CTE — optional comparison"],
+    ["funcVepSp", "SP — optional comparison"],
+  ];
   const sections: [DisplayItem, string][] = [
     ["quality", "Call quality"], ["population", "Population & regions"], ["gnomadPopulations", "All gnomAD population frequencies"], ["clinvar", "ClinVar"], ["transcript", "Transcript"], ["geneConstraint", "Gene constraint"],
   ];
   const detectedDbnsfp = ADDITIONAL_DBNSFP_PREDICTORS.filter((item) => availableDbnsfpPredictors.has(item.id));
-  return <div className="display-settings"><button className={`secondary-button ${open ? "active" : ""}`} onClick={() => setOpen(!open)}>Display settings</button>{open && <div className="settings-popover"><div className="settings-head"><div><strong>Information shown</strong><span>Saved on this workstation</span></div><button onClick={() => setOpen(false)}>×</button></div>{setOneRowPerVariant && <><h3>Variant list</h3><div className="settings-grid"><Check label="One row per variant" checked={Boolean(oneRowPerVariant)} onChange={setOneRowPerVariant} /></div><p className="settings-note">Each variant appears once, represented by its highest-priority transcript (MANE Select, then MANE Plus Clinical, then most severe consequence). A +N chip counts the collapsed transcript/gene rows; the variant page always lists every transcript.</p></>}<h3>Evidence sections</h3><div className="settings-grid">{sections.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>Core predictors</h3><div className="settings-grid">{predictors.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>Additional dbNSFP predictors <span className="detected-count">{detectedDbnsfp.length} detected</span></h3>{detectedDbnsfp.length ? <div className="settings-grid">{detectedDbnsfp.map((item) => <Check key={item.id} label={item.label} checked={visibleDbnsfpPredictors.has(item.id)} onChange={(checked) => toggleDbnsfp(item.id, checked)} />)}</div> : <p className="settings-empty">None were present in this VCF’s CSQ schema.</p>}<button className="settings-reset" onClick={() => { setVisibleInfo(new Set(DEFAULT_DISPLAY)); setVisibleDbnsfpPredictors(new Set()); }}>Restore defaults</button></div>}</div>;
+  return <div className="display-settings"><button className={`secondary-button ${open ? "active" : ""}`} onClick={() => setOpen(!open)}>Display settings</button>{open && <div className="settings-popover"><div className="settings-head"><div><strong>Information shown</strong><span>Saved on this workstation</span></div><button onClick={() => setOpen(false)}>×</button></div>{setOneRowPerVariant && <><h3>Variant list</h3><div className="settings-grid"><Check label="One row per variant" checked={Boolean(oneRowPerVariant)} onChange={setOneRowPerVariant} /></div><p className="settings-note">Each variant appears once, represented by its highest-priority transcript (MANE Select, then MANE Plus Clinical, then most severe consequence). A +N chip counts the collapsed transcript/gene rows; the variant page always lists every transcript.</p></>}<h3>Evidence sections</h3><div className="settings-grid">{sections.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>Core predictors</h3><div className="settings-grid">{predictors.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><h3>FuncVEP models</h3><div className="settings-grid">{funcVepModels.map(([key, label]) => <Check key={key} label={label} checked={visibleInfo.has(key)} onChange={(checked) => toggle(key, checked)} />)}</div><p className="settings-note">CTI is shown by default. Enable CTE or SP here when you want to compare their different feature sets.</p><h3>Additional dbNSFP predictors <span className="detected-count">{detectedDbnsfp.length} detected</span></h3>{detectedDbnsfp.length ? <div className="settings-grid">{detectedDbnsfp.map((item) => <Check key={item.id} label={item.label} checked={visibleDbnsfpPredictors.has(item.id)} onChange={(checked) => toggleDbnsfp(item.id, checked)} />)}</div> : <p className="settings-empty">None were present in this VCF’s CSQ schema.</p>}<button className="settings-reset" onClick={() => { setVisibleInfo(new Set(DEFAULT_DISPLAY)); setVisibleDbnsfpPredictors(new Set()); }}>Restore defaults</button></div>}</div>;
+}
+
+const FUNCVEP_MODEL_DISPLAY: Array<{
+  key: Extract<DisplayItem, "funcVepCti" | "funcVepCte" | "funcVepSp">;
+  label: "CTI" | "CTE" | "SP";
+  value: (row: VariantRow) => number | null | undefined;
+  description: string;
+}> = [
+  {
+    key: "funcVepCti",
+    label: "CTI",
+    value: (row) => row.funcVepCti,
+    description: "includes features from clinical-trained predictors",
+  },
+  {
+    key: "funcVepCte",
+    label: "CTE",
+    value: (row) => row.funcVepCte,
+    description: "excludes clinically trained predictors and also AlphaMissense because its development used ClinVar variants for model selection and tuning",
+  },
+  {
+    key: "funcVepSp",
+    label: "SP",
+    value: (row) => row.funcVepSp,
+    description: "excludes all features derived from other variant-effect predictors",
+  },
+];
+
+function hasVisibleFuncVepScore(row: VariantRow, visibleInfo: Set<DisplayItem>) {
+  return FUNCVEP_MODEL_DISPLAY.some((model) => {
+    const value = model.value(row);
+    return visibleInfo.has(model.key) && value !== null && value !== undefined;
+  });
+}
+
+function FuncVepEvidence({
+  row,
+  observation,
+  visibleInfo,
+}: {
+  row: VariantRow;
+  observation?: PredictorObservation;
+  visibleInfo: Set<DisplayItem>;
+}) {
+  const models = FUNCVEP_MODEL_DISPLAY.filter((model) => visibleInfo.has(model.key));
+  const hasAnyScore = FUNCVEP_MODEL_DISPLAY.some((model) => {
+    const value = model.value(row);
+    return value !== null && value !== undefined;
+  });
+  if (!models.length || (!hasAnyScore && !observation)) return null;
+  const exactMatch = observation?.matchStatus === "exact";
+  const sourceGene = observation?.target?.ensembl_gene;
+  const sourceGenes = (sourceGene || "").split("&").filter(Boolean);
+  const matchReason = observation?.provenance?.match;
+  const noScoreReason = matchReason === "query_target_unavailable"
+    ? "The VCF did not provide an Ensembl gene target"
+    : matchReason === "multiple_exact_records"
+      ? "More than one source record matched"
+      : observation?.matchStatus === "ambiguous"
+        ? "The source match was ambiguous"
+        : "The allele was found, but the Ensembl gene did not match exactly";
+  return <section className="review-section">
+    <div className="section-title"><div><p className="eyebrow">Functional evidence model</p><h2>FuncVEP</h2></div><span>{exactMatch ? "Exact allele + Ensembl gene" : cleanLabel(observation?.matchStatus || "unmatched")}</span></div>
+    {exactMatch ? <div className="logofunc-evidence">
+      <div><span>Predicted functional effect</span><strong>{models.length === 1 ? `${models[0].label} model` : `${models.length} selected model settings`}</strong><small>Higher scores indicate greater predicted functional impact. This is not a clinical pathogenicity classification.</small></div>
+      <dl>{models.map((model) => <div key={model.key}><dt>{model.label}</dt><dd>{compactNumber(model.value(row) ?? null, 3)}</dd></div>)}</dl>
+      <p>{models.map((model) => `${model.label} ${model.description}`).join(" · ")}</p>
+      {models.every((model) => model.value(row) === null || model.value(row) === undefined) && <small>The match is exact, but the selected model score is unavailable. Missing is not evidence that the variant is benign.</small>}
+    </div> : <div className="logofunc-evidence">
+      <div><span>No FuncVEP score attached</span><strong>{noScoreReason}</strong><small>GUIDE-IEI does not transfer a score between genes. Missing FuncVEP output is not evidence that the variant is benign.</small></div>
+      {sourceGenes.length > 0 && <p className="funcvep-source-genes">FuncVEP source gene{sourceGenes.length === 1 ? "" : "s"}: {sourceGenes.map((gene) => <code key={gene}>{gene}</code>)}</p>}
+    </div>}
+  </section>;
 }
 
 function ccreDistanceLabel(distance: number) {
@@ -1688,6 +1781,7 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
         strong,
       };
     });
+  const funcVepObservation = selected.predictions?.funcvep;
   const gnomadPopulationItems: [string, React.ReactNode][] = Object.entries(selected.gnomadFrequencies ?? {})
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => [gnomadFrequencyLabel(key), compactNumber(value, 6)]);
@@ -1738,6 +1832,8 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
 
       {reviewSection === "gene" ? <GeneKnowledgePanel gene={selected.gene} constraintRow={selected} relatedRows={rows.filter((row) => row.gene.toUpperCase() === selected.gene.toUpperCase())}/> : reviewSection === "phenotype" ? <PhenotypeReviewPanel sample={selected.sample} onManage={onManagePhenotype}/> : analysisScope === "whole_genome" && reviewSection === "regulatory" ? <RegulatoryEvidencePanel catalog={screenCatalog} evidence={screenEvidence} loading={screenEvidenceLoading} error={screenEvidenceError} activeSetId={activeRegulatorySetId} setActiveSetId={setActiveRegulatorySetId} customSets={regulatoryContextSets} setCustomSets={setRegulatoryContextSets} onCatalogInstalled={setScreenCatalog}><CcreContextPanel compact chrom={selected.chrom} pos={selected.pos} ref={selected.ref} alt={selected.alt}/></RegulatoryEvidencePanel> : <>
       <section className="review-section"><div className="section-title"><div><p className="eyebrow">Computational evidence</p><h2>Predictors</h2></div><span>{predictorCards.length + additionalPredictorCards.length} shown</span></div><div className="predictor-card-grid">{[...predictorCards, ...additionalPredictorCards].map((item) => <div className={`predictor-card ${item.strong ? "strong" : ""}`} key={item.key}><span>{item.label}</span><strong>{compactNumber(item.value ?? null, item.label.includes("CADD") ? 1 : 3)}</strong><small>{item.value === null || item.value === undefined ? "No score for this variant" : item.note || "Available"}</small></div>)}</div>{visibleInfo.has("loGoFunc") && selected.loGoFuncAlleleAvailable && <div className="logofunc-evidence"><div><span>LoGoFunc missense mechanism</span><strong>{selected.loGoFuncPrediction || "Allele available; transcript/protein mismatch"}{selectedLoGoFuncScore !== null ? ` · ${compactNumber(selectedLoGoFuncScore, 3)}` : ""}</strong><small>Research prediction; not a clinical classification or LOFTEE result.</small></div><dl><div><dt>Neutral</dt><dd>{compactNumber(selected.loGoFuncNeutral, 3)}</dd></div><div><dt>GOF</dt><dd>{compactNumber(selected.loGoFuncGof, 3)}</dd></div><div><dt>LOF</dt><dd>{compactNumber(selected.loGoFuncLof, 3)}</dd></div></dl><p>Source {selected.loGoFuncSourceTranscript || "—"} · {selected.loGoFuncSourceHgvsp || "—"} · {cleanLabel(selected.loGoFuncMatch)}</p></div>}{visibleInfo.has("loftee") && <div className="loftee-line loftee-detail-line"><span>LOFTEE</span><div className="loftee-line-content"><strong>{selected.haplotypeFrameStatus === "FRAME_RESTORED_CONFIRMED" ? `Not LoF after confirmed haplotype reconstruction · per-variant ${lofteeDisplayLabel(selected)}` : lofteeDisplayLabel(selected)}</strong>{isReferenceDisruptedTranscript(selected) && !selected.loftee && <small>LOFTEE evaluates standard protein-coding transcripts. This transcript&apos;s reference-genome haplotype already has a disrupted open reading frame, although other human haplotypes may be translated.</small>}{isStartLostVariant(selected) && !selected.loftee && <small>Start-loss variants require separate assessment of downstream in-frame initiation sites and transcript context. No PVS1 conclusion is assigned here.</small>}{lofteeCodes(selected.lofteeFilter).map((code) => <small key={`filter:${code}`}><b>LC reason:</b> {lofteeExplanation(code, "filter")} <code>{code}</code></small>)}{lofteeCodes(selected.lofteeFlags).map((code) => <small key={`flag:${code}`}><b>Flag:</b> {lofteeExplanation(code, "flag")} <code>{code}</code></small>)}</div></div>}{visibleInfo.has("loftee") && selected.ptcCalcStatus && <div className="loftee-line loftee-detail-line"><span>Frameshift PTC calculation</span><div className="loftee-line-content"><strong>{isReferenceDisruptedTranscript(selected) ? "Not calculated · reference transcript CDS is already disrupted" : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? "Not applicable · single-exon transcript" : ptcCalculationStatusLabel(selected.ptcCalcStatus)}</strong>{isReferenceDisruptedTranscript(selected) ? <><small>A reliable patient-specific PTC/NMD position cannot be calculated against an already-disrupted reference ORF.</small><small>Technical status: <code>{selected.ptcCalcStatus}</code></small></> : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? <><small>This transcript has no downstream exon–exon junction, so the conventional 50–55-nt exon-junction NMD rule is not applicable.</small><small>Premature stops in single-exon transcripts may escape exon-junction-complex-dependent NMD; assess transcript-specific RNA and protein evidence separately.</small>{(selected.loftee50bp || selected.loftee50bpOriginal) && <small>Stored technical value: <code>{selected.loftee50bp || selected.loftee50bpOriginal}</code> · not interpreted for this transcript</small>}</> : <>{selected.ptcDistanceFromLastExon !== null && <small>{ptcDistanceLabel(selected.ptcDistanceFromLastExon)}</small>}{selected.loftee50bp && <small><b>{ptcRuleLabel(selected.loftee50bp)}</b></small>}{selected.loftee50bpChanged && <small>Replaced original LOFTEE coordinate-based result: {selected.loftee50bpOriginal || "not recorded"}</small>}</>}</div></div>}{selected.haplotypeFrameStatus && <div className="loftee-line"><span>Sample haplotype</span><strong>{haplotypeFrameLabel(selected.haplotypeFrameStatus)}{selected.haplotypeFramePartners?.length ? ` · partner ${selected.haplotypeFramePartners.join(", ")}` : ""}{selected.haplotypeProteinChange ? ` · ${selected.haplotypeProteinChange}` : ""}</strong></div>}</section>
+
+      <FuncVepEvidence row={selected} observation={funcVepObservation} visibleInfo={visibleInfo}/>
 
       {isHighImpactSpliceVariant(selected) && <div className="splicing-evidence-row"><span>Splicing evidence</span><div><small>Site</small><strong>{spliceSiteLabel(selected)}</strong></div><div title={cleanLabel(selected.consequence)}><small>VEP</small><strong>{selected.impact} · {primarySpliceConsequenceLabel(selected.consequence)}</strong></div><div><small>LOFTEE</small><strong>{selected.loftee || "Not annotated"}</strong></div><div><small>SpliceAI</small><strong>{spliceAiDisplay(selected.spliceAI)}</strong></div></div>}
 
@@ -3757,6 +3853,8 @@ function DatasetSetupCard({
   choosingPreparationPath,
   onChoosePreparationPath,
   onPrepare,
+  licenseAccepted = false,
+  onLicenseAccepted,
 }: {
   source: AnnotationSource;
   analysisScope: AnalysisScope;
@@ -3769,6 +3867,8 @@ function DatasetSetupCard({
   choosingPreparationPath: boolean;
   onChoosePreparationPath: () => void;
   onPrepare: () => void;
+  licenseAccepted?: boolean;
+  onLicenseAccepted?: (value: boolean) => void;
 }) {
   const supported = (source.available_in ?? ["exome", "whole_genome"]).includes(analysisScope);
   const activeDownload = downloadJob?.status === "queued" || downloadJob?.status === "running";
@@ -3799,15 +3899,25 @@ function DatasetSetupCard({
     : source.installed ? "Verify files" : "Download / resume";
   const preparationLabel = source.prepare_id === "logofunc"
     ? "Choose the downloaded LoGoFunc file"
+    : source.prepare_id === "funcvep"
+    ? "Optional: use an official ZIP already on this computer"
     : "Choose the licensed PromoterAI source folder";
   const chosenSourceName = preparationPath
     ? preparationPath.replace(/[\\/]+$/, "").split(/[\\/]/).pop() || "Selected source"
     : "";
   const preparationButton = source.prepare_id === "logofunc"
     ? "Import LoGoFunc"
+    : source.prepare_id === "funcvep"
+    ? preparationPath
+      ? source.installed ? "Prepare selected ZIP and replace FuncVEP" : "Prepare selected ZIP and install FuncVEP"
+      : source.installed ? "Download and replace FuncVEP" : "Download and install FuncVEP"
     : source.installed ? "Prepare and replace" : "Prepare and install";
   const preparationHelp = source.prepare_id === "logofunc"
     ? "The checksum-verified 3.66 GB table and index are moved into Annotation datasets storage; they are removed from the selected download location."
+    : source.prepare_id === "funcvep"
+    ? preparationPath
+      ? "GUIDE-IEI verifies the selected official archive and prepares only FuncVEP_CTI, FuncVEP_CTE, and FuncVEP_SP locally. Your ZIP remains exactly where you selected it."
+      : "GUIDE-IEI resumably downloads the pinned 4.24 GB ZIP from official Zenodo storage, verifies its published checksum, and prepares only FuncVEP_CTI, FuncVEP_CTE, and FuncVEP_SP. The source ZIP is retained in Annotation datasets storage."
     : "Prepared files are written to Annotation datasets storage. After successful installation, the two large licensed source files are removed from the selected folder. Nothing is uploaded.";
   return <article className={`dataset-card ${source.installed ? "installed" : "missing"} ${source.setup_mode} ${supported ? "" : "profile-unavailable"}`}>
     <div className="dataset-card-top">
@@ -3815,14 +3925,30 @@ function DatasetSetupCard({
         <input type="checkbox" checked={supported && enabled} disabled={!canToggle} onChange={(event) => onEnabled(event.target.checked)}/>
         <span className="custom-check"/>
       </label>
-      <div className="dataset-card-title"><strong>{source.label}{source.id !== "dbnsfp" && source.version ? ` ${source.version}` : ""}</strong><small><GlossaryText text={source.description} /></small></div>
+      <div className="dataset-card-title"><strong>{source.label}{source.id !== "dbnsfp" && !["funcvep", "logofunc"].includes(source.id) && source.version ? ` ${source.version}` : ""}</strong><small><GlossaryText text={source.description} /></small></div>
       <span className={`dataset-status ${activeDownload ? "working" : source.installed ? "ready" : "missing"}`}>{status}</span>
     </div>
     <div className="dataset-meta"><span>{setupLabels[source.setup_mode]}</span>{source.access === "registration" && <span>Registration required</span>}{source.access === "license" && <span>License required</span>}{source.access === "terms" && <span>Usage terms apply</span>}{source.recommendation === "optional" && <span>Optional</span>}{source.size_hint && <span>{source.size_hint}</span>}</div>
     {activeDownload && <div className="resource-progress"><progress max={100} value={downloadJob?.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(downloadJob, downloadJob?.operation === "preparation" ? "Preparing local dataset…" : "Starting dataset download…")}</span></div>}
     {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Download log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
     {source.prepare_id === "dbnsfp" && <div className="dataset-preparation"><label className="dataset-download-link"><span>Paste the private dbNSFP GRCh38 (.gz) download link</span><input type="url" value={preparationPath} autoComplete="off" spellCheck={false} disabled={activeDownload} placeholder="https://…/dbNSFP…_grch38.gz" onChange={(event) => onPreparationPath(event.target.value)}/></label><button type="button" disabled={activeDownload || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Downloading and installing…" : source.installed ? "Download and replace dbNSFP" : "Download and install dbNSFP"}</button><small>The filename must end in _grch38.gz — not _grch37.gz. GUIDE-IEI accepts any dbNSFP release version and Outlook Safe Links, derives the .tbi and .md5 links, resumes interrupted transfers with eight connections, and keeps the private link out of logs and configuration.</small></div>}
-    {source.prepare_id && source.prepare_id !== "dbnsfp" && <div className="dataset-preparation"><span className="dataset-preparation-label">{preparationLabel}</span><div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "logofunc" ? "Choose file" : "Choose folder"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div><button type="button" disabled={activeDownload || choosingPreparationPath || !preparationPath.trim()} onClick={onPrepare}>{activeDownload ? "Preparing…" : preparationButton}</button><small>{preparationHelp}</small></div>}
+    {source.prepare_id && source.prepare_id !== "dbnsfp" && <div className="dataset-preparation">
+      {source.prepare_id === "funcvep" && <div className="dataset-license-panel">
+        <strong>License and download</strong>
+        <p>The FuncVEP project states that it uses the PolyForm Strict 1.0.0 license. GUIDE-IEI does not include or redistribute the archive. Review the upstream terms before allowing GUIDE-IEI to obtain the ZIP from the official Zenodo record.</p>
+        <div className="dataset-license-actions">
+          <a href="https://polyformproject.org/licenses/strict/1.0.0" target="_blank" rel="noreferrer">Read upstream license ↗</a>
+          <a href="https://zenodo.org/records/20595206" target="_blank" rel="noreferrer">Open official download page ↗</a>
+        </div>
+        <label className="check-row"><input type="checkbox" checked={licenseAccepted} disabled={activeDownload} onChange={(event) => onLicenseAccepted?.(event.target.checked)}/><span className="custom-check"/><span>I have reviewed the upstream terms and confirm that my intended use of FuncVEP is permitted.</span></label>
+      </div>}
+      {source.prepare_id === "funcvep" && <small className="dataset-local-processing">After acknowledgement, GUIDE-IEI can download the archive directly and process it on this computer. You can alternatively choose an existing ZIP below.</small>}
+      <span className="dataset-preparation-label">{preparationLabel}</span>
+      <div className="dataset-source-picker"><button type="button" disabled={activeDownload || choosingPreparationPath} onClick={onChoosePreparationPath}>{choosingPreparationPath ? "Opening chooser…" : preparationPath ? "Choose another" : source.prepare_id === "promoterai" ? "Choose folder" : "Choose file"}</button>{chosenSourceName ? <span title={preparationPath}><strong>{chosenSourceName}</strong><small>Selected from this computer</small></span> : source.prepare_id === "funcvep" ? <span><strong>Automatic Zenodo download</strong><small>No local ZIP needs to be selected</small></span> : <span><strong>No source selected</strong><small>Download it anywhere, then select it here</small></span>}</div>
+      {source.prepare_id === "funcvep" && preparationPath && <button className="dataset-source-clear" type="button" disabled={activeDownload} onClick={() => onPreparationPath("")}>Use automatic Zenodo download instead</button>}
+      <button type="button" disabled={activeDownload || choosingPreparationPath || (source.prepare_id !== "funcvep" && !preparationPath.trim()) || (source.prepare_id === "funcvep" && !licenseAccepted)} onClick={onPrepare}>{activeDownload ? source.prepare_id === "funcvep" && !preparationPath ? "Downloading and preparing…" : "Preparing…" : preparationButton}</button>
+      <small>{preparationHelp}</small>
+    </div>}
     <div className="dataset-actions">
       {downloadId && (source.setup_mode !== "bundled" || !source.installed) && <button type="button" disabled={activeDownload} onClick={() => onDownload(downloadId)}>{activeDownload ? "Downloading…" : buttonLabel}</button>}
       {source.reference_url && <a href={source.reference_url} target="_blank" rel="noreferrer">{source.reference_label || "Official reference"} ↗</a>}
@@ -3909,7 +4035,7 @@ function OmimDatasetSetupCard({
     {downloadJob?.status === "failed" && <div className="resource-download-error"><strong>{downloadJob.error || downloadJob.message}</strong><details><summary>Installation log</summary><pre>{downloadJob.log || "No log output was captured."}</pre></details></div>}
     {message && <div className="alert">{message}</div>}
     {status?.installed && <p className="constraint-note">{status.genes?.toLocaleString()} genes · {status.phenotypes?.toLocaleString()} phenotype associations</p>}
-    <div className="dataset-actions"><a href="https://omim.org/downloads" target="_blank" rel="noreferrer">OMIM data access and official downloads ↗</a></div>
+    <div className="dataset-actions"><a href="https://omim.org/" target="_blank" rel="noreferrer">OMIM website ↗</a></div>
   </article>;
 }
 
@@ -3931,6 +4057,8 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   const [dbnsfpDownloadUrl, setDbnsfpDownloadUrl] = useState("");
   const [promoterAiSourceDir, setPromoterAiSourceDir] = useState("");
   const [loGoFuncSourcePath, setLoGoFuncSourcePath] = useState("");
+  const [funcVepSourcePath, setFuncVepSourcePath] = useState("");
+  const [funcVepLicenseAccepted, setFuncVepLicenseAccepted] = useState(false);
   const [choosingResourceSource, setChoosingResourceSource] = useState<string | null>(null);
   const [selectedDbnsfpPredictors, setSelectedDbnsfpPredictors] = useState<Set<string>>(new Set());
   const [fork, setFork] = useState(8);
@@ -4087,14 +4215,15 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     }
   }
 
-  async function choosePreparationSource(resourceId: "promoterai" | "logofunc") {
+  async function choosePreparationSource(resourceId: "promoterai" | "logofunc" | "funcvep") {
     setServiceError("");
     setChoosingResourceSource(resourceId);
     try {
       const selection = await chooseLocalResourceSource(resourceId);
       if (selection.cancelled || !selection.path) return;
       if (resourceId === "promoterai") setPromoterAiSourceDir(selection.path);
-      else setLoGoFuncSourcePath(selection.path);
+      else if (resourceId === "logofunc") setLoGoFuncSourcePath(selection.path);
+      else setFuncVepSourcePath(selection.path);
     } catch (error) {
       setServiceError(
         error instanceof Error ? error.message : "Could not open the local file chooser.",
@@ -4146,6 +4275,24 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     } catch (error) {
       setServiceError(
         error instanceof Error ? error.message : "Could not install the LoGoFunc source.",
+      );
+    }
+  }
+
+  async function prepareFuncVep() {
+    setServiceError("");
+    try {
+      const job = await startFuncVepPreparation(
+        funcVepSourcePath.trim(),
+        funcVepLicenseAccepted,
+      );
+      setResourceJobs((current) => [
+        job,
+        ...current.filter((item) => item.id !== job.id),
+      ]);
+    } catch (error) {
+      setServiceError(
+        error instanceof Error ? error.message : "Could not prepare the FuncVEP archive.",
       );
     }
   }
@@ -4215,19 +4362,19 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   const exomeDatasetsInstalled = Boolean(capabilities?.annotation_profile.recommended_profiles?.exome.installed);
   const wgsDatasetsInstalled = Boolean(capabilities?.annotation_profile.recommended_profiles?.whole_genome.installed);
   const accessRequiredSources = annotationSources.filter(
-    (source) => source.access === "registration" || source.access === "license",
+    (source) => source.recommendation !== "optional"
+      && (source.access === "registration" || source.access === "license"),
   );
   const bundledSources = annotationSources.filter((source) => source.setup_mode === "bundled");
   const optionalSources = annotationSources.filter(
-    (source) => source.recommendation === "optional"
-      && source.access !== "registration" && source.access !== "license",
+    (source) => source.recommendation === "optional",
   );
   const standardSources = annotationSources.filter(
     (source) => !accessRequiredSources.includes(source)
       && !bundledSources.includes(source)
       && !optionalSources.includes(source),
   );
-  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpDownloadUrl : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : ""} onPreparationPath={source.id === "dbnsfp" ? setDbnsfpDownloadUrl : () => undefined} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => { if (source.id === "promoterai" || source.id === "logofunc") void choosePreparationSource(source.id); }} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : () => undefined}/>);
+  const datasetCards = (sources: AnnotationSource[]) => sources.map((source) => <DatasetSetupCard key={source.id} source={source} analysisScope={analysisScope} enabled={annotationSourceIsEnabled(source, analysisScope, sourceEnabled)} onEnabled={(checked) => setSourceEnabled((current) => ({ ...current, [source.id]: checked }))} downloadJob={latestResourceJobs.get(source.id)} onDownload={downloadResource} preparationPath={source.id === "dbnsfp" ? dbnsfpDownloadUrl : source.id === "promoterai" ? promoterAiSourceDir : source.id === "logofunc" ? loGoFuncSourcePath : source.id === "funcvep" ? funcVepSourcePath : ""} onPreparationPath={source.id === "dbnsfp" ? setDbnsfpDownloadUrl : source.id === "funcvep" ? setFuncVepSourcePath : () => undefined} choosingPreparationPath={choosingResourceSource === source.id} onChoosePreparationPath={() => { if (source.id === "promoterai" || source.id === "logofunc" || source.id === "funcvep") void choosePreparationSource(source.id); }} onPrepare={source.id === "dbnsfp" ? prepareDbnsfp : source.id === "promoterai" ? preparePromoterAi : source.id === "logofunc" ? prepareLoGoFunc : source.id === "funcvep" ? prepareFuncVep : () => undefined} licenseAccepted={source.id === "funcvep" ? funcVepLicenseAccepted : false} onLicenseAccepted={source.id === "funcvep" ? setFuncVepLicenseAccepted : undefined}/>);
   return <section className="intake-card annotate-card intake-primary-card">
     <div className="intake-card-head"><span className="step-number">{step}</span><div><p className="eyebrow">Local VEP</p><h2>{step === 1 ? "Select raw VCF files" : setupOnly ? "Set up annotation datasets" : "Check annotation settings"}</h2></div><span className={`service-badge ${capabilities ? "online" : "offline"}`}>{capabilities ? "service ready" : "service offline"}</span></div>
     {step === 1 ? <>
@@ -4462,8 +4609,8 @@ function GenePanel({ genes, rows, onSelect }: { genes: [string, number][]; rows:
 function downloadTsv(rows: VariantRow[], qcSettings: VariantQcSettings) {
   const detectedDbnsfp = ADDITIONAL_DBNSFP_PREDICTORS.filter((definition) =>
     rows.some((row) => row.availableDbnsfpPredictors?.includes(definition.id)));
-  const headers = ["sample", "variant_id", "chrom", "pos", "ref", "alt", "original_assembly", "original_chrom", "original_pos", "original_ref", "original_alt", "unscored_indel_reasons", "gene", "HGVSc", "HGVSp", "consequence", "impact", "gnomad_popmax", "gnomad_popmax_population", "gnomad_frequencies", "CADD_phred", "CADD_raw", "AlphaMissense", "AlphaMissense_pred", "REVEL", "MetaRNN", "MetaRNN_pred", "PrimateAI", "PrimateAI_pred", "SIFT", "SIFT_pred", "PolyPhen_HDIV", "PolyPhen_HDIV_pred", "GERP_RS", "phyloP100way", "phastCons100way", "LOFTEE", "LOFTEE_filter", "LOFTEE_flags", "LOFTEE_PTC_50BP", "LOFTEE_50BP_original", "PTC_distance_from_last_exon", "PTC_calc_status", "haplotype_frame_status", "haplotype_frame_partners", "haplotype_protein_change", "ClinVar", "ClinVar_conflicting_evidence", "SpliceAI", "promoterAI", "LoGoFunc_prediction", "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF", "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match", "genotype", "DP", "GQ", "allele_balance", "carriers", "MANE", "PICK", "RepeatMasker", "SegDup", ...detectedDbnsfp.flatMap((definition) => [definition.scoreColumn, ...(definition.predictionColumn ? [definition.predictionColumn] : [])])];
-  const body = rows.map((row) => [row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "", row.originalChrom ?? "", row.originalPos ?? "", row.originalRef ?? "", row.originalAlt ?? "", row.unscoredIndelReasons?.join("&") ?? "", row.gene, row.hgvsC, row.hgvsP, row.consequence, row.impact, row.gnomadPopmax ?? "", row.gnomadPopmaxPopulation ?? "", JSON.stringify(row.gnomadFrequencies ?? {}), row.cadd ?? "", row.caddRaw ?? "", row.alphaMissense ?? "", row.alphaPrediction, row.revel ?? "", row.metaRnn ?? "", row.metaRnnPrediction ?? "", row.primateAi ?? "", row.primateAiPrediction ?? "", row.sift ?? "", row.siftPrediction ?? "", row.polyPhen ?? "", row.polyPhenPrediction ?? "", row.gerpRs ?? "", row.phyloP100way ?? "", row.phastCons100way ?? "", row.loftee, row.lofteeFilter, row.lofteeFlags, row.loftee50bp, row.loftee50bpOriginal, row.ptcDistanceFromLastExon ?? "", row.ptcCalcStatus, row.haplotypeFrameStatus ?? "", row.haplotypeFramePartners?.join(",") ?? "", row.haplotypeProteinChange ?? "", row.clinvar, row.clinvarConflictingEvidence ?? "", row.spliceAI ?? "", row.promoterAI ?? "", row.loGoFuncPrediction, row.loGoFuncNeutral ?? "", row.loGoFuncGof ?? "", row.loGoFuncLof ?? "", row.loGoFuncSourceTranscript, row.loGoFuncSourceHgvsp, row.loGoFuncMatch, row.genotype, row.dp ?? "", row.gq ?? "", row.alleleBalance ?? "", row.carriers?.map((carrier) => { const failures = carrierQcFailures(carrier, row, qcSettings); return `${carrier.sample}:${carrier.evidence.gt}${carrier.evidence.partialCall ? "(partial)" : ""}:DP=${carrier.evidence.dp ?? "."}:GQ=${carrier.evidence.gq ?? "."}:AD=${carrier.evidence.adRef ?? "."},${carrier.evidence.adAlt ?? "."}:AB=${carrier.evidence.alleleBalance?.toFixed(3) ?? "."}:FT=${carrier.evidence.genotypeFilter || "."}:QC=${failures.length ? `fail(${failures.join("|").replace(/[;\t]/g, " ")})` : "pass"}`; }).join(";") ?? "", row.mane, row.picked, row.repeat, row.segdup, ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])])].join("\t"));
+  const headers = ["sample", "variant_id", "chrom", "pos", "ref", "alt", "original_assembly", "original_chrom", "original_pos", "original_ref", "original_alt", "unscored_indel_reasons", "gene", "HGVSc", "HGVSp", "consequence", "impact", "gnomad_popmax", "gnomad_popmax_population", "gnomad_frequencies", "CADD_phred", "CADD_raw", "AlphaMissense", "AlphaMissense_pred", "REVEL", "MetaRNN", "MetaRNN_pred", "PrimateAI", "PrimateAI_pred", "SIFT", "SIFT_pred", "PolyPhen_HDIV", "PolyPhen_HDIV_pred", "GERP_RS", "phyloP100way", "phastCons100way", "LOFTEE", "LOFTEE_filter", "LOFTEE_flags", "LOFTEE_PTC_50BP", "LOFTEE_50BP_original", "PTC_distance_from_last_exon", "PTC_calc_status", "haplotype_frame_status", "haplotype_frame_partners", "haplotype_protein_change", "ClinVar", "ClinVar_conflicting_evidence", "SpliceAI", "promoterAI", "LoGoFunc_prediction", "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF", "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match", "FuncVEP_CTI", "FuncVEP_CTE", "FuncVEP_SP", "predictor_observations", "genotype", "DP", "GQ", "allele_balance", "carriers", "MANE", "PICK", "RepeatMasker", "SegDup", ...detectedDbnsfp.flatMap((definition) => [definition.scoreColumn, ...(definition.predictionColumn ? [definition.predictionColumn] : [])])];
+  const body = rows.map((row) => [row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "", row.originalChrom ?? "", row.originalPos ?? "", row.originalRef ?? "", row.originalAlt ?? "", row.unscoredIndelReasons?.join("&") ?? "", row.gene, row.hgvsC, row.hgvsP, row.consequence, row.impact, row.gnomadPopmax ?? "", row.gnomadPopmaxPopulation ?? "", JSON.stringify(row.gnomadFrequencies ?? {}), row.cadd ?? "", row.caddRaw ?? "", row.alphaMissense ?? "", row.alphaPrediction, row.revel ?? "", row.metaRnn ?? "", row.metaRnnPrediction ?? "", row.primateAi ?? "", row.primateAiPrediction ?? "", row.sift ?? "", row.siftPrediction ?? "", row.polyPhen ?? "", row.polyPhenPrediction ?? "", row.gerpRs ?? "", row.phyloP100way ?? "", row.phastCons100way ?? "", row.loftee, row.lofteeFilter, row.lofteeFlags, row.loftee50bp, row.loftee50bpOriginal, row.ptcDistanceFromLastExon ?? "", row.ptcCalcStatus, row.haplotypeFrameStatus ?? "", row.haplotypeFramePartners?.join(",") ?? "", row.haplotypeProteinChange ?? "", row.clinvar, row.clinvarConflictingEvidence ?? "", row.spliceAI ?? "", row.promoterAI ?? "", row.loGoFuncPrediction, row.loGoFuncNeutral ?? "", row.loGoFuncGof ?? "", row.loGoFuncLof ?? "", row.loGoFuncSourceTranscript, row.loGoFuncSourceHgvsp, row.loGoFuncMatch, row.funcVepCti ?? "", row.funcVepCte ?? "", row.funcVepSp ?? "", JSON.stringify(row.predictions ?? {}), row.genotype, row.dp ?? "", row.gq ?? "", row.alleleBalance ?? "", row.carriers?.map((carrier) => { const failures = carrierQcFailures(carrier, row, qcSettings); return `${carrier.sample}:${carrier.evidence.gt}${carrier.evidence.partialCall ? "(partial)" : ""}:DP=${carrier.evidence.dp ?? "."}:GQ=${carrier.evidence.gq ?? "."}:AD=${carrier.evidence.adRef ?? "."},${carrier.evidence.adAlt ?? "."}:AB=${carrier.evidence.alleleBalance?.toFixed(3) ?? "."}:FT=${carrier.evidence.genotypeFilter || "."}:QC=${failures.length ? `fail(${failures.join("|").replace(/[;\t]/g, " ")})` : "pass"}`; }).join(";") ?? "", row.mane, row.picked, row.repeat, row.segdup, ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])])].join("\t"));
   const url = URL.createObjectURL(new Blob([[headers.join("\t"), ...body].join("\n")], { type: "text/tab-separated-values" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = "iei-prioritized-variants.tsv"; anchor.click(); URL.revokeObjectURL(url);
 }

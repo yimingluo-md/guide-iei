@@ -32,6 +32,7 @@ plain language what it contributes; this chapter is a tour of those cards.
 | PromoterAI (licensed; recommended for WGS) | <1 GB | promoter predictions |
 | CADD whole-genome (optional) | ~83 GB | non-coding CADD only |
 | LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
+| FuncVEP (optional; licensed) | 4.24 GB source ZIP; 24 GiB free for automatic setup | missense functional-effect scores |
 
 Dataset sizes are approximate and may change between releases. Allow about
 110 GB for the recommended exome resources and 150–250 GB for a more complete
@@ -135,6 +136,34 @@ lying outside the exome's coding scope.
   classes for missense variants. It may provide a mechanistic hypothesis, but
   it does not establish pathogenicity or functional effect. One click from
   Zenodo (~4 GB).
+- **FuncVEP**
+  ([Kayaalp et al., *Nature Genetics* 2026](https://www.nature.com/articles/s41588-026-02727-3)).
+  Scores the predicted functional effect of GRCh38 missense SNVs. It is a
+  licensed resource. Review the archive's
+  [PolyForm Strict License 1.0.0](https://polyformproject.org/licenses/strict/1.0.0),
+  acknowledge that your intended use is permitted, and select **Download and
+  install FuncVEP**. GUIDE-IEI downloads the pinned ZIP resumably from the
+  [official Zenodo record](https://zenodo.org/records/20595206). You can select
+  an existing official ZIP instead.
+  The upstream terms permit qualifying noncommercial use but do not grant
+  distribution or software-modification rights. Because Zenodo does not expose a separate
+  dataset-license field for this record, confirm that your intended local use
+  is authorized.
+  Preparation happens entirely on this computer. GUIDE-IEI validates the
+  archive, retains only the three FuncVEP score columns, builds a local index,
+  and retains an automatic download in Annotation datasets storage. Nothing is
+  uploaded or redistributed.
+  Although the upstream ZIP also contains ClinVEP columns, GUIDE-IEI does not
+  import or display ClinVEP.
+
+FuncVEP scores are emitted only when both the genomic allele and the
+version-independent Ensembl gene ID match exactly. The three models are CTI
+(clinically trained component predictors included), CTE (clinically trained
+predictors and AlphaMissense excluded; AlphaMissense used ClinVar variants for
+model selection and tuning), and SP (features from other
+variant-effect predictors excluded). A higher score means a stronger predicted
+functional effect. It is not a clinical pathogenicity classification, and a
+missing score is not evidence that a variant is benign.
 
 Already bundled with the software, requiring no download: the ENCODE SCREEN
 cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge

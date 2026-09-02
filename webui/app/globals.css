@@ -357,6 +357,15 @@ tbody tr:last-child td { border-bottom: 0; }
 .dataset-preparation button { padding: 5px 8px; border: 1px solid #b9d1ca; border-radius: 4px; background: #edf7f3; color: #256957; font-size: 8px; font-weight: 650; cursor: pointer; }
 .dataset-preparation button:disabled { opacity: .55; cursor: not-allowed; }
 .dataset-preparation small { margin-top: 6px; }
+.dataset-license-panel { margin-bottom: 8px; padding: 9px; border: 1px solid #d6e2de; border-radius: 5px; background: white; }
+.dataset-license-panel > strong { display: block; color: #40534d; font-size: 9px; }
+.dataset-license-panel > p { margin: 4px 0 0; color: #5f706b; font-size: 8px; line-height: 1.45; }
+.dataset-license-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.dataset-license-actions a { padding: 5px 8px; border: 1px solid #b9d1ca; border-radius: 4px; background: #edf7f3; color: #256957; font-size: 8px; font-weight: 650; text-decoration: none; }
+.dataset-license-actions a:hover { background: #e4f2ed; text-decoration: none; }
+.dataset-license-panel .check-row { margin-top: 9px; }
+.dataset-license-panel .check-row > span:last-child { color: #53645f; font-size: 8px; line-height: 1.45; }
+.dataset-preparation .dataset-local-processing { margin: 0 0 7px; }
 .dataset-preparation-label { display: block; margin-bottom: 5px; color: #53645f; font-size: 8px; font-weight: 650; }
 .dataset-download-link { display: block; margin-bottom: 7px; }
 .dataset-download-link > span { margin-bottom: 5px; color: #53645f; font-weight: 650; }
@@ -366,6 +375,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .dataset-source-picker > span { min-width: 0; }
 .dataset-source-picker strong { display: block; overflow: hidden; color: #40534d; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
 .dataset-source-picker small { margin: 1px 0 0; }
+.dataset-preparation .dataset-source-clear { display: block; margin: -1px 0 7px; border: 0; background: transparent; color: #39776d; font-weight: 550; text-decoration: underline; }
 .dataset-instructions { margin: 9px 0 0 22px; border-top: 1px solid #edf0ef; }
 .dataset-instructions > summary { padding-top: 8px; color: #5d746d; font-size: 8px; cursor: pointer; }
 .dataset-instructions ol { margin: 8px 0 0; padding-left: 17px; color: #6f7d78; font-size: 8px; line-height: 1.5; }
@@ -958,6 +968,7 @@ tbody tr:last-child td { border-bottom: 0; }
 .logofunc-evidence > div > span { color: #52736d; font-size: 9px; text-transform: uppercase; letter-spacing: .06em; }
 .logofunc-evidence > div > strong { margin-top: 6px; color: #175f58; font: 14px var(--font-geist-mono); }
 .logofunc-evidence > div > small, .logofunc-evidence > p { margin-top: 5px; color: #72847f; font-size: 9px; }
+.funcvep-source-genes code + code::before { content: ", "; }
 .logofunc-evidence dl { margin: 12px 0 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
 .logofunc-evidence dl > div { padding: 9px; border-radius: 4px; background: white; }
 .logofunc-evidence dt { color: #7a8b87; font-size: 8px; text-transform: uppercase; }

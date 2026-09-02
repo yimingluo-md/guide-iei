@@ -53,6 +53,15 @@ PROMOTERAI_FIELDS = (
 LOGOFUNC_SCORE_FIELDS = (
     "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF",
 )
+FUNCVEP_SCORE_FIELDS = (
+    "FuncVEP_CTI", "FuncVEP_CTE", "FuncVEP_SP",
+)
+FUNCVEP_PROVENANCE_FIELDS = (
+    "FuncVEP_allele_available",
+    "FuncVEP_match",
+    "FuncVEP_match_status",
+    "FuncVEP_source_gene",
+)
 
 
 def open_text(path: Path):
@@ -169,6 +178,9 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     thresholds = qc_config.get("warn_below") or {}
     max_examples = max_examples or int(qc_config.get("max_missing_examples", 20))
     names = _configured_field_names(config)
+    funcvep_enabled = bool(
+        (((config.get("plugins") or {}).get("FuncVEP") or {}).get("enabled"))
+    )
 
     counters = Counter()
     consequence_counts = Counter()
@@ -208,6 +220,10 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 continue
             if csq_fields is None:
                 raise ValueError("VEP CSQ header was not found")
+            funcvep_record_qc = funcvep_enabled and all(
+                field in csq_fields
+                for field in (*FUNCVEP_SCORE_FIELDS, *FUNCVEP_PROVENANCE_FIELDS)
+            )
             columns = line.rstrip("\n").split("\t")
             if len(columns) < 8:
                 raise ValueError(f"malformed VCF record: {line.rstrip()}")
@@ -265,6 +281,41 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                     ] += 1
                 elif allele_available:
                     note_missing("LoGoFunc_transcript_protein_match", key)
+
+                counters["funcvep_missense_snv_eligible"] += 1
+                funcvep_allele_available = any(
+                    entry.get("FuncVEP_allele_available") == "1"
+                    for entry in missense
+                )
+                funcvep_exact = [
+                    entry
+                    for entry in missense
+                    if entry.get("FuncVEP_match_status") == "exact"
+                    and entry.get("FuncVEP_match") == "allele_gene"
+                ]
+                funcvep_complete = [
+                    entry
+                    for entry in funcvep_exact
+                    if all(present(entry.get(field)) for field in FUNCVEP_SCORE_FIELDS)
+                ]
+                if funcvep_allele_available:
+                    counters["funcvep_allele_available"] += 1
+                if funcvep_exact:
+                    counters["funcvep_exact_match"] += 1
+                if funcvep_complete:
+                    counters["funcvep_score_complete"] += 1
+                elif funcvep_exact and funcvep_record_qc:
+                    note_missing("FuncVEP_scores", key)
+                elif funcvep_allele_available and funcvep_record_qc:
+                    note_missing("FuncVEP_gene_match", key)
+                elif funcvep_record_qc:
+                    note_missing("FuncVEP_allele", key)
+                for status in {
+                    entry.get("FuncVEP_match_status", "")
+                    for entry in missense
+                    if present(entry.get("FuncVEP_match_status"))
+                }:
+                    counters[f"funcvep_match_status:{status}"] += 1
 
             plof = [e for e in entries if has_consequence(e, PLOF_CONSEQUENCES)]
             if plof:
@@ -355,8 +406,20 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 counters["clinvar_pathogenic_aa_match_records"] += 1
             if present(info.get("ClinGen_ERepo")):
                 counters["clingen_erepo_match_records"] += 1
-                counters["clingen_erepo_assertions"] += len(
-                    info.get("ClinGen_ERepo", "").split(",")
+                count_slots = [
+                    int(token)
+                    for token in info.get("ClinGen_ERepo_count", "").split(",")
+                    if token.isdigit()
+                ]
+                counters["clingen_erepo_assertions"] += (
+                    sum(count_slots)
+                    if count_slots
+                    else sum(
+                        token not in MISSING
+                        for token in re.split(
+                            r"[,&]", info.get("ClinGen_ERepo", "")
+                        )
+                    )
                 )
             haplotype_entries = info.get("IEI_HAPLOTYPE_FRAME", "").split(",")
             haplotype_statuses = {
@@ -390,6 +453,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     loftee_config = plugins.get("LoF") or {}
     spliceai_config = plugins.get("SpliceAI") or {}
     logofunc_config = plugins.get("LoGoFunc") or {}
+    funcvep_config = plugins.get("FuncVEP") or {}
     missense_n = counters["missense_eligible"]
     db_threshold = float(thresholds.get("dbnsfp_missense", 0.80))
     for field in names["critical_dbnsfp"]:
@@ -531,6 +595,27 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         logofunc_exact_metric["status"] = "WARN"
     metrics.extend((logofunc_allele_metric, logofunc_exact_metric))
 
+    funcvep_schema = all(
+        field in csq_fields
+        for field in (*FUNCVEP_SCORE_FIELDS, *FUNCVEP_PROVENANCE_FIELDS)
+    )
+    funcvep_eligible = counters["funcvep_missense_snv_eligible"]
+    funcvep_metric = metric(
+        "FuncVEP exact allele and Ensembl gene scores on missense SNV records",
+        funcvep_eligible,
+        counters["funcvep_score_complete"],
+        float(thresholds.get("funcvep_missense_snv", 0.80)),
+    )
+    funcvep_metric["schema_present"] = funcvep_schema
+    funcvep_metric["match_contract"] = "exact GRCh38 allele + stable Ensembl gene ID"
+    if not funcvep_config.get("enabled"):
+        funcvep_metric["status"] = "SKIPPED_DISABLED"
+    elif not funcvep_schema:
+        funcvep_metric["status"] = (
+            "FAIL" if funcvep_config.get("required") else "SKIPPED_NOT_INSTALLED"
+        )
+    metrics.append(funcvep_metric)
+
     clingen_config = config.get("clingen_erepo") or {}
     clingen_schema = all(
         field in header_info_fields
@@ -595,6 +680,9 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 (config.get("clingen_erepo") or {}).get("required")
             ),
             "LoGoFunc_version": logofunc_config.get("version"),
+            "FuncVEP_version": funcvep_config.get("version"),
+            "FuncVEP_required": bool(funcvep_config.get("required")),
+            "FuncVEP_match_contract": "exact GRCh38 allele + stable Ensembl gene ID",
             "LOFTEE_PTC_50BP_required": bool(
                 (
                     (config.get("post_processing") or {}).get(
@@ -710,6 +798,24 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                     "residue position, and amino-acid substitution agreement. Missing is not neutral."
                 ),
             },
+            "funcvep": {
+                "schema_present": funcvep_schema,
+                "eligible_grch38_missense_snv_records": funcvep_eligible,
+                "allele_available_records": counters["funcvep_allele_available"],
+                "exact_allele_gene_match_records": counters["funcvep_exact_match"],
+                "complete_score_records": counters["funcvep_score_complete"],
+                "match_status_record_counts": {
+                    key.removeprefix("funcvep_match_status:"): value
+                    for key, value in sorted(counters.items())
+                    if key.startswith("funcvep_match_status:")
+                },
+                "scores": list(FUNCVEP_SCORE_FIELDS),
+                "scope": "GRCh38 missense SNVs",
+                "interpretation": (
+                    "Scores require an exact genomic allele and stable Ensembl gene ID match. "
+                    "They estimate functional effect and are not clinical pathogenicity classifications."
+                ),
+            },
             "missing_examples": missing_examples,
         },
     }
@@ -761,6 +867,7 @@ details pre {{ white-space: pre-wrap; background: #f7f9f9; padding: 1rem }}
 <th>Coverage</th><th>Status</th></tr></thead><tbody>{''.join(rows)}</tbody></table>
 <p>promoterAI: {html.escape(report['details']['promoterAI']['status'])}</p>
 <p>LoGoFunc exact transcript/protein matches: {report['details']['logofunc']['exact_transcript_protein_match_records']}</p>
+<p>FuncVEP exact allele/gene scores: {report['details']['funcvep']['complete_score_records']}</p>
 <details><summary>Full details</summary><pre>{details}</pre></details>
 <p>Created {html.escape(report['created_utc'])}</p>
 </body></html>

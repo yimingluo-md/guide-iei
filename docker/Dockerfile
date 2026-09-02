@@ -133,6 +133,11 @@ COPY --chown=vep:vep PromoterAI.pm /plugins/PromoterAI.pm
 # missense prediction table. The multi-gigabyte data remain user-supplied.
 COPY --chown=vep:vep LoGoFunc.pm /plugins/LoGoFunc.pm
 
+# Manifest-driven lookup for local indexed predictors. Resource selection is
+# supplied as adapter data, so new predictors do not require Perl wrappers.
+# Neither the FuncVEP ZIP nor its prepared scores are copied into the image.
+COPY --chown=vep:vep IndexedScores.pm /plugins/IndexedScores.pm
+
 # Return to the unprivileged user for runtime.
 USER vep
 WORKDIR /data

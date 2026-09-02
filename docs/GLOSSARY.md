@@ -95,6 +95,9 @@ see it in place.
 **LoGoFunc**
 : Research predictor of missense mechanism: gain of function, loss of function, or neutral. A hypothesis generator, not a pathogenicity call.
 
+**FuncVEP**
+: Research predictor of damaging functional effects for GRCh38 missense SNVs. GUIDE-IEI reports CTI, CTE, and SP only after exact allele-and-Ensembl-gene matching. Higher scores predict greater functional damage; they are not clinical pathogenicity classifications.
+
 ## Inheritance & family
 
 **de novo** *(also: de-novo)*

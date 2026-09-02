@@ -194,6 +194,42 @@ def test_required_ptc_50bp_gtf_missing_fails(tmp_path):
     assert "LOFTEE PTC 50-bp GTF missing" in result.stderr
 
 
+def test_generic_indexed_predictor_manifest_is_validated_from_registry(tmp_path):
+    cache = tmp_path / "cache"; cache.mkdir()
+    scores = tmp_path / "scores.tsv.gz"; scores.write_bytes(b"scores")
+    pathlib.Path(str(scores) + ".tbi").write_bytes(b"index")
+    manifest = tmp_path / "manifest.json"; manifest.write_text("{}\n")
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        "reference:\n"
+        "  assembly: GRCh38\n"
+        f"  vep_cache_dir: {cache}\n"
+        "region:\n  coding_only: false\n"
+        "output:\n  format: vcf\n  compress: bgzip\n"
+        "container:\n  runtime: definitely-not-a-container-runtime\n"
+        "plugins:\n"
+        "  FuncVEP:\n"
+        "    enabled: true\n"
+        "    required: true\n"
+        f"    file: {scores}\n"
+        f"    manifest: {manifest}\n"
+        "post_processing:\n  clinvar_aa_match:\n    enabled: false\n"
+    )
+    vcf = tmp_path / "in.vcf"; write_vcf(vcf)
+    result = run_reference_checks(config, vcf, tmp_path / "out.vcf.gz")
+    assert result.returncode != 0
+    assert "FuncVEP manifest is invalid" in result.stderr
+    assert "manifest_schema" in result.stderr
+
+
+def test_indexed_plugin_runtime_check_is_not_funcvep_specific(_tmp_path=None):
+    source = PREFLIGHT.read_text()
+    assert "annotator.adapter is Adapter.GENERIC_INDEXED_LOOKUP" in source
+    assert "plugins.FuncVEP.enabled" not in source
+    assert 'if [[ "$GENERIC_INDEXED_ENABLED" == "true" ]]' in source
+    assert "test -r /plugins/IndexedScores.pm" in source
+
+
 if __name__ == "__main__":
     tests = [
         test_valid_single_and_multi_sample,
@@ -204,6 +240,8 @@ if __name__ == "__main__":
         test_required_spliceai_snv_missing_fails,
         test_required_loftee_reference_missing_fails,
         test_required_ptc_50bp_gtf_missing_fails,
+        test_generic_indexed_predictor_manifest_is_validated_from_registry,
+        test_indexed_plugin_runtime_check_is_not_funcvep_specific,
     ]
     for test in tests:
         with tempfile.TemporaryDirectory() as td:

@@ -32,6 +32,11 @@ test("keeps the clinical review defaults visible", async () => {
   assert.match(source, /confirmResearchUseExport/);
   assert.match(source, /FilterSection title="Clinical database"/);
   assert.match(source, /FilterSection title="Prediction scores"/);
+  assert.match(source, /const exactMatch = observation\?\.matchStatus === "exact";/);
+  assert.doesNotMatch(source, /matchStatus === "exact" \|\| hasAnyScore/);
+  assert.match(source, /matchReason === "query_target_unavailable"/);
+  assert.match(source, /The VCF did not provide an Ensembl gene target/);
+  assert.match(source, /sourceGene \|\| ""\)\.split\("&"\)/);
 });
 
 test("provides separate local annotation and annotated-VCF review paths", async () => {
@@ -157,7 +162,7 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Paste the private dbNSFP GRCh38 \(\.gz\) download link/);
   assert.match(source, /must end in _grch38\.gz — not _grch37\.gz/);
   assert.match(source, /accepts any dbNSFP release version/);
-  assert.match(source, /source\.id !== "dbnsfp" && source\.version/);
+  assert.match(source, /source\.id !== "dbnsfp" && !\["funcvep", "logofunc"\]\.includes\(source\.id\) && source\.version/);
   assert.match(source, /Download and install dbNSFP/);
   assert.match(source, /derives the \.tbi and \.md5 links/);
   assert.match(source, /Choose folder/);
@@ -190,6 +195,32 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(service, /\/api\/resource-preparations\/logofunc/);
   assert.match(service, /startLoGoFuncPreparation/);
   assert.match(source, /LoGoFunc predicted class/);
+  assert.match(source, /source\.recommendation === "optional"/);
+  assert.match(source, /source\.id === "funcvep" \? funcVepSourcePath/);
+  assert.match(source, /Automatic Zenodo download/);
+  assert.match(source, /Use automatic Zenodo download instead/);
+  assert.match(source, /Download and install FuncVEP/);
+  assert.match(source, /resumably downloads the pinned 4\.24 GB ZIP from official Zenodo storage/);
+  assert.match(source, /polyformproject\.org\/licenses\/strict\/1\.0\.0/);
+  assert.match(source, /License and download/);
+  assert.match(source, /Read upstream license/);
+  assert.match(source, /Open official download page/);
+  assert.match(source, /I have reviewed the upstream terms and confirm that my intended use of FuncVEP is permitted/);
+  assert.match(source, /After acknowledgement, GUIDE-IEI can download the archive directly and process it on this computer/);
+  assert.match(
+    await readFile(new URL("app/globals.css", root), "utf8"),
+    /\.dataset-preparation \.dataset-local-processing \{ margin: 0 0 7px; \}/,
+  );
+  assert.match(source, /source\.prepare_id !== "funcvep" && !preparationPath\.trim\(\)/);
+  assert.match(source, /source\.prepare_id === "funcvep" && !licenseAccepted/);
+  assert.match(source, /licenseAccepted=\{source\.id === "funcvep" \? funcVepLicenseAccepted : false\}/);
+  assert.match(source, /!\["funcvep", "logofunc"\]\.includes\(source\.id\)/);
+  assert.match(source, /href="https:\/\/zenodo\.org\/records\/20595206"/);
+  assert.match(source, /href="https:\/\/omim\.org\/"[^>]*>OMIM website ↗/);
+  assert.match(source, /source\.reference_url && <a href=\{source\.reference_url\}/);
+  assert.match(service, /\/api\/resource-preparations\/funcvep/);
+  assert.match(service, /startFuncVepPreparation/);
+  assert.match(service, /license_accepted: licenseAccepted/);
 });
 
 test("builds compound-het candidates only from rows surviving active filters", async () => {
@@ -248,6 +279,14 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /CADD phred/);
   assert.match(source, /SpliceAI max/);
   assert.match(source, /promoterAI/);
+  assert.match(source, /"loGoFunc", "funcVepCti", "loftee"/);
+  assert.doesNotMatch(source, /"funcVepCti", "funcVepCte", "funcVepSp", "loftee"/);
+  assert.match(source, /CTI — default/);
+  assert.match(source, /CTE — optional comparison/);
+  assert.match(source, /SP — optional comparison/);
+  assert.match(source, /item === "funcVep" \? \["funcVepCti"\]/);
+  assert.match(source, /currentPreference === null && !migrated\.includes\("funcVepCti"\)/);
+  assert.match(source, /excludes clinically trained predictors and also AlphaMissense because its development used ClinVar variants for model selection and tuning/);
   assert.match(source, /CADD raw/);
   assert.match(source, /GERP\+\+ RS/);
   assert.match(source, /phyloP 100-way/);

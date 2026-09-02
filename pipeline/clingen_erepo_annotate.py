@@ -10,8 +10,8 @@ from urllib.parse import quote
 
 
 HEADERS = (
-    '##INFO=<ID=ClinGen_ERepo,Number=.,Type=String,Description="Active ClinGen expert-panel assertions encoded as ALT|UUID|CAID|assertion|disease|MONDO|MOI|panel|approval_date; URL-percent-encoded fields">\n',
-    '##INFO=<ID=ClinGen_ERepo_count,Number=1,Type=Integer,Description="Number of active ClinGen Evidence Repository assertions on this record">\n',
+    '##INFO=<ID=ClinGen_ERepo,Number=A,Type=String,Description="Active ClinGen expert-panel assertions for each ALT; multiple assertions for one ALT are ampersand-separated and each is encoded as ALT|UUID|CAID|assertion|disease|MONDO|MOI|panel|approval_date with URL-percent-encoded fields">\n',
+    '##INFO=<ID=ClinGen_ERepo_count,Number=A,Type=Integer,Description="Number of active ClinGen Evidence Repository assertions for each ALT allele">\n',
 )
 
 
@@ -60,10 +60,12 @@ def main() -> int:
                     raise ValueError("malformed VCF record during ClinGen annotation")
                 chrom = columns[0].removeprefix("chr")
                 pos, ref = int(columns[1]), columns[3]
-                tokens = []
+                per_alt_tokens: list[list[str]] = []
                 for alt in columns[4].split(","):
+                    tokens = []
                     for row in connection.execute(query, (chrom, pos, ref, alt)):
                         tokens.append("|".join(safe(value) for value in (alt, *row)))
+                    per_alt_tokens.append(tokens)
                 # Strip any prior run's keys UNCONDITIONALLY: leaving them
                 # in place when the new database has no match preserved
                 # retracted assertions through reannotation.
@@ -73,11 +75,24 @@ def main() -> int:
                     and not item.startswith("ClinGen_ERepo=")
                     and not item.startswith("ClinGen_ERepo_count=")
                 ]
-                if tokens:
+                assertion_count = sum(len(tokens) for tokens in per_alt_tokens)
+                if assertion_count:
                     info = ";".join(retained) + ";" if retained else ""
-                    columns[7] = f"{info}ClinGen_ERepo={','.join(tokens)};ClinGen_ERepo_count={len(tokens)}"
+                    # Number=A requires exactly one comma-separated slot per
+                    # ALT. Keep multiple disease-specific assertions inside
+                    # that ALT's slot with '&'; fields are percent encoded, so
+                    # a literal ampersand cannot be confused with source data.
+                    assertion_slots = [
+                        "&".join(tokens) if tokens else "."
+                        for tokens in per_alt_tokens
+                    ]
+                    count_slots = [str(len(tokens)) for tokens in per_alt_tokens]
+                    columns[7] = (
+                        f"{info}ClinGen_ERepo={','.join(assertion_slots)};"
+                        f"ClinGen_ERepo_count={','.join(count_slots)}"
+                    )
                     annotated_records += 1
-                    assertions_added += len(tokens)
+                    assertions_added += assertion_count
                 else:
                     columns[7] = ";".join(retained) if retained else "."
                 target.write("\t".join(columns) + "\n")

@@ -102,6 +102,58 @@ class ClinGenErepoTests(unittest.TestCase):
             ][0].split("\t")[7]
             self.assertEqual(first_info, info)
 
+            # Number=A output must keep each assertion attached to its own ALT
+            # on a multi-allelic record. Multiple assertions for one ALT stay
+            # inside that ALT's single slot, separated by '&'.
+            connection = sqlite3.connect(database)
+            connection.execute(
+                """
+                INSERT INTO assertions(
+                    chrom,pos,ref,alt,uuid,caid,assertion,disease,mondo_id,
+                    mode_of_inheritance,expert_panel,approval_date,active
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                ("1", 100, "A", "T", "u4", "CA4", "Likely Pathogenic",
+                 "Disease T", "MONDO:4", "Autosomal dominant inheritance",
+                 "Test VCEP", "2026-02-01", 1),
+            )
+            connection.commit()
+            connection.close()
+            multi_input = root / "multi-in.vcf"
+            multi_input.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                "1\t100\t.\tA\tG,T\t.\tPASS\tDP=30\n",
+                encoding="utf-8",
+            )
+            multi_output = root / "multi-out.vcf"
+            argv = sys.argv
+            sys.argv = [
+                "clingen_erepo_annotate",
+                "--input", str(multi_input),
+                "--output", str(multi_output),
+                "--database", str(database),
+            ]
+            try:
+                self.assertEqual(annotate_main(), 0)
+            finally:
+                sys.argv = argv
+            multi_text = multi_output.read_text(encoding="utf-8")
+            self.assertIn("##INFO=<ID=ClinGen_ERepo,Number=A", multi_text)
+            self.assertIn("##INFO=<ID=ClinGen_ERepo_count,Number=A", multi_text)
+            multi_info = next(
+                line for line in multi_text.splitlines() if not line.startswith("#")
+            ).split("\t")[7]
+            parsed_info = dict(
+                item.split("=", 1) for item in multi_info.split(";") if "=" in item
+            )
+            slots = parsed_info["ClinGen_ERepo"].split(",")
+            self.assertEqual(len(slots), 2)
+            self.assertEqual(len(slots[0].split("&")), 2)
+            self.assertTrue(all(token.startswith("G|") for token in slots[0].split("&")))
+            self.assertTrue(slots[1].startswith("T|"))
+            self.assertEqual(parsed_info["ClinGen_ERepo_count"], "2,1")
+
             # A retracted (or removed) assertion must not survive
             # reannotation: stale ClinGen keys are stripped even when the
             # new database has no match for the record.

@@ -19,10 +19,30 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
     fasta.parent.mkdir()
     fasta.write_bytes(b"reference bytes")
     (tmp_path / "refs" / "genome.fa.gz.sha256").write_text("abc123  genome.fa.gz\n")
+    funcvep = tmp_path / "refs" / "funcvep.tsv.gz"
+    funcvep.write_bytes(b"prepared FuncVEP")
+    funcvep_manifest = tmp_path / "refs" / "funcvep.manifest.json"
+    funcvep_manifest.write_text("{}\n")
+    registry_dir = tmp_path / "config"
+    registry_dir.mkdir()
+    registry_path = registry_dir / "predictor-registry.json"
+    registry_path.write_bytes((ROOT / "config" / "predictor-registry.json").read_bytes())
     config = tmp_path / "config.yaml"
     config.write_text(yaml.safe_dump({
         "reference": {"fasta": {"path": str(fasta)}, "vep_cache_dir": str(tmp_path / "cache")},
-        "plugins": {},
+        "plugins": {
+            "FuncVEP": {
+                "enabled": True,
+                "file": str(funcvep),
+                "manifest": str(funcvep_manifest),
+            },
+        },
+        # The actual pipeline gate is the parent flag; a nested flag can
+        # deliberately disagree and must not change the recorded run state.
+        "liftover": {
+            "enabled": False,
+            "grch37_to_grch38": {"enabled": True},
+        },
         "custom_tracks": {},
     }))
     source = tmp_path / "in.vcf"
@@ -52,6 +72,15 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
     }
     assert manifest["clinvar_release"] == "2026-08"
     assert len(manifest["config"]["sha256"]) == 64
+    assert manifest["predictor_registry"]["schema_version"] == 1
+    assert len(manifest["predictor_registry"]["sha256"]) == 64
+    assert manifest["predictor_registry"]["predictor_count"] >= 50
+    configured_resources = {
+        item["id"]: item["enabled"]
+        for item in manifest["predictor_registry"]["configured_resources"]
+    }
+    assert configured_resources["funcvep"] is True
+    assert configured_resources["liftover"] is False
     assert manifest["input"]["exists"] and manifest["output"]["exists"]
 
     fasta_entry = next(
@@ -67,6 +96,10 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
         if item["path"] == str(tmp_path / "cache")
     )
     assert missing_cache["exists"] is False
+    funcvep_entry = next(
+        item for item in manifest["references"] if item["path"] == str(funcvep)
+    )
+    assert funcvep_entry["size"] == len(b"prepared FuncVEP")
 
 
 if __name__ == "__main__":

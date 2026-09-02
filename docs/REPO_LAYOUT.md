@@ -8,6 +8,7 @@ nav_order: 16
 
 ```
 config/annotation.config.yaml   administrator defaults used by CLI and the UI
+config/predictor-registry.json  typed resources, match scopes, metrics, and licenses
 docker/Dockerfile               VEP 113 + LOFTEE grch38 + samtools + DBD::SQLite
 docker/build.sh                 build the image (docker or podman)
 scripts/setup_environment.sh    host setup check + no-admin bootstrap
@@ -28,6 +29,8 @@ scripts/update_clingen_erepo.sh   install/update ClinGen expert variant assertio
 scripts/sync_to_onedrive.sh     copy the working tree (no .git) to a synced folder
 scripts/start_workbench.sh      launch the workbench (service + UI, supervised)
 pipeline/build_vep_command.py   translate the config into VEP argv + bind-mounts
+pipeline/predictor_registry.py  validate and expose the immutable predictor contract
+pipeline/indexed_scores.py      validate shared indexed-predictor manifests
 pipeline/loftee_ptc_50bp.py     replace frameshift 50_BP_RULE using the resulting PTC
 pipeline/haplotype_consequences.py validate sample GT/phase for frame-restoring haplotypes
 pipeline/clinvar_aa_match.py    add INFO/ClinVar_path_aa_match to the VCF
@@ -37,3 +40,6 @@ local_service/                  loopback API + persistent SQLite job queue
 webui/                          the local review workbench (Next.js)
 test/                           tiny VCF + config + tests (no container needed)
 ```
+
+See [Predictor architecture](PREDICTOR_ARCHITECTURE.md) before adding a new
+score source or changing how an existing predictor is matched.

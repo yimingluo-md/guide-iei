@@ -1,3 +1,5 @@
+import predictorRegistry from "../../config/predictor-registry.json";
+
 export type Impact = "HIGH" | "MODERATE" | "LOW" | "MODIFIER" | "UNKNOWN";
 
 export type GenotypeEvidence = {
@@ -92,7 +94,7 @@ export type DbnsfpPredictorDefinition = {
   label: string;
   scoreColumn: string;
   predictionColumn?: string;
-  damagingDirection?: "higher" | "lower";
+  damagingDirection?: "higher" | "lower" | "absolute";
   damagingThreshold?: number;
 };
 
@@ -101,38 +103,119 @@ export type DbnsfpPredictorValue = {
   prediction: string;
 };
 
-// Optional dbNSFP fields exposed by the annotation UI. The core
-// diagnostic set (AlphaMissense, CADD, REVEL, MetaRNN, PrimateAI, SIFT,
-// PolyPhen HDIV and conservation scores) retains dedicated fields below.
-export const ADDITIONAL_DBNSFP_PREDICTORS: DbnsfpPredictorDefinition[] = [
-  { id: "sift4g", label: "SIFT4G", scoreColumn: "SIFT4G_score", predictionColumn: "SIFT4G_pred", damagingDirection: "lower", damagingThreshold: 0.05 },
-  { id: "polyphen_hvar", label: "PolyPhen HVAR", scoreColumn: "Polyphen2_HVAR_score", predictionColumn: "Polyphen2_HVAR_pred" },
-  { id: "mutation_taster", label: "MutationTaster", scoreColumn: "MutationTaster_score", predictionColumn: "MutationTaster_pred" },
-  { id: "mutation_assessor", label: "MutationAssessor", scoreColumn: "MutationAssessor_score", predictionColumn: "MutationAssessor_pred" },
-  { id: "provean", label: "PROVEAN", scoreColumn: "PROVEAN_score", predictionColumn: "PROVEAN_pred", damagingDirection: "lower", damagingThreshold: -2.5 },
-  { id: "vest4", label: "VEST4", scoreColumn: "VEST4_score" },
-  { id: "meta_svm", label: "MetaSVM", scoreColumn: "MetaSVM_score", predictionColumn: "MetaSVM_pred" },
-  { id: "meta_lr", label: "MetaLR", scoreColumn: "MetaLR_score", predictionColumn: "MetaLR_pred" },
-  { id: "m_cap", label: "M-CAP", scoreColumn: "M-CAP_score", predictionColumn: "M-CAP_pred" },
-  { id: "mutpred2", label: "MutPred2", scoreColumn: "MutPred2_score", predictionColumn: "MutPred2_pred" },
-  { id: "mvp", label: "MVP", scoreColumn: "MVP_score" },
-  { id: "gmvp", label: "gMVP", scoreColumn: "gMVP_score" },
-  { id: "mpc", label: "MPC", scoreColumn: "MPC_score" },
-  { id: "deogen2", label: "DEOGEN2", scoreColumn: "DEOGEN2_score", predictionColumn: "DEOGEN2_pred" },
-  { id: "bayesdel_addaf", label: "BayesDel addAF", scoreColumn: "BayesDel_addAF_score", predictionColumn: "BayesDel_addAF_pred" },
-  { id: "bayesdel_noaf", label: "BayesDel noAF", scoreColumn: "BayesDel_noAF_score", predictionColumn: "BayesDel_noAF_pred" },
-  { id: "clinpred", label: "ClinPred", scoreColumn: "ClinPred_score", predictionColumn: "ClinPred_pred" },
-  { id: "list_s2", label: "LIST-S2", scoreColumn: "LIST-S2_score", predictionColumn: "LIST-S2_pred" },
-  { id: "varity_r", label: "VARITY R", scoreColumn: "VARITY_R_score" },
-  { id: "varity_er", label: "VARITY ER", scoreColumn: "VARITY_ER_score" },
-  { id: "esm1b", label: "ESM1b", scoreColumn: "ESM1b_score", predictionColumn: "ESM1b_pred" },
-  { id: "phactboost", label: "PHACTboost", scoreColumn: "PHACTboost_score" },
-  { id: "mutformer", label: "MutFormer", scoreColumn: "MutFormer_score" },
-  { id: "mutscore", label: "MutScore", scoreColumn: "MutScore_score" },
-  { id: "popeve", label: "popEVE", scoreColumn: "popEVE_score", predictionColumn: "popEVE_pred" },
+// Optional dbNSFP cards are derived from the same metric contract used by the
+// command builder and cohort store. Dedicated fields keep their established
+// presentation, while newly registered optional dbNSFP predictors appear in
+// the generic card/export path without another duplicated column list.
+const DEDICATED_DBNSFP_PREDICTORS = new Set([
+  "alphamissense", "cadd_coding", "revel", "sift_dbnsfp", "polyphen2_hdiv",
+  "metarnn", "primateai", "gerp", "phylop100", "phastcons100",
+]);
+const DBNSFP_DAMAGING_THRESHOLDS: Record<string, number> = {
+  sift4g: 0.05,
+  provean: -2.5,
+};
+export const ADDITIONAL_DBNSFP_PREDICTORS: DbnsfpPredictorDefinition[] =
+  predictorRegistry.predictors.flatMap((predictor) => {
+    if (
+      predictor.resource_id !== "dbnsfp"
+      || !predictor.optional
+      || DEDICATED_DBNSFP_PREDICTORS.has(predictor.id)
+    ) return [];
+    const score = predictor.metrics.find((metric) => metric.id === "score");
+    if (!score) return [];
+    const prediction = predictor.metrics.find((metric) => metric.id === "prediction");
+    return [{
+      id: predictor.id,
+      label: predictor.label,
+      scoreColumn: score.field,
+      ...(prediction ? { predictionColumn: prediction.field } : {}),
+      damagingDirection: score.direction as DbnsfpPredictorDefinition["damagingDirection"],
+      ...(predictor.id in DBNSFP_DAMAGING_THRESHOLDS
+        ? { damagingThreshold: DBNSFP_DAMAGING_THRESHOLDS[predictor.id] }
+        : {}),
+    }];
+  });
+
+const ALLELE_SCOPED_DBNSFP_PREDICTORS = new Set(
+  predictorRegistry.predictors
+    .filter((predictor) => (
+      predictor.resource_id === "dbnsfp"
+      && predictorRegistry.annotators.some((annotator) => (
+        annotator.id === predictor.annotator_id && annotator.match.scope === "allele"
+      ))
+    ))
+    .map((predictor) => predictor.id),
+);
+
+const ALLELE_MATCH_DIMENSIONS = [
+  "chromosome", "position", "reference", "alternate",
+];
+const TRANSCRIPT_MATCH_DIMENSIONS = [
+  ...ALLELE_MATCH_DIMENSIONS, "ensembl_transcript",
+];
+const TRANSCRIPT_CONSEQUENCE_MATCH_DIMENSIONS = [
+  ...TRANSCRIPT_MATCH_DIMENSIONS, "consequence",
 ];
 
+function proteinPositionFromHgvsp(value: string): string {
+  if (!value) return "";
+  const proteinChange = value.includes(":") ? value.split(":").at(-1)! : value;
+  return proteinChange.match(/(?:p\.)?[A-Za-z*?]*(\d+)/)?.[1] ?? "";
+}
+
 export type CohortCarrier = { sample: string; evidence: GenotypeEvidence };
+
+export type PredictorObservation = {
+  scope:
+    | "none"
+    | "allele"
+    | "allele_gene"
+    | "allele_gene_symbol"
+    | "allele_transcript"
+    | "allele_transcript_protein"
+    | "allele_transcript_tss_strand"
+    | "interval"
+    | "transcript_consequence"
+    | "gene_protein_residue"
+    | "sample_haplotype";
+  matchStatus: "exact" | "partial" | "ambiguous" | "unmatched";
+  matchedOn: string[];
+  target?: Record<string, string>;
+  values: Record<string, number | string | boolean>;
+  provenance?: Record<string, number | string | boolean>;
+};
+
+type BrowserPredictorContract = {
+  scope: PredictorObservation["scope"];
+  dimensions: string[];
+  metrics: Record<string, {
+    filterable: boolean;
+    valueType: "float" | "integer" | "category" | "boolean" | "text";
+    valueRange: number[] | null;
+  }>;
+};
+
+const REGISTRY_ANNOTATORS = Object.fromEntries(
+  predictorRegistry.annotators.map((annotator) => [annotator.id, annotator]),
+);
+const BROWSER_PREDICTOR_CONTRACTS = Object.fromEntries(
+  predictorRegistry.predictors.map((predictor) => {
+    const annotator = REGISTRY_ANNOTATORS[predictor.annotator_id];
+    if (!annotator) throw new Error(`Predictor registry has no annotator ${predictor.annotator_id}`);
+    return [predictor.id, {
+      scope: annotator.match.scope as PredictorObservation["scope"],
+      dimensions: annotator.match.dimensions,
+      metrics: Object.fromEntries(
+        predictor.metrics.map((metric) => [metric.id, {
+          filterable: metric.filterable,
+          valueType: metric.value_type as BrowserPredictorContract["metrics"][string]["valueType"],
+          valueRange: metric.value_range,
+        }]),
+      ),
+    } satisfies BrowserPredictorContract];
+  }),
+) as Record<string, BrowserPredictorContract>;
 
 export type VariantRow = {
   key: string;
@@ -220,6 +303,11 @@ export type VariantRow = {
   loGoFuncSourceTranscript: string;
   loGoFuncSourceHgvsp: string;
   loGoFuncMatch: string;
+  funcVepCti?: number | null;
+  funcVepCte?: number | null;
+  funcVepSp?: number | null;
+  /** Normalized predictor payload used by new storage/rendering paths. */
+  predictions?: Record<string, PredictorObservation>;
   pLi?: number | null;
   loeuf?: number | null;
   missenseZ?: number | null;
@@ -546,6 +634,35 @@ function number(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function unambiguousInteger(value: string | undefined): number | null {
+  if (!value || EMPTY.has(value)) return null;
+  const values = [...new Set(
+    value.split(/[,&]/)
+      .map((token) => Number(token))
+      .filter((token) => Number.isFinite(token) && Number.isInteger(token)),
+  )];
+  return values.length === 1 ? values[0] : null;
+}
+
+function promoterAiSourceStrand(record: Record<string, string>) {
+  const encoding: Record<string, "+" | "-"> = {
+    "+": "+", "1": "+", "-": "-", "-1": "-",
+  };
+  for (const field of ["PromoterAI_strand", "STRAND"]) {
+    const raw = record[field];
+    if (!raw || raw === ".") continue;
+    const strands = [...new Set(
+      raw.split(/[,&]/).flatMap((token) => {
+        const strand = encoding[token.trim()];
+        return strand ? [strand] : [];
+      }),
+    )];
+    if (strands.length === 1) return strands[0];
+    if (strands.length > 1) return "";
+  }
+  return "";
+}
+
 function truthy(value: string | undefined) {
   return Boolean(value && !EMPTY.has(value) && value !== "0");
 }
@@ -567,12 +684,24 @@ function alleleInfoReasons(
   return value.split("&").map(decode).filter((item) => item && !EMPTY.has(item));
 }
 
-function clinGenErepoAssertions(raw: string | undefined, alt: string): ClinGenErepoCompact[] {
-  return (raw ?? "").split(",").flatMap((token) => {
+function clinGenErepoTokens(raw: string | undefined, alt: string) {
+  // Current files use Number=A (comma-separated ALT slots) and join multiple
+  // assertions for one ALT with '&'. Older GUIDE-IEI files stored every
+  // assertion as one record-wide comma-separated token. Flatten both shapes,
+  // then use the encoded leading ALT to prevent cross-allele attribution.
+  return (raw ?? "").split(/[,&]/).filter((token) => {
     const fields = token.split("|").map((value) => {
       try { return decodeURIComponent(value); } catch { return value; }
     });
-    if (fields.length !== 9 || fields[0] !== alt) return [];
+    return fields.length === 9 && fields[0] === alt;
+  });
+}
+
+function clinGenErepoAssertions(raw: string | undefined, alt: string): ClinGenErepoCompact[] {
+  return clinGenErepoTokens(raw, alt).flatMap((token) => {
+    const fields = token.split("|").map((value) => {
+      try { return decodeURIComponent(value); } catch { return value; }
+    });
     return [{
       uuid: fields[1], caid: fields[2], assertion: fields[3], disease: fields[4],
       mondoId: fields[5], modeOfInheritance: fields[6], expertPanel: fields[7],
@@ -590,6 +719,7 @@ export function haplotypeFrameEvidence(
   status: "FRAME_RESTORED_CONFIRMED" | "FRAME_RESTORATION_PARTIAL_CONFIRMED" | "FRAME_RESTORING_POSSIBLE_UNPHASED" | "";
   partners: string[];
   protein: string;
+  evidence: string;
 } {
   const transcriptBase = transcript.split(".")[0];
   const matches = (raw ?? "").split(",").flatMap((entry) => {
@@ -610,6 +740,7 @@ export function haplotypeFrameEvidence(
       status: status as "FRAME_RESTORED_CONFIRMED" | "FRAME_RESTORATION_PARTIAL_CONFIRMED" | "FRAME_RESTORING_POSSIBLE_UNPHASED",
       partners: partners.split("&").filter(Boolean),
       protein,
+      evidence: fields.join("|"),
     }];
   });
   const priority = {
@@ -619,7 +750,9 @@ export function haplotypeFrameEvidence(
   };
   return matches.sort(
     (left, right) => priority[left.status] - priority[right.status],
-  )[0] ?? { status: "" as const, partners: [] as string[], protein: "" };
+  )[0] ?? {
+    status: "" as const, partners: [] as string[], protein: "", evidence: "",
+  };
 }
 
 function first(record: Record<string, string>, keys: string[]) {
@@ -661,12 +794,34 @@ function alleleIndexedInfo(
   return indexed;
 }
 
-function preferredMaximum(record: Record<string, string>, keyGroups: string[][]) {
-  for (const keys of keyGroups) {
-    const value = maximum(record, keys);
-    if (value !== null) return value;
+function vepAltAllele(ref: string, alt: string) {
+  if (!/^[ACGTN]+$/i.test(ref) || !/^[ACGTN]+$/i.test(alt)) return alt;
+  let refSequence = ref.toUpperCase();
+  let altSequence = alt.toUpperCase();
+  while (refSequence && altSequence
+    && refSequence.at(-1) === altSequence.at(-1)) {
+    refSequence = refSequence.slice(0, -1);
+    altSequence = altSequence.slice(0, -1);
   }
-  return null;
+  while (refSequence && altSequence && refSequence[0] === altSequence[0]) {
+    refSequence = refSequence.slice(1);
+    altSequence = altSequence.slice(1);
+  }
+  return altSequence || "-";
+}
+
+function consequenceMatchesAlt(
+  consequence: Record<string, string>, ref: string, alts: string[], altIndex: number,
+) {
+  const alleleNumber = Number(consequence.ALLELE_NUM || 0);
+  if (alleleNumber) return alleleNumber === altIndex + 1;
+  const allele = consequence.Allele || "";
+  if (!allele) return true;
+  if (allele.toUpperCase() === alts[altIndex].toUpperCase()) return true;
+  const minimizedAlts = alts.map((alt) => vepAltAllele(ref, alt).toUpperCase());
+  const minimized = minimizedAlts[altIndex];
+  return allele.toUpperCase() === minimized
+    && minimizedAlts.filter((candidate) => candidate === minimized).length === 1;
 }
 
 function minimum(record: Record<string, string>, keys: string[]) {
@@ -674,6 +829,23 @@ function minimum(record: Record<string, string>, keys: string[]) {
     (record[key] ?? "").split(/[,&]/).map(number).filter((v): v is number => v !== null),
   );
   return values.length ? Math.min(...values) : null;
+}
+
+function directedNumber(
+  record: Record<string, string>,
+  keys: string[],
+  direction: DbnsfpPredictorDefinition["damagingDirection"],
+) {
+  if (direction === "lower") return minimum(record, keys);
+  if (direction !== "absolute") return maximum(record, keys);
+  const values = keys.flatMap((key) =>
+    (record[key] ?? "").split(/[,&]/).map(number).filter((v): v is number => v !== null),
+  );
+  return values.length
+    ? values.reduce((selected, value) => (
+        Math.abs(value) > Math.abs(selected) ? value : selected
+      ))
+    : null;
 }
 
 function gnomadFrequencies(record: Record<string, string>) {
@@ -1358,10 +1530,9 @@ export async function parseVcfFiles(
           const unscoredIndelReasons = alleleInfoReasons(
             info, "IEI_UNSCORED_INDEL", altIndex,
           );
-          const matching = consequences.filter((csq) => {
-            const alleleNum = Number(csq.ALLELE_NUM || 0);
-            return alleleNum ? alleleNum === altIndex + 1 : !csq.Allele || csq.Allele === alt;
-          });
+          const matching = consequences.filter((csq) => (
+            consequenceMatchesAlt(csq, ref, alts, altIndex)
+          ));
           // A single-ALT record's consequences necessarily describe this ALT
           // even when VEP's minimised Allele string (e.g. "-" for indels)
           // does not equal the raw ALT. On a multi-allelic record with no
@@ -1407,7 +1578,18 @@ export async function parseVcfFiles(
               "SpliceAI_pred_DS_AG", "SpliceAI_pred_DS_AL", "SpliceAI_pred_DS_DG", "SpliceAI_pred_DS_DL",
               "DS_AG", "DS_AL", "DS_DG", "DS_DL", "SpliceAI",
             ]);
+            const spliceAiSourceGene = first(combined, ["SpliceAI_pred_SYMBOL"]);
+            const spliceAiDsAg = maximum(combined, ["SpliceAI_pred_DS_AG", "DS_AG"]);
+            const spliceAiDsAl = maximum(combined, ["SpliceAI_pred_DS_AL", "DS_AL"]);
+            const spliceAiDsDg = maximum(combined, ["SpliceAI_pred_DS_DG", "DS_DG"]);
+            const spliceAiDsDl = maximum(combined, ["SpliceAI_pred_DS_DL", "DS_DL"]);
+            const spliceAiDpAg = number(first(combined, ["SpliceAI_pred_DP_AG", "DP_AG"]));
+            const spliceAiDpAl = number(first(combined, ["SpliceAI_pred_DP_AL", "DP_AL"]));
+            const spliceAiDpDg = number(first(combined, ["SpliceAI_pred_DP_DG", "DP_DG"]));
+            const spliceAiDpDl = number(first(combined, ["SpliceAI_pred_DP_DL", "DP_DL"]));
             const gene = first(combined, ["SYMBOL", "Gene", "HGNC"]);
+            const transcript = first(combined, ["Feature"]);
+            const consequence = first(combined, ["Consequence"]);
             const mane = truthy(first(combined, ["MANE_SELECT", "MANE_PLUS_CLINICAL"]));
             const picked = truthy(first(combined, ["PICK"]))
               || legacyFallbackGenes.has(gene || "—");
@@ -1416,6 +1598,115 @@ export async function parseVcfFiles(
             const primateAi = maximum(combined, ["PrimateAI_score"]);
             const sift = minimum(combined, ["SIFT_score"]);
             const polyPhen = maximum(combined, ["Polyphen2_HDIV_score"]);
+            const caddWgs = maximum(combined, [
+              "CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED",
+            ]);
+            const caddCoding = maximum(combined, ["CADD_phred"]);
+            const cadd = caddWgs ?? caddCoding;
+            const caddWgsRaw = maximum(combined, [
+              "CADD_RAW", "CADD_WGS_CADD_RAW", "CADD_WGS_RAW",
+            ]);
+            const caddCodingRaw = maximum(combined, ["CADD_raw"]);
+            const caddRaw = caddWgsRaw ?? caddCodingRaw;
+            const alphaMissense = maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]);
+            const alphaPrediction = uniqueValues(
+              first(combined, ["AlphaMissense_pred", "am_class"]),
+            ).join(" / ");
+            const promoterAi = maximum(combined, [
+              "PromoterAI_score", "promoterAI_score",
+              "promoterAI_promoterAI", "PromoterAI_promoterAI",
+              "promoterAI", "PromoterAI",
+            ]);
+            const promoterAiMatch = first(combined, ["PromoterAI_match"]);
+            const promoterAiSourceTranscript = first(combined, [
+              "PromoterAI_source_transcript",
+            ]);
+            const promoterAiTss = unambiguousInteger(first(combined, ["PromoterAI_TSS"]));
+            const promoterAiStrand = promoterAiSourceStrand(combined);
+            const promoterAiMatchIsExact = [
+              "allele_transcript_tss_strand", "exact_version", "stable_id",
+              "stable_transcript_id",
+            ].includes(promoterAiMatch);
+            const promoterAiStatus: PredictorObservation["matchStatus"] =
+              promoterAi !== null && promoterAiMatchIsExact
+                && Boolean(promoterAiSourceTranscript)
+                && promoterAiTss !== null && Boolean(promoterAiStrand)
+                ? "exact"
+                : promoterAi !== null || Boolean(promoterAiMatch)
+                  || Boolean(promoterAiSourceTranscript)
+                  || promoterAiTss !== null || Boolean(promoterAiStrand)
+                  ? "partial"
+                  : "unmatched";
+            const loGoFuncPrediction = first(combined, ["LoGoFunc_prediction"]);
+            const loGoFuncNeutral = maximum(combined, ["LoGoFunc_neutral"]);
+            const loGoFuncGof = maximum(combined, ["LoGoFunc_GOF"]);
+            const loGoFuncLof = maximum(combined, ["LoGoFunc_LOF"]);
+            const loGoFuncAlleleAvailable = truthy(first(combined, [
+              "LoGoFunc_allele_available",
+            ]));
+            const loGoFuncSourceTranscript = first(combined, [
+              "LoGoFunc_source_transcript",
+            ]);
+            const loGoFuncSourceHgvsp = first(combined, ["LoGoFunc_source_HGVSp"]);
+            const loGoFuncSourceProteinPosition = proteinPositionFromHgvsp(
+              loGoFuncSourceHgvsp,
+            );
+            const loGoFuncMatch = first(combined, ["LoGoFunc_match"]);
+            const funcVepCti = maximum(combined, ["FuncVEP_CTI"]);
+            const funcVepCte = maximum(combined, ["FuncVEP_CTE"]);
+            const funcVepSp = maximum(combined, ["FuncVEP_SP"]);
+            const funcVepMatch = first(combined, ["FuncVEP_match"]);
+            const funcVepMatchStatus = first(combined, ["FuncVEP_match_status"]);
+            const funcVepSourceGene = first(combined, ["FuncVEP_source_gene"]);
+            const funcVepAlleleAvailable = truthy(first(combined, [
+              "FuncVEP_allele_available",
+            ]));
+            const gerpRs = maximum(combined, ["GERP++_RS"]);
+            const phyloP100way = maximum(combined, ["phyloP100way_vertebrate"]);
+            const phastCons100way = maximum(combined, ["phastCons100way_vertebrate"]);
+            const repeatMaskerOverlap = first(combined, ["RepeatMasker", "REPEATMASKER"]);
+            const segDupOverlap = first(combined, ["SegDup", "SEGDUP"]);
+            const clinvarSignificance = first(combined, ["ClinVar_CLNSIG", "CLNSIG"]);
+            const clinvarConflicting = first(combined, [
+              "ClinVar_CLNSIGCONF", "CLNSIGCONF",
+            ]);
+            const clinvarReviewStatus = first(combined, [
+              "ClinVar_CLNREVSTAT", "CLNREVSTAT",
+            ]);
+            const clinvarDisease = first(combined, ["ClinVar_CLNDN", "CLNDN"]);
+            const clinvarAaResidueRaw = first(combined, ["ClinVar_path_aa_match"]);
+            const clinvarAaChangeRaw = first(combined, [
+              "ClinVar_path_aa_change_match",
+            ]);
+            const clinGenAssertionTokens = clinGenErepoTokens(
+              info.ClinGen_ERepo, alt,
+            );
+            const clinGenAssertionsRaw = clinGenAssertionTokens.join("&");
+            const clinGenAssertionCount = clinGenAssertionTokens.length || null;
+            const clinGenCompactAssertions = clinGenErepoAssertions(
+              info.ClinGen_ERepo, alt,
+            );
+            const ptcCdsPosition = number(first(combined, ["PTC_cds_pos"]));
+            const ptcAminoAcidPosition = number(first(combined, ["PTC_aa_pos"]));
+            const ptcDistanceFromLastExon = number(first(combined, [
+              "PTC_dist_from_last_exon",
+            ]));
+            const ptcOriginalRule = first(combined, [
+              "LoF_50_BP_RULE_original", "50_BP_RULE_original",
+            ]);
+            const ptcRule = first(combined, [
+              "LoF_50_BP_RULE_PTC", "50_BP_RULE_recomputed",
+            ]);
+            const ptcRuleChangedRaw = first(combined, [
+              "LoF_50_BP_RULE_changed", "50_BP_RULE_changed",
+            ]);
+            const ptcDistanceFromLastCodingExon = number(first(combined, [
+              "PTC_dist_from_last_coding_exon",
+            ]));
+            const ptcLofteeAnchorRule = first(combined, [
+              "LoF_50_BP_RULE_LOFTEE_anchor",
+            ]);
+            const ptcCalculationStatus = first(combined, ["PTC_calc_status"]);
             const populationFrequencies = gnomadFrequencies(combined);
             const availableDbnsfpPredictors = ADDITIONAL_DBNSFP_PREDICTORS
               .filter((definition) => csqFields.includes(definition.scoreColumn)
@@ -1427,9 +1718,11 @@ export async function parseVcfFiles(
                 .map((definition) => [
                   definition.id,
                   {
-                    score: definition.damagingDirection === "lower"
-                      ? minimum(combined, [definition.scoreColumn])
-                      : maximum(combined, [definition.scoreColumn]),
+                    score: directedNumber(
+                      combined,
+                      [definition.scoreColumn],
+                      definition.damagingDirection,
+                    ),
                     prediction: definition.predictionColumn
                       ? uniqueValues(first(combined, [definition.predictionColumn])).join(" / ")
                       : "",
@@ -1443,6 +1736,443 @@ export async function parseVcfFiles(
               ["SIFT", sift],
               ["PolyPhen", polyPhen],
             ].filter(([, value]) => value !== null && value !== undefined).map(([label, value]) => `${label} ${value}`);
+            const predictions: Record<string, PredictorObservation> = {};
+            const addPrediction = (
+              predictorId: string,
+              scope: PredictorObservation["scope"],
+              matchedOn: string[],
+              values: Record<string, number | string | boolean | null | undefined>,
+              matchStatus: PredictorObservation["matchStatus"] = "exact",
+              target?: Record<string, string>,
+              provenance?: Record<string, number | string | boolean>,
+            ) => {
+              const contract = BROWSER_PREDICTOR_CONTRACTS[predictorId];
+              if (!contract) throw new Error(`Unknown predictor contract: ${predictorId}`);
+              if (scope !== contract.scope) {
+                throw new Error(
+                  `${predictorId} observation scope ${scope} does not match registry scope ${contract.scope}`,
+                );
+              }
+              const unknownDimensions = matchedOn.filter(
+                (dimension) => !contract.dimensions.includes(dimension),
+              );
+              if (unknownDimensions.length) {
+                throw new Error(
+                  `${predictorId} observation uses unknown match dimensions: ${unknownDimensions.join(", ")}`,
+                );
+              }
+              const unknownTarget = Object.keys(target ?? {}).filter(
+                (dimension) => !contract.dimensions.includes(dimension),
+              );
+              if (unknownTarget.length) {
+                throw new Error(
+                  `${predictorId} observation uses unknown target fields: ${unknownTarget.join(", ")}`,
+                );
+              }
+              const populated = Object.fromEntries(
+                Object.entries(values).filter(([, value]) => (
+                  value !== null && value !== undefined && value !== ""
+                )),
+              ) as Record<string, number | string | boolean>;
+              const populatedProvenance = Object.fromEntries(
+                Object.entries(provenance ?? {}).filter(([, value]) => (
+                  value !== null && value !== undefined && value !== ""
+                )),
+              ) as Record<string, number | string | boolean>;
+              const validateMetricValue = (
+                metric: string,
+                value: number | string | boolean,
+                location: "value" | "provenance",
+              ) => {
+                const definition = contract.metrics[metric];
+                if (!definition) {
+                  throw new Error(
+                    `${predictorId} observation uses unknown ${location} metric: ${metric}`,
+                  );
+                }
+                const numeric = definition.valueType === "float"
+                  || definition.valueType === "integer";
+                const validType = numeric
+                  ? typeof value === "number" && Number.isFinite(value)
+                    && (definition.valueType !== "integer" || Number.isInteger(value))
+                  : definition.valueType === "boolean"
+                    ? typeof value === "boolean"
+                    : typeof value === "string";
+                if (!validType) return false;
+                if (numeric && definition.valueRange) {
+                  const [minimum, maximum] = definition.valueRange;
+                  const numericValue = value as number;
+                  if (
+                    (minimum !== null && numericValue < minimum)
+                    || (maximum !== null && numericValue > maximum)
+                  ) {
+                    return false;
+                  }
+                }
+                return true;
+              };
+              const invalidMetrics: string[] = [];
+              for (const metric of Object.keys(populated)) {
+                const valid = validateMetricValue(metric, populated[metric], "value");
+                if (!contract.metrics[metric].filterable) {
+                  throw new Error(`${predictorId}.${metric} must be stored as provenance`);
+                }
+                if (!valid) {
+                  delete populated[metric];
+                  invalidMetrics.push(metric);
+                }
+              }
+              for (const metric of Object.keys(populatedProvenance)) {
+                const valid = validateMetricValue(
+                  metric, populatedProvenance[metric], "provenance",
+                );
+                if (contract.metrics[metric].filterable) {
+                  throw new Error(`${predictorId}.${metric} must be stored as a value`);
+                }
+                if (!valid) {
+                  delete populatedProvenance[metric];
+                  invalidMetrics.push(metric);
+                }
+              }
+              const withheldMetrics: string[] = [];
+              if (
+                matchStatus !== "exact"
+                && ["promoterai", "logofunc", "funcvep"].includes(predictorId)
+              ) {
+                for (const metric of Object.keys(populated)) {
+                  delete populated[metric];
+                  withheldMetrics.push(metric);
+                }
+              }
+              const retainedProvenance = {
+                ...populatedProvenance,
+                ...(invalidMetrics.length ? {
+                  invalid_metrics: [...new Set(invalidMetrics)].join(","),
+                } : {}),
+                ...(withheldMetrics.length ? {
+                  withheld_metrics: withheldMetrics.sort().join(","),
+                } : {}),
+              };
+              if (
+                Object.keys(populated).length
+                || Object.keys(populatedProvenance).length
+                || withheldMetrics.length
+              ) {
+                predictions[predictorId] = {
+                  scope,
+                  matchStatus,
+                  matchedOn,
+                  values: populated,
+                  ...(target && Object.keys(target).length ? { target } : {}),
+                  ...(Object.keys(retainedProvenance).length
+                    ? { provenance: retainedProvenance }
+                    : {}),
+                };
+              }
+            };
+            const transcriptTarget = transcript
+              ? { ensembl_transcript: transcript }
+              : undefined;
+            const transcriptConsequenceTarget = {
+              ...(transcript ? { ensembl_transcript: transcript } : {}),
+              ...(consequence ? { consequence } : {}),
+            };
+            if (caddWgs !== null || caddWgsRaw !== null) {
+              addPrediction("cadd_wgs", "allele", ALLELE_MATCH_DIMENSIONS, {
+                phred: caddWgs, raw: caddWgsRaw,
+              });
+            } else {
+              addPrediction("cadd_coding", "allele", ALLELE_MATCH_DIMENSIONS, {
+                phred: caddCoding, raw: caddCodingRaw,
+              });
+            }
+            const addTranscriptPrediction = (
+              predictorId: string,
+              values: Record<string, number | string | boolean | null | undefined>,
+            ) => addPrediction(
+              predictorId, "allele_transcript", TRANSCRIPT_MATCH_DIMENSIONS,
+              values, "exact", transcriptTarget,
+            );
+            addTranscriptPrediction("alphamissense", {
+              score: alphaMissense, prediction: alphaPrediction,
+            });
+            addTranscriptPrediction("revel", { score: revel });
+            addTranscriptPrediction("metarnn", {
+              score: metaRnn,
+              prediction: uniqueValues(first(combined, ["MetaRNN_pred"])).join(" / "),
+            });
+            addTranscriptPrediction("primateai", {
+              score: primateAi,
+              prediction: uniqueValues(first(combined, ["PrimateAI_pred"])).join(" / "),
+            });
+            addTranscriptPrediction("sift_dbnsfp", {
+              score: sift,
+              prediction: uniqueValues(first(combined, ["SIFT_pred"])).join(" / "),
+            });
+            addTranscriptPrediction("polyphen2_hdiv", {
+              score: polyPhen,
+              prediction: uniqueValues(first(combined, ["Polyphen2_HDIV_pred"])).join(" / "),
+            });
+            addPrediction(
+              "spliceai",
+              "allele_gene_symbol",
+              spliceAiSourceGene
+                ? [...ALLELE_MATCH_DIMENSIONS, "gene_symbol"]
+                : ALLELE_MATCH_DIMENSIONS,
+              spliceAiSourceGene ? {
+                delta_acceptor_gain: spliceAiDsAg,
+                delta_acceptor_loss: spliceAiDsAl,
+                delta_donor_gain: spliceAiDsDg,
+                delta_donor_loss: spliceAiDsDl,
+              } : {},
+              spliceAiSourceGene ? "exact" : "partial",
+              spliceAiSourceGene ? { gene_symbol: spliceAiSourceGene } : undefined,
+              spliceAiSourceGene || [spliceAiDpAg, spliceAiDpAl, spliceAiDpDg, spliceAiDpDl]
+                .some((value) => value !== null)
+                ? {
+                    ...(spliceAiSourceGene
+                      ? { source_gene_symbol: spliceAiSourceGene }
+                      : {}),
+                    ...(spliceAiDpAg !== null
+                      ? { delta_position_acceptor_gain: spliceAiDpAg }
+                      : {}),
+                    ...(spliceAiDpAl !== null
+                      ? { delta_position_acceptor_loss: spliceAiDpAl }
+                      : {}),
+                    ...(spliceAiDpDg !== null
+                      ? { delta_position_donor_gain: spliceAiDpDg }
+                      : {}),
+                    ...(spliceAiDpDl !== null
+                      ? { delta_position_donor_loss: spliceAiDpDl }
+                      : {}),
+                  }
+                : undefined,
+            );
+            addPrediction(
+              "promoterai",
+              "allele_transcript_tss_strand",
+              promoterAiStatus === "exact"
+                ? [...TRANSCRIPT_MATCH_DIMENSIONS, "tss", "strand"]
+                : ALLELE_MATCH_DIMENSIONS,
+              { score: promoterAi },
+              promoterAiStatus,
+              {
+                ...(promoterAiSourceTranscript
+                  ? { ensembl_transcript: promoterAiSourceTranscript }
+                  : {}),
+                ...(promoterAiTss !== null ? { tss: String(promoterAiTss) } : {}),
+                ...(promoterAiStrand ? { strand: promoterAiStrand } : {}),
+              },
+              promoterAiMatch || promoterAiSourceTranscript || promoterAiTss || promoterAiStrand
+                ? {
+                    ...(promoterAiMatch ? { match: promoterAiMatch } : {}),
+                    ...(promoterAiSourceTranscript
+                      ? { source_transcript: promoterAiSourceTranscript }
+                      : {}),
+                    ...(promoterAiTss !== null ? { tss: promoterAiTss } : {}),
+                    ...(promoterAiStrand ? { strand: promoterAiStrand } : {}),
+                    ...(number(first(combined, ["PromoterAI_distance"])) !== null
+                      ? { distance: number(first(combined, ["PromoterAI_distance"]))! }
+                      : {}),
+                  }
+                : undefined,
+            );
+            addPrediction(
+              "logofunc",
+              "allele_transcript_protein",
+              loGoFuncMatch === "allele_transcript_protein"
+                ? [...TRANSCRIPT_MATCH_DIMENSIONS, "protein_position", "amino_acid_change"]
+                : ALLELE_MATCH_DIMENSIONS,
+              {
+                prediction: loGoFuncPrediction,
+                neutral: loGoFuncNeutral,
+                gof: loGoFuncGof,
+                lof: loGoFuncLof,
+              },
+              loGoFuncMatch === "allele_transcript_protein"
+                ? "exact"
+                : loGoFuncAlleleAvailable ? "partial" : "unmatched",
+              {
+                ...(loGoFuncSourceTranscript
+                  ? { ensembl_transcript: loGoFuncSourceTranscript }
+                  : {}),
+                ...(loGoFuncSourceHgvsp
+                  ? {
+                      ...(loGoFuncSourceProteinPosition
+                        ? { protein_position: loGoFuncSourceProteinPosition }
+                        : {}),
+                      amino_acid_change: loGoFuncSourceHgvsp,
+                    }
+                  : {}),
+              },
+              loGoFuncAlleleAvailable || loGoFuncMatch
+                ? {
+                    allele_available: loGoFuncAlleleAvailable,
+                    ...(loGoFuncMatch ? { match: loGoFuncMatch } : {}),
+                  }
+                : undefined,
+            );
+            const normalizedFuncVepStatus: PredictorObservation["matchStatus"] =
+              funcVepMatchStatus === "exact" || funcVepMatchStatus === "partial"
+                || funcVepMatchStatus === "ambiguous"
+                ? funcVepMatchStatus
+                : [funcVepCti, funcVepCte, funcVepSp].some((value) => value !== null)
+                  ? "exact"
+                  : funcVepAlleleAvailable ? "partial" : "unmatched";
+            addPrediction(
+              "funcvep",
+              "allele_gene",
+              normalizedFuncVepStatus === "exact" || funcVepMatch === "allele_gene"
+                ? [...ALLELE_MATCH_DIMENSIONS, "ensembl_gene"]
+                : ALLELE_MATCH_DIMENSIONS,
+              { cti: funcVepCti, cte: funcVepCte, sp: funcVepSp },
+              normalizedFuncVepStatus,
+              funcVepSourceGene ? { ensembl_gene: funcVepSourceGene } : undefined,
+              funcVepAlleleAvailable || funcVepMatch || funcVepMatchStatus
+                ? {
+                    allele_available: funcVepAlleleAvailable,
+                    ...(funcVepMatch ? { match: funcVepMatch } : {}),
+                    ...(funcVepMatchStatus ? { match_status: funcVepMatchStatus } : {}),
+                  }
+                : undefined,
+            );
+            addPrediction(
+              "vep_sift", "transcript_consequence",
+              TRANSCRIPT_CONSEQUENCE_MATCH_DIMENSIONS,
+              { prediction: first(combined, ["SIFT"]) }, "exact",
+              transcriptConsequenceTarget,
+            );
+            addPrediction(
+              "vep_polyphen", "transcript_consequence",
+              TRANSCRIPT_CONSEQUENCE_MATCH_DIMENSIONS,
+              { prediction: first(combined, ["PolyPhen"]) }, "exact",
+              transcriptConsequenceTarget,
+            );
+            addPrediction("gerp", "allele", ALLELE_MATCH_DIMENSIONS, {
+              score: gerpRs,
+            });
+            addPrediction("phylop100", "allele", ALLELE_MATCH_DIMENSIONS, {
+              score: phyloP100way,
+            });
+            addPrediction("phastcons100", "allele", ALLELE_MATCH_DIMENSIONS, {
+              score: phastCons100way,
+            });
+            addPrediction(
+              "loftee", "transcript_consequence",
+              TRANSCRIPT_CONSEQUENCE_MATCH_DIMENSIONS,
+              {
+                classification: first(combined, ["LoF", "LOFTEE"]),
+                filter: first(combined, ["LoF_filter"]),
+              },
+              "exact",
+              transcriptConsequenceTarget,
+              {
+                ...(first(combined, ["LoF_flags"])
+                  ? { flags: first(combined, ["LoF_flags"]) }
+                  : {}),
+                ...(first(combined, ["LoF_info"])
+                  ? { info: first(combined, ["LoF_info"]) }
+                : {}),
+              },
+            );
+            addPrediction(
+              "repeatmasker_context", "allele", ALLELE_MATCH_DIMENSIONS,
+              { overlap: repeatMaskerOverlap },
+            );
+            addPrediction(
+              "segdup_context", "allele", ALLELE_MATCH_DIMENSIONS,
+              { overlap: segDupOverlap },
+            );
+            addPrediction(
+              "clinvar_assertions", "allele", ALLELE_MATCH_DIMENSIONS,
+              {
+                clinical_significance: clinvarSignificance,
+                review_status: clinvarReviewStatus,
+              },
+              "exact",
+              undefined,
+              {
+                ...(clinvarConflicting
+                  ? { conflicting_significance: clinvarConflicting }
+                  : {}),
+                ...(clinvarDisease ? { disease: clinvarDisease } : {}),
+              },
+            );
+            addPrediction(
+              "clingen_erepo_assertions", "allele", ALLELE_MATCH_DIMENSIONS,
+              { count: clinGenAssertionCount },
+              "exact",
+              undefined,
+              clinGenAssertionsRaw ? { assertions: clinGenAssertionsRaw } : undefined,
+            );
+            addPrediction(
+              "loftee_ptc_50bp", "transcript_consequence",
+              TRANSCRIPT_CONSEQUENCE_MATCH_DIMENSIONS,
+              {
+                ptc_distance: ptcDistanceFromLastExon,
+                ptc_rule: ptcRule,
+                rule_changed: ptcRuleChangedRaw
+                  ? truthy(ptcRuleChangedRaw)
+                  : undefined,
+                ptc_distance_from_last_coding_exon: ptcDistanceFromLastCodingExon,
+              },
+              "exact",
+              transcriptConsequenceTarget,
+              {
+                ...(ptcCdsPosition !== null
+                  ? { ptc_cds_position: ptcCdsPosition }
+                  : {}),
+                ...(ptcAminoAcidPosition !== null
+                  ? { ptc_amino_acid_position: ptcAminoAcidPosition }
+                  : {}),
+                ...(ptcOriginalRule ? { original_rule: ptcOriginalRule } : {}),
+                ...(ptcLofteeAnchorRule
+                  ? { loftee_anchor_rule: ptcLofteeAnchorRule }
+                  : {}),
+                ...(ptcCalculationStatus
+                  ? { calculation_status: ptcCalculationStatus }
+                  : {}),
+              },
+            );
+            addPrediction(
+              "clinvar_aa_match", "allele", ALLELE_MATCH_DIMENSIONS,
+              {
+                residue_match: clinvarAaResidueRaw
+                  ? truthy(clinvarAaResidueRaw)
+                  : undefined,
+                change_match: clinvarAaChangeRaw
+                  ? truthy(clinvarAaChangeRaw)
+                  : undefined,
+              },
+            );
+            addPrediction(
+              "haplotype_frame", "sample_haplotype",
+              [
+                ...ALLELE_MATCH_DIMENSIONS,
+                "sample",
+                ...(transcript ? ["ensembl_transcript"] : []),
+                ...(genotype.phaseSet ? ["phase_set"] : []),
+              ],
+              { frame_evidence: haplotypeFrame.evidence },
+              genotype.phaseSet ? "exact" : "partial",
+              {
+                sample: cohortMode ? cohortRepresentative!.sample : sample,
+                ...(transcript ? { ensembl_transcript: transcript } : {}),
+                ...(genotype.phaseSet ? { phase_set: genotype.phaseSet } : {}),
+              },
+            );
+            ADDITIONAL_DBNSFP_PREDICTORS.forEach((definition) => {
+              const value = dbnsfpPredictors[definition.id];
+              const alleleScoped = ALLELE_SCOPED_DBNSFP_PREDICTORS.has(definition.id);
+              addPrediction(
+                definition.id,
+                alleleScoped ? "allele" : "allele_transcript",
+                alleleScoped ? ALLELE_MATCH_DIMENSIONS : TRANSCRIPT_MATCH_DIMENSIONS,
+                { score: value?.score, prediction: value?.prediction },
+                "exact",
+                alleleScoped ? undefined : transcriptTarget,
+              );
+            });
 
             rows.push({
               key: `${file.name}:${chrom}:${posRaw}:${ref}:${alt}:${sample}:${recordOccurrence}:${transcriptIndex}`,
@@ -1477,16 +2207,10 @@ export async function parseVcfFiles(
               gnomadPopmax: popmax,
               gnomadPopmaxPopulation: first(combined, ["MAX_AF_POPS", "gnomAD_AF_popmax_population"]),
               gnomadFrequencies: populationFrequencies,
-              cadd: preferredMaximum(combined, [
-                ["CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED"],
-                ["CADD_phred"],
-              ]),
-              caddRaw: preferredMaximum(combined, [
-                ["CADD_RAW", "CADD_WGS_CADD_RAW", "CADD_WGS_RAW"],
-                ["CADD_raw"],
-              ]),
-              alphaMissense: maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]),
-              alphaPrediction: uniqueValues(first(combined, ["AlphaMissense_pred", "am_class"])).join(" / "),
+              cadd,
+              caddRaw,
+              alphaMissense,
+              alphaPrediction,
               revel,
               metaRnn,
               metaRnnPrediction: uniqueValues(first(combined, ["MetaRNN_pred"])).join(" / "),
@@ -1496,9 +2220,9 @@ export async function parseVcfFiles(
               siftPrediction: uniqueValues(first(combined, ["SIFT_pred"])).join(" / "),
               polyPhen,
               polyPhenPrediction: uniqueValues(first(combined, ["Polyphen2_HDIV_pred"])).join(" / "),
-              gerpRs: maximum(combined, ["GERP++_RS"]),
-              phyloP100way: maximum(combined, ["phyloP100way_vertebrate"]),
-              phastCons100way: maximum(combined, ["phastCons100way_vertebrate"]),
+              gerpRs,
+              phyloP100way,
+              phastCons100way,
               availableDbnsfpPredictors,
               dbnsfpPredictors,
               loftee: first(combined, ["LoF", "LOFTEE"]),
@@ -1525,24 +2249,24 @@ export async function parseVcfFiles(
               clinvarDisease: first(combined, ["ClinVar_CLNDN", "CLNDN"]),
               clinvarAaMatch: truthy(first(combined, ["ClinVar_path_aa_match"])),
               clinvarAaChangeMatch: truthy(first(combined, ["ClinVar_path_aa_change_match"])),
-              clingenErepo: clinGenErepoAssertions(info.ClinGen_ERepo, alt),
+              clingenErepo: clinGenCompactAssertions,
               haplotypeFrameStatus: haplotypeFrame.status,
               haplotypeFramePartners: haplotypeFrame.partners,
               haplotypeProteinChange: haplotypeFrame.protein,
               spliceAI: splice,
-              promoterAI: maximum(combined, [
-                "PromoterAI_score", "promoterAI_score",
-                "promoterAI_promoterAI", "PromoterAI_promoterAI",
-                "promoterAI", "PromoterAI",
-              ]),
-              loGoFuncPrediction: first(combined, ["LoGoFunc_prediction"]),
-              loGoFuncNeutral: maximum(combined, ["LoGoFunc_neutral"]),
-              loGoFuncGof: maximum(combined, ["LoGoFunc_GOF"]),
-              loGoFuncLof: maximum(combined, ["LoGoFunc_LOF"]),
-              loGoFuncAlleleAvailable: truthy(first(combined, ["LoGoFunc_allele_available"])),
-              loGoFuncSourceTranscript: first(combined, ["LoGoFunc_source_transcript"]),
-              loGoFuncSourceHgvsp: first(combined, ["LoGoFunc_source_HGVSp"]),
-              loGoFuncMatch: first(combined, ["LoGoFunc_match"]),
+              promoterAI: promoterAiStatus === "exact" ? promoterAi : null,
+              loGoFuncPrediction,
+              loGoFuncNeutral,
+              loGoFuncGof,
+              loGoFuncLof,
+              loGoFuncAlleleAvailable,
+              loGoFuncSourceTranscript,
+              loGoFuncSourceHgvsp,
+              loGoFuncMatch,
+              funcVepCti: normalizedFuncVepStatus === "exact" ? funcVepCti : null,
+              funcVepCte: normalizedFuncVepStatus === "exact" ? funcVepCte : null,
+              funcVepSp: normalizedFuncVepStatus === "exact" ? funcVepSp : null,
+              predictions,
               pLi: maximum(combined, ["pLI", "gnomAD_pLI", "ExAC_pLI"]),
               loeuf: maximum(combined, ["LOEUF", "loeuf", "oe_lof_upper", "gnomAD_LOEUF"]),
               missenseZ: maximum(combined, ["mis_z", "missense_z", "gnomAD_mis_z"]),
@@ -1647,6 +2371,21 @@ export async function parseVcfFiles(
     row.loGoFuncMatch = row.transcript === evidence.loGoFuncSourceTranscript
       ? "allele_transcript_protein"
       : "source_transcript_match_elsewhere";
+    const normalized = evidence.predictions?.logofunc;
+    if (normalized) {
+      row.predictions = {
+        ...(row.predictions ?? {}),
+        logofunc: {
+          ...normalized,
+          matchedOn: [...normalized.matchedOn],
+          values: { ...normalized.values },
+          ...(normalized.target ? { target: { ...normalized.target } } : {}),
+          ...(normalized.provenance
+            ? { provenance: { ...normalized.provenance } }
+            : {}),
+        },
+      };
+    }
   });
 
   const intakeQc: IntakeQcCheck[] = [

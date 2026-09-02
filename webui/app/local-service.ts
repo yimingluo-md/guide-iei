@@ -101,7 +101,7 @@ export type ServiceCapabilities = {
       status: "ready" | "required_missing" | "optional_missing";
       setup_mode: "manual" | "download" | "prepare" | "bundled" | "deferred";
       download_id?: string;
-      prepare_id?: "dbnsfp" | "promoterai" | "logofunc";
+      prepare_id?: "dbnsfp" | "promoterai" | "logofunc" | "funcvep";
       reference_url: string;
       reference_label: string;
       size_hint: string;
@@ -128,7 +128,7 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
+  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
   operation?: "download" | "preparation" | "installation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;
@@ -1011,6 +1011,7 @@ export type LocalResourceSelection = {
     | "dbnsfp"
     | "promoterai"
     | "logofunc"
+    | "funcvep"
     | "omim"
     | "storage_annotation"
     | "storage_data"
@@ -1052,6 +1053,19 @@ export async function startLoGoFuncPreparation(sourcePath: string) {
   return request<ResourceDownloadJob>("/api/resource-preparations/logofunc", {
     method: "POST",
     body: JSON.stringify({ source_path: sourcePath }),
+  });
+}
+
+export async function startFuncVepPreparation(
+  sourcePath: string,
+  licenseAccepted: boolean,
+) {
+  return request<ResourceDownloadJob>("/api/resource-preparations/funcvep", {
+    method: "POST",
+    body: JSON.stringify({
+      source_path: sourcePath,
+      license_accepted: licenseAccepted,
+    }),
   });
 }
 

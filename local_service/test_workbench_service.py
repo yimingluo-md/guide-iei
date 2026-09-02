@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import base64
 import gzip
+import hashlib
 import io
 import json
 import os
@@ -12,6 +13,7 @@ import unittest
 import urllib.error
 import urllib.request
 from contextlib import closing
+from dataclasses import replace
 from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -25,7 +27,13 @@ from local_service.storage_locations import (
     StorageLocationRegistry, StorageRegistryError, _filesystem_type,
     storage_path_warning,
 )
-from local_service.workbench_service import AnnotationJobService, JobStore, SERVICE_VERSION, create_server
+from local_service.workbench_service import (
+    FUNCVEP_ARCHIVE_NAME,
+    AnnotationJobService,
+    JobStore,
+    SERVICE_VERSION,
+    create_server,
+)
 
 
 class AnnotationJobServiceTests(unittest.TestCase):
@@ -1007,6 +1015,24 @@ class AnnotationJobServiceTests(unittest.TestCase):
             result = self.service.choose_local_resource_source({"resource_id": "promoterai"})
         self.assertTrue(result["cancelled"])
 
+    def test_native_resource_picker_accepts_the_official_funcvep_zip(self):
+        selected = self.root / "FuncVEP_and_ClinVEP_scores_all_possible_missense_variants.zip"
+        selected.write_bytes(b"official-archive-placeholder")
+        completed = Mock(returncode=0, stdout=str(selected) + "\n", stderr="")
+        with patch(
+            "local_service.workbench_service.platform.system", return_value="Darwin"
+        ), patch(
+            "local_service.workbench_service.subprocess.run", return_value=completed
+        ) as run:
+            result = self.service.choose_local_resource_source({"resource_id": "funcvep"})
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["resource_id"], "funcvep")
+        self.assertEqual(result["selection_type"], "file")
+        self.assertEqual(result["path"], str(selected.resolve()))
+        self.assertEqual(result["name"], selected.name)
+        self.assertIn("choose file", run.call_args.args[0][2])
+        self.assertIn("official FuncVEP .zip archive", run.call_args.args[0][2])
+
     def test_dbnsfp_download_accepts_safelink_and_keeps_authorized_url_secret(self):
         target = "https://dist.genos.us/academic/authorized/dbNSFP6.0b_grch38.gz"
         safe_link = (
@@ -1182,6 +1208,22 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(sources["promoterai"]["access"], "license")
         self.assertEqual(sources["logofunc"]["recommendation"], "optional")
         self.assertFalse(sources["logofunc"]["enabled"])
+        self.assertEqual(sources["funcvep"]["access"], "license")
+        self.assertEqual(sources["funcvep"]["recommendation"], "optional")
+        self.assertEqual(sources["funcvep"]["prepare_id"], "funcvep")
+        self.assertFalse(sources["funcvep"]["enabled"])
+        expected_references = {
+            "spliceai": ("SpliceAI published manuscript", "10.1016/j.cell.2018.12.015"),
+            "logofunc": ("LoGoFunc published manuscript", "s13073-023-01261-9"),
+            "funcvep": ("FuncVEP published manuscript", "s41588-026-02727-3"),
+            "ccre": ("ENCODE Registry V4 published manuscript", "s41586-025-09909-9"),
+            "screen_context": ("ENCODE Registry V4 published manuscript", "s41586-025-09909-9"),
+            "clinvar": ("ClinVar website", "ncbi.nlm.nih.gov/clinvar"),
+            "clingen_erepo": ("ClinGen website", "clinicalgenome.org"),
+        }
+        for source_id, (label, url_fragment) in expected_references.items():
+            self.assertEqual(sources[source_id]["reference_label"], label)
+            self.assertIn(url_fragment, sources[source_id]["reference_url"])
         self.assertTrue(sources["ccre"]["installed"])
         with self.assertRaisesRegex(ValueError, "only for whole-genome"):
             self.service.submit({
@@ -1477,6 +1519,218 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(completed["operation"], "preparation")
         self.assertEqual(completed["status"], "succeeded")
         self.assertEqual(completed["progress"], 100.0)
+
+    def test_funcvep_preparation_requires_explicit_license_acknowledgement(self):
+        source = self.root / "FuncVEP_and_ClinVEP_scores_all_possible_missense_variants.zip"
+        source.write_bytes(b"official-archive-placeholder")
+        with self.assertRaisesRegex(ValueError, "reviewed the FuncVEP license"):
+            self.service.start_funcvep_preparation({
+                "source_path": str(source),
+                "license_accepted": False,
+            })
+
+    def test_funcvep_preparation_passes_source_config_and_acknowledgement(self):
+        source = self.root / "FuncVEP_and_ClinVEP_scores_all_possible_missense_variants.zip"
+        source.write_bytes(b"official-archive-placeholder")
+        with patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ) as ensure_space, patch.object(
+            self.service,
+            "_start_resource_job",
+            return_value={"id": "funcvep-job", "status": "queued"},
+        ) as start:
+            result = self.service.start_funcvep_preparation({
+                "source_path": str(source),
+                "license_accepted": True,
+            })
+        self.assertEqual(result["id"], "funcvep-job")
+        ensure_space.assert_called_once_with("funcvep_preparation")
+        start.assert_called_once()
+        self.assertEqual(start.call_args.args[0], "funcvep")
+        self.assertEqual(start.call_args.args[2], "preparation")
+        command = start.call_args.args[1]
+        self.assertEqual(command[0], "bash")
+        self.assertTrue(command[1].endswith("scripts/prepare_funcvep.sh"))
+        self.assertEqual(command[2], str(source.resolve()))
+        self.assertTrue(Path(command[3]).is_file())
+        self.assertIn("funcvep_scores.grch38.tsv.gz", Path(command[3]).read_text())
+        self.assertEqual(command[4:], ["--acknowledge-license"])
+        self.assertNotIn("--remove-source-after-success", command)
+        self.assertTrue(source.is_file())
+
+    def test_funcvep_acknowledgement_can_start_automatic_zenodo_download(self):
+        with patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ) as ensure_space, patch.object(
+            self.service,
+            "_start_resource_job",
+            return_value={"id": "funcvep-download-job", "status": "queued"},
+        ) as start:
+            result = self.service.start_funcvep_preparation({
+                "source_path": "",
+                "license_accepted": True,
+            })
+        self.assertEqual(result["id"], "funcvep-download-job")
+        archive = self.service.annotation_root / "funcvep" / FUNCVEP_ARCHIVE_NAME
+        ensure_space.assert_called_once_with(
+            "funcvep_download_preparation",
+            {("plugins", "FuncVEP", "file"): archive},
+        )
+        command = start.call_args.args[1]
+        self.assertEqual(command[0], "bash")
+        self.assertTrue(command[1].endswith("scripts/download_funcvep.sh"))
+        self.assertTrue(Path(command[2]).is_file())
+        self.assertEqual(command[3:], ["--acknowledge-license"])
+
+    def test_funcvep_is_installed_only_with_scores_index_and_manifest(self):
+        from pipeline.funcvep_dataset import OUTPUT_HEADER, build_manifest
+
+        def source_status():
+            return next(
+                source
+                for source in self.service.capabilities()["annotation_profile"]["sources"]
+                if source["id"] == "funcvep"
+            )
+
+        managed = self.service.annotation_root / "funcvep"
+        managed.mkdir(parents=True, exist_ok=True)
+        scores = managed / "funcvep_scores.grch38.tsv.gz"
+        index = Path(str(scores) + ".tbi")
+        manifest = managed / "funcvep.manifest.json"
+
+        self.assertFalse(source_status()["installed"])
+        scores.write_bytes(b"scores")
+        self.assertFalse(source_status()["installed"])
+        index.write_bytes(b"index")
+        self.assertFalse(source_status()["installed"])
+        manifest.write_text('{"resource": "FuncVEP"}\n')
+        self.assertFalse(source_status()["installed"])
+        manifest.write_bytes(b"\xff")
+        self.assertFalse(source_status()["installed"])
+
+        # Exercise the actual preparation manifest builder rather than a
+        # service-specific approximation of its schema.
+        with gzip.open(scores, "wt", encoding="ascii") as handle:
+            handle.write(OUTPUT_HEADER)
+            handle.write("1\t1\tA\tG\tENSG00000000001\t0.1\t0.2\t0.3\n")
+        index.write_bytes(b"test-tabix-index")
+        archive = managed / "official.zip"
+        archive.write_bytes(b"official-source")
+        stats = managed / "stats.json"
+        stats.write_text(json.dumps({
+            "archive": {
+                "name": archive.name,
+                "size": archive.stat().st_size,
+                "md5": hashlib.md5(archive.read_bytes()).hexdigest(),
+                "sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
+                "preserved": True,
+            },
+            "source_member": {"name": "scores.tsv", "size": 1, "crc32": "00000000"},
+            "row_count": 1,
+            "contigs": {"1": 1},
+            "excluded_columns": ["ClinVEP_CTI", "ClinVEP_CTE", "ClinVEP_SP"],
+        }))
+        with patch(
+            "pipeline.funcvep_dataset.is_bgzf", return_value=True
+        ), patch(
+            "pipeline.funcvep_dataset.tabix_metadata",
+            return_value={
+                "format": "tabix", "sequence_column": 1,
+                "begin_column": 2, "end_column": 2, "contigs": ["1"],
+            },
+        ):
+            payload = build_manifest(
+                archive,
+                scores,
+                index,
+                stats,
+                installed_score_name=scores.name,
+                license_acknowledged=True,
+            )
+        manifest.write_text(json.dumps(payload) + "\n")
+        installed = source_status()
+        self.assertTrue(installed["installed"])
+        self.assertEqual(
+            set(installed["configured_paths"]),
+            {str(scores), str(manifest)},
+        )
+
+        # Extending the registry and manifest together must not require a
+        # service-specific literal output-set update.
+        from pipeline.predictor_registry import load_registry
+        registry = load_registry()
+        funcvep_predictor = registry.predictor("funcvep")
+        extra_metric = replace(
+            funcvep_predictor.metrics[0],
+            id="secondary_cti",
+            field="FuncVEP_secondary_CTI",
+        )
+        extended_predictor = replace(
+            funcvep_predictor,
+            metrics=(*funcvep_predictor.metrics, extra_metric),
+        )
+        extended_registry = replace(
+            registry,
+            predictors=tuple(
+                extended_predictor if item.id == funcvep_predictor.id else item
+                for item in registry.predictors
+            ),
+        )
+        extended_payload = json.loads(json.dumps(payload))
+        extended_output = dict(extended_payload["outputs"][0])
+        extended_output.update({
+            "id": extra_metric.field,
+            "column": extra_metric.field,
+            "description": "Registry-extension regression score",
+        })
+        extended_payload["outputs"].append(extended_output)
+        extended_payload["table"]["columns"].append(extra_metric.field)
+        manifest.write_text(json.dumps(extended_payload) + "\n")
+        with patch(
+            "local_service.workbench_service.load_predictor_registry",
+            return_value=extended_registry,
+        ):
+            self.assertTrue(source_status()["installed"])
+        manifest.write_text(json.dumps(payload) + "\n")
+
+        from pipeline.predictor_registry import RegistryError
+        with patch(
+            "local_service.workbench_service.load_predictor_registry",
+            side_effect=RegistryError("corrupt registry"),
+        ):
+            self.assertFalse(source_status()["installed"])
+
+        # Copying a bundle may preserve bytes but not timestamps. A mismatch
+        # must fall back to the recorded checksum instead of marking it broken.
+        score_status = scores.stat()
+        os.utime(
+            scores,
+            ns=(score_status.st_atime_ns, score_status.st_mtime_ns + 1_000_000),
+        )
+        self.assertTrue(source_status()["installed"])
+
+        # mtime_ns is optional in the shared schema and must remain optional
+        # for service installation detection too.
+        without_mtime = json.loads(json.dumps(payload))
+        del without_mtime["files"]["data"]["mtime_ns"]
+        del without_mtime["files"]["index"]["mtime_ns"]
+        manifest.write_text(json.dumps(without_mtime) + "\n")
+        self.assertTrue(source_status()["installed"])
+
+        # Installation readiness uses the same typed registry contract as
+        # command startup, not merely the presence of the expected field ID.
+        wrong_type = json.loads(json.dumps(payload))
+        wrong_type["outputs"][0]["type"] = "string"
+        manifest.write_text(json.dumps(wrong_type) + "\n")
+        self.assertFalse(source_status()["installed"])
+
+        # A same-size content change after the timestamp diverges is detected
+        # by the checksum fallback.
+        manifest.write_text(json.dumps(payload) + "\n")
+        damaged = bytearray(scores.read_bytes())
+        damaged[-1] ^= 1
+        scores.write_bytes(damaged)
+        self.assertFalse(source_status()["installed"])
 
     def test_loopback_http_health_and_job_list(self):
         server = create_server(self.service, "127.0.0.1", 0)

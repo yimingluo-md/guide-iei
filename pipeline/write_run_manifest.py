@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timezone
 
 from build_vep_command import load_config
+from predictor_registry import RegistryError, load_registry
 
 
 def file_metadata(path: str) -> dict:
@@ -39,7 +40,16 @@ def sha256(path: str) -> str:
     return digest.hexdigest()
 
 
-def reference_paths(cfg: dict) -> list[str]:
+def config_value(cfg: dict, dotted_path: str):
+    value = cfg
+    for part in dotted_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def reference_paths(cfg: dict, registry=None) -> list[str]:
     paths = []
     ref = cfg.get("reference", {}) or {}
     paths.append(ref.get("vep_cache_dir"))
@@ -52,6 +62,7 @@ def reference_paths(cfg: dict) -> list[str]:
         "CADD_WGS": ("snv", "indels"),
         "PromoterAI": ("file", "transcript_map", "manifest"),
         "LoGoFunc": ("file", "manifest"),
+        "FuncVEP": ("file", "manifest"),
     }.items():
         block = plugins.get(name, {}) or {}
         paths.extend(block.get(key) for key in keys)
@@ -71,7 +82,42 @@ def reference_paths(cfg: dict) -> list[str]:
     region = cfg.get("region", {}) or {}
     # The BED that decided which variants reached VEP is run-defining.
     paths.extend([region.get("custom_bed"), region.get("bed")])
+    # Registry-declared assets make future predictors reproducible without
+    # another hard-coded manifest edit. The legacy list above remains during
+    # migration so older configurations keep identical behavior.
+    if registry is not None:
+        for resource in registry.resources:
+            paths.extend(config_value(cfg, asset.config_path) for asset in resource.assets)
     return sorted({path for path in paths if path and path != "auto"})
+
+
+def registry_metadata(path: Path, cfg: dict) -> tuple[dict, object | None]:
+    result = file_metadata(str(path))
+    if not result["exists"]:
+        return result, None
+    try:
+        registry = load_registry(path)
+    except RegistryError as exc:
+        raise ValueError(f"invalid predictor registry {path}: {exc}") from exc
+    result.update({
+        "sha256": sha256(str(path)),
+        "schema_version": registry.schema_version,
+        "resource_count": len(registry.resources),
+        "annotator_count": len(registry.annotators),
+        "predictor_count": len(registry.predictors),
+        "configured_resources": [
+            {
+                "id": resource.id,
+                "enabled": (
+                    bool(value.get("enabled", resource.default_enabled))
+                    if isinstance((value := config_value(cfg, resource.config_path)), dict)
+                    else resource.default_enabled
+                ),
+            }
+            for resource in registry.resources
+        ],
+    })
+    return result, registry
 
 
 def main() -> int:
@@ -99,6 +145,8 @@ def main() -> int:
             pipeline_version = version_handle.read().strip()
     else:
         pipeline_version = "unknown"
+    registry_path = Path(args.base_dir) / "config" / "predictor-registry.json"
+    predictor_registry, registry = registry_metadata(registry_path, cfg)
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "pipeline_version": pipeline_version,
@@ -112,11 +160,12 @@ def main() -> int:
         "input_filter_policy": args.filter_policy or None,
         "region_bed": args.region_bed or None,
         "vep_argv": plan.get("argv", []),
+        "predictor_registry": predictor_registry,
         "references": [
             file_metadata(
                 path if os.path.isabs(path) else os.path.join(args.base_dir, path)
             )
-            for path in sorted({*reference_paths(cfg),
+            for path in sorted({*reference_paths(cfg, registry),
                                 *([args.region_bed] if args.region_bed else [])})
         ],
     }

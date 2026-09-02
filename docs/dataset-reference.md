@@ -66,6 +66,32 @@ webpage; each section holds the process detail the UI no longer shows.
   requires exact allele + Ensembl transcript + residue + substitution
   agreement, with allele-only matches labeled as such.
 
+## FuncVEP
+- Optional licensed official ZIP from
+  [Zenodo](https://zenodo.org/records/20595206). After acknowledgement,
+  GUIDE-IEI can download it resumably from Zenodo or prepare an existing local
+  copy. GUIDE-IEI never bundles, uploads, or redistributes the source. An
+  automatic download is retained in Annotation datasets storage; a selected
+  ZIP remains in its original location. The supported archive identifies the
+  [PolyForm Strict License 1.0.0](https://polyformproject.org/licenses/strict/1.0.0);
+  the user must review and acknowledge those terms. They permit qualifying
+  noncommercial use but do not grant distribution or software-modification
+  rights. The Zenodo
+  record does not expose a separate dataset-license field, so GUIDE-IEI asks
+  the user to confirm authorization rather than making that determination.
+- The supported archive is identity-, size-, checksum-, CRC-, and
+  schema-validated. Automatic setup needs at least 24 GiB free (20 GB when the
+  source ZIP is on another filesystem), streams the source,
+  retains only `FuncVEP_CTI`, `FuncVEP_CTE`, and `FuncVEP_SP`, then writes a
+  coordinate-sorted GRCh38 BGZF table, tabix index, and provenance manifest.
+  The ClinVEP columns present upstream are intentionally excluded.
+- Annotation requires the exact normalized GRCh38 allele and version-stripped
+  Ensembl gene stable ID. Partial or ambiguous matches expose provenance but
+  never scores. CTI includes clinically trained component predictors; CTE
+  excludes those and AlphaMissense; SP excludes features from all other
+  variant-effect predictors. Higher values mean stronger predicted functional
+  damage, not clinical pathogenicity.
+
 ## GRCh37/hg19 input conversion
 - Uses the pinned BCFtools/liftover plugin (bcftools 1.20, pinned commit)
   with both source and destination FASTAs; remaps GT and Number=A/R/G

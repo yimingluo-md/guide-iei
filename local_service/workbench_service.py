@@ -63,9 +63,20 @@ from local_service.storage_locations import (
     storage_path_warning,
 )
 from local_service.wgs_review import WgsPrefilterOptions, WgsReviewStore
+from pipeline.indexed_scores import (
+    load_manifest as load_indexed_scores_manifest,
+    validate_manifest_files,
+    validate_manifest_registry_contract,
+)
+from pipeline.funcvep_dataset import PINNED_RELEASE as FUNCVEP_PINNED_RELEASE
+from pipeline.predictor_registry import (
+    Adapter,
+    load_registry as load_predictor_registry,
+)
 
 
 SERVICE_VERSION = "0.13.0"
+FUNCVEP_ARCHIVE_NAME = FUNCVEP_PINNED_RELEASE.archive_name
 # Exit code that asks the launcher (scripts/start_workbench.sh or a packaged
 # supervisor) to start the service again — used to activate pending
 # storage-location changes from inside the app without rerunning the script.
@@ -81,6 +92,7 @@ ANNOTATION_SOURCE_PATHS = {
     "promoterai": ("plugins", "PromoterAI"),
     "cadd_wgs": ("plugins", "CADD_WGS"),
     "logofunc": ("plugins", "LoGoFunc"),
+    "funcvep": ("plugins", "FuncVEP"),
     "clinvar": ("custom_tracks", "ClinVar"),
     "loftee_ptc_50bp": ("post_processing", "loftee_ptc_50bp"),
     "clinvar_aa_match": ("post_processing", "clinvar_aa_match"),
@@ -99,6 +111,7 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "promoterai": "recommended_wgs",
     "cadd_wgs": "optional",
     "logofunc": "optional",
+    "funcvep": "optional",
     "clinvar": "recommended",
     "loftee_ptc_50bp": "included",
     "clinvar_aa_match": "included",
@@ -200,11 +213,8 @@ ANNOTATION_SOURCE_SETUP = {
     "spliceai": {
         "setup_mode": "download",
         "download_id": "spliceai",
-        "reference_url": (
-            "https://ftp.ensembl.org/pub/data_files/homo_sapiens/GRCh38/"
-            "variation_plugins/spliceai_scores.masked.snv.ensembl_mane_v1.4.grch38.vcf.gz"
-        ),
-        "reference_label": "Ensembl SpliceAI MANE v1.4 VCF",
+        "reference_url": "https://doi.org/10.1016/j.cell.2018.12.015",
+        "reference_label": "SpliceAI published manuscript",
         "size_hint": "approximately 27 GB plus index",
         "instructions": [
             "Click Download and keep the computer awake; the download is resumable.",
@@ -273,8 +283,8 @@ ANNOTATION_SOURCE_SETUP = {
         "recommendation": "optional",
         "download_id": "logofunc",
         "prepare_id": "logofunc",
-        "reference_url": "https://zenodo.org/records/13835271",
-        "reference_label": "LoGoFunc Zenodo record 13835271",
+        "reference_url": "https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-023-01261-9",
+        "reference_label": "LoGoFunc published manuscript",
         "size_hint": "3.66 GB; GRCh38 canonical missense SNVs",
         "instructions": [
             "Click Download from Zenodo, or use Choose file for a copy downloaded elsewhere; the table is checksum-verified and moved into managed storage.",
@@ -282,11 +292,27 @@ ANNOTATION_SOURCE_SETUP = {
             "Academic use only per the source; a research mechanism hint — not a clinical classification and not a replacement for LOFTEE.",
         ],
     },
+    "funcvep": {
+        "setup_mode": "prepare",
+        "access": "license",
+        "recommendation": "optional",
+        "prepare_id": "funcvep",
+        "reference_url": "https://www.nature.com/articles/s41588-026-02727-3",
+        "reference_label": "FuncVEP published manuscript",
+        "size_hint": "4.24 GB archive; 24 GiB free for automatic setup",
+        "instructions": [
+            "The upstream FuncVEP project identifies PolyForm Strict License 1.0.0. Review those terms and acknowledge that your intended use is permitted.",
+            "The upstream terms permit qualifying noncommercial uses but do not grant distribution or software-modification rights; confirm that your intended local use of the score archive is authorized.",
+            "After acknowledgement, GUIDE-IEI downloads the pinned official ZIP resumably from Zenodo, verifies it, extracts only the three FuncVEP scores, and builds a local GRCh38 tabix index.",
+            "An already-downloaded official ZIP can be selected instead. The archive is never uploaded or bundled with GUIDE-IEI; an automatic download remains in Annotation datasets storage for reproducibility and resume support.",
+            "A score is attached only when both the genomic allele and stable Ensembl gene ID match. These are functional-effect predictions, not clinical classifications; ClinVEP columns are intentionally not imported.",
+        ],
+    },
     "clinvar": {
         "setup_mode": "download",
         "download_id": "clinvar",
-        "reference_url": "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/",
-        "reference_label": "NCBI ClinVar GRCh38 VCF directory",
+        "reference_url": "https://www.ncbi.nlm.nih.gov/clinvar/",
+        "reference_label": "ClinVar website",
         "size_hint": "updated weekly",
         "instructions": [
             "Click Download latest to fetch the current weekly release.",
@@ -335,8 +361,8 @@ ANNOTATION_SOURCE_SETUP = {
     "screen_context": {
         "setup_mode": "download",
         "download_id": "screen_context",
-        "reference_url": "https://huggingface.co/datasets/luoyiming1991/screen-registry-v4-immune-contexts",
-        "reference_label": "Prepared SCREEN Registry V4 context bundle (public mirror)",
+        "reference_url": "https://www.nature.com/articles/s41586-025-09909-9",
+        "reference_label": "ENCODE Registry V4 published manuscript",
         "size_hint": "approximately 1.5 GB verified download; kept in Annotation datasets storage",
         "instructions": [
             "Click Download to fetch the prepared bundle from the public mirror; every file is verified before installation.",
@@ -350,8 +376,8 @@ ANNOTATION_SOURCE_SETUP = {
         "download_id": "ccre",
         "access": "bundled",
         "recommendation": "included",
-        "reference_url": "https://downloads.wenglab.org/Registry-V4/GRCh38-cCREs.bed",
-        "reference_label": "ENCODE SCREEN Registry V4 GRCh38 cCRE BED",
+        "reference_url": "https://www.nature.com/articles/s41586-025-09909-9",
+        "reference_label": "ENCODE Registry V4 published manuscript",
         "size_hint": "approximately 25 MB; included with the software",
         "instructions": [
             "Part of the standard setup; click Download bundled files if it is reported missing.",
@@ -363,8 +389,8 @@ ANNOTATION_SOURCE_SETUP = {
     "clingen_erepo": {
         "setup_mode": "download",
         "download_id": "clingen_erepo",
-        "reference_url": "https://erepo.clinicalgenome.org/evrepo/",
-        "reference_label": "ClinGen Evidence Repository",
+        "reference_url": "https://clinicalgenome.org/",
+        "reference_label": "ClinGen website",
         "size_hint": "approximately 35 MB source; compact local VCF and SQLite snapshot",
         "instructions": [
             "Click Install latest (or Check and update) to fetch the official public export; a failed update leaves the previous working copy unchanged.",
@@ -418,6 +444,11 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
         (("liftover", "grch37_to_grch38", "chain"), int(0.5 * GIB), False),
     ],
     "logofunc": [(("plugins", "LoGoFunc", "file"), 5 * GIB, False)],
+    # The preparation streams its 11 GB member into a much smaller score-only
+    # indexed table; sorting and atomic publication need at least 20 decimal GB.
+    "funcvep_preparation": [(("plugins", "FuncVEP", "file"), 19 * GIB, False)],
+    # Automatic setup also stores the 4.24 GB source ZIP on the same volume.
+    "funcvep_download_preparation": [(("plugins", "FuncVEP", "file"), 24 * GIB, False)],
     # SCREEN preparation also downloads the release-matched Ensembl GTF used
     # to derive the bundled +/-500 kb gene-TSS context table.
     "ccre": [(("wgs_review", "ccre", "bed"), 3 * GIB, False)],
@@ -2200,6 +2231,7 @@ class AnnotationJobService:
             "dbnsfp": ("folder", "Choose the unzipped dbNSFP release folder"),
             "promoterai": ("folder", "Choose the folder containing the two PromoterAI files"),
             "logofunc": ("file", "Choose the downloaded LoGoFunc .csv.gz file"),
+            "funcvep": ("file", "Choose the downloaded official FuncVEP .zip archive"),
             "omim": ("folder", "Choose the folder containing the four OMIM data files"),
             "storage_annotation": ("folder", "Choose the folder for annotation datasets"),
             "storage_data": ("folder", "Choose the folder for the Sample Library & Cohort"),
@@ -2207,7 +2239,7 @@ class AnnotationJobService:
         }
         if resource_id not in choices:
             raise ValueError(
-                "resource picker supports dbNSFP, PromoterAI, LoGoFunc, OMIM, or a storage location"
+                "resource picker supports dbNSFP, PromoterAI, LoGoFunc, FuncVEP, OMIM, or a storage location"
             )
         selection_type, prompt = choices[resource_id]
         system = platform.system()
@@ -2235,11 +2267,16 @@ class AnnotationJobService:
                     "{[Console]::Write($d.SelectedPath)}"
                 )
             else:
+                file_filter = (
+                    "ZIP archive (*.zip)|*.zip|All files (*.*)|*.*"
+                    if resource_id == "funcvep"
+                    else "Compressed table (*.csv.gz)|*.csv.gz|All files (*.*)|*.*"
+                )
                 script = (
                     "Add-Type -AssemblyName System.Windows.Forms;"
                     "$d=New-Object System.Windows.Forms.OpenFileDialog;"
                     f"$d.Title={json.dumps(prompt)};"
-                    "$d.Filter='Compressed table (*.csv.gz)|*.csv.gz|All files (*.*)|*.*';"
+                    f"$d.Filter={json.dumps(file_filter)};"
                     "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
                     "{[Console]::Write($d.FileName)}"
                 )
@@ -2382,6 +2419,43 @@ class AnnotationJobService:
             str(config_path),
         ]
         return self._start_resource_job("logofunc", command, "preparation")
+
+    def start_funcvep_preparation(self, payload: dict) -> dict:
+        """Download or prepare a user-authorized FuncVEP archive locally."""
+        self._ensure_active_storage_available(require_annotation_root=True)
+        if payload.get("license_accepted") is not True:
+            raise ValueError(
+                "confirm that you reviewed the FuncVEP license and that your intended use is permitted"
+            )
+        config_path = self._write_resource_config("funcvep")
+        source_value = payload.get("source_path") if isinstance(payload, dict) else None
+        if isinstance(source_value, str) and source_value.strip():
+            source_path = Path(source_value).expanduser().resolve()
+            if not source_path.is_file():
+                raise ValueError(f"FuncVEP source archive does not exist: {source_path}")
+            if source_path.suffix.lower() != ".zip":
+                raise ValueError("select the official FuncVEP .zip archive")
+            self._ensure_annotation_download_space("funcvep_preparation")
+            command = [
+                "bash",
+                str(self.pipeline_root / "scripts" / "prepare_funcvep.sh"),
+                str(source_path),
+                str(config_path),
+                "--acknowledge-license",
+            ]
+        else:
+            archive_path = self.annotation_root / "funcvep" / FUNCVEP_ARCHIVE_NAME
+            self._ensure_annotation_download_space(
+                "funcvep_download_preparation",
+                {("plugins", "FuncVEP", "file"): archive_path},
+            )
+            command = [
+                "bash",
+                str(self.pipeline_root / "scripts" / "download_funcvep.sh"),
+                str(config_path),
+                "--acknowledge-license",
+            ]
+        return self._start_resource_job("funcvep", command, "preparation")
 
     def _download_omim_file(
         self,
@@ -4182,7 +4256,51 @@ class AnnotationJobService:
                 "file": str(root / Path(current).name),
                 "manifest": str(root / "logofunc.manifest.json"),
             }
+        if resource_id == "funcvep":
+            root = self.annotation_root / "funcvep"
+            return {
+                "file": str(root / "funcvep_scores.grch38.tsv.gz"),
+                "manifest": str(root / "funcvep.manifest.json"),
+            }
         return {}
+
+    @staticmethod
+    def _generic_indexed_install_is_valid(
+        resource_id: str,
+        score_path: Path,
+        manifest_path: Path,
+        *,
+        registry=None,
+    ) -> bool:
+        """Validate one registry-declared generic indexed-score installation."""
+        index_path = Path(str(score_path) + ".tbi")
+        if not all(path.is_file() for path in (score_path, index_path, manifest_path)):
+            return False
+        try:
+            payload = load_indexed_scores_manifest(manifest_path)
+            registry = registry or load_predictor_registry()
+            resource = registry.resource(resource_id)
+            annotators = [
+                annotator for annotator in registry.annotators
+                if annotator.resource_id == resource_id
+                and annotator.adapter is Adapter.GENERIC_INDEXED_LOOKUP
+            ]
+            if len(annotators) != 1:
+                return False
+            annotator = annotators[0]
+            validate_manifest_registry_contract(
+                payload,
+                (
+                    predictor for predictor in registry.predictors
+                    if predictor.annotator_id == annotator.id
+                ),
+                resource=resource,
+                annotator=annotator,
+            )
+            validate_manifest_files(payload, score_path, index_path)
+            return True
+        except (OSError, AttributeError, TypeError, ValueError, KeyError):
+            return False
 
     def _set_managed_preparation_paths(
         self,
@@ -4199,21 +4317,42 @@ class AnnotationJobService:
             return
         primary = Path(paths["path"] if resource_id == "dbnsfp" else paths["file"])
         required = [primary, Path(str(primary) + ".tbi")]
-        if resource_id in {"promoterai", "logofunc"}:
+        if resource_id in {"promoterai", "logofunc", "funcvep"}:
             required.append(Path(paths["manifest"]))
         if resource_id == "promoterai":
             required.append(Path(paths["transcript_map"]))
-        if require_installed and not all(path.is_file() for path in required):
-            return
+        if require_installed:
+            if not all(path.is_file() for path in required):
+                return
+            if "manifest" in paths:
+                try:
+                    registry = load_predictor_registry()
+                except (OSError, ValueError):
+                    return
+                generic_resources = {
+                    annotator.resource_id for annotator in registry.annotators
+                    if annotator.adapter is Adapter.GENERIC_INDEXED_LOOKUP
+                }
+                if (
+                    resource_id in generic_resources
+                    and not self._generic_indexed_install_is_valid(
+                        resource_id,
+                        primary,
+                        Path(paths["manifest"]),
+                        registry=registry,
+                    )
+                ):
+                    return
         plugin_name = {
             "dbnsfp": "dbNSFP",
             "promoterai": "PromoterAI",
             "logofunc": "LoGoFunc",
+            "funcvep": "FuncVEP",
         }[resource_id]
         config.setdefault("plugins", {}).setdefault(plugin_name, {}).update(paths)
 
     def _prefer_installed_managed_resources(self, config: dict) -> dict:
-        for resource_id in ("dbnsfp", "promoterai", "logofunc"):
+        for resource_id in ("dbnsfp", "promoterai", "logofunc", "funcvep"):
             self._set_managed_preparation_paths(
                 config, resource_id, require_installed=True
             )
@@ -4352,6 +4491,7 @@ class AnnotationJobService:
             "promoterai": ("PromoterAI", "Predicts whether a variant near a gene's transcription start disrupts that gene's expression. Requires two files licensed from Illumina; nothing is uploaded anywhere"),
             "cadd_wgs": ("CADD scores for non-coding regions", "Genome-wide CADD deleteriousness scores for variants outside protein-coding regions. Coding-region CADD is already included with dbNSFP — install this only for whole-genome, non-coding analysis"),
             "logofunc": ("LoGoFunc", "Research-grade prediction of whether a missense variant causes gain of function, loss of function, or neither — a mechanism hint, not a clinical classifier"),
+            "funcvep": ("FuncVEP", "Research-grade estimates of a missense variant's functional effect from three complementary model settings — not a clinical pathogenicity classification"),
             "clinvar": ("ClinVar", "What clinical laboratories have reported about each variant. Reports come from many submitters and can conflict; review status matters. Refreshed automatically before every run"),
             "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create and flags cases where the rule suggests possible NMD escape"),
             "clinvar_aa_match": ("ClinVar protein-change and residue matching", "Identifies ClinVar P/LP reports with the same protein change or a P/LP missense report at the same residue. These are candidate PS1/PM5 evidence only; the reviewer must confirm transcript, condition, review status, disease mechanism, and evidence independence"),
@@ -4401,6 +4541,8 @@ class AnnotationJobService:
                 values = [block.get("snv"), block.get("indels")]
             elif source_id == "logofunc":
                 values = [block.get("file"), block.get("manifest")]
+            elif source_id == "funcvep":
+                values = [block.get("file"), block.get("manifest")]
             elif source_id == "screen_context":
                 # The active bundle is normally recorded by the installed
                 # pointer file, not the config; resolved separately below.
@@ -4428,6 +4570,16 @@ class AnnotationJobService:
                 if (resolved := self._resolved_reference_path(value)) is not None
             ]
 
+        try:
+            indexed_registry = load_predictor_registry()
+            generic_indexed_resources = {
+                annotator.resource_id for annotator in indexed_registry.annotators
+                if annotator.adapter is Adapter.GENERIC_INDEXED_LOOKUP
+            }
+        except (OSError, ValueError):
+            indexed_registry = None
+            generic_indexed_resources = set()
+
         sources = []
         for source_id, location in ANNOTATION_SOURCE_PATHS.items():
             parent = config.get(location[0]) or {}
@@ -4447,6 +4599,16 @@ class AnnotationJobService:
             # including required diagnostic sources — as ready, letting the
             # operator start a run that fails (or silently skips) later.
             installed = bool(paths) and all(path.exists() for path in paths)
+            if (
+                installed
+                and indexed_registry is None
+                and block.get("file")
+                and block.get("manifest")
+            ):
+                # A corrupt registry must not crash the dataset panel. Fail
+                # closed for manifest-driven predictor installations while
+                # leaving unrelated resources usable.
+                installed = False
             if source_id == "clinvar_aa_match":
                 # Not a dataset: the residue-matching feature ships with the
                 # software and its table is rebuilt automatically from the
@@ -4478,6 +4640,14 @@ class AnnotationJobService:
                     score_path.exists()
                     and Path(str(score_path) + ".tbi").exists()
                     and all(path.exists() for path in paths[1:])
+                )
+            if installed and source_id in generic_indexed_resources and paths:
+                score_path = paths[0]
+                installed = self._generic_indexed_install_is_valid(
+                    source_id,
+                    score_path,
+                    paths[-1],
+                    registry=indexed_registry,
                 )
             if installed and source_id in {
                 "dbnsfp", "spliceai", "cadd_wgs", "repeatmasker", "segdup", "clinvar"
@@ -4784,7 +4954,7 @@ class AnnotationJobService:
         config = self._load_config(
             self.pipeline_root / "config" / "annotation.config.yaml"
         )
-        if resource_id in {"dbnsfp", "promoterai", "logofunc"}:
+        if resource_id in {"dbnsfp", "promoterai", "logofunc", "funcvep"}:
             self._set_managed_preparation_paths(
                 config,
                 resource_id,
@@ -5386,6 +5556,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/resource-preparations/logofunc":
                 self._json(
                     self.service.start_logofunc_preparation(self._body()),
+                    HTTPStatus.ACCEPTED,
+                )
+                return
+            if path == "/api/resource-preparations/funcvep":
+                self._json(
+                    self.service.start_funcvep_preparation(self._body()),
                     HTTPStatus.ACCEPTED,
                 )
                 return

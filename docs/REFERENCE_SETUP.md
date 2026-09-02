@@ -30,11 +30,12 @@ The top of the dataset screen provides three primary actions:
 
 Existing complete files are verified and skipped, and interrupted supported
 downloads remain resumable. The bulk actions cannot obtain dbNSFP or
-PromoterAI on the user's behalf: dbNSFP requires academic registration and
-PromoterAI requires a separate Illumina license. Their cards are therefore
-kept together in the prominent **Registration or license required** section.
-LoGoFunc is shown under optional research annotations and is not installed or
-enabled by either recommended profile.
+PromoterAI on the user's behalf because dbNSFP requires academic registration
+and PromoterAI requires a separate Illumina license. FuncVEP remains outside
+the recommended bulk profiles because it is optional and requires explicit
+acknowledgement; its own card can download the official archive directly after
+that acknowledgement. dbNSFP and PromoterAI remain prominent guided setups;
+FuncVEP appears with LoGoFunc and CADD under **Optional add-ons**.
 
 When GUIDE-IEI is launched from a clean source checkout rather than a packaged
 release, the same recommended action also downloads any release reference
@@ -47,7 +48,7 @@ button.
 
 For a normal workstation setup, use **Storage → Annotation datasets → Change
 location** before downloading large resources. This central annotation root
-holds the VEP cache, FASTA, dbNSFP, CADD, SpliceAI, ClinVar, SCREEN, and other
+holds the VEP cache, FASTA, dbNSFP, CADD, SpliceAI, FuncVEP, ClinVar, SCREEN, and other
 release-matched tracks. The UI resolves stock `references/...` configuration
 paths through this selected root for both VEP jobs and resource downloads, so
 the bundle remains coherent without exposing YAML paths in ordinary use.
@@ -264,7 +265,61 @@ It then creates local reference links and a provenance manifest without
 copying the large table. LoGoFunc is optional and annotation continues without
 it when unavailable.
 
-## Licensed integration
+## FuncVEP — optional licensed archive
+
+FuncVEP predicts functional effects for all possible missense SNVs represented
+in its GRCh38 release. GUIDE-IEI does not bundle or redistribute the licensed
+scores. Review its
+[PolyForm Strict License 1.0.0](https://polyformproject.org/licenses/strict/1.0.0),
+then use the **FuncVEP** card under **Optional add-ons**:
+
+The upstream project identifies this license for FuncVEP. It permits qualifying
+noncommercial uses but does not grant distribution or software-modification
+rights. The
+Zenodo record does not expose a separate dataset-license field, so users must
+confirm that their intended local use is authorized rather than relying on
+GUIDE-IEI to make that determination.
+
+1. Review and explicitly acknowledge the linked license terms.
+2. Select **Download and install FuncVEP**. GUIDE-IEI fetches the pinned ZIP
+   resumably from the [official Zenodo record](https://zenodo.org/records/20595206).
+3. Alternatively, choose an existing official ZIP with the native file picker.
+4. Keep at least 24 GiB free for automatic download plus preparation, or 20 GB
+   free when preparing a ZIP stored on another filesystem.
+
+The workstation verifies the archive's pinned identity and ZIP integrity,
+streams its table without unpacking an 11 GB permanent copy, retains only
+`FuncVEP_CTI`, `FuncVEP_CTE`, and `FuncVEP_SP`, sorts and BGZF-compresses the
+GRCh38 table, builds a tabix index, and records checksums and the match contract
+in a local manifest. Processing stays local. An automatically downloaded ZIP
+is retained in Annotation datasets storage; a selected ZIP remains unchanged
+in its original location. Nothing is uploaded or redistributed.
+
+The equivalent command is:
+
+```bash
+# Automatic official download and preparation:
+bash scripts/download_funcvep.sh \
+  config/annotation.config.yaml --acknowledge-license
+
+# Existing official ZIP:
+bash scripts/prepare_funcvep.sh \
+  /absolute/path/to/FuncVEP_and_ClinVEP_scores_all_possible_missense_variants.zip \
+  config/annotation.config.yaml --acknowledge-license
+```
+
+Annotation is emitted only for an exact GRCh38 allele and version-stripped
+Ensembl gene stable ID match. CTI includes clinically trained component
+predictors; CTE excludes clinically trained predictors and also excludes
+AlphaMissense because its development used ClinVar variants for model selection
+and tuning; SP excludes all
+features derived from other variant-effect predictors. Higher values predict
+greater functional damage, not clinical pathogenicity. The official archive
+also contains ClinVEP scores, but this integration deliberately neither
+prepares nor displays them. FuncVEP remains optional, and an absent archive
+does not prevent other annotation.
+
+## PromoterAI — licensed integration
 
 PromoterAI is recommended for whole-genome analysis (WGS-only). After obtaining `tss.tsv` and
 `promoterAI_tss500.tsv.gz` from Illumina under the user's own license, open the

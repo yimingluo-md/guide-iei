@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import ipaddress
 import json
+import math
 import multiprocessing
 import os
 import re
@@ -26,8 +28,16 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
-from urllib.parse import unquote
+from urllib.parse import unquote, urlsplit
 
+from pipeline.predictor_registry import (
+    MatchDimension,
+    MatchScope,
+    MetricType,
+    ScoreDirection,
+    TranscriptVersionPolicy,
+    load_registry,
+)
 from pipeline.vcf_assembly import detect_vcf_assembly
 
 
@@ -36,7 +46,86 @@ IMPACT_ORDER = {"HIGH": 1, "MODERATE": 2, "LOW": 3, "MODIFIER": 4, "UNKNOWN": 5}
 ALLOWED_IMPACTS = set(IMPACT_ORDER)
 DEFAULT_INDEX_READERS = 4
 DEFAULT_STAGE_BATCH_RECORDS = 2_000
+MAX_STAGE_PREDICTION_OBSERVATIONS = 25_000
+MAX_STAGE_PREDICTION_VALUES = 75_000
 MAX_BROWSER_SAMPLE_REVIEW_CARRIERS = 200_000
+# Stay below SQLite's historical 999-host-parameter default. Query APIs may
+# return 10,000 observations, so hydrate typed values in portable chunks.
+SQLITE_VARIABLE_CHUNK = 900
+PREDICTOR_REGISTRY = load_registry()
+EMBEDDED_VCF_PROVIDER = "GUIDE-IEI embedded VCF"
+EMBEDDED_VCF_RELEASE = "embedded-vcf"
+
+
+def _public_source_uri(source_uri: str) -> str:
+    """Validate provenance URLs without ever accepting access credentials."""
+    if not isinstance(source_uri, str):
+        raise ValueError("source_uri must be a string")
+    if not source_uri:
+        return ""
+    parsed_uri = urlsplit(source_uri)
+    if (
+        parsed_uri.scheme != "https"
+        or not parsed_uri.hostname
+        or parsed_uri.username
+        or parsed_uri.password
+        or parsed_uri.query
+        or parsed_uri.fragment
+    ):
+        raise ValueError(
+            "source_uri must be a public credential-free HTTPS URL"
+        )
+    host = parsed_uri.hostname.lower()
+    if host == "localhost" or host.endswith(".local"):
+        raise ValueError("source_uri must not point to a private host")
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        address = None
+    if address and (
+        address.is_private or address.is_loopback
+        or address.is_link_local or address.is_reserved
+    ):
+        raise ValueError("source_uri must not point to a private host")
+    decoded_path = unquote(parsed_uri.path)
+    if re.search(
+        r"(?i)(?:^|[/;])(?:token|api[_-]?key|secret|signature|credential|"
+        r"private[_-]?account[_-]?key)"
+        r"(?:[=/;_-]|$)",
+        decoded_path,
+    ):
+        raise ValueError("source_uri path must not contain credentials")
+    for opaque in re.findall(
+        r"(?i)/(?:downloads?|access|auth)/([A-Za-z0-9_-]{20,})(?:/|$)",
+        decoded_path,
+    ):
+        if (
+            re.search(r"[a-z]", opaque)
+            and re.search(r"[A-Z]", opaque)
+            and re.search(r"[0-9]", opaque)
+        ):
+            raise ValueError("source_uri path must not contain credentials")
+    return source_uri
+
+
+def _embedded_vcf_release_identity(
+    source_file_id: int, content_sha256: str = "", content_probe: str = "",
+) -> tuple[str, str, str]:
+    if content_sha256:
+        checksum_algorithm = "sha256"
+        checksum = content_sha256.lower()
+    elif content_probe:
+        checksum_algorithm = "iei-content-probe-sha256"
+        checksum = content_probe.lower()
+    else:
+        checksum_algorithm = ""
+        checksum = ""
+    release_version = (
+        f"{EMBEDDED_VCF_RELEASE}-{checksum[:16]}"
+        if checksum
+        else f"{EMBEDDED_VCF_RELEASE}-unverified-{source_file_id}"
+    )
+    return release_version, checksum_algorithm, checksum
 
 
 @dataclass(frozen=True)
@@ -427,6 +516,17 @@ def decode(value: str | None) -> str:
     return unquote(value or "")
 
 
+def _prediction_dimension_missing(
+    value: object, dimension: MatchDimension | None = None,
+) -> bool:
+    if value is None or not isinstance(value, str):
+        return value is None
+    cleaned = value.strip()
+    return cleaned in {"", "."} or (
+        cleaned == "-" and dimension is not MatchDimension.STRAND
+    )
+
+
 def parse_number(value: str | None) -> float | None:
     if not value or value in EMPTY:
         return None
@@ -461,6 +561,112 @@ def allele_info_value(
     values = record.get(key, "").split(",")
     value = values[alt_index] if alt_index < len(values) else ""
     return "" if value in EMPTY else decode(value)
+
+
+_CLINVAR_AA_ALLELE_FIELDS = (
+    "ClinVar_path_aa_match",
+    "ClinVar_path_aa_change_match",
+)
+
+
+def _clingen_assertions_for_alt(
+    raw: str, *, alt: str, alt_index: int, alts: tuple[str, ...],
+) -> list[str]:
+    """Select this ALT's ClinGen assertions from old and new encodings.
+
+    The legacy postprocessor writes one comma-separated record-level list
+    whose tokens begin with ALT.  The planned Number=A producer writes one
+    comma slot per ALT and joins multiple same-ALT assertions with ``&``.
+    Supporting both here prevents record-level evidence and counts from being
+    copied to every allele of a multi-ALT record.
+    """
+    if not raw or raw in EMPTY:
+        return []
+    comma_slots = raw.split(",")
+    number_a_shape = len(alts) > 1 and len(comma_slots) == len(alts)
+    all_tokens = [
+        token
+        for slot in comma_slots
+        for token in slot.split("&")
+    ]
+    # Both the legacy record-level encoding and the current Number=A
+    # encoding carry ALT as the first pipe-delimited token. Prefer that
+    # explicit identity over an ambiguous comma count: a legacy two-ALT row
+    # may legitimately contain exactly two assertions for the first ALT.
+    has_explicit_alt = any(
+        token.partition("|")[1]
+        and decode(token.partition("|")[0]) in alts
+        for token in all_tokens
+    )
+    candidates = (
+        all_tokens
+        if has_explicit_alt
+        else comma_slots[alt_index].split("&")
+        if number_a_shape and alt_index < len(comma_slots)
+        else all_tokens
+    )
+    selected: list[str] = []
+    for token in candidates:
+        if not token or token in EMPTY:
+            continue
+        leading_alt, separator, _ = token.partition("|")
+        decoded_leading = decode(leading_alt)
+        if (
+            not separator
+            or decoded_leading == alt
+            or len(alts) == 1
+            or (
+                not has_explicit_alt
+                and number_a_shape
+                and decoded_leading not in alts
+            )
+        ):
+            selected.append(token)
+    return selected
+
+
+def _prediction_info_for_alt(
+    info: dict[str, str], *, alt: str, alt_index: int, alts: tuple[str, ...],
+) -> dict[str, str]:
+    """Return INFO fields whose predictor evidence belongs to one ALT."""
+    selected = dict(info)
+    for key in _CLINVAR_AA_ALLELE_FIELDS:
+        if key in info:
+            selected[key] = allele_info_value(info, key, alt_index)
+    if "ClinGen_ERepo" in info:
+        assertions = _clingen_assertions_for_alt(
+            info["ClinGen_ERepo"],
+            alt=alt,
+            alt_index=alt_index,
+            alts=alts,
+        )
+        selected["ClinGen_ERepo"] = ",".join(assertions)
+        selected["ClinGen_ERepo_count"] = (
+            str(len(assertions)) if assertions else ""
+        )
+    return selected
+
+
+def _prediction_annotation_records(
+    prediction_info: dict[str, str], consequences: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    if not consequences:
+        return [prediction_info]
+    gene_ids_by_symbol = {
+        consequence.get("SYMBOL", "").upper(): consequence.get("Gene", "")
+        for consequence in consequences
+        if consequence.get("SYMBOL") and consequence.get("Gene")
+    }
+    records: list[dict[str, str]] = []
+    for consequence in consequences:
+        record = {**prediction_info, **consequence}
+        source_gene = first(record, ("SpliceAI_pred_SYMBOL",))
+        if source_gene:
+            record["_SpliceAI_source_gene_id"] = gene_ids_by_symbol.get(
+                source_gene.upper(), ""
+            )
+        records.append(record)
+    return records
 
 
 def maximum(record: dict[str, str], keys: tuple[str, ...]) -> float | None:
@@ -560,6 +766,7 @@ def parse_genotype(format_value: str, sample_value: str, alt_index: int) -> dict
         "gt": gt,
         "zygosity": zygosity,
         "phased": int("|" in gt),
+        "phase_set": first(fields, ("PS", "PID")),
         "dp": int(dp) if dp is not None else None,
         "gq": gq,
         "allele_balance": (
@@ -583,11 +790,637 @@ def parse_csq_entries(raw: str, fields: list[str]) -> list[dict[str, str]]:
     return entries
 
 
-def annotation_from(record: dict[str, str]) -> dict:
+def _vep_alt_allele(ref: str, alt: str) -> str:
+    """Return VEP's minimized CSQ Allele representation for a small variant."""
+    if not re.fullmatch(r"[ACGTN]+", ref, re.IGNORECASE) or not re.fullmatch(
+        r"[ACGTN]+", alt, re.IGNORECASE
+    ):
+        return alt
+    ref_sequence = ref.upper()
+    alt_sequence = alt.upper()
+    while ref_sequence and alt_sequence and ref_sequence[-1] == alt_sequence[-1]:
+        ref_sequence = ref_sequence[:-1]
+        alt_sequence = alt_sequence[:-1]
+    while ref_sequence and alt_sequence and ref_sequence[0] == alt_sequence[0]:
+        ref_sequence = ref_sequence[1:]
+        alt_sequence = alt_sequence[1:]
+    return alt_sequence or "-"
+
+
+def _consequence_matches_alt(
+    consequence: dict[str, str], *, ref: str, alts: tuple[str, ...], alt_index: int,
+) -> bool:
+    """Attribute a CSQ entry without borrowing an ambiguous minimized allele."""
+    allele_number = consequence.get("ALLELE_NUM", "")
+    if allele_number.isdigit():
+        return int(allele_number) == alt_index + 1
+    allele = consequence.get("Allele", "")
+    if not allele:
+        return True
+    if allele.upper() == alts[alt_index].upper():
+        return True
+    minimized_alts = tuple(_vep_alt_allele(ref, alt) for alt in alts)
+    minimized = minimized_alts[alt_index]
+    return (
+        allele.upper() == minimized.upper()
+        and sum(candidate.upper() == minimized.upper() for candidate in minimized_alts)
+        == 1
+    )
+
+
+_VARIANT_MATCH_DIMENSIONS = {
+    MatchDimension.CHROMOSOME,
+    MatchDimension.POSITION,
+    MatchDimension.REFERENCE,
+    MatchDimension.ALTERNATE,
+}
+_GENOMIC_MATCH_DIMENSIONS = {
+    *_VARIANT_MATCH_DIMENSIONS,
+    MatchDimension.START,
+    MatchDimension.END,
+}
+_ANNOTATION_BOUND_SCOPES = {
+    MatchScope.ALLELE_TRANSCRIPT,
+    MatchScope.ALLELE_TRANSCRIPT_PROTEIN,
+    MatchScope.ALLELE_TRANSCRIPT_TSS_STRAND,
+    MatchScope.TRANSCRIPT_CONSEQUENCE,
+    MatchScope.GENE_PROTEIN_RESIDUE,
+}
+
+
+def _promoterai_strand(record: dict[str, str]) -> str:
+    """Normalize strand, using legacy VEP STRAND before returning invalid input."""
+    encoding = {"+": "+", "1": "+", "-": "-", "-1": "-"}
+    invalid = ""
+    for field in ("PromoterAI_strand", "STRAND"):
+        raw = decode(record.get(field, "")).strip()
+        if not raw or raw == ".":
+            continue
+        strands = {
+            encoding[token]
+            for item in raw.replace(",", "&").split("&")
+            if (token := item.strip()) in encoding
+        }
+        if len(strands) == 1:
+            return strands.pop()
+        invalid = invalid or raw
+    return invalid
+
+
+def _registry_metric_value(record: dict[str, str], metric) -> object | None:
+    if metric.field == "PromoterAI_strand":
+        return _promoterai_strand(record) or None
+    raw = record.get(metric.field, "")
+    if raw in EMPTY:
+        return None
+    if metric.value_type in {MetricType.FLOAT, MetricType.INTEGER}:
+        values = [
+            value
+            for item in raw.replace("&", ",").split(",")
+            if (value := parse_number(item)) is not None
+        ]
+        if not values:
+            return None
+        if metric.direction is ScoreDirection.LOWER:
+            value = min(values)
+        elif metric.direction is ScoreDirection.ABSOLUTE:
+            value = max(values, key=abs)
+        elif metric.direction is ScoreDirection.HIGHER:
+            value = max(values)
+        else:
+            value = values[0]
+        if metric.value_type is MetricType.INTEGER:
+            return int(value) if value.is_integer() else None
+        return value
+    value = decode(raw)
+    if metric.value_type is MetricType.BOOLEAN:
+        tokens = [
+            decode(token).strip().lower()
+            for token in raw.replace("&", ",").split(",")
+        ]
+        true_tokens = {"1", "true", "yes", "y", "on"}
+        false_tokens = {"0", "false", "no", "n", "off"}
+        if tokens and all(token in true_tokens for token in tokens):
+            return True
+        if tokens and all(token in false_tokens for token in tokens):
+            return False
+        return None
+    return value
+
+
+def _stable_transcript(value: str, policy: TranscriptVersionPolicy) -> str:
+    if policy is TranscriptVersionPolicy.EXACT:
+        return value
+    return value.split(".", 1)[0]
+
+
+def _protein_position_from_change(value: str) -> str:
+    if not value or (":" not in value and value.upper().startswith("ENSP")):
+        return ""
+    protein_change = value.rsplit(":", 1)[-1]
+    match = re.search(r"(?:p\.)?[A-Za-z*?]*(\d+)", protein_change)
+    return match.group(1) if match else ""
+
+
+def _prediction_match_status(
+    predictor_id: str,
+    scope: MatchScope,
+    values: dict[str, object],
+    provenance: dict[str, object],
+) -> str:
+    if predictor_id == "funcvep":
+        source_status = str(provenance.get("match_status") or "").lower()
+        if source_status in {"exact", "partial", "ambiguous", "unmatched"}:
+            return source_status
+        if provenance.get("match") == scope.value:
+            return "exact"
+        if any(metric in values for metric in ("cti", "cte", "sp")):
+            return "exact"
+        return "partial" if (
+            values.get("allele_available")
+            or provenance.get("allele_available")
+        ) else "unmatched"
+    if predictor_id == "logofunc":
+        if provenance.get("match") == scope.value:
+            return "exact"
+        if values.get("allele_available") or provenance.get("allele_available"):
+            return "partial"
+        return "partial" if values or provenance else "unmatched"
+    if predictor_id == "promoterai":
+        match = str(provenance.get("match") or "").lower()
+        if "score" in values and match in {
+            scope.value,
+            "exact_version",
+            "stable_id",
+            "stable_transcript_id",
+        }:
+            return "exact"
+        return "partial" if values or provenance else "unmatched"
+    return "exact" if values or provenance else "unmatched"
+
+
+def _prediction_target(
+    record: dict[str, str], annotation: dict, annotator, values: dict[str, object],
+) -> dict[str, object]:
+    target: dict[str, object] = {}
+    for dimension in annotator.match.dimensions:
+        if dimension in _VARIANT_MATCH_DIMENSIONS:
+            continue
+        if dimension is MatchDimension.ENSEMBL_GENE:
+            target[dimension.value] = annotation["gene_id"]
+        elif dimension is MatchDimension.GENE_SYMBOL:
+            target[dimension.value] = annotation["gene"]
+        elif dimension is MatchDimension.ENSEMBL_TRANSCRIPT:
+            target[dimension.value] = _stable_transcript(
+                annotation["transcript"], annotator.match.transcript_version
+            )
+        elif dimension is MatchDimension.CONSEQUENCE:
+            target[dimension.value] = annotation["consequence"]
+        elif dimension is MatchDimension.PROTEIN_POSITION:
+            protein_position = first(record, ("Protein_position",))
+            if not protein_position:
+                protein_position = _protein_position_from_change(
+                    annotation["hgvsp"]
+                )
+            target[dimension.value] = protein_position
+        elif dimension is MatchDimension.AMINO_ACID_CHANGE:
+            target[dimension.value] = (
+                first(record, ("Amino_acids",)) or annotation["hgvsp"]
+            )
+        elif dimension is MatchDimension.TSS:
+            target[dimension.value] = first(record, ("PromoterAI_TSS",))
+        elif dimension is MatchDimension.STRAND:
+            target[dimension.value] = _promoterai_strand(record)
+        elif dimension is MatchDimension.START:
+            target[dimension.value] = first(record, ("START", "Start"))
+        elif dimension is MatchDimension.END:
+            target[dimension.value] = first(record, ("END", "End"))
+    return target
+
+
+def _canonical_prediction_target_key(
+    annotator,
+    target: dict[str, object],
+    *,
+    chrom: str,
+    pos: int,
+    ref: str,
+    alt: str,
+    sample: str = "",
+) -> str:
+    genomic: dict[MatchDimension, object] = {
+        MatchDimension.CHROMOSOME: normalize_chromosome(chrom),
+        MatchDimension.POSITION: int(pos),
+        MatchDimension.REFERENCE: ref.upper(),
+        MatchDimension.ALTERNATE: alt.upper(),
+        MatchDimension.SAMPLE: sample or str(target.get("sample") or ""),
+    }
+    for dimension in (MatchDimension.START, MatchDimension.END):
+        raw_value = target.get(dimension.value)
+        genomic[dimension] = (
+            int(raw_value)
+            if not _prediction_dimension_missing(raw_value, dimension)
+            else ""
+        )
+    canonical: dict[str, object] = {}
+    for dimension in annotator.match.dimensions:
+        if dimension in genomic:
+            canonical[dimension.value] = genomic[dimension]
+            continue
+        value = target.get(dimension.value, "")
+        canonical[dimension.value] = (
+            ""
+            if _prediction_dimension_missing(value, dimension)
+            else str(value)
+        )
+    return json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+
+
+def _normalized_public_prediction_target(annotator, target: dict) -> dict:
+    """Type-check caller-supplied match dimensions before exact certification."""
+    normalized: dict[str, object] = {}
+    coordinate_dimensions = {
+        MatchDimension.POSITION,
+        MatchDimension.START,
+        MatchDimension.END,
+        MatchDimension.TSS,
+    }
+    for dimension in annotator.match.dimensions:
+        if dimension.value not in target:
+            continue
+        value = target[dimension.value]
+        if _prediction_dimension_missing(value, dimension):
+            normalized[dimension.value] = ""
+        elif dimension in coordinate_dimensions:
+            if isinstance(value, bool):
+                raise ValueError(f"target {dimension.value} must be an integer")
+            try:
+                numeric = int(value)
+            except (TypeError, ValueError) as error:
+                raise ValueError(
+                    f"target {dimension.value} must be an integer"
+                ) from error
+            if str(numeric) != str(value).strip() or numeric < 1:
+                raise ValueError(
+                    f"target {dimension.value} must be a positive integer"
+                )
+            normalized[dimension.value] = numeric
+        elif dimension is MatchDimension.STRAND:
+            if value not in {"+", "-"}:
+                raise ValueError("target strand must be + or -")
+            normalized[dimension.value] = value
+        else:
+            if (
+                not isinstance(value, str)
+                and not (
+                    dimension is MatchDimension.PHASE_SET
+                    and isinstance(value, int)
+                    and not isinstance(value, bool)
+                )
+            ):
+                raise ValueError(
+                    f"target {dimension.value} must be a string"
+                )
+            normalized[dimension.value] = str(value).strip()
+    return normalized
+
+
+def _normalized_import_prediction_target(annotator, target: dict) -> tuple[dict, list[str]]:
+    normalized: dict[str, object] = {}
+    invalid: list[str] = []
+    for dimension in annotator.match.dimensions:
+        if dimension.value not in target:
+            continue
+        try:
+            normalized.update(_normalized_public_prediction_target(
+                annotator, {dimension.value: target[dimension.value]}
+            ))
+        except ValueError:
+            normalized[dimension.value] = ""
+            invalid.append(dimension.value)
+    return normalized, invalid
+
+
+def _active_predictors(fields: Iterable[str]) -> tuple:
+    available = set(fields)
+    return tuple(
+        predictor for predictor in PREDICTOR_REGISTRY.predictors
+        if any(metric.field in available for metric in predictor.metrics)
+    )
+
+
+def _normalized_predictions(
+    record: dict[str, str], annotation: dict, predictors: Iterable | None = None,
+) -> list[dict]:
+    predictions: list[dict] = []
+    selected_predictors = (
+        _active_predictors(record) if predictors is None else predictors
+    )
+    for predictor in selected_predictors:
+        annotator = PREDICTOR_REGISTRY.annotators_by_id[predictor.annotator_id]
+        if annotator.match.scope is MatchScope.SAMPLE_HAPLOTYPE:
+            # Expanded against the matching sample below, after genotypes are
+            # parsed. A CSQ row alone cannot identify a phased observation.
+            continue
+        values: dict[str, object] = {}
+        provenance: dict[str, object] = {}
+        invalid_metrics: list[str] = []
+        for metric in predictor.metrics:
+            value = _registry_metric_value(record, metric)
+            if value is None:
+                continue
+            try:
+                value = _validated_prediction_metric(metric, value)
+            except ValueError:
+                # Imported VCF annotations are untrusted evidence. Discard a
+                # malformed metric without rolling back every variant in the
+                # cohort. Public upsert_prediction writes remain strict.
+                invalid_metrics.append(metric.id)
+                continue
+            destination = (
+                values if metric.filterable else provenance
+            )
+            destination[metric.id] = value
+        if not values and not provenance:
+            continue
+        if invalid_metrics:
+            provenance["invalid_metrics"] = invalid_metrics
+
+        match_status = _prediction_match_status(
+            predictor.id, annotator.match.scope, values, provenance
+        )
+        if predictor.id == "funcvep" and match_status != "exact":
+            # A source allele without an exact Ensembl-gene match is useful
+            # provenance, but its scores are not evidence for this gene.
+            withheld: list[str] = []
+            for metric in ("cti", "cte", "sp"):
+                if values.pop(metric, None) is not None:
+                    withheld.append(metric)
+            if withheld:
+                provenance["withheld_metrics"] = withheld
+        elif predictor.id in {"logofunc", "promoterai"} and (
+            match_status != "exact"
+        ):
+            withheld = sorted(values)
+            values.clear()
+            if withheld:
+                provenance["withheld_metrics"] = withheld
+        source_annotation = annotation
+        target_record = record
+        if predictor.id == "spliceai":
+            source_gene_symbol = first(record, ("SpliceAI_pred_SYMBOL",))
+            source_annotation = dict(annotation)
+            source_annotation["gene"] = source_gene_symbol.upper()
+            if source_gene_symbol:
+                source_gene_id = first(
+                    record, ("_SpliceAI_source_gene_id",)
+                )
+                if source_gene_id:
+                    source_annotation["gene_id"] = source_gene_id
+                elif annotation["gene"].upper() != source_gene_symbol.upper():
+                    # The plugin matched a different gene from this CSQ row.
+                    # Do not manufacture an Ensembl ID for that source gene.
+                    source_annotation["gene_id"] = ""
+                provenance.setdefault("source_gene_symbol", source_gene_symbol)
+            else:
+                source_annotation["gene_id"] = ""
+        elif predictor.id == "funcvep":
+            source_annotation = dict(annotation)
+            source_annotation["gene_id"] = first(
+                record, ("FuncVEP_source_gene",)
+            )
+        elif predictor.id == "promoterai":
+            source_annotation = dict(annotation)
+            source_annotation["transcript"] = first(
+                record, ("PromoterAI_source_transcript",)
+            )
+        elif predictor.id == "logofunc":
+            source_annotation = dict(annotation)
+            source_annotation["transcript"] = first(
+                record, ("LoGoFunc_source_transcript",)
+            )
+            source_annotation["hgvsp"] = first(
+                record, ("LoGoFunc_source_HGVSp",)
+            )
+            target_record = dict(record)
+            target_record["Protein_position"] = (
+                _protein_position_from_change(source_annotation["hgvsp"])
+            )
+            target_record["Amino_acids"] = source_annotation["hgvsp"]
+        target = _prediction_target(
+            target_record, source_annotation, annotator, values
+        )
+        if (
+            MatchDimension.ENSEMBL_TRANSCRIPT in annotator.match.dimensions
+            and annotator.match.transcript_version
+            is TranscriptVersionPolicy.EXACT_THEN_STABLE_ID
+            and provenance.get("match") == "exact_version"
+        ):
+            target[MatchDimension.ENSEMBL_TRANSCRIPT.value] = (
+                source_annotation["transcript"]
+            )
+        target, invalid_dimensions = _normalized_import_prediction_target(
+            annotator, target
+        )
+        if invalid_dimensions:
+            match_status = "partial"
+            withheld = sorted(values)
+            values.clear()
+            if withheld:
+                provenance["withheld_metrics"] = withheld
+            provenance["invalid_dimensions"] = invalid_dimensions
+        missing_dimensions = [
+            dimension.value for dimension in annotator.match.dimensions
+            if dimension not in _VARIANT_MATCH_DIMENSIONS
+            and dimension is not MatchDimension.SAMPLE
+            and _prediction_dimension_missing(
+                target.get(dimension.value, ""), dimension
+            )
+        ]
+        if match_status == "exact" and missing_dimensions:
+            match_status = "partial"
+            withheld = sorted(values)
+            values.clear()
+            if withheld:
+                provenance["withheld_metrics"] = withheld
+            provenance["missing_dimensions"] = missing_dimensions
+        matched_dimensions = (
+            []
+            if match_status == "unmatched"
+            else [
+                dimension.value for dimension in annotator.match.dimensions
+                if match_status == "exact"
+                or dimension in _VARIANT_MATCH_DIMENSIONS
+                or not _prediction_dimension_missing(
+                    target.get(dimension.value, ""), dimension
+                )
+            ]
+        )
+        provenance["matched_dimensions"] = matched_dimensions
+        target_dimensions = set(annotator.match.dimensions)
+        bind_annotation = (
+            match_status == "exact"
+            and annotator.match.scope in _ANNOTATION_BOUND_SCOPES
+        )
+        if bind_annotation and predictor.id in {"logofunc", "promoterai"}:
+            # VEP's default CSQ Feature omits transcript versions even though
+            # the plugin can verify the version on the transcript object. The
+            # plugin's exact_version provenance is therefore authoritative;
+            # bind it to the CSQ row when their stable IDs agree while keeping
+            # the versioned source transcript in the observation target.
+            current_transcript = annotation["transcript"]
+            source_transcript = str(target.get(
+                MatchDimension.ENSEMBL_TRANSCRIPT.value, ""
+            ))
+            if (
+                provenance.get("match") == "exact_version"
+                and "." in current_transcript
+            ):
+                bind_annotation = current_transcript == source_transcript
+            else:
+                bind_annotation = _stable_transcript(
+                    current_transcript, TranscriptVersionPolicy.STABLE_ID
+                ) == _stable_transcript(
+                    source_transcript, TranscriptVersionPolicy.STABLE_ID
+                )
+        if bind_annotation and predictor.id == "logofunc":
+            # An exact source-scoped LoGoFunc value belongs only to the CSQ
+            # annotation that produced the source transcript/protein match.
+            # Other transcript rows may present it in the UI, but they must
+            # not become storage owners of that exact observation.
+            bind_annotation = (
+                annotation["hgvsp"] == source_annotation["hgvsp"]
+            )
+        predictions.append({
+            "resource_id": predictor.resource_id,
+            "predictor_id": predictor.id,
+            "target_scope": annotator.match.scope.value,
+            "target": target,
+            "bind_annotation": bind_annotation,
+            "gene_id": (
+                source_annotation["gene_id"]
+                if MatchDimension.ENSEMBL_GENE in target_dimensions else ""
+            ),
+            "gene_symbol": (
+                source_annotation["gene"]
+                if MatchDimension.GENE_SYMBOL in target_dimensions else ""
+            ),
+            "transcript_id": (
+                source_annotation["transcript"]
+                if MatchDimension.ENSEMBL_TRANSCRIPT in target_dimensions else ""
+            ),
+            "protein_change": (
+                source_annotation["hgvsp"]
+                if target_dimensions & {
+                    MatchDimension.PROTEIN_POSITION,
+                    MatchDimension.AMINO_ACID_CHANGE,
+                } else ""
+            ),
+            "match_status": match_status,
+            "matcher": annotator.id,
+            "provenance": provenance,
+            "values": values,
+        })
+    return predictions
+
+
+def _normalized_haplotype_prediction(
+    haplotype: dict[str, str], *, sample: str, phase_set: str,
+) -> dict | None:
+    """Normalize sample-specific frame evidence after genotype parsing.
+
+    The evidence is emitted in INFO, but its registry identity also requires
+    the carrier sample and FORMAT phase set.  Keeping this separate from
+    ``annotation_from`` prevents one sample's evidence from being attached to
+    every consequence or carrier at the locus.
+    """
+    if not haplotype.get("status"):
+        return None
+    predictor = PREDICTOR_REGISTRY.predictors_by_id["haplotype_frame"]
+    annotator = PREDICTOR_REGISTRY.annotators_by_id[predictor.annotator_id]
+    transcript = _stable_transcript(
+        haplotype.get("transcript", ""), annotator.match.transcript_version
+    )
+    target = {
+        MatchDimension.SAMPLE.value: sample,
+        MatchDimension.PHASE_SET.value: phase_set,
+        MatchDimension.ENSEMBL_TRANSCRIPT.value: transcript,
+    }
+    missing_dimensions = [
+        dimension.value for dimension in annotator.match.dimensions
+        if dimension not in _GENOMIC_MATCH_DIMENSIONS
+        and _prediction_dimension_missing(
+            target.get(dimension.value, ""), dimension
+        )
+    ]
+    match_status = "partial" if missing_dimensions else "exact"
+    provenance: dict[str, object] = {
+        "partners": haplotype.get("partners", ""),
+        "source_protein_change": haplotype.get("protein", ""),
+        "matched_dimensions": [
+            dimension.value for dimension in annotator.match.dimensions
+            if dimension in _GENOMIC_MATCH_DIMENSIONS
+            or not _prediction_dimension_missing(
+                target.get(dimension.value, ""), dimension
+            )
+        ],
+    }
+    values: dict[str, object] = {}
+    if match_status == "exact":
+        values["frame_evidence"] = haplotype["status"]
+    else:
+        provenance["frame_evidence"] = haplotype["status"]
+        provenance["missing_dimensions"] = missing_dimensions
+    return {
+        "resource_id": predictor.resource_id,
+        "predictor_id": predictor.id,
+        "target_scope": annotator.match.scope.value,
+        "target": target,
+        "bind_annotation": False,
+        "gene_id": "",
+        "gene_symbol": "",
+        "transcript_id": transcript,
+        "protein_change": haplotype.get("protein", ""),
+        "match_status": match_status,
+        "matcher": annotator.id,
+        "provenance": provenance,
+        "values": values,
+    }
+
+
+def _validated_prediction_metric(metric, value: object) -> object:
+    if metric.value_type is MetricType.BOOLEAN:
+        if not isinstance(value, bool):
+            raise ValueError(f"metric {metric.id} must be Boolean")
+        return value
+    if metric.value_type in {MetricType.FLOAT, MetricType.INTEGER}:
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f"metric {metric.id} must be numeric")
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            raise ValueError(f"metric {metric.id} must be finite")
+        if metric.value_type is MetricType.INTEGER and not numeric.is_integer():
+            raise ValueError(f"metric {metric.id} must be an integer")
+        if metric.value_range and not (
+            metric.value_range[0] <= numeric <= metric.value_range[1]
+        ):
+            raise ValueError(
+                f"metric {metric.id} must be between "
+                f"{metric.value_range[0]} and {metric.value_range[1]}"
+            )
+        return int(numeric) if metric.value_type is MetricType.INTEGER else numeric
+    if not isinstance(value, str):
+        raise ValueError(f"metric {metric.id} must be text")
+    return value
+
+
+def annotation_from(
+    record: dict[str, str], *, predictors: Iterable | None = None,
+) -> dict:
     impact = (first(record, ("IMPACT",)) or "UNKNOWN").upper()
     if impact not in ALLOWED_IMPACTS:
         impact = "UNKNOWN"
-    return {
+    annotation = {
         "gene": (first(record, ("SYMBOL", "HGNC")) or "—").upper(),
         "gene_id": first(record, ("Gene",)),
         "transcript": first(record, ("Feature",)),
@@ -639,6 +1472,10 @@ def annotation_from(record: dict[str, str]) -> dict:
         "repeat_masker": int(truthy(first(record, ("RepeatMasker", "REPEATMASKER")))),
         "segdup": int(truthy(first(record, ("SegDup", "SEGDUP")))),
     }
+    annotation["_predictions"] = _normalized_predictions(
+        record, annotation, predictors
+    )
+    return annotation
 
 
 STAGE_VARIANT_COLUMNS = (
@@ -661,6 +1498,19 @@ STAGE_GENOTYPE_COLUMNS = (
     "dp", "gq", "allele_balance", "qual", "haplotype_frame_status",
     "haplotype_frame_partners", "haplotype_protein_change",
     "haplotype_transcript",
+)
+STAGE_PREDICTION_OBSERVATION_COLUMNS = (
+    "resource_id", "predictor_id", "variant_key", "target_scope",
+    "target_key", "bind_annotation", "annotation_gene",
+    "annotation_transcript", "annotation_hgvsc", "annotation_hgvsp",
+    "annotation_consequence", "sample_name", "gene_id", "gene_symbol",
+    "transcript_id", "protein_change", "match_status", "matcher",
+    "provenance_json",
+)
+STAGE_PREDICTION_VALUE_COLUMNS = (
+    "resource_id", "predictor_id", "variant_key", "target_scope",
+    "target_key", "metric", "value_type", "numeric_value", "text_value",
+    "boolean_value",
 )
 
 
@@ -739,6 +1589,45 @@ CREATE TABLE stage_genotypes (
   haplotype_transcript TEXT,
   PRIMARY KEY(variant_key, sample_name)
 ) WITHOUT ROWID;
+CREATE TABLE stage_prediction_observations (
+  resource_id TEXT NOT NULL,
+  predictor_id TEXT NOT NULL,
+  variant_key TEXT NOT NULL,
+  target_scope TEXT NOT NULL,
+  target_key TEXT NOT NULL,
+  bind_annotation INTEGER NOT NULL DEFAULT 0,
+  annotation_gene TEXT NOT NULL DEFAULT '',
+  annotation_transcript TEXT NOT NULL DEFAULT '',
+  annotation_hgvsc TEXT NOT NULL DEFAULT '',
+  annotation_hgvsp TEXT NOT NULL DEFAULT '',
+  annotation_consequence TEXT NOT NULL DEFAULT '',
+  sample_name TEXT NOT NULL DEFAULT '',
+  gene_id TEXT NOT NULL DEFAULT '',
+  gene_symbol TEXT NOT NULL DEFAULT '',
+  transcript_id TEXT NOT NULL DEFAULT '',
+  protein_change TEXT NOT NULL DEFAULT '',
+  match_status TEXT NOT NULL,
+  matcher TEXT NOT NULL,
+  provenance_json TEXT NOT NULL DEFAULT '{}',
+  PRIMARY KEY(
+    resource_id, predictor_id, variant_key, target_scope, target_key
+  )
+) WITHOUT ROWID;
+CREATE TABLE stage_prediction_values (
+  resource_id TEXT NOT NULL,
+  predictor_id TEXT NOT NULL,
+  variant_key TEXT NOT NULL,
+  target_scope TEXT NOT NULL,
+  target_key TEXT NOT NULL,
+  metric TEXT NOT NULL,
+  value_type TEXT NOT NULL,
+  numeric_value REAL,
+  text_value TEXT,
+  boolean_value INTEGER,
+  PRIMARY KEY(
+    resource_id, predictor_id, variant_key, target_scope, target_key, metric
+  )
+) WITHOUT ROWID;
 """
 
 
@@ -755,6 +1644,33 @@ STAGE_ANNOTATION_INSERT = _stage_insert_sql(
 )
 STAGE_GENOTYPE_INSERT = _stage_insert_sql(
     "stage_genotypes", STAGE_GENOTYPE_COLUMNS
+)
+STAGE_PREDICTION_OBSERVATION_INSERT = f"""
+INSERT INTO stage_prediction_observations (
+  {','.join(STAGE_PREDICTION_OBSERVATION_COLUMNS)}
+) VALUES ({_placeholders(STAGE_PREDICTION_OBSERVATION_COLUMNS)})
+ON CONFLICT(
+  resource_id, predictor_id, variant_key, target_scope, target_key
+) DO UPDATE SET
+  bind_annotation=excluded.bind_annotation,
+  annotation_gene=excluded.annotation_gene,
+  annotation_transcript=excluded.annotation_transcript,
+  annotation_hgvsc=excluded.annotation_hgvsc,
+  annotation_hgvsp=excluded.annotation_hgvsp,
+  annotation_consequence=excluded.annotation_consequence,
+  sample_name=excluded.sample_name,
+  gene_id=excluded.gene_id,
+  gene_symbol=excluded.gene_symbol,
+  transcript_id=excluded.transcript_id,
+  protein_change=excluded.protein_change,
+  match_status=excluded.match_status,
+  matcher=excluded.matcher,
+  provenance_json=excluded.provenance_json
+WHERE stage_prediction_observations.match_status != 'exact'
+   OR excluded.match_status = 'exact'
+"""
+STAGE_PREDICTION_VALUE_INSERT = _stage_insert_sql(
+    "stage_prediction_values", STAGE_PREDICTION_VALUE_COLUMNS
 )
 
 COHORT_SECONDARY_INDEXES = {
@@ -797,6 +1713,58 @@ COHORT_SECONDARY_INDEXES = {
         "CREATE INDEX cohort_annotations_preferred_idx "
         "ON cohort_annotations(gene, mane, picked, impact)"
     ),
+    "prediction_observations_variant_idx": (
+        "CREATE INDEX prediction_observations_variant_idx "
+        "ON prediction_observations(variant_id, predictor_id, release_id)"
+    ),
+    "prediction_observations_predictor_idx": (
+        "CREATE INDEX prediction_observations_predictor_idx "
+        "ON prediction_observations(predictor_id, variant_id, release_id)"
+    ),
+    "prediction_observations_source_idx": (
+        "CREATE INDEX prediction_observations_source_idx "
+        "ON prediction_observations(source_file_id, predictor_id) "
+        "WHERE source_file_id IS NOT NULL"
+    ),
+    "prediction_observations_annotation_idx": (
+        "CREATE INDEX prediction_observations_annotation_idx "
+        "ON prediction_observations(annotation_id, predictor_id) "
+        "WHERE annotation_id IS NOT NULL"
+    ),
+    "prediction_observations_sample_idx": (
+        "CREATE INDEX prediction_observations_sample_idx "
+        "ON prediction_observations(sample_id, predictor_id) "
+        "WHERE sample_id IS NOT NULL"
+    ),
+    "prediction_observations_gene_idx": (
+        "CREATE INDEX prediction_observations_gene_idx "
+        "ON prediction_observations(gene_id, predictor_id) "
+        "WHERE gene_id != ''"
+    ),
+    "prediction_observations_transcript_idx": (
+        "CREATE INDEX prediction_observations_transcript_idx "
+        "ON prediction_observations(transcript_id, predictor_id) "
+        "WHERE transcript_id != ''"
+    ),
+    "prediction_observations_scope_idx": (
+        "CREATE INDEX prediction_observations_scope_idx "
+        "ON prediction_observations(target_scope, target_key)"
+    ),
+    "prediction_values_numeric_idx": (
+        "CREATE INDEX prediction_values_numeric_idx "
+        "ON prediction_values(metric, numeric_value, observation_id) "
+        "WHERE value_type = 'number'"
+    ),
+    "prediction_values_text_idx": (
+        "CREATE INDEX prediction_values_text_idx "
+        "ON prediction_values(metric, text_value, observation_id) "
+        "WHERE value_type = 'text'"
+    ),
+    "prediction_values_boolean_idx": (
+        "CREATE INDEX prediction_values_boolean_idx "
+        "ON prediction_values(metric, boolean_value, observation_id) "
+        "WHERE value_type = 'boolean'"
+    ),
 }
 
 
@@ -815,10 +1783,15 @@ def _stage_vcf_records(
     variant_rows: dict[str, tuple] = {}
     annotation_rows: dict[tuple, tuple] = {}
     genotype_rows: dict[tuple, tuple] = {}
+    prediction_rows: dict[tuple, tuple] = {}
+    prediction_value_rows: dict[tuple, tuple] = {}
     records_processed = 0
     pass_records = 0
     excluded_records = 0
     carrier_count = 0
+    active_predictors = _active_predictors(
+        (*header.csq_fields, *header.info_fields)
+    )
 
     def flush() -> None:
         if variant_rows:
@@ -829,10 +1802,91 @@ def _stage_vcf_records(
             )
         if genotype_rows:
             connection.executemany(STAGE_GENOTYPE_INSERT, genotype_rows.values())
+        if prediction_rows:
+            connection.executemany(
+                STAGE_PREDICTION_OBSERVATION_INSERT, prediction_rows.values()
+            )
+        if prediction_value_rows:
+            connection.executemany(
+                STAGE_PREDICTION_VALUE_INSERT, prediction_value_rows.values()
+            )
         connection.commit()
         variant_rows.clear()
         annotation_rows.clear()
         genotype_rows.clear()
+        prediction_rows.clear()
+        prediction_value_rows.clear()
+
+    def capture_prediction(
+        prediction: dict,
+        *,
+        key: str,
+        chrom: str,
+        pos: int,
+        ref: str,
+        alt: str,
+        annotation: dict | None = None,
+        sample_name: str = "",
+    ) -> None:
+        annotator = PREDICTOR_REGISTRY.annotators_by_id[
+            prediction["matcher"]
+        ]
+        target_key = _canonical_prediction_target_key(
+            annotator,
+            prediction["target"],
+            chrom=chrom,
+            pos=pos,
+            ref=ref,
+            alt=alt,
+            sample=sample_name,
+        )
+        identity = (
+            prediction["resource_id"],
+            prediction["predictor_id"],
+            key,
+            prediction["target_scope"],
+            target_key,
+        )
+        annotation = annotation or {}
+        observation_row = (
+            *identity,
+            int(prediction["bind_annotation"]),
+            annotation.get("gene", ""),
+            annotation.get("transcript", ""),
+            annotation.get("hgvsc", ""),
+            annotation.get("hgvsp", ""),
+            annotation.get("consequence", ""),
+            sample_name,
+            prediction["gene_id"],
+            prediction["gene_symbol"],
+            prediction["transcript_id"],
+            prediction["protein_change"],
+            prediction["match_status"],
+            prediction["matcher"],
+            json.dumps(
+                prediction["provenance"],
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        previous = prediction_rows.get(identity)
+        if (
+            previous is None
+            or previous[-3] != "exact"
+            or prediction["match_status"] == "exact"
+        ):
+            prediction_rows[identity] = observation_row
+        for metric, value in prediction["values"].items():
+            if isinstance(value, bool):
+                typed = ("boolean", None, None, int(value))
+            elif isinstance(value, (int, float)):
+                typed = ("number", float(value), None, None)
+            else:
+                typed = ("text", None, str(value), None)
+            value_identity = (*identity, metric)
+            prediction_value_rows[value_identity] = (
+                *value_identity, *typed
+            )
 
     try:
         for line in lines:
@@ -883,7 +1937,8 @@ def _stage_vcf_records(
                 )
             qual = parse_number(qual_raw)
 
-            for alt_index, alt in enumerate(alt_raw.split(",")):
+            alts = tuple(alt_raw.split(","))
+            for alt_index, alt in enumerate(alts):
                 carriers: list[tuple[str, dict]] = []
                 for sample_index, sample_name in enumerate(header.samples):
                     genotype = parse_genotype(
@@ -920,22 +1975,27 @@ def _stage_vcf_records(
                     ) or None,
                 )
 
-                matching = []
-                for consequence in consequences:
-                    allele_number = consequence.get("ALLELE_NUM", "")
-                    if allele_number.isdigit():
-                        if int(allele_number) == alt_index + 1:
-                            matching.append(consequence)
-                    elif (
-                        not consequence.get("Allele")
-                        or consequence.get("Allele") == alt
-                    ):
-                        matching.append(consequence)
-                if not matching:
+                matching = [
+                    consequence
+                    for consequence in consequences
+                    if _consequence_matches_alt(
+                        consequence, ref=ref, alts=alts, alt_index=alt_index
+                    )
+                ]
+                if not matching and len(alts) == 1:
                     matching = consequences
+                prediction_info = _prediction_info_for_alt(
+                    info,
+                    alt=alt,
+                    alt_index=alt_index,
+                    alts=alts,
+                )
+                annotation_records = _prediction_annotation_records(
+                    prediction_info, matching
+                )
                 annotations = [
-                    annotation_from({**info, **consequence})
-                    for consequence in matching
+                    annotation_from(record, predictors=active_predictors)
+                    for record in annotation_records
                 ]
                 if "PICK" not in header.csq_fields:
                     annotations_by_gene: dict[str, list[dict]] = {}
@@ -961,6 +2021,16 @@ def _stage_vcf_records(
                         annotation["consequence"],
                     )
                     annotation_rows[annotation_key] = annotation_tuple
+                    for prediction in annotation["_predictions"]:
+                        capture_prediction(
+                            prediction,
+                            key=key,
+                            chrom=chrom,
+                            pos=pos,
+                            ref=ref,
+                            alt=alt,
+                            annotation=annotation,
+                        )
 
                 for sample_name, genotype in carriers:
                     haplotype = haplotype_frame_evidence(
@@ -975,9 +2045,28 @@ def _stage_vcf_records(
                         haplotype["partners"], haplotype["protein"],
                         haplotype["transcript"],
                     )
+                    haplotype_prediction = _normalized_haplotype_prediction(
+                        haplotype,
+                        sample=sample_name,
+                        phase_set=genotype["phase_set"],
+                    )
+                    if haplotype_prediction:
+                        capture_prediction(
+                            haplotype_prediction,
+                            key=key,
+                            chrom=chrom,
+                            pos=pos,
+                            ref=ref,
+                            alt=alt,
+                            sample_name=sample_name,
+                        )
                     carrier_count += 1
 
-            if records_processed % batch_records == 0:
+            if (
+                records_processed % batch_records == 0
+                or len(prediction_rows) >= MAX_STAGE_PREDICTION_OBSERVATIONS
+                or len(prediction_value_rows) >= MAX_STAGE_PREDICTION_VALUES
+            ):
                 flush()
             if progress and records_processed % 5_000 == 0:
                 progress({
@@ -1206,6 +2295,86 @@ class CohortStore:
                     UNIQUE(variant_id, sample_id)
                 );
 
+                CREATE TABLE IF NOT EXISTS predictor_releases (
+                    id INTEGER PRIMARY KEY,
+                    provider TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    release_version TEXT NOT NULL,
+                    assembly TEXT NOT NULL,
+                    source_uri TEXT NOT NULL DEFAULT '',
+                    checksum_algorithm TEXT NOT NULL DEFAULT '',
+                    checksum TEXT NOT NULL DEFAULT '',
+                    priority INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(
+                        provider, resource_id, release_version, assembly,
+                        checksum_algorithm, checksum
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS prediction_observations (
+                    id INTEGER PRIMARY KEY,
+                    release_id INTEGER NOT NULL
+                        REFERENCES predictor_releases(id) ON DELETE CASCADE,
+                    source_file_id INTEGER
+                        REFERENCES cohort_files(id) ON DELETE CASCADE,
+                    source_identity TEXT NOT NULL DEFAULT 'manual',
+                    predictor_id TEXT NOT NULL,
+                    variant_id INTEGER NOT NULL
+                        REFERENCES cohort_variants(id) ON DELETE CASCADE,
+                    annotation_id INTEGER
+                        REFERENCES cohort_annotations(id) ON DELETE CASCADE,
+                    sample_id INTEGER
+                        REFERENCES cohort_samples(id) ON DELETE CASCADE,
+                    target_scope TEXT NOT NULL,
+                    target_key TEXT NOT NULL,
+                    gene_id TEXT NOT NULL DEFAULT '',
+                    gene_symbol TEXT NOT NULL DEFAULT '',
+                    transcript_id TEXT NOT NULL DEFAULT '',
+                    protein_change TEXT NOT NULL DEFAULT '',
+                    match_status TEXT NOT NULL DEFAULT 'exact',
+                    matcher TEXT NOT NULL DEFAULT '',
+                    provenance_json TEXT NOT NULL DEFAULT '{}',
+                    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(
+                        release_id, predictor_id, variant_id,
+                        target_scope, target_key, source_identity
+                    )
+                );
+
+                CREATE TABLE IF NOT EXISTS prediction_values (
+                    id INTEGER PRIMARY KEY,
+                    observation_id INTEGER NOT NULL
+                        REFERENCES prediction_observations(id) ON DELETE CASCADE,
+                    metric TEXT NOT NULL,
+                    value_type TEXT NOT NULL
+                        CHECK(value_type IN ('number', 'text', 'boolean')),
+                    numeric_value REAL,
+                    text_value TEXT,
+                    boolean_value INTEGER CHECK(boolean_value IN (0, 1)),
+                    unit TEXT NOT NULL DEFAULT '',
+                    UNIQUE(observation_id, metric),
+                    CHECK(
+                        (value_type = 'number'
+                         AND numeric_value IS NOT NULL
+                         AND text_value IS NULL
+                         AND boolean_value IS NULL)
+                        OR
+                        (value_type = 'text'
+                         AND numeric_value IS NULL
+                         AND text_value IS NOT NULL
+                         AND boolean_value IS NULL)
+                        OR
+                        (value_type = 'boolean'
+                         AND numeric_value IS NULL
+                         AND text_value IS NULL
+                         AND boolean_value IS NOT NULL)
+                    )
+                );
+
                 CREATE INDEX IF NOT EXISTS cohort_variants_locus_idx
                     ON cohort_variants(chrom, pos, ref, alt);
                 CREATE INDEX IF NOT EXISTS cohort_variants_rsid_idx
@@ -1224,6 +2393,44 @@ class CohortStore:
                     ON cohort_genotypes(sample_id);
                 CREATE INDEX IF NOT EXISTS cohort_samples_name_idx
                     ON cohort_samples(name);
+                CREATE INDEX IF NOT EXISTS predictor_releases_lookup_idx
+                    ON predictor_releases(
+                        resource_id, assembly, priority DESC, release_version
+                    );
+                CREATE INDEX IF NOT EXISTS prediction_observations_variant_idx
+                    ON prediction_observations(
+                        variant_id, predictor_id, release_id
+                    );
+                CREATE INDEX IF NOT EXISTS prediction_observations_predictor_idx
+                    ON prediction_observations(
+                        predictor_id, variant_id, release_id
+                    );
+                CREATE INDEX IF NOT EXISTS prediction_observations_source_idx
+                    ON prediction_observations(source_file_id, predictor_id)
+                    WHERE source_file_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS prediction_observations_annotation_idx
+                    ON prediction_observations(annotation_id, predictor_id)
+                    WHERE annotation_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS prediction_observations_sample_idx
+                    ON prediction_observations(sample_id, predictor_id)
+                    WHERE sample_id IS NOT NULL;
+                CREATE INDEX IF NOT EXISTS prediction_observations_gene_idx
+                    ON prediction_observations(gene_id, predictor_id)
+                    WHERE gene_id != '';
+                CREATE INDEX IF NOT EXISTS prediction_observations_transcript_idx
+                    ON prediction_observations(transcript_id, predictor_id)
+                    WHERE transcript_id != '';
+                CREATE INDEX IF NOT EXISTS prediction_observations_scope_idx
+                    ON prediction_observations(target_scope, target_key);
+                CREATE INDEX IF NOT EXISTS prediction_values_numeric_idx
+                    ON prediction_values(metric, numeric_value, observation_id)
+                    WHERE value_type = 'number';
+                CREATE INDEX IF NOT EXISTS prediction_values_text_idx
+                    ON prediction_values(metric, text_value, observation_id)
+                    WHERE value_type = 'text';
+                CREATE INDEX IF NOT EXISTS prediction_values_boolean_idx
+                    ON prediction_values(metric, boolean_value, observation_id)
+                    WHERE value_type = 'boolean';
                 """
             )
             # In-place migration for cohort databases created before PICK was
@@ -1372,6 +2579,894 @@ class CohortStore:
                 """
             )
 
+    @staticmethod
+    def _prediction_json(value: dict | None, label: str) -> str:
+        if value is None:
+            value = {}
+        if not isinstance(value, dict):
+            raise ValueError(f"{label} must be an object")
+        try:
+            return json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{label} must contain JSON-compatible values") from error
+
+    @staticmethod
+    def _required_prediction_text(value: object, label: str) -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{label} must be a non-empty string")
+        return value.strip()
+
+    @staticmethod
+    def _decode_prediction_json(value: str) -> dict:
+        try:
+            decoded = json.loads(value or "{}")
+        except (TypeError, json.JSONDecodeError):
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    @classmethod
+    def _serialize_predictor_release(cls, row: sqlite3.Row) -> dict:
+        result = dict(row)
+        result["metadata"] = cls._decode_prediction_json(
+            result.pop("metadata_json", "{}")
+        )
+        return result
+
+    def upsert_predictor_release(
+        self,
+        *,
+        provider: str,
+        resource_id: str,
+        release_version: str,
+        assembly: str,
+        source_uri: str = "",
+        checksum_algorithm: str = "",
+        checksum: str = "",
+        priority: int = 0,
+        metadata: dict | None = None,
+    ) -> dict:
+        """Register one installed predictor resource release idempotently.
+
+        A release describes the provenance shared by one or more predictors.
+        It deliberately does not contain secret download credentials; callers
+        should leave ``source_uri`` empty or store only a public canonical URI.
+        """
+        provider = self._required_prediction_text(provider, "provider")
+        resource_id = self._required_prediction_text(resource_id, "resource_id")
+        try:
+            resource = PREDICTOR_REGISTRY.resources_by_id[resource_id]
+        except KeyError as error:
+            raise ValueError(f"unknown predictor resource: {resource_id}") from error
+        release_version = self._required_prediction_text(
+            release_version, "release_version"
+        )
+        assembly = self._required_prediction_text(assembly, "assembly")
+        if resource.assembly and assembly != resource.assembly:
+            raise ValueError(
+                f"assembly for {resource_id} must be {resource.assembly}"
+            )
+        if not isinstance(priority, int) or isinstance(priority, bool):
+            raise ValueError("priority must be an integer")
+        for value, label in (
+            (checksum_algorithm, "checksum_algorithm"),
+            (checksum, "checksum"),
+        ):
+            if not isinstance(value, str):
+                raise ValueError(f"{label} must be a string")
+        if bool(checksum_algorithm) != bool(checksum):
+            raise ValueError(
+                "checksum_algorithm and checksum must be supplied together"
+        )
+        checksum_algorithm = checksum_algorithm.lower()
+        checksum = checksum.lower()
+        source_uri = _public_source_uri(source_uri)
+        canonical_source_uri = _public_source_uri(resource.source_url or "")
+        if source_uri and (
+            not canonical_source_uri
+            or source_uri.rstrip("/") != canonical_source_uri.rstrip("/")
+        ):
+            raise ValueError(
+                "source_uri must be the registry's public canonical landing URL"
+            )
+        metadata_json = self._prediction_json(metadata, "metadata")
+        now = utc_now()
+        with self._session() as connection:
+            connection.execute(
+                """
+                INSERT INTO predictor_releases(
+                    provider, resource_id, release_version, assembly,
+                    source_uri, checksum_algorithm, checksum, priority,
+                    metadata_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    provider, resource_id, release_version, assembly,
+                    checksum_algorithm, checksum
+                )
+                DO UPDATE SET
+                    source_uri=excluded.source_uri,
+                    priority=excluded.priority,
+                    metadata_json=excluded.metadata_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    provider, resource_id, release_version, assembly,
+                    source_uri, checksum_algorithm, checksum, priority,
+                    metadata_json, now, now,
+                ),
+            )
+            row = connection.execute(
+                """
+                SELECT * FROM predictor_releases
+                WHERE provider = ? AND resource_id = ?
+                  AND release_version = ? AND assembly = ?
+                  AND checksum_algorithm = ? AND checksum = ?
+                """,
+                (
+                    provider, resource_id, release_version, assembly,
+                    checksum_algorithm, checksum,
+                ),
+            ).fetchone()
+        assert row is not None
+        return self._serialize_predictor_release(row)
+
+    @staticmethod
+    def _ensure_embedded_predictor_releases(
+        connection: sqlite3.Connection,
+        resource_ids: Iterable[str],
+        *,
+        source_file_id: int,
+        content_sha256: str = "",
+        content_probe: str = "",
+    ) -> dict[str, int]:
+        resources = [
+            PREDICTOR_REGISTRY.resources_by_id[resource_id]
+            for resource_id in sorted(set(resource_ids))
+        ]
+        if not resources:
+            return {}
+        release_version, checksum_algorithm, checksum = (
+            _embedded_vcf_release_identity(
+                source_file_id, content_sha256, content_probe
+            )
+        )
+        now = utc_now()
+        connection.executemany(
+            """
+            INSERT INTO predictor_releases(
+                provider, resource_id, release_version, assembly,
+                source_uri, checksum_algorithm, checksum, priority,
+                metadata_json, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            ON CONFLICT(
+                provider, resource_id, release_version, assembly,
+                checksum_algorithm, checksum
+            ) DO UPDATE SET updated_at=excluded.updated_at
+            """,
+            [
+                (
+                    EMBEDDED_VCF_PROVIDER,
+                    resource.id,
+                    release_version,
+                    resource.assembly or "not_applicable",
+                    _public_source_uri(resource.source_url or ""),
+                    checksum_algorithm,
+                    checksum,
+                    json.dumps({
+                        "distribution": resource.distribution.value,
+                        "license_name": resource.license_name,
+                        "origin": "embedded_vcf_annotation",
+                        "registry_schema_version": PREDICTOR_REGISTRY.schema_version,
+                    }, sort_keys=True, separators=(",", ":")),
+                    now,
+                    now,
+                )
+                for resource in resources
+            ],
+        )
+        placeholders = ",".join("?" for _ in resources)
+        return {
+            row["resource_id"]: row["id"]
+            for row in connection.execute(
+                f"""
+                SELECT id, resource_id FROM predictor_releases
+                WHERE provider = ? AND release_version = ?
+                  AND checksum_algorithm = ? AND checksum = ?
+                  AND resource_id IN ({placeholders})
+                """,
+                (
+                    EMBEDDED_VCF_PROVIDER,
+                    release_version,
+                    checksum_algorithm,
+                    checksum,
+                    *(resource.id for resource in resources),
+                ),
+            )
+        }
+
+    @classmethod
+    def _serialize_prediction_observations(
+        cls,
+        connection: sqlite3.Connection,
+        rows: list[sqlite3.Row],
+    ) -> list[dict]:
+        if not rows:
+            return []
+        observation_ids = [row["id"] for row in rows]
+        value_rows: list[sqlite3.Row] = []
+        for start in range(0, len(observation_ids), SQLITE_VARIABLE_CHUNK):
+            chunk = observation_ids[start:start + SQLITE_VARIABLE_CHUNK]
+            placeholders = ",".join("?" for _ in chunk)
+            value_rows.extend(connection.execute(
+                f"""
+                SELECT observation_id, metric, value_type, numeric_value,
+                       text_value, boolean_value, unit
+                FROM prediction_values
+                WHERE observation_id IN ({placeholders})
+                ORDER BY observation_id, metric
+                """,
+                chunk,
+            ).fetchall())
+        values: dict[int, dict[str, object]] = {
+            observation_id: {} for observation_id in observation_ids
+        }
+        value_types: dict[int, dict[str, str]] = {
+            observation_id: {} for observation_id in observation_ids
+        }
+        value_units: dict[int, dict[str, str]] = {
+            observation_id: {} for observation_id in observation_ids
+        }
+        for value_row in value_rows:
+            value_type = value_row["value_type"]
+            if value_type == "number":
+                value: object = value_row["numeric_value"]
+            elif value_type == "boolean":
+                value = bool(value_row["boolean_value"])
+            else:
+                value = value_row["text_value"]
+            observation_id = value_row["observation_id"]
+            metric = value_row["metric"]
+            values[observation_id][metric] = value
+            value_types[observation_id][metric] = value_type
+            if value_row["unit"]:
+                value_units[observation_id][metric] = value_row["unit"]
+
+        serialized: list[dict] = []
+        for row in rows:
+            result = dict(row)
+            result["provenance"] = cls._decode_prediction_json(
+                result.pop("provenance_json", "{}")
+            )
+            result["release_metadata"] = cls._decode_prediction_json(
+                result.pop("release_metadata_json", "{}")
+            )
+            result["values"] = values[result["id"]]
+            result["value_types"] = value_types[result["id"]]
+            result["value_units"] = value_units[result["id"]]
+            serialized.append(result)
+        return serialized
+
+    @staticmethod
+    def _prediction_select() -> str:
+        return """
+            SELECT observation.*, predictor_release.provider,
+                   predictor_release.resource_id,
+                   predictor_release.release_version,
+                   predictor_release.assembly,
+                   predictor_release.source_uri,
+                   predictor_release.checksum_algorithm,
+                   predictor_release.checksum, predictor_release.priority,
+                   predictor_release.metadata_json AS release_metadata_json
+            FROM prediction_observations AS observation
+            JOIN predictor_releases AS predictor_release
+              ON predictor_release.id = observation.release_id
+        """
+
+    def upsert_prediction(
+        self,
+        *,
+        release_id: int,
+        predictor_id: str,
+        variant_id: int,
+        target_scope: str,
+        values: dict[str, float | int | str | bool | None],
+        annotation_id: int | None = None,
+        sample_id: int | None = None,
+        gene_id: str = "",
+        gene_symbol: str = "",
+        transcript_id: str = "",
+        protein_change: str = "",
+        consequence: str = "",
+        target: dict | None = None,
+        target_key: str | None = None,
+        match_status: str = "exact",
+        matcher: str = "",
+        provenance: dict | None = None,
+        units: dict[str, str] | None = None,
+        replace_values: bool = False,
+    ) -> dict:
+        """Upsert one scope-aware prediction and its typed metric values.
+
+        ``None`` removes a named metric. Other values are stored in separate
+        numeric, text, and Boolean columns so filtering remains indexed.
+        Unless ``replace_values`` is true, metrics omitted from ``values`` are
+        preserved, allowing a predictor to be populated incrementally.
+        """
+        predictor_id = self._required_prediction_text(predictor_id, "predictor_id")
+        try:
+            predictor = PREDICTOR_REGISTRY.predictors_by_id[predictor_id]
+        except KeyError as error:
+            raise ValueError(f"unknown predictor: {predictor_id}") from error
+        annotator = PREDICTOR_REGISTRY.annotators_by_id[predictor.annotator_id]
+        target_scope = self._required_prediction_text(target_scope, "target_scope")
+        if target_scope != annotator.match.scope.value:
+            raise ValueError(
+                f"target_scope for {predictor_id} must be "
+                f"{annotator.match.scope.value}"
+            )
+        match_status = self._required_prediction_text(match_status, "match_status")
+        if match_status not in {"exact", "partial", "ambiguous", "unmatched"}:
+            raise ValueError("unsupported prediction match_status")
+        if not isinstance(release_id, int) or isinstance(release_id, bool):
+            raise ValueError("release_id must be an integer")
+        if not isinstance(variant_id, int) or isinstance(variant_id, bool):
+            raise ValueError("variant_id must be an integer")
+        if annotation_id is not None and (
+            not isinstance(annotation_id, int) or isinstance(annotation_id, bool)
+        ):
+            raise ValueError("annotation_id must be an integer or null")
+        if sample_id is not None and (
+            not isinstance(sample_id, int) or isinstance(sample_id, bool)
+        ):
+            raise ValueError("sample_id must be an integer or null")
+        if not isinstance(values, dict):
+            raise ValueError("values must be an object")
+        if not isinstance(replace_values, bool):
+            raise ValueError("replace_values must be a Boolean")
+        units = units or {}
+        if not isinstance(units, dict) or any(
+            not isinstance(metric, str) or not isinstance(unit, str)
+            for metric, unit in units.items()
+        ):
+            raise ValueError("units must map metric names to strings")
+        identifiers = {
+            "gene_id": gene_id,
+            "gene_symbol": gene_symbol,
+            "transcript_id": transcript_id,
+            "protein_change": protein_change,
+            "consequence": consequence,
+        }
+        for label, value in identifiers.items():
+            if not isinstance(value, str):
+                raise ValueError(f"{label} must be a string")
+            identifiers[label] = value.strip()
+        if matcher and matcher != annotator.id:
+            raise ValueError(f"matcher for {predictor_id} must be {annotator.id}")
+        matcher = annotator.id
+        if target_key is not None:
+            raise ValueError("target_key is derived from the registry match scope")
+        if target is None:
+            target = {}
+        if not isinstance(target, dict):
+            raise ValueError("target must be an object")
+        allowed_target_fields = {
+            dimension.value for dimension in annotator.match.dimensions
+        }
+        unknown_target_fields = set(target) - allowed_target_fields
+        if unknown_target_fields:
+            raise ValueError(
+                "target has fields outside the registry match scope: "
+                + ", ".join(sorted(unknown_target_fields))
+            )
+        target = _normalized_public_prediction_target(annotator, target)
+        provenance_object = dict(provenance or {})
+        self._prediction_json(provenance_object, "provenance")
+
+        typed_values: list[
+            tuple[str, str, float | None, str | None, int | None, str]
+        ] = []
+        removed_metrics: list[str] = []
+        removed_provenance_metrics: list[str] = []
+        withheld_metrics: list[str] = []
+        metrics_by_id = {metric.id: metric for metric in predictor.metrics}
+        withhold_filterable = (
+            predictor_id in {"funcvep", "logofunc", "promoterai"}
+            and match_status != "exact"
+        )
+        if withhold_filterable:
+            removed_metrics.extend(
+                metric.id for metric in predictor.metrics if metric.filterable
+            )
+        unknown_unit_metrics = set(units) - set(metrics_by_id)
+        if unknown_unit_metrics:
+            raise ValueError(
+                f"unknown metric for {predictor_id}: "
+                + ", ".join(sorted(unknown_unit_metrics))
+            )
+        for metric_id, value in values.items():
+            metric_id = self._required_prediction_text(metric_id, "metric")
+            try:
+                metric = metrics_by_id[metric_id]
+            except KeyError as error:
+                raise ValueError(
+                    f"unknown metric for {predictor_id}: {metric_id}"
+                ) from error
+            unit = units.get(metric_id, "")
+            if value is None:
+                if metric.filterable:
+                    removed_metrics.append(metric_id)
+                else:
+                    removed_provenance_metrics.append(metric_id)
+                continue
+            value = _validated_prediction_metric(metric, value)
+            if withhold_filterable and metric.filterable:
+                withheld_metrics.append(metric_id)
+                continue
+            if not metric.filterable:
+                provenance_object[metric_id] = value
+            elif metric.value_type is MetricType.BOOLEAN:
+                typed_values.append(
+                    (metric_id, "boolean", None, None, int(value), unit)
+                )
+            elif metric.value_type in {MetricType.FLOAT, MetricType.INTEGER}:
+                typed_values.append(
+                    (metric_id, "number", float(value), None, None, unit)
+                )
+            else:
+                typed_values.append(
+                    (metric_id, "text", None, str(value), None, unit)
+                )
+        now = utc_now()
+        with self._session() as connection:
+            release = connection.execute(
+                "SELECT resource_id FROM predictor_releases WHERE id = ?",
+                (release_id,),
+            ).fetchone()
+            if release is None:
+                raise ValueError("release_id does not exist")
+            if release["resource_id"] != predictor.resource_id:
+                raise ValueError(
+                    f"release_id is not a {predictor.resource_id} release"
+                )
+            variant = connection.execute(
+                """
+                SELECT chrom, pos, ref, alt FROM cohort_variants WHERE id = ?
+                """,
+                (variant_id,),
+            ).fetchone()
+            if variant is None:
+                raise ValueError("variant_id does not exist")
+            if annotation_id is not None:
+                annotation = connection.execute(
+                    "SELECT variant_id FROM cohort_annotations WHERE id = ?",
+                    (annotation_id,),
+                ).fetchone()
+                if annotation is None:
+                    raise ValueError("annotation_id does not exist")
+                if annotation["variant_id"] != variant_id:
+                    raise ValueError("annotation_id belongs to another variant")
+            if (
+                annotator.match.scope not in _ANNOTATION_BOUND_SCOPES
+                or match_status != "exact"
+            ):
+                annotation_id = None
+            elif annotation_id is None:
+                raise ValueError(f"{target_scope} predictions require annotation_id")
+            sample_name = ""
+            if sample_id is not None:
+                sample = connection.execute(
+                    "SELECT name FROM cohort_samples WHERE id = ?", (sample_id,)
+                ).fetchone()
+                if sample is None:
+                    raise ValueError("sample_id does not exist")
+                sample_name = sample["name"]
+            if annotator.match.scope is not MatchScope.SAMPLE_HAPLOTYPE:
+                sample_id = None
+                sample_name = ""
+            elif sample_id is None:
+                raise ValueError("sample_haplotype predictions require sample_id")
+            supplied_variant_dimensions = {
+                "chromosome": normalize_chromosome(str(target.get("chromosome", ""))),
+                "position": target.get("position", ""),
+                "reference": str(target.get("reference", "")).upper(),
+                "alternate": str(target.get("alternate", "")).upper(),
+            }
+            actual_variant_dimensions = {
+                "chromosome": normalize_chromosome(variant["chrom"]),
+                "position": int(variant["pos"]),
+                "reference": variant["ref"].upper(),
+                "alternate": variant["alt"].upper(),
+            }
+            for dimension, supplied in supplied_variant_dimensions.items():
+                if (
+                    dimension in target
+                    and not _prediction_dimension_missing(
+                        target[dimension], MatchDimension(dimension)
+                    )
+                    and supplied != actual_variant_dimensions[dimension]
+                ):
+                    raise ValueError(
+                        f"target {dimension} contradicts variant_id"
+                    )
+            if (
+                "sample" in target
+                and target["sample"] != sample_name
+            ):
+                raise ValueError("target sample contradicts sample_id")
+            canonical_target = dict(target)
+            canonical_target.setdefault("ensembl_gene", identifiers["gene_id"])
+            canonical_target.setdefault("gene_symbol", identifiers["gene_symbol"])
+            transcript_policy = (
+                TranscriptVersionPolicy.EXACT
+                if (
+                    annotator.match.transcript_version
+                    is TranscriptVersionPolicy.EXACT_THEN_STABLE_ID
+                    and provenance_object.get("match") == "exact_version"
+                )
+                else annotator.match.transcript_version
+            )
+            canonical_target["ensembl_transcript"] = _stable_transcript(
+                str(
+                    canonical_target.get("ensembl_transcript")
+                    or identifiers["transcript_id"]
+                ),
+                transcript_policy,
+            )
+            canonical_target.setdefault("consequence", identifiers["consequence"])
+            canonical_target.setdefault(
+                "amino_acid_change", identifiers["protein_change"]
+            )
+            canonical_target.setdefault(
+                "protein_position",
+                _protein_position_from_change(identifiers["protein_change"]),
+            )
+            if match_status == "exact":
+                missing_dimensions = [
+                    dimension.value for dimension in annotator.match.dimensions
+                    if dimension not in _VARIANT_MATCH_DIMENSIONS
+                    and dimension is not MatchDimension.SAMPLE
+                    and _prediction_dimension_missing(
+                        canonical_target.get(dimension.value, ""), dimension
+                    )
+                ]
+                if missing_dimensions:
+                    raise ValueError(
+                        "exact prediction is missing match dimensions: "
+                        + ", ".join(missing_dimensions)
+                    )
+            target_key = _canonical_prediction_target_key(
+                annotator,
+                canonical_target,
+                chrom=variant["chrom"],
+                pos=variant["pos"],
+                ref=variant["ref"],
+                alt=variant["alt"],
+                sample=sample_name,
+            )
+            target_dimensions = set(annotator.match.dimensions)
+            stored_identifiers = {
+                "gene_id": (
+                    str(canonical_target.get("ensembl_gene") or "")
+                    if MatchDimension.ENSEMBL_GENE in target_dimensions else ""
+                ),
+                "gene_symbol": (
+                    str(canonical_target.get("gene_symbol") or "")
+                    if MatchDimension.GENE_SYMBOL in target_dimensions else ""
+                ),
+                "transcript_id": (
+                    str(canonical_target.get("ensembl_transcript") or "")
+                    if MatchDimension.ENSEMBL_TRANSCRIPT in target_dimensions
+                    else ""
+                ),
+                "protein_change": (
+                    str(
+                        canonical_target.get("amino_acid_change")
+                        or identifiers["protein_change"]
+                    )
+                    if target_dimensions & {
+                        MatchDimension.PROTEIN_POSITION,
+                        MatchDimension.AMINO_ACID_CHANGE,
+                    } else ""
+                ),
+            }
+            provenance_object.setdefault(
+                "matched_dimensions",
+                [] if match_status == "unmatched" else [
+                    dimension.value for dimension in annotator.match.dimensions
+                    if match_status == "exact"
+                    or dimension in _VARIANT_MATCH_DIMENSIONS
+                    or not _prediction_dimension_missing(
+                        canonical_target.get(dimension.value, ""), dimension
+                    )
+                ],
+            )
+            existing_observation = connection.execute(
+                """
+                SELECT id, provenance_json FROM prediction_observations
+                WHERE release_id = ? AND predictor_id = ? AND variant_id = ?
+                  AND target_scope = ? AND target_key = ?
+                  AND source_identity = 'manual'
+                """,
+                (
+                    release_id, predictor_id, variant_id,
+                    target_scope, target_key,
+                ),
+            ).fetchone()
+            if existing_observation is not None and withhold_filterable:
+                withheld_metrics.extend(
+                    row["metric"] for row in connection.execute(
+                        """
+                        SELECT metric FROM prediction_values
+                        WHERE observation_id = ?
+                        """,
+                        (existing_observation["id"],),
+                    )
+                )
+            if existing_observation is not None and not replace_values:
+                merged_provenance = self._decode_prediction_json(
+                    existing_observation["provenance_json"]
+                )
+                merged_provenance.update(provenance_object)
+                provenance_object = merged_provenance
+            for metric_id in removed_provenance_metrics:
+                provenance_object.pop(metric_id, None)
+            inherited_withheld = provenance_object.get(
+                "withheld_metrics", []
+            )
+            withheld_set = set(
+                inherited_withheld
+                if isinstance(inherited_withheld, list) else []
+            )
+            if withhold_filterable:
+                withheld_set.update(withheld_metrics)
+            else:
+                withheld_set.difference_update(
+                    row[0] for row in typed_values
+                )
+            if withheld_set:
+                provenance_object["withheld_metrics"] = sorted(withheld_set)
+            else:
+                provenance_object.pop("withheld_metrics", None)
+            provenance_json = self._prediction_json(
+                provenance_object, "provenance"
+            )
+            connection.execute(
+                """
+                INSERT INTO prediction_observations(
+                    release_id, source_file_id, source_identity, predictor_id,
+                    variant_id, annotation_id, sample_id, target_scope,
+                    target_key, gene_id, gene_symbol,
+                    transcript_id, protein_change, match_status, matcher,
+                    provenance_json, created_at, updated_at
+                ) VALUES (?, NULL, 'manual', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    release_id, predictor_id, variant_id,
+                    target_scope, target_key, source_identity
+                ) DO UPDATE SET
+                    annotation_id=excluded.annotation_id,
+                    sample_id=excluded.sample_id,
+                    gene_id=excluded.gene_id,
+                    gene_symbol=excluded.gene_symbol,
+                    transcript_id=excluded.transcript_id,
+                    protein_change=excluded.protein_change,
+                    match_status=excluded.match_status,
+                    matcher=excluded.matcher,
+                    provenance_json=excluded.provenance_json,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    release_id, predictor_id, variant_id, annotation_id,
+                    sample_id, target_scope, target_key,
+                    stored_identifiers["gene_id"],
+                    stored_identifiers["gene_symbol"],
+                    stored_identifiers["transcript_id"],
+                    stored_identifiers["protein_change"],
+                    match_status, matcher.strip(), provenance_json, now, now,
+                ),
+            )
+            observation_id = connection.execute(
+                """
+                SELECT id FROM prediction_observations
+                WHERE release_id = ? AND predictor_id = ? AND variant_id = ?
+                  AND target_scope = ? AND target_key = ?
+                  AND source_identity = 'manual'
+                """,
+                (
+                    release_id, predictor_id, variant_id,
+                    target_scope, target_key,
+                ),
+            ).fetchone()[0]
+            if replace_values:
+                connection.execute(
+                    "DELETE FROM prediction_values WHERE observation_id = ?",
+                    (observation_id,),
+                )
+            elif removed_metrics:
+                placeholders = ",".join("?" for _ in removed_metrics)
+                connection.execute(
+                    f"""
+                    DELETE FROM prediction_values
+                    WHERE observation_id = ? AND metric IN ({placeholders})
+                    """,
+                    (observation_id, *removed_metrics),
+                )
+            connection.executemany(
+                """
+                INSERT INTO prediction_values(
+                    observation_id, metric, value_type, numeric_value,
+                    text_value, boolean_value, unit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(observation_id, metric) DO UPDATE SET
+                    value_type=excluded.value_type,
+                    numeric_value=excluded.numeric_value,
+                    text_value=excluded.text_value,
+                    boolean_value=excluded.boolean_value,
+                    unit=excluded.unit
+                """,
+                [
+                    (observation_id, metric, value_type, numeric, text, boolean, unit)
+                    for metric, value_type, numeric, text, boolean, unit
+                    in typed_values
+                ],
+            )
+            row = connection.execute(
+                self._prediction_select() + " WHERE observation.id = ?",
+                (observation_id,),
+            ).fetchone()
+            assert row is not None
+            result = self._serialize_prediction_observations(connection, [row])[0]
+        return result
+
+    def query_predictions(
+        self,
+        *,
+        observation_id: int | None = None,
+        release_id: int | None = None,
+        predictor_id: str | None = None,
+        variant_id: int | None = None,
+        annotation_id: int | None = None,
+        sample_id: int | None = None,
+        target_scope: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Return generic predictions without changing legacy query results."""
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10_000:
+            raise ValueError("limit must be between 1 and 10000")
+        if predictor_id is not None:
+            try:
+                predictor = PREDICTOR_REGISTRY.predictors_by_id[predictor_id]
+            except KeyError as error:
+                raise ValueError(f"unknown predictor: {predictor_id}") from error
+            expected_scope = PREDICTOR_REGISTRY.annotators_by_id[
+                predictor.annotator_id
+            ].match.scope.value
+            if target_scope is not None and target_scope != expected_scope:
+                raise ValueError(
+                    f"target_scope for {predictor_id} must be {expected_scope}"
+                )
+        conditions: list[str] = []
+        parameters: list[object] = []
+        for column, value in (
+            ("observation.id", observation_id),
+            ("observation.release_id", release_id),
+            ("observation.predictor_id", predictor_id),
+            ("observation.variant_id", variant_id),
+            ("observation.annotation_id", annotation_id),
+            ("observation.sample_id", sample_id),
+            ("observation.target_scope", target_scope),
+        ):
+            if value is not None:
+                conditions.append(f"{column} = ?")
+                parameters.append(value)
+        where = " WHERE " + " AND ".join(conditions) if conditions else ""
+        with self._session() as connection:
+            rows = connection.execute(
+                self._prediction_select()
+                + where
+                + " ORDER BY predictor_release.priority DESC, observation.id LIMIT ?",
+                (*parameters, limit),
+            ).fetchall()
+            return self._serialize_prediction_observations(connection, rows)
+
+    def filter_predictions(
+        self,
+        *,
+        metric: str,
+        operator: str,
+        value: float | int | str | bool,
+        release_id: int | None = None,
+        predictor_id: str | None = None,
+        target_scope: str | None = None,
+        limit: int = 1000,
+    ) -> list[dict]:
+        """Filter one typed predictor metric using indexed value columns."""
+        metric = self._required_prediction_text(metric, "metric")
+        predictor_id = self._required_prediction_text(
+            predictor_id, "predictor_id"
+        )
+        try:
+            predictor = PREDICTOR_REGISTRY.predictors_by_id[predictor_id]
+        except KeyError as error:
+            raise ValueError(f"unknown predictor: {predictor_id}") from error
+        metrics_by_id = {
+            definition.id: definition for definition in predictor.metrics
+        }
+        try:
+            metric_definition = metrics_by_id[metric]
+        except KeyError as error:
+            raise ValueError(
+                f"unknown metric for {predictor_id}: {metric}"
+            ) from error
+        if not metric_definition.filterable:
+            raise ValueError(f"metric {predictor_id}.{metric} is not filterable")
+        expected_scope = PREDICTOR_REGISTRY.annotators_by_id[
+            predictor.annotator_id
+        ].match.scope.value
+        if target_scope is not None and target_scope != expected_scope:
+            raise ValueError(
+                f"target_scope for {predictor_id} must be {expected_scope}"
+            )
+        operators = {
+            "eq": "=", "=": "=", "ne": "!=", "!=": "!=",
+            "lt": "<", "<": "<", "lte": "<=", "<=": "<=",
+            "gt": ">", ">": ">", "gte": ">=", ">=": ">=",
+        }
+        sql_operator = operators.get(operator)
+        if sql_operator is None:
+            raise ValueError("unsupported prediction filter operator")
+        if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= 10_000:
+            raise ValueError("limit must be between 1 and 10000")
+        if isinstance(value, bool):
+            value_type = "boolean"
+            value_column = "typed_value.boolean_value"
+            sql_value: object = int(value)
+        elif isinstance(value, (int, float)):
+            value_type = "number"
+            value_column = "typed_value.numeric_value"
+            sql_value = float(value)
+            if not math.isfinite(sql_value):
+                raise ValueError("prediction filter value must be finite")
+        elif isinstance(value, str):
+            value_type = "text"
+            value_column = "typed_value.text_value"
+            sql_value = value
+        else:
+            raise ValueError("prediction filter value has an unsupported type")
+        _validated_prediction_metric(metric_definition, value)
+        if value_type != "number" and sql_operator not in {"=", "!="}:
+            raise ValueError("text and Boolean prediction filters support only = and !=")
+
+        conditions = [
+            "typed_value.metric = ?",
+            f"typed_value.value_type = '{value_type}'",
+            f"{value_column} {sql_operator} ?",
+        ]
+        parameters: list[object] = [metric, sql_value]
+        for column, filter_value in (
+            ("observation.release_id", release_id),
+            ("observation.predictor_id", predictor_id),
+            ("observation.target_scope", target_scope),
+        ):
+            if filter_value is not None:
+                conditions.append(f"{column} = ?")
+                parameters.append(filter_value)
+        select = self._prediction_select() + """
+            JOIN prediction_values AS typed_value
+              ON typed_value.observation_id = observation.id
+        """
+        with self._session() as connection:
+            rows = connection.execute(
+                select
+                + " WHERE " + " AND ".join(conditions)
+                + " ORDER BY predictor_release.priority DESC, observation.id LIMIT ?",
+                (*parameters, limit),
+            ).fetchall()
+            return self._serialize_prediction_observations(connection, rows)
+
     def stats(self) -> dict:
         with self._session() as connection:
             row = connection.execute(
@@ -1507,6 +3602,8 @@ class CohortStore:
             connection.executescript(
                 """
                 BEGIN EXCLUSIVE;
+                DROP TABLE prediction_values;
+                DROP TABLE prediction_observations;
                 DROP TABLE cohort_genotypes;
                 DROP TABLE cohort_annotations;
                 DROP TABLE cohort_variants;
@@ -2068,6 +4165,8 @@ class CohortStore:
             samples: list[str] = []
             sample_ids: list[int] = []
             csq_fields: list[str] = []
+            info_fields: set[str] = set()
+            active_predictors: tuple = ()
             saw_fileformat = False
             saw_columns = False
             pass_records = 0
@@ -2075,6 +4174,7 @@ class CohortStore:
             carrier_count = 0
             variant_cache: dict[str, int] = {}
             annotation_cache: set[tuple] = set()
+            embedded_release_ids: dict[str, int] = {}
             records_processed = 0
 
             try:
@@ -2100,10 +4200,18 @@ class CohortStore:
                                     f"(expected 248956422, found {values['length']})"
                                 )
                             continue
-                        if line.startswith("##INFO=<ID=CSQ"):
-                            match = re.search(r"Format:\s*([^\">]+)", line, re.IGNORECASE)
-                            if match:
-                                csq_fields = match.group(1).strip().split("|")
+                        if line.startswith("##INFO=<ID="):
+                            id_match = re.match(r"##INFO=<ID=([^,>]+)", line)
+                            if id_match:
+                                info_fields.add(id_match.group(1))
+                            if id_match and id_match.group(1) == "CSQ":
+                                match = re.search(
+                                    r"Format:\s*([^\">]+)",
+                                    line,
+                                    re.IGNORECASE,
+                                )
+                                if match:
+                                    csq_fields = match.group(1).strip().split("|")
                             continue
                         if line.startswith("#CHROM"):
                             saw_columns = True
@@ -2117,6 +4225,9 @@ class CohortStore:
                                 ).lastrowid
                                 for sample in samples
                             ]
+                            active_predictors = _active_predictors(
+                                (*csq_fields, *info_fields)
+                            )
                             continue
                         if not line.strip() or line.startswith("#"):
                             continue
@@ -2154,7 +4265,8 @@ class CohortStore:
                             )
                         qual = parse_number(qual_raw)
 
-                        for alt_index, alt in enumerate(alt_raw.split(",")):
+                        alts = tuple(alt_raw.split(","))
+                        for alt_index, alt in enumerate(alts):
                             carrier_rows = []
                             for sample_index, sample_id in enumerate(sample_ids):
                                 genotype = parse_genotype(
@@ -2243,20 +4355,34 @@ class CohortStore:
                                     variant_cache.clear()
                                 variant_cache[key] = variant_id
 
-                            matching = []
-                            for consequence in consequences:
-                                allele_number = consequence.get("ALLELE_NUM", "")
-                                if allele_number.isdigit():
-                                    if int(allele_number) == alt_index + 1:
-                                        matching.append(consequence)
-                                elif not consequence.get("Allele") or consequence.get("Allele") == alt:
-                                    matching.append(consequence)
-                            if not matching:
+                            matching = [
+                                consequence
+                                for consequence in consequences
+                                if _consequence_matches_alt(
+                                    consequence,
+                                    ref=ref,
+                                    alts=alts,
+                                    alt_index=alt_index,
+                                )
+                            ]
+                            if not matching and len(alts) == 1:
                                 matching = consequences
 
+                            prediction_info = _prediction_info_for_alt(
+                                info,
+                                alt=alt,
+                                alt_index=alt_index,
+                                alts=alts,
+                            )
+
+                            annotation_records = _prediction_annotation_records(
+                                prediction_info, matching
+                            )
                             annotations = [
-                                annotation_from({**info, **consequence})
-                                for consequence in matching
+                                annotation_from(
+                                    record, predictors=active_predictors
+                                )
+                                for record in annotation_records
                             ]
                             if "PICK" not in csq_fields:
                                 annotations_by_gene: dict[str, list[dict]] = {}
@@ -2343,6 +4469,31 @@ class CohortStore:
                                     """,
                                     {"variant_id": variant_id, **annotation},
                                 )
+                                annotation_id = connection.execute(
+                                    """
+                                    SELECT id FROM cohort_annotations
+                                    WHERE variant_id = ? AND gene = ?
+                                      AND COALESCE(transcript, '') = ?
+                                      AND COALESCE(hgvsc, '') = ?
+                                      AND COALESCE(hgvsp, '') = ?
+                                      AND consequence = ?
+                                    """,
+                                    annotation_key,
+                                ).fetchone()[0]
+                                self._write_embedded_predictions(
+                                    connection,
+                                    variant_id=variant_id,
+                                    annotation_id=annotation_id,
+                                    annotation=annotation,
+                                    chrom=chrom,
+                                    pos=pos,
+                                    ref=ref,
+                                    alt=alt,
+                                    release_ids=embedded_release_ids,
+                                    source_file_id=file_id,
+                                    content_sha256=content_sha,
+                                    content_probe=content_probe,
+                                )
 
                             for sample_id, sample_name, genotype in carrier_rows:
                                 haplotype = haplotype_frame_evidence(
@@ -2382,6 +4533,31 @@ class CohortStore:
                                         haplotype["protein"], haplotype["transcript"],
                                     ),
                                 )
+                                haplotype_prediction = (
+                                    _normalized_haplotype_prediction(
+                                        haplotype,
+                                        sample=sample_name,
+                                        phase_set=genotype["phase_set"],
+                                    )
+                                )
+                                if haplotype_prediction:
+                                    self._write_embedded_predictions(
+                                        connection,
+                                        variant_id=variant_id,
+                                        annotation_id=None,
+                                        annotation=None,
+                                        chrom=chrom,
+                                        pos=pos,
+                                        ref=ref,
+                                        alt=alt,
+                                        release_ids=embedded_release_ids,
+                                        source_file_id=file_id,
+                                        content_sha256=content_sha,
+                                        content_probe=content_probe,
+                                        predictions=(haplotype_prediction,),
+                                        sample_id=sample_id,
+                                        sample_name=sample_name,
+                                    )
                                 carrier_count += 1
 
                         if progress and records_processed % 5000 == 0:
@@ -2844,6 +5020,304 @@ class CohortStore:
             collect(executor)
         return results, reader_count
 
+    def _merge_stage_predictions(
+        self,
+        connection: sqlite3.Connection,
+        alias: str,
+        file_id: int,
+        *,
+        content_sha256: str = "",
+        content_probe: str = "",
+    ) -> None:
+        resource_ids = [
+            row[0] for row in connection.execute(
+                f"SELECT DISTINCT resource_id FROM {alias}.stage_prediction_observations"
+            )
+        ]
+        if not resource_ids:
+            return
+        self._ensure_embedded_predictor_releases(
+            connection,
+            resource_ids,
+            source_file_id=file_id,
+            content_sha256=content_sha256,
+            content_probe=content_probe,
+        )
+        release_version, checksum_algorithm, checksum = (
+            _embedded_vcf_release_identity(
+                file_id, content_sha256, content_probe
+            )
+        )
+        source_identity = f"cohort-file:{file_id}"
+        now = utc_now()
+        connection.execute(
+            f"""
+            INSERT INTO prediction_observations(
+                release_id, source_file_id, source_identity, predictor_id,
+                variant_id, annotation_id, sample_id, target_scope,
+                target_key, gene_id, gene_symbol,
+                transcript_id, protein_change, match_status, matcher,
+                provenance_json, created_at, updated_at
+            )
+            SELECT predictor_release.id, ?, ?, staged.predictor_id, variant.id,
+                   CASE WHEN staged.bind_annotation = 1
+                        THEN annotation.id ELSE NULL END,
+                   CASE WHEN staged.sample_name != ''
+                        THEN sample.id ELSE NULL END,
+                   staged.target_scope, staged.target_key, staged.gene_id,
+                   staged.gene_symbol, staged.transcript_id,
+                   staged.protein_change, staged.match_status, staged.matcher,
+                   staged.provenance_json, ?, ?
+            FROM {alias}.stage_prediction_observations AS staged
+            JOIN cohort_variants AS variant
+              ON variant.variant_key = staged.variant_key
+            JOIN predictor_releases AS predictor_release
+             ON predictor_release.provider = ?
+             AND predictor_release.resource_id = staged.resource_id
+             AND predictor_release.release_version = ?
+             AND predictor_release.checksum_algorithm = ?
+             AND predictor_release.checksum = ?
+            LEFT JOIN cohort_annotations AS annotation
+              ON staged.bind_annotation = 1
+             AND annotation.variant_id = variant.id
+             AND annotation.gene = staged.annotation_gene
+             AND COALESCE(annotation.transcript, '') = staged.annotation_transcript
+             AND COALESCE(annotation.hgvsc, '') = staged.annotation_hgvsc
+             AND COALESCE(annotation.hgvsp, '') = staged.annotation_hgvsp
+             AND annotation.consequence = staged.annotation_consequence
+            LEFT JOIN cohort_samples AS sample
+              ON sample.file_id = ? AND sample.name = staged.sample_name
+            WHERE (staged.bind_annotation = 0 OR annotation.id IS NOT NULL)
+              AND (staged.sample_name = '' OR sample.id IS NOT NULL)
+            ON CONFLICT(
+                release_id, predictor_id, variant_id,
+                target_scope, target_key, source_identity
+            ) DO UPDATE SET
+                annotation_id=CASE
+                    WHEN prediction_observations.match_status = 'exact'
+                     AND excluded.match_status != 'exact'
+                    THEN prediction_observations.annotation_id
+                    ELSE excluded.annotation_id END,
+                sample_id=COALESCE(
+                    excluded.sample_id, prediction_observations.sample_id
+                ),
+                gene_id=excluded.gene_id,
+                gene_symbol=excluded.gene_symbol,
+                transcript_id=excluded.transcript_id,
+                protein_change=excluded.protein_change,
+                match_status=CASE
+                    WHEN prediction_observations.match_status = 'exact'
+                     AND excluded.match_status != 'exact'
+                    THEN prediction_observations.match_status
+                    ELSE excluded.match_status END,
+                matcher=excluded.matcher,
+                provenance_json=CASE
+                    WHEN prediction_observations.match_status = 'exact'
+                     AND excluded.match_status != 'exact'
+                    THEN prediction_observations.provenance_json
+                    ELSE excluded.provenance_json END,
+                updated_at=excluded.updated_at
+            """,
+            (
+                int(file_id), source_identity, now, now,
+                EMBEDDED_VCF_PROVIDER, release_version,
+                checksum_algorithm, checksum, int(file_id),
+            ),
+        )
+        connection.execute(
+            f"""
+            INSERT INTO prediction_values(
+                observation_id, metric, value_type, numeric_value,
+                text_value, boolean_value, unit
+            )
+            SELECT observation.id, staged.metric, staged.value_type,
+                   staged.numeric_value, staged.text_value,
+                   staged.boolean_value, ''
+            FROM {alias}.stage_prediction_values AS staged
+            JOIN cohort_variants AS variant
+              ON variant.variant_key = staged.variant_key
+            JOIN predictor_releases AS predictor_release
+             ON predictor_release.provider = ?
+             AND predictor_release.resource_id = staged.resource_id
+             AND predictor_release.release_version = ?
+             AND predictor_release.checksum_algorithm = ?
+             AND predictor_release.checksum = ?
+            JOIN prediction_observations AS observation
+              ON observation.release_id = predictor_release.id
+             AND observation.predictor_id = staged.predictor_id
+             AND observation.variant_id = variant.id
+             AND observation.target_scope = staged.target_scope
+             AND observation.target_key = staged.target_key
+             AND observation.source_identity = ?
+            WHERE 1
+            ON CONFLICT(observation_id, metric) DO UPDATE SET
+                value_type=excluded.value_type,
+                numeric_value=excluded.numeric_value,
+                text_value=excluded.text_value,
+                boolean_value=excluded.boolean_value,
+                unit=excluded.unit
+            """,
+            (
+                EMBEDDED_VCF_PROVIDER, release_version,
+                checksum_algorithm, checksum, source_identity,
+            ),
+        )
+
+    def _write_embedded_predictions(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        variant_id: int,
+        annotation_id: int | None,
+        annotation: dict | None,
+        chrom: str,
+        pos: int,
+        ref: str,
+        alt: str,
+        release_ids: dict[str, int],
+        source_file_id: int,
+        content_sha256: str = "",
+        content_probe: str = "",
+        predictions: Iterable[dict] | None = None,
+        sample_id: int | None = None,
+        sample_name: str = "",
+    ) -> None:
+        if predictions is None:
+            predictions = annotation["_predictions"] if annotation else ()
+        predictions = tuple(predictions)
+        missing_resources = {
+            prediction["resource_id"] for prediction in predictions
+            if prediction["resource_id"] not in release_ids
+        }
+        if missing_resources:
+            release_ids.update(
+                self._ensure_embedded_predictor_releases(
+                    connection,
+                    missing_resources,
+                    source_file_id=source_file_id,
+                    content_sha256=content_sha256,
+                    content_probe=content_probe,
+                )
+            )
+        source_identity = f"cohort-file:{source_file_id}"
+        now = utc_now()
+        for prediction in predictions:
+            annotator = PREDICTOR_REGISTRY.annotators_by_id[
+                prediction["matcher"]
+            ]
+            target_key = _canonical_prediction_target_key(
+                annotator,
+                prediction["target"],
+                chrom=chrom,
+                pos=pos,
+                ref=ref,
+                alt=alt,
+                sample=sample_name,
+            )
+            connection.execute(
+                """
+                INSERT INTO prediction_observations(
+                    release_id, source_file_id, source_identity, predictor_id,
+                    variant_id, annotation_id, sample_id, target_scope,
+                    target_key, gene_id, gene_symbol,
+                    transcript_id, protein_change, match_status, matcher,
+                    provenance_json, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(
+                    release_id, predictor_id, variant_id,
+                    target_scope, target_key, source_identity
+                ) DO UPDATE SET
+                    annotation_id=CASE
+                        WHEN prediction_observations.match_status = 'exact'
+                         AND excluded.match_status != 'exact'
+                        THEN prediction_observations.annotation_id
+                        ELSE excluded.annotation_id END,
+                    sample_id=COALESCE(
+                        excluded.sample_id, prediction_observations.sample_id
+                    ),
+                    gene_id=excluded.gene_id,
+                    gene_symbol=excluded.gene_symbol,
+                    transcript_id=excluded.transcript_id,
+                    protein_change=excluded.protein_change,
+                    match_status=CASE
+                        WHEN prediction_observations.match_status = 'exact'
+                         AND excluded.match_status != 'exact'
+                        THEN prediction_observations.match_status
+                        ELSE excluded.match_status END,
+                    matcher=excluded.matcher,
+                    provenance_json=CASE
+                        WHEN prediction_observations.match_status = 'exact'
+                         AND excluded.match_status != 'exact'
+                        THEN prediction_observations.provenance_json
+                        ELSE excluded.provenance_json END,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    release_ids[prediction["resource_id"]],
+                    source_file_id,
+                    source_identity,
+                    prediction["predictor_id"],
+                    variant_id,
+                    annotation_id if prediction["bind_annotation"] else None,
+                    sample_id,
+                    prediction["target_scope"],
+                    target_key,
+                    prediction["gene_id"],
+                    prediction["gene_symbol"],
+                    prediction["transcript_id"],
+                    prediction["protein_change"],
+                    prediction["match_status"],
+                    prediction["matcher"],
+                    json.dumps(
+                        prediction["provenance"],
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    now,
+                    now,
+                ),
+            )
+            observation_id = connection.execute(
+                """
+                SELECT id FROM prediction_observations
+                WHERE release_id = ? AND predictor_id = ? AND variant_id = ?
+                  AND target_scope = ? AND target_key = ?
+                  AND source_identity = ?
+                """,
+                (
+                    release_ids[prediction["resource_id"]],
+                    prediction["predictor_id"],
+                    variant_id,
+                    prediction["target_scope"],
+                    target_key,
+                    source_identity,
+                ),
+            ).fetchone()[0]
+            typed_rows = []
+            for metric, value in prediction["values"].items():
+                if isinstance(value, bool):
+                    typed = ("boolean", None, None, int(value))
+                elif isinstance(value, (int, float)):
+                    typed = ("number", float(value), None, None)
+                else:
+                    typed = ("text", None, str(value), None)
+                typed_rows.append((observation_id, metric, *typed, ""))
+            connection.executemany(
+                """
+                INSERT INTO prediction_values(
+                    observation_id, metric, value_type, numeric_value,
+                    text_value, boolean_value, unit
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(observation_id, metric) DO UPDATE SET
+                    value_type=excluded.value_type,
+                    numeric_value=excluded.numeric_value,
+                    text_value=excluded.text_value,
+                    boolean_value=excluded.boolean_value,
+                    unit=excluded.unit
+                """,
+                typed_rows,
+            )
+
     def _merge_stages(
         self,
         *,
@@ -3005,6 +5479,13 @@ class CohortStore:
                       repeat_masker=MAX(excluded.repeat_masker, cohort_annotations.repeat_masker),
                       segdup=MAX(excluded.segdup, cohort_annotations.segdup)
                 """)
+                self._merge_stage_predictions(
+                    connection,
+                    alias,
+                    file_id,
+                    content_sha256=content_sha256,
+                    content_probe=content_probe,
+                )
                 connection.execute(f"""
                     INSERT INTO cohort_genotypes(
                       variant_id, sample_id, genotype, zygosity, phased,

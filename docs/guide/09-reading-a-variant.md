@@ -219,6 +219,32 @@ Three structural caveats apply to any predictor comparison:
   filtering on popmax, part of their score restates what the filter
   already established.
 
+### Functional effect (FuncVEP)
+
+When the optional FuncVEP resource
+([Kayaalp et al., *Nature Genetics* 2026](https://www.nature.com/articles/s41588-026-02727-3))
+is installed, the variant page shows its CTI score by default for GRCh38
+missense SNVs. CTE and SP can be enabled under **Display settings → FuncVEP
+models**. All three are 0–1 scores; higher values mean that a damaging
+**functional effect** is more likely:
+
+- **CTI** includes features from all available component variant-effect
+  predictors, including clinically trained predictors.
+- **CTE** excludes clinically trained component predictors and also excludes
+  AlphaMissense. AlphaMissense is not categorized as clinically trained here;
+  the authors excluded it because its development used ClinVar variants for
+  model selection and tuning.
+- **SP** excludes every feature derived from another variant-effect predictor,
+  providing the least predictor-dependent member of the family.
+
+GUIDE-IEI displays these scores only after the genomic allele and the stable
+Ensembl gene ID both match exactly. A gene mismatch or unavailable target is
+shown as missing rather than transferring a score between genes. The scores
+predict functional impact, **not clinical pathogenicity**; even CTI is not an
+ACMG classification or independent clinical evidence. Missing is likewise not
+benign. The upstream archive also contains clinically trained ClinVEP models,
+but GUIDE-IEI deliberately does not import or display those columns.
+
 ### Gain versus loss of function
 
 When LoGoFunc ([Stein et al., *Genome Medicine* 2023](https://genomemedicine.biomedcentral.com/articles/10.1186/s13073-023-01261-9)) is installed, its three class probabilities — neutral,

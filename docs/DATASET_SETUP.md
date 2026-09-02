@@ -14,7 +14,10 @@ downloads for either exome or whole-genome analysis and refresh changing public
 sources such as ClinVar. dbNSFP registration and licensed PromoterAI setup are
 shown separately with direct source links and guided instructions. SCREEN
 Registry V4 cCRE regions and the hg19 input bundle ship with the native
-release; LoGoFunc remains an optional research annotation. Each dataset card
+release; LoGoFunc remains an optional public research annotation, and FuncVEP
+is an optional licensed archive that GUIDE-IEI can download after the user
+reviews and acknowledges the upstream terms. An existing official ZIP can be
+selected instead. Each dataset card
 explains in plain language what the dataset adds; the technical details behind
 every card are in the [dataset reference](dataset-reference.md), and screen
 behavior in [Reference setup](REFERENCE_SETUP.md).
@@ -99,7 +102,39 @@ bash scripts/download_logofunc.sh config/annotation.config.yaml
 bash scripts/prepare_logofunc.sh /path/to/LoGoFunc
 ```
 
-## 6. CADD whole-genome scores (optional, WGS only, ~83 GiB)
+## 6. FuncVEP (optional, licensed archive)
+
+Review the supported official FuncVEP archive's
+[PolyForm Strict License 1.0.0](https://polyformproject.org/licenses/strict/1.0.0)
+for your intended use. The upstream terms permit qualifying noncommercial use
+but do not grant distribution or software-modification rights; the Zenodo record does not expose
+a separate dataset-license field, so confirm that your local use is authorized.
+In the Annotation datasets screen, acknowledge the terms and select **Download
+and install FuncVEP**. GUIDE-IEI resumably downloads the pinned archive from
+the [official Zenodo record](https://zenodo.org/records/20595206), verifies its
+published checksum, extracts only the three FuncVEP scores, and builds a GRCh38
+tabix index. An existing official ZIP can be selected instead. All processing
+is local; the archive and its contents are never uploaded or redistributed.
+Allow at least 24 GiB free for the automatic download and preparation.
+
+Command-line equivalents:
+
+```bash
+# Automatic official download and preparation after reviewing the terms:
+bash scripts/download_funcvep.sh \
+  config/annotation.config.yaml --acknowledge-license
+
+# Or prepare an existing official ZIP:
+bash scripts/prepare_funcvep.sh \
+  /absolute/path/to/FuncVEP_and_ClinVEP_scores_all_possible_missense_variants.zip \
+  config/annotation.config.yaml --acknowledge-license
+```
+
+The resulting annotations require an exact genomic allele plus stable Ensembl
+gene ID match. The upstream archive's ClinVEP columns are intentionally not
+prepared or integrated.
+
+## 7. CADD whole-genome scores (optional, WGS only, ~83 GiB)
 
 Coding-region CADD scores are already included in dbNSFP; this optional
 download adds CADD for **non-coding** whole-genome positions. It can be

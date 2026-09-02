@@ -4,12 +4,24 @@ import test from "node:test";
 import { deflateRawSync, gzipSync } from "node:zlib";
 import ts from "typescript";
 
-const source = await readFile(new URL("../app/vcf.ts", import.meta.url), "utf8");
+const rawSource = await readFile(new URL("../app/vcf.ts", import.meta.url), "utf8");
+const predictorRegistry = JSON.parse(await readFile(
+  new URL("../../config/predictor-registry.json", import.meta.url),
+  "utf8",
+));
+// The production bundle resolves the JSON import. This dependency-free test
+// harness transpiles one TypeScript file to a data URL, so inline the same
+// canonical registry document before transpilation.
+const source = rawSource.replace(
+  'import predictorRegistry from "../../config/predictor-registry.json";',
+  `const predictorRegistry = ${JSON.stringify(predictorRegistry)};`,
+);
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
 const {
+  ADDITIONAL_DBNSFP_PREDICTORS,
   candidateCompoundHetKeys,
   isHeterozygousGenotype,
   STANDARD_VARIANT_QC,
@@ -110,9 +122,23 @@ test("imports a real gzip-compressed .vcf.gz file", async () => {
   assert.equal(result.rows[0].gnomadFrequencies.gnomADg_NFE_AF, 0.00015);
   assert.equal(result.rows[0].gnomadPopmaxPopulation, "AFR");
   assert.equal(result.rows[0].clinvarReviewStatus, "reviewed_by_expert_panel");
+  assert.deepEqual(result.rows[0].predictions.clinvar_assertions, {
+    scope: "allele",
+    matchStatus: "exact",
+    matchedOn: ["chromosome", "position", "reference", "alternate"],
+    values: { review_status: "reviewed_by_expert_panel" },
+    provenance: { disease: "immunodeficiency" },
+  });
   assert.equal(result.rows[0].pLi, 0.997);
   assert.equal(result.rows[0].loeuf, 0.21);
-  assert.equal(result.rows[0].promoterAI, -0.91);
+  assert.equal(result.rows[0].promoterAI, null);
+  assert.deepEqual(result.rows[0].predictions.promoterai, {
+    scope: "allele_transcript_tss_strand",
+    matchStatus: "partial",
+    matchedOn: ["chromosome", "position", "reference", "alternate"],
+    values: {},
+    provenance: { withheld_metrics: "score" },
+  });
   assert.deepEqual(result.rows[0].unscoredIndelReasons, [
     "SpliceAI_intronic", "PromoterAI_promoter",
   ]);
@@ -125,6 +151,11 @@ test("imports a real gzip-compressed .vcf.gz file", async () => {
     score: 0.73,
     prediction: "D",
   });
+  assert.equal(
+    ADDITIONAL_DBNSFP_PREDICTORS.find((item) => item.id === "esm1b")
+      .damagingDirection,
+    "lower",
+  );
   assert.equal(result.summary.intakeQc.length, 10);
   assert.equal(result.summary.intakeQc.every((check) => check.status === "pass"), true);
 });
@@ -358,6 +389,229 @@ test("preserves separate disease-specific ClinGen expert assertions", async () =
   assert.equal(result.rows[0].clingenErepo[0].modeOfInheritance, "Autosomal dominant inheritance");
 });
 
+test("keeps Number=A ClinGen assertions isolated to their ALT allele", async () => {
+  const encodeAssertion = (alt, uuid, disease) => [
+    alt, uuid, `CA-${uuid}`, "Pathogenic", disease, "MONDO:1",
+    "Autosomal dominant inheritance", "Panel", "2026-01-01",
+  ].map((value) => encodeURIComponent(value)).join("|");
+  const fields = ["Allele", "ALLELE_NUM", "Consequence", "IMPACT", "SYMBOL", "PICK"];
+  const gAssertions = [
+    encodeAssertion("G", "g1", "Disease G1"),
+    encodeAssertion("G", "g2", "Disease G2"),
+  ].join("&");
+  const tAssertion = encodeAssertion("T", "t1", "Disease T");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "##INFO=<ID=ClinGen_ERepo,Number=A,Type=String,Description=\"per ALT\">",
+    "##INFO=<ID=ClinGen_ERepo_count,Number=A,Type=Integer,Description=\"per ALT\">",
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t100\t.\tA\tG,T\t99\tPASS\tCSQ=G|1|missense_variant|MODERATE|GENE1|1,T|2|missense_variant|MODERATE|GENE2|1;ClinGen_ERepo=${gAssertions},${tAssertion};ClinGen_ERepo_count=2,1\tGT\t1/2`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "clingen-number-a.vcf")]);
+  const byAlt = new Map(result.rows.map((row) => [row.alt, row]));
+  assert.deepEqual(
+    byAlt.get("G").clingenErepo.map((item) => item.disease),
+    ["Disease G1", "Disease G2"],
+  );
+  assert.deepEqual(
+    byAlt.get("T").clingenErepo.map((item) => item.disease),
+    ["Disease T"],
+  );
+  assert.equal(byAlt.get("G").predictions.clingen_erepo_assertions.values.count, 2);
+  assert.equal(
+    byAlt.get("G").predictions.clingen_erepo_assertions.provenance.assertions,
+    gAssertions,
+  );
+  assert.equal(byAlt.get("T").predictions.clingen_erepo_assertions.values.count, 1);
+  assert.equal(
+    byAlt.get("T").predictions.clingen_erepo_assertions.provenance.assertions,
+    tAssertion,
+  );
+});
+
+test("filters legacy record-wide ClinGen observations by encoded ALT", async () => {
+  const encodeAssertion = (alt, uuid) => [
+    alt, uuid, `CA-${uuid}`, "Pathogenic", `Disease ${uuid}`, "MONDO:1",
+    "Autosomal dominant inheritance", "Panel", "2026-01-01",
+  ].map((value) => encodeURIComponent(value)).join("|");
+  const fields = ["Allele", "ALLELE_NUM", "Consequence", "IMPACT", "SYMBOL", "PICK"];
+  const gAssertions = [encodeAssertion("G", "g1"), encodeAssertion("G", "g2")];
+  const tAssertion = encodeAssertion("T", "t1");
+  const legacyAssertions = [...gAssertions, tAssertion].join(",");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "##INFO=<ID=ClinGen_ERepo,Number=.,Type=String,Description=\"legacy record wide\">",
+    "##INFO=<ID=ClinGen_ERepo_count,Number=1,Type=Integer,Description=\"legacy record wide\">",
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t100\t.\tA\tG,T\t99\tPASS\tCSQ=G|1|missense_variant|MODERATE|GENE1|1,T|2|missense_variant|MODERATE|GENE2|1;ClinGen_ERepo=${legacyAssertions};ClinGen_ERepo_count=3\tGT\t1/2`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "clingen-legacy.vcf")]);
+  const byAlt = new Map(result.rows.map((row) => [row.alt, row]));
+  assert.equal(byAlt.get("G").predictions.clingen_erepo_assertions.values.count, 2);
+  assert.equal(byAlt.get("T").predictions.clingen_erepo_assertions.values.count, 1);
+  assert.equal(
+    byAlt.get("G").predictions.clingen_erepo_assertions.provenance.assertions,
+    gAssertions.join("&"),
+  );
+  assert.equal(
+    byAlt.get("T").predictions.clingen_erepo_assertions.provenance.assertions,
+    tAssertion,
+  );
+});
+
+test("normalizes regional context and ClinVar amino-acid flags as allele observations", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Feature", "PICK",
+    "RepeatMasker", "SegDup", "ClinVar_path_aa_match",
+    "ClinVar_path_aa_change_match",
+  ];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1|ENST1|1|LINE_L1|0.992|1|0\tGT\t0/1",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "allele-context.vcf")]);
+  const observations = result.rows[0].predictions;
+  assert.deepEqual(observations.repeatmasker_context.values, { overlap: "LINE_L1" });
+  assert.deepEqual(observations.segdup_context.values, { overlap: "0.992" });
+  assert.deepEqual(observations.clinvar_aa_match.values, {
+    residue_match: true,
+    change_match: false,
+  });
+  assert.equal(observations.repeatmasker_context.scope, "allele");
+  assert.equal(observations.segdup_context.scope, "allele");
+  assert.equal(observations.clinvar_aa_match.scope, "allele");
+});
+
+test("models SpliceAI as an allele-and-source-gene predictor with delta positions", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature", "PICK",
+    "SpliceAI_pred_SYMBOL", "SpliceAI_pred_DS_AG", "SpliceAI_pred_DS_AL",
+    "SpliceAI_pred_DS_DG", "SpliceAI_pred_DS_DL", "SpliceAI_pred_DP_AG",
+    "SpliceAI_pred_DP_AL", "SpliceAI_pred_DP_DG", "SpliceAI_pred_DP_DL",
+  ];
+  const csq = [
+    "G", "splice_region_variant", "MODERATE", "GENE1", "ENSG1", "ENST1", "1",
+    "GENE1", "0.31", "0.02", "0.7", "0.01", "-12", "4", "8", "-3",
+  ].join("|");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t100\t.\tA\tG\t99\tPASS\tCSQ=${csq}\tGT\t0/1`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "spliceai.vcf")]);
+  assert.deepEqual(result.rows[0].predictions.spliceai, {
+    scope: "allele_gene_symbol",
+    matchStatus: "exact",
+    matchedOn: [
+      "chromosome", "position", "reference", "alternate", "gene_symbol",
+    ],
+    values: {
+      delta_acceptor_gain: 0.31,
+      delta_acceptor_loss: 0.02,
+      delta_donor_gain: 0.7,
+      delta_donor_loss: 0.01,
+    },
+    target: { gene_symbol: "GENE1" },
+    provenance: {
+      source_gene_symbol: "GENE1",
+      delta_position_acceptor_gain: -12,
+      delta_position_acceptor_loss: 4,
+      delta_position_donor_gain: 8,
+      delta_position_donor_loss: -3,
+    },
+  });
+});
+
+test("drops malformed predictor metrics without rejecting the VCF", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature", "PICK",
+    "SpliceAI_pred_SYMBOL", "SpliceAI_pred_DS_AG", "SpliceAI_pred_DP_AG",
+    "REVEL_score",
+  ];
+  const csq = [
+    "G", "splice_region_variant", "MODERATE", "GENE1", "ENSG1", "ENST1", "1",
+    "GENE1", "0.5", "137", "1.0001",
+  ].join("|");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t100\t.\tA\tG\t99\tPASS\tCSQ=${csq}\tGT\t0/1`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "invalid-metric.vcf")]);
+
+  assert.equal(result.rows.length, 1);
+  assert.deepEqual(result.rows[0].predictions.spliceai, {
+    scope: "allele_gene_symbol",
+    matchStatus: "exact",
+    matchedOn: [
+      "chromosome", "position", "reference", "alternate", "gene_symbol",
+    ],
+    values: { delta_acceptor_gain: 0.5 },
+    target: { gene_symbol: "GENE1" },
+    provenance: {
+      source_gene_symbol: "GENE1",
+      invalid_metrics: "delta_position_acceptor_gain",
+    },
+  });
+  assert.equal(result.rows[0].predictions.revel, undefined);
+});
+
+test("normalizes PromoterAI strand encoding and supports legacy VEP STRAND", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature", "PICK",
+    "STRAND", "PromoterAI_score", "PromoterAI_TSS", "PromoterAI_strand",
+    "PromoterAI_source_transcript", "PromoterAI_match",
+  ];
+  const row = (tss, pluginStrand) => [
+    "G", "upstream_gene_variant", "MODIFIER", "GENE1", "ENSG1", "ENST1", "1",
+    "-1", "-0.8", tss, pluginStrand, "ENST1", "stable_id",
+  ].join("|");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t100\t.\tA\tG\t99\tPASS\tCSQ=${row("90", "-1")}\tGT\t0/1`,
+    `1\t110\t.\tA\tG\t99\tPASS\tCSQ=${row("90", "")}\tGT\t0/1`,
+    `1\t120\t.\tA\tG\t99\tPASS\tCSQ=${row("90&91", "-1")}\tGT\t0/1`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "promoter-strand.vcf")]);
+
+  for (const prediction of result.rows.slice(0, 2).map(
+    (variant) => variant.predictions.promoterai,
+  )) {
+    assert.equal(prediction.matchStatus, "exact");
+    assert.equal(prediction.target.strand, "-");
+    assert.equal(prediction.provenance.strand, "-");
+    assert.equal(prediction.provenance.tss, 90);
+    assert.equal(prediction.values.score, -0.8);
+  }
+  const ambiguous = result.rows[2].predictions.promoterai;
+  assert.equal(ambiguous.matchStatus, "partial");
+  assert.equal(ambiguous.target.tss, undefined);
+  assert.equal(ambiguous.provenance.tss, undefined);
+  assert.deepEqual(ambiguous.values, {});
+  assert.equal(ambiguous.provenance.withheld_metrics, "score");
+  assert.equal(result.rows[2].promoterAI, null);
+});
+
 test("prefers the selected WGS CADD plugin over a duplicate dbNSFP value", async () => {
   const fields = [
     "Allele", "Consequence", "IMPACT", "SYMBOL",
@@ -420,9 +674,145 @@ test("parses strict LoGoFunc evidence and exposes it beside the MANE transcript"
   assert.equal(sourceRow.loGoFuncMatch, "allele_transcript_protein");
   assert.equal(sourceRow.loGoFuncPrediction, "GOF");
   assert.equal(sourceRow.loGoFuncGof, 0.9);
+  assert.deepEqual(sourceRow.predictions.logofunc, {
+    scope: "allele_transcript_protein",
+    matchStatus: "exact",
+    matchedOn: [
+      "chromosome", "position", "reference", "alternate",
+      "ensembl_transcript", "protein_position", "amino_acid_change",
+    ],
+    values: { prediction: "GOF", neutral: 0.05, gof: 0.9, lof: 0.05 },
+    target: {
+      ensembl_transcript: "ENST_SOURCE",
+      protein_position: "1",
+      amino_acid_change: "ENSP_SOURCE:p.Lys1Arg",
+    },
+    provenance: {
+      allele_available: true,
+      match: "allele_transcript_protein",
+    },
+  });
   assert.equal(maneRow.loGoFuncPrediction, "GOF");
   assert.equal(maneRow.loGoFuncSourceTranscript, "ENST_SOURCE");
   assert.equal(maneRow.loGoFuncMatch, "source_transcript_match_elsewhere");
+  assert.deepEqual(maneRow.predictions.logofunc, sourceRow.predictions.logofunc);
+});
+
+test("retains allele-only LoGoFunc provenance without assigning a score", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature",
+    "HGVSp", "PICK", "LoGoFunc_prediction", "LoGoFunc_neutral",
+    "LoGoFunc_GOF", "LoGoFunc_LOF", "LoGoFunc_allele_available",
+    "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match",
+  ];
+  const consequence = [
+    "G", "missense_variant", "MODERATE", "GENE1", "ENSG1", "ENST_QUERY",
+    "ENSP_QUERY:p.Lys1Arg", "1", "", "", "", "", "1",
+    "ENST_SOURCE", "ENSP_SOURCE:p.Lys1Arg", "allele_only",
+  ].join("|");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t150\t.\tA\tG\t99\tPASS\tCSQ=${consequence}\tGT:DP:GQ:AD\t0/1:30:99:15,15`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "logofunc-partial.vcf")]);
+  assert.deepEqual(result.rows[0].predictions.logofunc, {
+    scope: "allele_transcript_protein",
+    matchStatus: "partial",
+    matchedOn: ["chromosome", "position", "reference", "alternate"],
+    values: {},
+    target: {
+      ensembl_transcript: "ENST_SOURCE",
+      protein_position: "1",
+      amino_acid_change: "ENSP_SOURCE:p.Lys1Arg",
+    },
+    provenance: { allele_available: true, match: "allele_only" },
+  });
+});
+
+test("parses FuncVEP scores as exact allele-and-gene predictor observations", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature", "PICK",
+    "FuncVEP_CTI", "FuncVEP_CTE", "FuncVEP_SP", "FuncVEP_allele_available",
+    "FuncVEP_match", "FuncVEP_match_status", "FuncVEP_source_gene",
+  ];
+  const scored = [
+    "G", "missense_variant", "MODERATE", "GENE1", "ENSG00000123456",
+    "ENST00000123456", "1", "0.912", "0.731", "0.445", "1",
+    "allele_gene", "exact", "ENSG00000123456",
+  ].join("|");
+  const unscored = [
+    "T", "missense_variant", "MODERATE", "GENE2", "ENSG00000654321",
+    "ENST00000654321", "1", "", "", "", "1",
+    "allele_only", "partial", "ENSG00000999999",
+  ].join("|");
+  const partialScored = [
+    "G", "missense_variant", "MODERATE", "GENE3", "ENSG00000777777",
+    "ENST00000777777", "1", "0.9", "0.8", "0.7", "1",
+    "allele_only", "partial", "ENSG00000888888",
+  ].join("|");
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t150\t.\tA\tG\t99\tPASS\tCSQ=${scored}\tGT:DP:GQ:AD\t0/1:30:99:15,15`,
+    `1\t250\t.\tC\tT\t99\tPASS\tCSQ=${unscored}\tGT:DP:GQ:AD\t0/1:30:99:15,15`,
+    `1\t350\t.\tA\tG\t99\tPASS\tCSQ=${partialScored}\tGT:DP:GQ:AD\t0/1:30:99:15,15`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "funcvep.vcf")]);
+  const scoredRow = result.rows.find((row) => row.pos === 150);
+  const unscoredRow = result.rows.find((row) => row.pos === 250);
+  const partialScoredRow = result.rows.find((row) => row.pos === 350);
+
+  assert.equal(scoredRow.funcVepCti, 0.912);
+  assert.equal(scoredRow.funcVepCte, 0.731);
+  assert.equal(scoredRow.funcVepSp, 0.445);
+  assert.equal(scoredRow.geneId, "ENSG00000123456");
+  assert.deepEqual(scoredRow.predictions.funcvep, {
+    scope: "allele_gene",
+    matchStatus: "exact",
+    matchedOn: [
+      "chromosome", "position", "reference", "alternate", "ensembl_gene",
+    ],
+    target: { ensembl_gene: "ENSG00000123456" },
+    values: { cti: 0.912, cte: 0.731, sp: 0.445 },
+    provenance: {
+      allele_available: true,
+      match: "allele_gene",
+      match_status: "exact",
+    },
+  });
+
+  assert.equal(unscoredRow.funcVepCti, null);
+  assert.equal(unscoredRow.funcVepCte, null);
+  assert.equal(unscoredRow.funcVepSp, null);
+  assert.deepEqual(unscoredRow.predictions.funcvep, {
+    scope: "allele_gene",
+    matchStatus: "partial",
+    matchedOn: ["chromosome", "position", "reference", "alternate"],
+    target: { ensembl_gene: "ENSG00000999999" },
+    values: {},
+    provenance: {
+      allele_available: true,
+      match: "allele_only",
+      match_status: "partial",
+    },
+  });
+  assert.equal(partialScoredRow.funcVepCti, null);
+  assert.equal(partialScoredRow.funcVepCte, null);
+  assert.equal(partialScoredRow.funcVepSp, null);
+  assert.deepEqual(partialScoredRow.predictions.funcvep.values, {});
+  assert.equal(
+    partialScoredRow.predictions.funcvep.provenance.withheld_metrics,
+    "cte,cti,sp",
+  );
 });
 
 test("retains reference parental genotypes and uses allele-specific GT and AD", async () => {
@@ -491,6 +881,21 @@ test("parses sample- and transcript-specific frame-restoration evidence", async 
   assert.equal(result.rows[0].haplotypeFrameStatus, "FRAME_RESTORED_CONFIRMED");
   assert.deepEqual(result.rows[0].haplotypeFramePartners, ["1:315:AG:A"]);
   assert.equal(result.rows[0].haplotypeProteinChange, "ENSP0001:10AB>CD");
+  assert.deepEqual(result.rows[0].predictions.haplotype_frame, {
+    scope: "sample_haplotype",
+    matchStatus: "partial",
+    matchedOn: [
+      "chromosome", "position", "reference", "alternate", "sample",
+      "ensembl_transcript",
+    ],
+    values: {
+      frame_evidence: [
+        "1:300:A:AT", "PATIENT", "ENST0001", "FRAME_RESTORED_CONFIRMED",
+        "1:315:AG:A", "ENSP0001:10AB>CD",
+      ].join("|"),
+    },
+    target: { sample: "PATIENT", ensembl_transcript: "ENST0001" },
+  });
   assert.equal(
     result.rows[0].clinvarConflictingEvidence,
     "Pathogenic(1)&Uncertain_significance(2)",
@@ -520,6 +925,20 @@ test("retains transcript-specific LOFTEE reasons, flags, and PTC recalculation",
   assert.equal(result.rows[0].loftee50bp, "FAIL");
   assert.equal(result.rows[0].ptcDistanceFromLastExon, -1874);
   assert.equal(result.rows[0].ptcCalcStatus, "ok");
+  assert.deepEqual(result.rows[0].predictions.loftee_ptc_50bp, {
+    scope: "transcript_consequence",
+    matchStatus: "exact",
+    matchedOn: [
+      "chromosome", "position", "reference", "alternate",
+      "ensembl_transcript", "consequence",
+    ],
+    values: { ptc_distance: -1874, ptc_rule: "FAIL", rule_changed: true },
+    target: {
+      ensembl_transcript: "ENST00000683810",
+      consequence: "frameshift_variant",
+    },
+    provenance: { original_rule: "PASS", calculation_status: "ok" },
+  });
 });
 
 test("reports an invalid file named .vcf.gz", async () => {
@@ -824,6 +1243,23 @@ test("does not cross-assign consequences on a multi-allelic allele-match failure
     assert.equal(row.gene, "—"); // but with no fabricated annotation
     assert.notEqual(row.gene, "GENEA");
   }
+});
+
+test("matches unique VEP-minimized alleles on multi-allelic indels", async () => {
+  const fields = ["Allele", "Consequence", "IMPACT", "SYMBOL"];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\tAT,AG\t99\tPASS\tCSQ=T|inframe_insertion|MODERATE|GENEA,G|inframe_insertion|MODERATE|GENEB\tGT\t1/2",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "indel-minimized.vcf")]);
+  const byAlt = new Map(result.rows.map((row) => [row.alt, row.gene]));
+  assert.equal(byAlt.get("AT"), "GENEA");
+  assert.equal(byAlt.get("AG"), "GENEB");
 });
 
 test("emits a row for a half-called carrier genotype", async () => {

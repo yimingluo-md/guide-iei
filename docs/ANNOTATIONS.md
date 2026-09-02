@@ -28,7 +28,7 @@ work whether or not you have the large/custom datasets on hand.
 | **auto, per-run** | ClinVar | fetched fresh from NCBI on every run by `scripts/fetch_clinvar.sh` |
 | **local updateable snapshot** | ClinGen Evidence Repository variant curations | installed or updated from the annotation-dataset UI; prepared by `scripts/update_clingen_erepo.sh` |
 | **large local** | dbNSFP; CADD v1.7 whole genome (WGS only) | dbNSFP requires academic registration and one-time rebuilding (`scripts/prepare_dbnsfp.sh`). CADD's required score-only files are downloadable/resumable from the UI or `scripts/download_cadd_wgs.sh`. |
-| **bring-your-own (licensed)** | PromoterAI | obtain the two files from Illumina, then prepare them from the local UI or `scripts/prepare_promoterai.sh`; auto-skipped if absent |
+| **licensed** | PromoterAI; FuncVEP | obtain PromoterAI from Illumina; after acknowledgement, FuncVEP can be downloaded directly from official Zenodo and prepared locally (`scripts/download_funcvep.sh`), or an existing ZIP can be used (`scripts/prepare_funcvep.sh`); auto-skipped if absent |
 | **optional public** | LoGoFunc | resumable direct download from Zenodo in the UI or `scripts/download_logofunc.sh`; an existing download can be validated and moved into managed storage with `scripts/prepare_logofunc.sh`; auto-skipped if absent |
 | **auto (region)** | coding+splice BED | built once from the release-matched Ensembl GTF by `scripts/build_coding_bed.sh`; used to pre-filter the input VCF |
 
@@ -71,6 +71,7 @@ VEP.
 | CADD v1.7 whole genome | `plugins.CADD_WGS` | `snv`, `indels` | Optional, WGS-only standard CADD plugin. The UI downloads only the official score tables and indexes and emits `CADD_RAW`/`CADD_PHRED`; CADD is licensed for non-commercial use. |
 | PromoterAI | `plugins.PromoterAI` | `file`, `transcript_map`, `manifest` | Optional, WGS-only transcript/TSS-aware plugin. The plugin code is bundled; licensed scores are prepared locally and never shipped. |
 | LoGoFunc | `plugins.LoGoFunc` | `file`, `manifest` | Optional GRCh38 missense-mechanism prediction (Neutral/GOF/LOF probabilities) from [Zenodo 13835271](https://zenodo.org/records/13835271). The plugin requires allele, source transcript, residue, and amino-acid substitution agreement. |
+| FuncVEP | `plugins.FuncVEP` | `file`, `manifest` | Optional GRCh38 missense functional-effect scores downloaded after acknowledgement from the [official Zenodo record](https://zenodo.org/records/20595206), or prepared from an existing official ZIP. Scores require exact genomic allele + stable Ensembl gene ID matching; no FuncVEP or ClinVEP data are bundled. |
 
 ## Custom tracks (`--custom`)
 
@@ -98,6 +99,25 @@ preferred MANE row for the same allele and gene, while preserving the source
 transcript and match status. Cohort LoGoFunc filters use only verified matches.
 These are research mechanism predictions, not ClinVar classifications and not
 LOFTEE calls. See [Bayrak et al., Genome Medicine (2023)](https://pubmed.ncbi.nlm.nih.gov/38037155/).
+
+### FuncVEP matching and interpretation
+
+FuncVEP covers GRCh38 missense SNVs and is gene-specific. Its generic indexed
+adapter first normalizes and matches the genomic allele, then strips any
+version suffix from the Ensembl gene IDs and requires exact gene agreement.
+Only one unambiguous allele-and-gene record can emit scores. Allele-only,
+missing-target, and ambiguous matches emit provenance but no score, so a value
+cannot silently move between overlapping genes.
+
+The three 0–1 outputs estimate damaging functional effect: CTI includes all
+available component variant-effect predictors, including clinically trained
+ones; CTE excludes clinically trained predictors and also excludes
+AlphaMissense because its development used ClinVar variants for model selection
+and tuning; and SP
+excludes all features derived from other variant-effect predictors. Higher is
+more damaging. These are not clinical pathogenicity classifications. The
+official upstream archive also contains ClinVEP outputs, but GUIDE-IEI
+deliberately excludes those columns from preparation and annotation.
 
 ---
 
@@ -226,6 +246,45 @@ shows it among the default predictors, and offers the optional filter
 PromoterAI is deliberately unavailable under **Exome region only**, because
 that profile removes promoter variants before VEP. Use a whole-genome job to
 enable it. A missing local PromoterAI dataset is an explicit optional skip.
+
+### FuncVEP
+
+FuncVEP is an optional, licensed resource. GUIDE-IEI does not bundle, upload,
+or redistribute its archive or score data. In **Annotate VCF → Set up annotation
+datasets → Optional add-ons**, review and explicitly acknowledge the upstream
+terms, then select **Download and install FuncVEP**. GUIDE-IEI downloads the
+pinned archive resumably from the [official Zenodo
+record](https://zenodo.org/records/20595206) and processes it locally. An
+existing official ZIP can be selected instead and remains in its selected
+location.
+
+The command-line equivalent is:
+
+```bash
+# Automatic official download and preparation:
+bash scripts/download_funcvep.sh \
+  config/annotation.config.yaml --acknowledge-license
+
+# Existing official ZIP:
+bash scripts/prepare_funcvep.sh \
+  /absolute/path/to/FuncVEP_and_ClinVEP_scores_all_possible_missense_variants.zip \
+  config/annotation.config.yaml --acknowledge-license
+```
+
+Preparation requires GRCh38. Allow at least 24 GiB free for automatic setup,
+or 20 GB when the source ZIP is stored on another filesystem. It validates the
+pinned archive identity and member schema,
+streams and partitions the source without retaining a plain 11 GB TSV, removes
+the three ClinVEP columns, validates 0–1 scores and Ensembl gene IDs, sorts the
+result, and writes:
+
+- `references/funcvep/funcvep_scores.grch38.tsv.gz` plus `.tbi`
+- `references/funcvep/funcvep.manifest.json`
+
+The manifest records source and derived-file checksums, GRCh38 scope, the row
+count and indexed contig list, license acknowledgement, excluded columns, and the exact
+allele-plus-stable-Ensembl-gene match contract. An absent or disabled FuncVEP
+resource is an explicit optional skip.
 
 ### CADD v1.7 whole genome
 

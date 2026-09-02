@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Unit tests for build_vep_command.py — run with `python -m pytest` or directly."""
+import json
+import hashlib
 import os
 import sys
 
@@ -28,8 +30,71 @@ def _full_cfg(root):
         "custom/rm.bed.gz", "custom/segdup.bed.gz",
         "clinvar/clinvar.vcf.gz", "logofunc/LoGoFunc.csv.gz",
         "logofunc/LoGoFunc.csv.gz.tbi",
+        "funcvep/funcvep_scores.grch38.tsv.gz",
+        "funcvep/funcvep_scores.grch38.tsv.gz.tbi",
+        "funcvep/funcvep.manifest.json",
     ]:
         _touch(root, rel)
+    with open(j("funcvep/funcvep_scores.grch38.tsv.gz"), "wb") as handle:
+        handle.write(b"score")
+    with open(j("funcvep/funcvep_scores.grch38.tsv.gz.tbi"), "wb") as handle:
+        handle.write(b"index")
+    with open(j("funcvep/funcvep.manifest.json"), "w", encoding="utf-8") as handle:
+        json.dump({
+            "manifest_schema": "guide-iei.indexed-scores/v1",
+            "resource": {"id": "funcvep", "name": "FuncVEP", "release": "test"},
+            "assembly": "GRCh38",
+            "applicability": {"consequences": ["missense_variant"]},
+            "table": {
+                "columns": [
+                    "chrom", "position", "reference", "alternate",
+                    "ensembl_gene_id", "FuncVEP_CTI", "FuncVEP_CTE", "FuncVEP_SP",
+                ],
+            },
+            "match": {
+                "required": ["allele", "ensembl_gene_id"],
+                "dimensions": {
+                    "allele": {
+                        "chrom": "chrom", "position": "position",
+                        "reference": "reference", "alternate": "alternate",
+                    },
+                    "ensembl_gene_id": {"column": "ensembl_gene_id"},
+                },
+            },
+            "outputs": [
+                {
+                    "id": field,
+                    "column": field,
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 1,
+                    "direction": "higher_is_more_functionally_damaging",
+                    "description": field,
+                }
+                for field in ("FuncVEP_CTI", "FuncVEP_CTE", "FuncVEP_SP")
+            ],
+            "provenance": {
+                "match": "FuncVEP_match",
+                "match_status": "FuncVEP_match_status",
+                "source_target": "FuncVEP_source_gene",
+                "allele_available": "FuncVEP_allele_available",
+            },
+            "license": {"acknowledged_by_user": True},
+            "files": {
+                "data": {
+                    "name": "funcvep_scores.grch38.tsv.gz",
+                    "size": len(b"score"),
+                    "mtime_ns": os.stat(j("funcvep/funcvep_scores.grch38.tsv.gz")).st_mtime_ns,
+                    "sha256": hashlib.sha256(b"score").hexdigest(),
+                },
+                "index": {
+                    "name": "funcvep_scores.grch38.tsv.gz.tbi",
+                    "size": len(b"index"),
+                    "mtime_ns": os.stat(j("funcvep/funcvep_scores.grch38.tsv.gz.tbi")).st_mtime_ns,
+                    "sha256": hashlib.sha256(b"index").hexdigest(),
+                },
+            },
+        }, handle)
     return {
         "reference": {"species": "homo_sapiens", "assembly": "GRCh38",
                       "vep_cache_dir": j("vep_cache"),
@@ -48,7 +113,7 @@ def _full_cfg(root):
         "plugins": {
             "dbNSFP": {"enabled": True, "version": "5.3.1a",
                        "path": j("dbnsfp/dbNSFP5.3.1a_grch38.gz"),
-                       "columns": ["CADD_phred", "REVEL_score", "AlphaMissense_score",
+                       "columns": ["CADD_phred", "CADD_raw", "REVEL_score", "AlphaMissense_score",
                                    "SIFT_pred", "Polyphen2_HDIV_pred"]},
             "LoF": {"enabled": True, "loftee_path": "auto",
                     "human_ancestor_fa": j("loftee/human_ancestor.fa.gz"),
@@ -69,6 +134,11 @@ def _full_cfg(root):
             "LoGoFunc": {
                 "enabled": True,
                 "file": j("logofunc/LoGoFunc.csv.gz"),
+            },
+            "FuncVEP": {
+                "enabled": True,
+                "file": j("funcvep/funcvep_scores.grch38.tsv.gz"),
+                "manifest": j("funcvep/funcvep.manifest.json"),
             },
         },
         "custom_tracks": {
@@ -105,10 +175,19 @@ def test_full_stack_native(tmp_path):
         "biotype,ccds,rank,length"
     )
     assert "--sift" in plan.argv and "p" in plan.argv
-    # plugins — dbNSFP with file + selected columns
+    # dbNSFP transcript-specific and allele-level registry fields are emitted
+    # by separate plugin instances with disjoint output columns.
     dbnsfp = [a for a in plan.argv if a.startswith("dbNSFP,")]
-    assert dbnsfp, "dbNSFP plugin emitted"
-    assert "CADD_phred" in dbnsfp[0] and "REVEL_score" in dbnsfp[0] and "AlphaMissense_score" in dbnsfp[0]
+    assert len(dbnsfp) == 2, dbnsfp
+    transcript_dbnsfp = next(
+        spec for spec in dbnsfp if "transcript_match=1" in spec
+    )
+    allele_dbnsfp = next(spec for spec in dbnsfp if "consequence=ALL" in spec)
+    assert "pep_match=0" in allele_dbnsfp
+    assert "REVEL_score" in transcript_dbnsfp
+    assert "AlphaMissense_score" in transcript_dbnsfp
+    assert "CADD_phred" not in transcript_dbnsfp
+    assert "CADD_phred" in allele_dbnsfp and "CADD_raw" in allele_dbnsfp
     assert any(a.startswith("LoF,loftee_path:$LOFTEE_DIR") for a in plan.argv)
     assert any(a.startswith("SpliceAI,snv=") and "indel=" in a for a in plan.argv)
     assert any(
@@ -116,6 +195,12 @@ def test_full_stack_native(tmp_path):
     )
     assert any(a.startswith("PromoterAI,file=") and "transcript_map=" in a for a in plan.argv)
     assert any(a.startswith("LoGoFunc,file=") for a in plan.argv)
+    assert any(
+        a.startswith("IndexedScores,file=")
+        and ",manifest=" in a
+        and a.endswith(",resource=funcvep")
+        for a in plan.argv
+    )
     # custom tracks — RepeatMasker, SegDup and ClinVar
     customs = [plan.argv[i + 1] for i, a in enumerate(plan.argv) if a == "--custom"]
     assert len(customs) == 3, customs
@@ -124,6 +209,51 @@ def test_full_stack_native(tmp_path):
     assert "type=exact" in clinvar and "coords=0" in clinvar
     # the shell-quoted rendering starts with the vep executable
     assert s.split()[0] == "vep", s
+
+
+def test_dbnsfp_registry_scopes_partition_columns_without_duplicates(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    cfg["plugins"]["dbNSFP"]["columns"] += [
+        "GERP++_RS",
+        "phyloP100way_vertebrate",
+        "phastCons100way_vertebrate",
+        "MutationTaster_score",
+        "MutationTaster_pred",
+        "CADD_phred",  # duplicate configuration must not duplicate CSQ output
+        "REVEL_score",
+    ]
+    plan = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz", container=False)
+    assert not plan.errors
+    assert any("duplicates" in warning for warning in plan.warnings)
+
+    specs = [value for value in plan.argv if value.startswith("dbNSFP,")]
+    assert len(specs) == 2, specs
+    transcript = next(spec for spec in specs if "transcript_match=1" in spec)
+    allele = next(spec for spec in specs if "consequence=ALL" in spec)
+    assert "pep_match=0" in allele
+
+    expected_allele = {
+        "CADD_phred",
+        "CADD_raw",
+        "GERP++_RS",
+        "phyloP100way_vertebrate",
+        "phastCons100way_vertebrate",
+        "MutationTaster_score",
+        "MutationTaster_pred",
+    }
+    for field in expected_allele:
+        assert field in allele
+        assert field not in transcript
+    assert "REVEL_score" in transcript and "REVEL_score" not in allele
+
+    configured_fields = set(cfg["plugins"]["dbNSFP"]["columns"])
+    emitted_fields = [
+        token
+        for spec in specs
+        for token in spec.split(",")[1:]
+        if token in configured_fields
+    ]
+    assert len(emitted_fields) == len(set(emitted_fields)), emitted_fields
 
 
 def test_optional_cadd_requires_both_data_files_and_indexes(tmp_path):
@@ -170,14 +300,123 @@ def test_missing_file_skipped(tmp_path):
     cfg = _full_cfg(str(tmp_path))
     os.remove(cfg["plugins"]["dbNSFP"]["path"])       # delete dbNSFP
     os.remove(cfg["plugins"]["LoGoFunc"]["file"])  # delete LoGoFunc
+    os.remove(cfg["plugins"]["FuncVEP"]["file"] + ".tbi")  # incomplete FuncVEP
     plan = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
     assert not plan.errors
     assert any("dbNSFP" in w for w in plan.warnings)
     assert any("LoGoFunc" in w for w in plan.warnings)
+    assert any("FuncVEP" in w and "index" in w for w in plan.warnings)
     assert not any(a.startswith("dbNSFP,") for a in plan.argv)
     assert not any(a.startswith("LoGoFunc,") for a in plan.argv)
+    assert not any(a.startswith("IndexedScores,") for a in plan.argv)
     customs = [plan.argv[i + 1] for i, a in enumerate(plan.argv) if a == "--custom"]
     assert len(customs) == 3
+
+
+def test_invalid_funcvep_manifest_is_never_emitted_to_vep(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    manifest = cfg["plugins"]["FuncVEP"]["manifest"]
+    with open(manifest, "w", encoding="utf-8") as handle:
+        json.dump({"resource": {"id": "funcvep"}}, handle)
+
+    optional = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert not optional.errors
+    assert any("FuncVEP.manifest" in warning for warning in optional.warnings)
+    assert not any(value.startswith("IndexedScores,") for value in optional.argv)
+
+    cfg["plugins"]["FuncVEP"]["required"] = True
+    required = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert any("FuncVEP.manifest" in error for error in required.errors)
+    assert not any(value.startswith("IndexedScores,") for value in required.argv)
+
+
+def test_generic_manifest_metric_contract_mismatches_stop_startup(tmp_path):
+    cases = (
+        ("type", "type", "integer", "type 'integer'"),
+        ("range", "maximum", 2, "range [0, 2]"),
+        ("direction", "direction", "lower", "direction 'lower'"),
+    )
+    for label, key, value, expected in cases:
+        root = tmp_path / label
+        cfg = _full_cfg(str(root))
+        manifest_path = cfg["plugins"]["FuncVEP"]["manifest"]
+        with open(manifest_path, encoding="utf-8") as handle:
+            payload = json.load(handle)
+        payload["outputs"][0][key] = value
+        with open(manifest_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle)
+
+        plan = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+        assert not plan.errors, label
+        assert any(
+            "FuncVEP_CTI" in warning
+            and expected in warning
+            and "registry metric 'funcvep.cti'" in warning
+            for warning in plan.warnings
+        ), (label, plan.warnings)
+        assert not any(value.startswith("IndexedScores,") for value in plan.argv)
+
+
+def test_generic_manifest_provenance_role_mismatch_is_startup_error(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    cfg["plugins"]["FuncVEP"]["required"] = True
+    manifest_path = cfg["plugins"]["FuncVEP"]["manifest"]
+    with open(manifest_path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    provenance = payload["provenance"]
+    provenance["source_target"], provenance["allele_available"] = (
+        provenance["allele_available"], provenance["source_target"]
+    )
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+    plan = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert any(
+        "provenance.source_target" in error
+        and "role 'flag'" in error
+        and "role 'provenance'" in error
+        for error in plan.errors
+    ), plan.errors
+    assert not any(value.startswith("IndexedScores,") for value in plan.argv)
+
+
+def test_generic_manifest_mtime_is_optional_and_checksum_resolves_mismatch(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    manifest_path = cfg["plugins"]["FuncVEP"]["manifest"]
+    score_path = cfg["plugins"]["FuncVEP"]["file"]
+
+    with open(manifest_path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    payload["files"]["data"].pop("mtime_ns")
+    payload["files"]["index"].pop("mtime_ns")
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    without_mtime = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert not without_mtime.errors
+    assert any(value.startswith("IndexedScores,") for value in without_mtime.argv)
+
+    # Restore timestamp metadata, then simulate a metadata-only copy. The
+    # manifest hash still proves identity, so the plugin remains enabled.
+    score_status = os.stat(score_path)
+    payload["files"]["data"]["mtime_ns"] = score_status.st_mtime_ns
+    payload["files"]["index"]["mtime_ns"] = os.stat(score_path + ".tbi").st_mtime_ns
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+    os.utime(
+        score_path,
+        ns=(score_status.st_atime_ns, score_status.st_mtime_ns + 1_000_000),
+    )
+    copied = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert not copied.errors
+    assert any(value.startswith("IndexedScores,") for value in copied.argv)
+
+    # A same-size content change cannot hide behind the timestamp fallback.
+    with open(score_path, "wb") as handle:
+        handle.write(b"scorf")
+    damaged = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert not damaged.errors
+    assert any("sha256" in warning for warning in damaged.warnings)
+    assert not any(value.startswith("IndexedScores,") for value in damaged.argv)
 
 
 def test_required_missing_errors(tmp_path):
@@ -237,6 +476,27 @@ def test_unconfigured_cadd_path_is_not_emitted_as_cwd(tmp_path):
     assert not any("indels=" in a and os.getcwd() in a for a in plan.argv)
     assert any(
         "CADD_WGS.indels" in warning and "no path configured" in warning
+        for warning in plan.warnings
+    )
+
+
+def test_unconfigured_funcvep_path_is_not_emitted_as_project_root(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    del cfg["plugins"]["FuncVEP"]["file"]
+    del cfg["plugins"]["FuncVEP"]["manifest"]
+    plan = build_vep_command(
+        cfg, "in.vcf.gz", "out.vcf.gz", container=True,
+        check_exists=False, base_dir=str(tmp_path),
+    )
+    assert not plan.errors
+    assert not any(value.startswith("IndexedScores,") for value in plan.argv)
+    assert not any(mount.host == str(tmp_path.parent) for mount in plan.mounts)
+    assert any(
+        "FuncVEP.file" in warning and "no path configured" in warning
+        for warning in plan.warnings
+    )
+    assert any(
+        "FuncVEP.manifest" in warning and "no path configured" in warning
         for warning in plan.warnings
     )
 
