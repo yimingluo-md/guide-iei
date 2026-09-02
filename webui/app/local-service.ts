@@ -35,6 +35,7 @@ export type JobProgress = {
   stage: string;
   stage_label: string;
   stages: JobProgressStage[];
+  resolved_assembly?: "GRCh38" | "GRCh37" | null;
   variants_total: number | null;
   variants_done: number | null;
   vep_percent: number | null;
@@ -82,7 +83,7 @@ export type ServiceCapabilities = {
       available: boolean;
       required: boolean;
       version: number | null;
-      state?: "ready" | "runtime_missing" | "runtime_unavailable" | "image_missing";
+      state?: "ready" | "runtime_missing" | "runtime_unavailable" | "image_missing" | "image_stale";
       message?: string;
     }[];
     sources: {
@@ -709,6 +710,7 @@ export type SampleLibraryDataset = {
   retained_record_count: number | null;
   include_in_cohort: boolean;
   cohort_file_id: number | null;
+  cohort_sample_entry_id: number | null;
   cohort_index_status: "ready" | "not_included" | "needs_repair";
   status: string;
   warnings: string[];
@@ -727,14 +729,14 @@ export type SampleLibraryImportSource = {
 
 export type SampleLibraryImportResult = {
   imports: {
-    datasets: Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id">[];
+    datasets: Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id" | "cohort_sample_entry_id">[];
     managed_path: string;
     deduplicated_file: boolean;
     profile_label: string;
     profile_hash: string;
     warnings: string[];
   }[];
-  datasets: Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id">[];
+  datasets: Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id" | "cohort_sample_entry_id">[];
 };
 
 export type StorageStats = {

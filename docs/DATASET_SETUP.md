@@ -32,11 +32,11 @@ bash docker/build.sh
 
 (`scripts/setup_environment.sh --install` offers this too.)
 
-The application's one-click recommended-dataset action performs this check
-automatically: when the native `bgzip`, `tabix`, and `samtools` set is absent
-and the configured local image has not been built, it builds the image before
-starting large downloads. Direct command-line users can still build it
-explicitly as shown above.
+The launcher and the application's one-click recommended-dataset action perform
+this check automatically. GUIDE-IEI fingerprints the container inputs in each
+software version; if the configured local image is missing or belongs to an
+older version, it rebuilds the image before annotation or large downloads.
+Direct command-line users can still build it explicitly as shown above.
 
 ## 2. Freely downloadable references
 

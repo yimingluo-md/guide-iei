@@ -168,7 +168,8 @@ class TrackerTests(unittest.TestCase):
     def test_stage_progression_denominator_and_percent(self):
         self.log_write("[10:00:00] preflight container checks passed\n")
         snap = self.tracker.snapshot(self.job)
-        self.assertEqual(snap["stage"], "preflight")
+        self.assertEqual(snap["stage"], "input")
+        self.assertEqual(snap["stage_label"], "Detecting genome assembly")
         self.assertIsNone(snap["variants_total"])
         # GRCh38 input: no liftover stage in the checklist.
         self.assertNotIn("liftover", [s["id"] for s in snap["stages"]])
@@ -210,10 +211,20 @@ class TrackerTests(unittest.TestCase):
         self.assertEqual(snap["vep_percent"], 99.0)
 
     def test_liftover_stage_appears_for_grch37_inputs(self):
-        self.job["input_assembly"] = "GRCh37"
+        self.job["input_assembly"] = "auto"
         self.log_write("[10:00:00] input assembly: requested=auto, resolved=GRCh37\n")
         snap = self.tracker.snapshot(self.job)
+        self.assertEqual(snap["resolved_assembly"], "GRCh37")
+        self.assertEqual(snap["stage_label"], "Preparing GRCh37 input for liftover")
         self.assertIn("liftover", [s["id"] for s in snap["stages"]])
+
+    def test_resolved_grch38_is_reported_without_liftover_stage(self):
+        self.job["input_assembly"] = "auto"
+        self.log_write("[10:00:00] input assembly: requested=auto, resolved=GRCh38\n")
+        snap = self.tracker.snapshot(self.job)
+        self.assertEqual(snap["resolved_assembly"], "GRCh38")
+        self.assertEqual(snap["stage_label"], "Preparing GRCh38 input")
+        self.assertNotIn("liftover", [s["id"] for s in snap["stages"]])
 
     def test_stale_output_from_a_previous_run_is_not_counted(self):
         """The previous run's completed output sits at the path until VEP

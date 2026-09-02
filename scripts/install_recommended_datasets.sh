@@ -129,12 +129,25 @@ ensure_dataset_hts_backend() {
     docker|podman)
       "$runtime" info >/dev/null 2>&1 \
         || die "$runtime is installed but is not running; start it and retry dataset setup"
+      local expected_fingerprint actual_fingerprint image_present
+      expected_fingerprint="$(bash "${ROOT}/docker/image_fingerprint.sh")"
+      actual_fingerprint=""
+      image_present=0
       if "$runtime" image inspect "$image" >/dev/null 2>&1; then
-        echo "Dataset indexing backend ready (${runtime} image ${image})."
-        return 0
+        image_present=1
+        actual_fingerprint="$(
+          "$runtime" image inspect --format \
+            '{{ index .Config.Labels "org.guide-iei.source-fingerprint" }}' \
+            "$image" 2>/dev/null || true
+        )"
+        if [[ "$actual_fingerprint" == "$expected_fingerprint" ]]; then
+          echo "Dataset indexing backend ready (${runtime} image ${image})."
+          return 0
+        fi
+        echo "The local annotation image is older than this GUIDE-IEI version; rebuilding it now."
       fi
 
-      [[ "$image" != *@* ]] \
+      [[ "$image_present" == "1" || "$image" != *@* ]] \
         || die "configured image $image is digest-pinned but is not available locally"
       image_name="$image"
       image_tag="latest"
@@ -150,6 +163,13 @@ ensure_dataset_hts_backend() {
         bash "${ROOT}/docker/build.sh" "$CONFIG"
       "$runtime" image inspect "$image" >/dev/null 2>&1 \
         || die "annotation tool build completed but image $image is unavailable"
+      actual_fingerprint="$(
+        "$runtime" image inspect --format \
+          '{{ index .Config.Labels "org.guide-iei.source-fingerprint" }}' \
+          "$image" 2>/dev/null || true
+      )"
+      [[ "$actual_fingerprint" == "$expected_fingerprint" ]] \
+        || die "annotation tool build completed but its source identity is incorrect"
       echo "Dataset indexing backend ready (${runtime} image ${image})."
       ;;
     singularity|apptainer)

@@ -357,6 +357,33 @@ def test_generic_manifest_metric_contract_mismatches_stop_startup(tmp_path):
         assert not any(value.startswith("IndexedScores,") for value in plan.argv)
 
 
+def test_generic_manifest_rejects_a_declared_stale_binary_threshold(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    manifest_path = cfg["plugins"]["FuncVEP"]["manifest"]
+    with open(manifest_path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+    payload["outputs"][0]["binary_classification"] = {
+        "threshold": 0.521,
+        "comparison": "greater_than_or_equal",
+        "positive_label": "Damaging",
+        "negative_label": "Neutral",
+        "threshold_set": "obsolete preprint threshold",
+        "source_url": "https://example.test/obsolete",
+    }
+    with open(manifest_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle)
+
+    plan = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert not plan.errors
+    assert any(
+        "FuncVEP_CTI" in warning
+        and "binary classification does not match registry metric 'funcvep.cti'"
+        in warning
+        for warning in plan.warnings
+    ), plan.warnings
+    assert not any(value.startswith("IndexedScores,") for value in plan.argv)
+
+
 def test_generic_manifest_provenance_role_mismatch_is_startup_error(tmp_path):
     cfg = _full_cfg(str(tmp_path))
     cfg["plugins"]["FuncVEP"]["required"] = True

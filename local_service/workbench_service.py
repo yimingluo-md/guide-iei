@@ -77,6 +77,15 @@ from pipeline.predictor_registry import (
 
 SERVICE_VERSION = "0.13.0"
 FUNCVEP_ARCHIVE_NAME = FUNCVEP_PINNED_RELEASE.archive_name
+CONTAINER_FINGERPRINT_LABEL = "org.guide-iei.source-fingerprint"
+CONTAINER_FINGERPRINT_FILES = (
+    ".dockerignore",
+    "Dockerfile",
+    "build.sh",
+    "PromoterAI.pm",
+    "LoGoFunc.pm",
+    "IndexedScores.pm",
+)
 # Exit code that asks the launcher (scripts/start_workbench.sh or a packaged
 # supervisor) to start the service again — used to activate pending
 # storage-location changes from inside the app without rerunning the script.
@@ -4380,8 +4389,31 @@ class AnnotationJobService:
             }
         if runtime in {"docker", "podman"}:
             try:
+                fingerprint = hashlib.sha256()
+                fingerprint.update(b"GUIDE-IEI container inputs v1\n")
+                for name in CONTAINER_FINGERPRINT_FILES:
+                    content = (self.pipeline_root / "docker" / name).read_bytes()
+                    file_hash = hashlib.sha256(content).hexdigest()
+                    fingerprint.update(f"{file_hash}  {name}\n".encode("utf-8"))
+                expected_fingerprint = fingerprint.hexdigest()
+            except OSError as exc:
+                return {
+                    "available": False,
+                    "state": "image_stale",
+                    "runtime": runtime,
+                    "image": image,
+                    "message": f"The annotation engine cannot be verified because a build input is unavailable: {exc}",
+                }
+            try:
                 result = subprocess.run(
-                    [runtime, "image", "inspect", image],
+                    [
+                        runtime,
+                        "image",
+                        "inspect",
+                        "--format",
+                        f'{{{{ index .Config.Labels "{CONTAINER_FINGERPRINT_LABEL}" }}}}',
+                        image,
+                    ],
                     capture_output=True,
                     text=True,
                     timeout=5,
@@ -4404,6 +4436,18 @@ class AnnotationJobService:
                     "message": f"{runtime_label} could not be checked: {exc}",
                 }
             if result.returncode == 0:
+                if result.stdout.strip() != expected_fingerprint:
+                    return {
+                        "available": False,
+                        "state": "image_stale",
+                        "runtime": runtime,
+                        "image": image,
+                        "message": (
+                            "The annotation engine is from an older GUIDE-IEI version. "
+                            "Close the launcher window and open GUIDE-IEI again to rebuild it automatically, "
+                            "or run: bash docker/build.sh"
+                        ),
+                    }
                 return {
                     "available": True,
                     "state": "ready",
@@ -4498,7 +4542,7 @@ class AnnotationJobService:
             "liftover": ("GRCh37/hg19 input conversion", "Lets you analyze VCFs made against the older GRCh37/hg19 reference. Variants are converted to GRCh38 with safeguards and a full audit trail — nothing is silently dropped"),
             "ccre": ("ENCODE cCRE regions", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
             "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: SCREEN records a positive regulatory signature in reference tissues and immune cell types, adding context to the aggregate cCRE map"),
-            "clingen_erepo": ("ClinGen expert-panel classifications", "Variant interpretations from ClinGen's disease-specific expert panels — the highest review level available. Stored locally; your variants are never sent to any server"),
+            "clingen_erepo": ("ClinGen", "Variant interpretations from ClinGen's disease-specific expert panels — the highest review level available. Stored locally; your variants are never sent to any server"),
         }
         try:
             config = self._prefer_installed_managed_resources(

@@ -25,7 +25,9 @@ const {
   candidateCompoundHetKeys,
   isHeterozygousGenotype,
   STANDARD_VARIANT_QC,
+  ReviewRowLimitError,
   parseVcfFiles,
+  predictorBinaryClassification,
   collapseToOneRowPerVariant,
   preferredClinicalTranscriptRows,
   variantQcFailures,
@@ -167,6 +169,35 @@ test("oversized files are refused before parsing, with routing guidance", async 
     () => parseVcfFiles([oversized]),
     /too large[\s\S]*Whole genome analysis scope/,
   );
+});
+
+test("row limit distinguishes variants from transcripts and retained reviews compact clinically", async () => {
+  const second = PASS_CSQ.split("|");
+  second[4] = "ENST:c.2A>G";
+  second[5] = "ENSP:p.Lys2Arg";
+  second[6] = "";
+  second[7] = "";
+  second[8] = "ENST00000999999";
+  const vcf = VCF.replace(`CSQ=${PASS_CSQ};`, `CSQ=${PASS_CSQ},${second.join("|")};`);
+
+  await assert.rejects(
+    () => parseVcfFiles([new File([vcf], "many-transcripts.vcf")], { rowCap: 1 }),
+    (reason) => {
+      assert.equal(reason instanceof ReviewRowLimitError, true);
+      assert.match(reason.message, /1 passing variant record/);
+      assert.match(reason.message, /transcript annotation rows/);
+      return true;
+    },
+  );
+
+  const compact = await parseVcfFiles(
+    [new File([vcf], "many-transcripts.vcf")],
+    { rowCap: 1, clinicalTranscriptsOnly: true },
+  );
+  assert.equal(compact.rows.length, 1);
+  assert.equal(compact.rows[0].mane, true);
+  assert.equal(compact.rows[0].compactTranscriptView, true);
+  assert.match(compact.summary.warnings.join("\n"), /Responsive clinical-transcript view/);
 });
 
 test("cohort files parse variant-centrically: one row per variant with carriers", async () => {
@@ -813,6 +844,32 @@ test("parses FuncVEP scores as exact allele-and-gene predictor observations", as
     partialScoredRow.predictions.funcvep.provenance.withheld_metrics,
     "cte,cti,sp",
   );
+});
+
+test("uses final-publication FuncVEP binary thresholds from the predictor registry", () => {
+  const cases = [
+    ["cti", 0.419606448098318],
+    ["cte", 0.519261866786599],
+    ["sp", 0.440940891937106],
+  ];
+  for (const [metric, threshold] of cases) {
+    assert.deepEqual(
+      predictorBinaryClassification("funcvep", metric, threshold),
+      {
+        label: "Damaging",
+        isPositive: true,
+        threshold,
+        comparison: "greater_than_or_equal",
+        thresholdSet: "Kayaalp et al., Nature Genetics 2026, Supplementary Table 13",
+        sourceUrl: "https://www.nature.com/articles/s41588-026-02727-3",
+      },
+    );
+    assert.equal(
+      predictorBinaryClassification("funcvep", metric, threshold - 1e-12).label,
+      "Neutral",
+    );
+  }
+  assert.equal(predictorBinaryClassification("funcvep", "cti", null), null);
 });
 
 test("retains reference parental genotypes and uses allele-specific GT and AD", async () => {

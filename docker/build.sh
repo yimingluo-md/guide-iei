@@ -27,6 +27,7 @@ fi
 
 RUNTIME="${RUNTIME:-docker}"
 command -v "${RUNTIME}" >/dev/null 2>&1 || { echo "ERROR: '${RUNTIME}' not found on PATH." >&2; exit 1; }
+IMAGE_FINGERPRINT="$(bash "${HERE}/image_fingerprint.sh")"
 
 echo "Building ${IMAGE_NAME}:${IMAGE_TAG}"
 echo "  base VEP image : ensemblorg/ensembl-vep:${VEP_TAG}"
@@ -34,9 +35,11 @@ echo "  LOFTEE branch  : ${LOFTEE_BRANCH}"
 echo "  bcftools       : ${BCFTOOLS_VERSION}"
 echo "  liftover plugin: ${BCFTOOLS_LIFTOVER_COMMIT}"
 echo "  runtime        : ${RUNTIME}"
+echo "  source identity: ${IMAGE_FINGERPRINT}"
 
 exec "${RUNTIME}" build \
     -t "${IMAGE_NAME}:${IMAGE_TAG}" \
+    --label "org.guide-iei.source-fingerprint=${IMAGE_FINGERPRINT}" \
     --build-arg "VEP_TAG=${VEP_TAG}" \
     --build-arg "LOFTEE_BRANCH=${LOFTEE_BRANCH}" \
     --build-arg "LOFTEE_COMMIT=${LOFTEE_COMMIT}" \

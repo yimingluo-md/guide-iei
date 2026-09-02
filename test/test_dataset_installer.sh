@@ -13,6 +13,12 @@ mkdir -p "$TEST_ROOT/scripts" "$TEST_ROOT/docker" "$TEST_ROOT/pipeline" \
   "$TEST_ROOT/config" "$WORK/bin"
 cp "$SOURCE_ROOT/scripts/install_recommended_datasets.sh" "$TEST_ROOT/scripts/"
 cp "$SOURCE_ROOT/scripts/lib.sh" "$TEST_ROOT/scripts/"
+cp "$SOURCE_ROOT/docker/image_fingerprint.sh" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/.dockerignore" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/Dockerfile" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/PromoterAI.pm" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/LoGoFunc.pm" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/IndexedScores.pm" "$TEST_ROOT/docker/"
 
 cat > "$TEST_ROOT/config/test.yaml" <<'YAML'
 container:
@@ -60,7 +66,12 @@ cat > "$WORK/bin/docker" <<'SH'
 #!/usr/bin/env bash
 case "${1:-} ${2:-}" in
   "info ") exit 0 ;;
-  "image inspect") [[ -f "$TEST_ROOT/image.ready" ]] ;;
+  "image inspect")
+    [[ -f "$TEST_ROOT/image.ready" ]] || exit 1
+    if [[ "${3:-}" == "--format" ]]; then
+      cat "$TEST_ROOT/image.fingerprint"
+    fi
+    ;;
   *) echo "unexpected fake docker invocation: $*" >&2; exit 1 ;;
 esac
 SH
@@ -70,6 +81,7 @@ cat > "$TEST_ROOT/docker/build.sh" <<'SH'
 set -euo pipefail
 printf '%s %s:%s\n' "$RUNTIME" "$IMAGE_NAME" "$IMAGE_TAG" > "$TEST_ROOT/build.args"
 touch "$TEST_ROOT/image.ready"
+bash "$TEST_ROOT/docker/image_fingerprint.sh" > "$TEST_ROOT/image.fingerprint"
 SH
 
 cat > "$TEST_ROOT/scripts/download_references.sh" <<'SH'

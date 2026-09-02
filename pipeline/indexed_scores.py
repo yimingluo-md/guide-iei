@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import math
 import os
 import re
 from functools import lru_cache
@@ -180,6 +181,55 @@ def validate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ManifestError(f"outputs[{index}] range values must be numeric")
             if minimum is not None and maximum is not None and minimum > maximum:
                 raise ManifestError(f"outputs[{index}] minimum exceeds maximum")
+        binary_classification = output.get("binary_classification")
+        if binary_classification is not None:
+            binary_classification = _required_mapping(
+                binary_classification, f"outputs[{index}].binary_classification"
+            )
+            expected_keys = {
+                "threshold", "comparison", "positive_label", "negative_label",
+                "threshold_set", "source_url",
+            }
+            if set(binary_classification) != expected_keys:
+                raise ManifestError(
+                    f"outputs[{index}].binary_classification must contain exactly "
+                    + ", ".join(sorted(expected_keys))
+                )
+            threshold = binary_classification["threshold"]
+            if (
+                output.get("type") not in {"number", "integer"}
+                or isinstance(threshold, bool)
+                or not isinstance(threshold, (int, float))
+                or not math.isfinite(threshold)
+            ):
+                raise ManifestError(
+                    f"outputs[{index}].binary_classification.threshold must be finite and numeric"
+                )
+            if minimum is not None and threshold < minimum:
+                raise ManifestError(
+                    f"outputs[{index}].binary_classification.threshold is below minimum"
+                )
+            if maximum is not None and threshold > maximum:
+                raise ManifestError(
+                    f"outputs[{index}].binary_classification.threshold is above maximum"
+                )
+            if binary_classification["comparison"] not in {
+                "greater_than_or_equal", "less_than_or_equal",
+                "absolute_greater_than_or_equal",
+            }:
+                raise ManifestError(
+                    f"outputs[{index}].binary_classification.comparison is unsupported"
+                )
+            for key in ("positive_label", "negative_label", "threshold_set"):
+                if not isinstance(binary_classification[key], str) or not binary_classification[key].strip():
+                    raise ManifestError(
+                        f"outputs[{index}].binary_classification.{key} is required"
+                    )
+            source_url = binary_classification["source_url"]
+            if not isinstance(source_url, str) or not source_url.startswith("https://"):
+                raise ManifestError(
+                    f"outputs[{index}].binary_classification.source_url must use https"
+                )
 
     provenance = _required_mapping(payload.get("provenance"), "provenance")
     provenance_ids: set[str] = set()
@@ -337,6 +387,33 @@ def validate_manifest_registry_contract(
                 f"manifest output {field!r} maps to provenance registry metric "
                 f"{metric_name!r}; declare it in manifest provenance instead"
             )
+
+        expected_binary = metric.binary_classification
+        observed_binary = output.get("binary_classification")
+        if expected_binary is None:
+            if observed_binary is not None:
+                raise ManifestError(
+                    f"manifest output {field!r} has an unexpected binary classification"
+                )
+        else:
+            expected_binary_payload = {
+                "threshold": expected_binary.threshold,
+                "comparison": _enum_value(expected_binary.comparison),
+                "positive_label": expected_binary.positive_label,
+                "negative_label": expected_binary.negative_label,
+                "threshold_set": expected_binary.threshold_set,
+                "source_url": expected_binary.source_url,
+            }
+            # Manifests created before binary classification metadata was
+            # introduced remain valid: the application derives the label from
+            # the current registry. If a manifest does declare a threshold,
+            # however, it must agree exactly so stale cutoffs cannot masquerade
+            # as the active contract.
+            if observed_binary is not None and observed_binary != expected_binary_payload:
+                raise ManifestError(
+                    f"manifest output {field!r} binary classification does not "
+                    f"match registry metric {metric_name!r}"
+                )
 
     provenance_contracts = {
         "match": ("match", {"category", "text"}, "provenance"),

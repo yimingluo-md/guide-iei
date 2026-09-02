@@ -659,24 +659,60 @@ else
             note "Apple Silicon: the amd64 VEP image runs through Colima's default binfmt emulation (works, but slower); advanced users may enable Rosetta with 'colima stop && colima start --vm-type vz --vz-rosetta'"
         fi
 
-        # ---- image + reference mount reachability
+        # ---- image identity + reference mount reachability
+        # A tag such as vep-annotate:latest is mutable. Match a deterministic
+        # label against this checkout so an image from an older GUIDE-IEI
+        # version is rebuilt instead of failing only after a job is submitted.
         IMAGE="$(read_config_scalar container.image)"
         [ -z "$IMAGE" ] && IMAGE="vep-annotate:latest"
+        EXPECTED_IMAGE_FINGERPRINT="$(bash "$ROOT/docker/image_fingerprint.sh" 2>/dev/null || true)"
+        IMAGE_PRESENT=0
+        IMAGE_CURRENT=0
+        ACTUAL_IMAGE_FINGERPRINT=""
         if "$CONTAINER_BIN" image inspect "$IMAGE" >/dev/null 2>&1; then
-            ok "container image $IMAGE is built"
+            IMAGE_PRESENT=1
+            ACTUAL_IMAGE_FINGERPRINT="$(
+                "$CONTAINER_BIN" image inspect --format \
+                    '{{ index .Config.Labels "org.guide-iei.source-fingerprint" }}' \
+                    "$IMAGE" 2>/dev/null || true
+            )"
+            if [ -n "$EXPECTED_IMAGE_FINGERPRINT" ] \
+                && [ "$ACTUAL_IMAGE_FINGERPRINT" = "$EXPECTED_IMAGE_FINGERPRINT" ]; then
+                IMAGE_CURRENT=1
+            fi
+        fi
+
+        if [ "$IMAGE_CURRENT" = 1 ]; then
+            ok "container image $IMAGE matches this GUIDE-IEI version"
+        elif [ "$MODE" = "install" ] && confirm "$([ "$IMAGE_PRESENT" = 1 ] && echo 'Rebuild the outdated VEP container image now?' || echo 'Build the VEP container image now (downloads the ~2 GB base image)?')"; then
+            if (cd "$ROOT" && RUNTIME="$CONTAINER_RUNTIME" PATH="$(dirname "$CONTAINER_BIN"):$PATH" bash docker/build.sh); then
+                ACTUAL_IMAGE_FINGERPRINT="$(
+                    "$CONTAINER_BIN" image inspect --format \
+                        '{{ index .Config.Labels "org.guide-iei.source-fingerprint" }}' \
+                        "$IMAGE" 2>/dev/null || true
+                )"
+                if [ -n "$EXPECTED_IMAGE_FINGERPRINT" ] \
+                    && [ "$ACTUAL_IMAGE_FINGERPRINT" = "$EXPECTED_IMAGE_FINGERPRINT" ]; then
+                    IMAGE_CURRENT=1
+                    ok "container image built for this GUIDE-IEI version"
+                else
+                    fix "image build completed but its identity could not be verified" "bash docker/build.sh"
+                fi
+            else
+                fix "image build failed" "bash docker/build.sh"
+            fi
+        elif [ "$IMAGE_PRESENT" = 1 ]; then
+            fix "container image $IMAGE is from an older GUIDE-IEI version" "restart GUIDE-IEI to rebuild it automatically, or run: bash docker/build.sh"
+        else
+            fix "container image $IMAGE not built" "bash docker/build.sh   (one-time, downloads the ~2 GB base image)"
+        fi
+
+        if [ "$IMAGE_CURRENT" = 1 ]; then
             if "$CONTAINER_BIN" run --rm -v "$ROOT":/probe:ro --entrypoint sh "$IMAGE" -c 'test -d /probe/scripts' >/dev/null 2>&1; then
                 ok "repo directory is mountable inside the container"
             else
                 fix "cannot bind-mount $ROOT into the container" "colima: restart with --mount \"\$HOME:w\" covering your data; Docker Desktop: add the folder under Settings -> Resources -> File sharing"
             fi
-        elif [ "$MODE" = "install" ] && confirm "Build the VEP container image now (downloads the ~2 GB base image)?"; then
-            if (cd "$ROOT" && RUNTIME="$CONTAINER_RUNTIME" PATH="$(dirname "$CONTAINER_BIN"):$PATH" bash docker/build.sh); then
-                ok "container image built"
-            else
-                fix "image build failed" "bash docker/build.sh"
-            fi
-        else
-            fix "container image $IMAGE not built" "bash docker/build.sh   (one-time, downloads the ~2 GB base image)"
         fi
     fi
 fi

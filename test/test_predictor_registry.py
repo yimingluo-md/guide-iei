@@ -13,6 +13,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
 from pipeline.predictor_registry import (  # noqa: E402
     Adapter,
+    BinaryComparison,
     MatchDimension,
     MatchScope,
     MetricType,
@@ -97,6 +98,28 @@ def test_registry_catalogs_all_current_source_families_and_funcvep():
     assert funcvep_resource.license_ack_required is True
     assert funcvep_resource.distribution.value == "license_acknowledged_download"
     assert {asset.id for asset in funcvep_resource.assets} == {"scores", "manifest"}
+
+    metrics = {metric.id: metric for metric in registry.predictor("funcvep").metrics}
+    assert {
+        metric_id: metrics[metric_id].binary_classification.threshold
+        for metric_id in ("cti", "cte", "sp")
+    } == {
+        "cti": 0.419606448098318,
+        "cte": 0.519261866786599,
+        "sp": 0.440940891937106,
+    }
+    assert all(
+        metrics[metric_id].binary_classification.comparison
+        is BinaryComparison.GREATER_THAN_OR_EQUAL
+        for metric_id in ("cti", "cte", "sp")
+    )
+    assert all(
+        metrics[metric_id].binary_classification.positive_label == "Damaging"
+        and metrics[metric_id].binary_classification.negative_label == "Neutral"
+        and "Supplementary Table 13"
+        in metrics[metric_id].binary_classification.threshold_set
+        for metric_id in ("cti", "cte", "sp")
+    )
 
 
 def test_dbnsfp_optional_predictors_are_complete_and_keep_existing_columns():
@@ -246,6 +269,18 @@ def test_metric_fields_types_directions_and_ranges_are_validated():
     backwards_range = raw_document()
     find(backwards_range["predictors"], "funcvep")["metrics"][0]["value_range"] = [1, 0]
     expect_registry_error(backwards_range, "minimum exceeds maximum")
+
+    outside_range = raw_document()
+    find(outside_range["predictors"], "funcvep")["metrics"][0][
+        "binary_classification"
+    ]["threshold"] = 2
+    expect_registry_error(outside_range, "outside value_range")
+
+    wrong_comparison = raw_document()
+    find(wrong_comparison["predictors"], "funcvep")["metrics"][0][
+        "binary_classification"
+    ]["comparison"] = "less_than_or_equal"
+    expect_registry_error(wrong_comparison, "does not match direction higher")
 
 
 def test_config_paths_are_valid_and_assets_stay_under_their_resource():

@@ -32,11 +32,24 @@ test("keeps the clinical review defaults visible", async () => {
   assert.match(source, /confirmResearchUseExport/);
   assert.match(source, /FilterSection title="Clinical database"/);
   assert.match(source, /FilterSection title="Prediction scores"/);
-  assert.match(source, /const exactMatch = observation\?\.matchStatus === "exact";/);
+  assert.match(source, /const funcVepExactMatch = funcVepObservation\?\.matchStatus === "exact";/);
   assert.doesNotMatch(source, /matchStatus === "exact" \|\| hasAnyScore/);
   assert.match(source, /matchReason === "query_target_unavailable"/);
   assert.match(source, /The VCF did not provide an Ensembl gene target/);
-  assert.match(source, /sourceGene \|\| ""\)\.split\("&"\)/);
+  assert.match(source, /observation\.target\?\.ensembl_gene \|\| ""\)\.split\("&"\)/);
+});
+
+test("uses exact gnomAD popmax presets and accepts a zero custom threshold", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  assert.match(source, /const POPMAX_PRESETS = \[0\.0001, 0\.001, 0\.01\]/);
+  assert.match(source, /useState<number \| null>\(0\.01\)/);
+  assert.match(source, />No limit<\/button>/);
+  assert.match(source, /0, 0\.00001, or 1e-5/);
+  assert.match(source, /value < 0 \|\| value > 1/);
+  assert.match(source, /popmax !== null && row\.gnomadPopmax !== null/);
+  assert.match(source, /setPopmax\(null\)/);
+  assert.doesNotMatch(source, /type="range" min="0" max="0\.05"/);
+  assert.doesNotMatch(source, /setPopmax\(1\)/);
 });
 
 test("provides separate local annotation and annotated-VCF review paths", async () => {
@@ -56,9 +69,16 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /Local indexed intake with candidate prefiltering/);
   assert.match(source, /Patient VCF, phenotype, and analysis data are processed locally/);
   assert.match(source, /analysisScope === "whole_genome"/);
-  assert.match(source, /DEFAULT_WGS_ANNOTATION_SOURCES = new Set\(\["cadd_wgs", "promoterai"\]\)/);
+  assert.match(source, /function annotationSourceIsLocked/);
+  assert.match(source, /source\.required \|\| source\.setup_mode === "bundled" \|\| source\.id === "dbnsfp"/);
+  assert.match(source, /return source\.installed \|\| source\.enabled/);
+  assert.doesNotMatch(source, /DEFAULT_WGS_ANNOTATION_SOURCES/);
   assert.equal(source.match(/annotationSourceIsEnabled\(source, analysisScope, sourceEnabled\)/g)?.length, 2);
-  assert.match(source, /CADD and promoterAI on by default/);
+  assert.match(source, /installed predictors on by default/);
+  assert.match(source, /Included in every run/);
+  assert.match(source, /Use in this run/);
+  assert.match(source, /Install to enable/);
+  assert.doesNotMatch(source, /className="dataset-enable"/);
   assert.match(source, /Indexing and prefiltering WGS/);
   assert.match(source, /Whole-genome indexing and prefiltering progress/);
   assert.match(source, /PASS-or-unfiltered\/QC AND \(popmax ≤ threshold OR popmax unavailable\)/);
@@ -162,7 +182,8 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Paste the private dbNSFP GRCh38 \(\.gz\) download link/);
   assert.match(source, /must end in _grch38\.gz — not _grch37\.gz/);
   assert.match(source, /accepts any dbNSFP release version/);
-  assert.match(source, /source\.id !== "dbnsfp" && !\["funcvep", "logofunc"\]\.includes\(source\.id\) && source\.version/);
+  assert.match(source, /source\.id !== "dbnsfp" && !\["funcvep", "logofunc", "clingen_erepo"\]\.includes\(source\.id\) && source\.version/);
+  assert.match(source, /source\.id === "clingen_erepo" && source\.version && <span>Updated/);
   assert.match(source, /Download and install dbNSFP/);
   assert.match(source, /derives the \.tbi and \.md5 links/);
   assert.match(source, /Choose folder/);
@@ -214,7 +235,7 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /source\.prepare_id !== "funcvep" && !preparationPath\.trim\(\)/);
   assert.match(source, /source\.prepare_id === "funcvep" && !licenseAccepted/);
   assert.match(source, /licenseAccepted=\{source\.id === "funcvep" \? funcVepLicenseAccepted : false\}/);
-  assert.match(source, /!\["funcvep", "logofunc"\]\.includes\(source\.id\)/);
+  assert.match(source, /!\["funcvep", "logofunc", "clingen_erepo"\]\.includes\(source\.id\)/);
   assert.match(source, /href="https:\/\/zenodo\.org\/records\/20595206"/);
   assert.match(source, /href="https:\/\/omim\.org\/"[^>]*>OMIM website ↗/);
   assert.match(source, /source\.reference_url && <a href=\{source\.reference_url\}/);
@@ -284,9 +305,23 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /CTI — default/);
   assert.match(source, /CTE — optional comparison/);
   assert.match(source, /SP — optional comparison/);
+  assert.match(source, /label: `FuncVEP \$\{model\.label\}`/);
+  assert.match(source, /predictorBinaryClassification\("funcvep", model\.metricId, score\)/);
+  assert.match(source, /classification\?\.label/);
+  assert.match(source, /classification\?\.isPositive/);
+  assert.match(source, /Functional-effect prediction, not a clinical pathogenicity classification/);
+  assert.match(source, /const allPredictorCards = \[\.\.\.predictorCards, \.\.\.funcVepPredictorCards, \.\.\.additionalPredictorCards\]/);
+  assert.match(source, /allPredictorCards\.map/);
+  assert.doesNotMatch(source, /Functional evidence model/);
+  assert.doesNotMatch(source, /<FuncVepEvidence/);
   assert.match(source, /item === "funcVep" \? \["funcVepCti"\]/);
   assert.match(source, /currentPreference === null && !migrated\.includes\("funcVepCti"\)/);
-  assert.match(source, /excludes clinically trained predictors and also AlphaMissense because its development used ClinVar variants for model selection and tuning/);
+  assert.doesNotMatch(source, /Exact allele \+ Ensembl gene\. CTI includes features/);
+  assert.doesNotMatch(source, /Exact allele \+ Ensembl gene\. CTE excludes clinically trained predictors/);
+  assert.match(source, /No score for the selected MANE transcript/);
+  assert.match(source, /AlphaMissense scores are available on/);
+  assert.match(source, /className="predictor-transcript-alternatives"/);
+  assert.match(styles, /\.predictor-transcript-alternatives summary span/);
   assert.match(source, /CADD raw/);
   assert.match(source, /GERP\+\+ RS/);
   assert.match(source, /phyloP 100-way/);

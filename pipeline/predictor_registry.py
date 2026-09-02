@@ -10,6 +10,7 @@ it incrementally while the existing configuration remains authoritative.
 from __future__ import annotations
 
 import json
+import math
 import re
 from dataclasses import dataclass
 from enum import Enum
@@ -131,6 +132,12 @@ class ScoreDirection(str, Enum):
     LOWER = "lower"
     ABSOLUTE = "absolute"
     NONE = "none"
+
+
+class BinaryComparison(str, Enum):
+    GREATER_THAN_OR_EQUAL = "greater_than_or_equal"
+    LESS_THAN_OR_EQUAL = "less_than_or_equal"
+    ABSOLUTE_GREATER_THAN_OR_EQUAL = "absolute_greater_than_or_equal"
 
 
 class MetricRole(str, Enum):
@@ -255,6 +262,17 @@ class MetricDefinition:
     value_range: tuple[float, float] | None
     derived: bool
     filterable: bool
+    binary_classification: BinaryClassificationDefinition | None
+
+
+@dataclass(frozen=True)
+class BinaryClassificationDefinition:
+    threshold: float
+    comparison: BinaryComparison
+    positive_label: str
+    negative_label: str
+    threshold_set: str
+    source_url: str
 
 
 @dataclass(frozen=True)
@@ -518,7 +536,7 @@ def _parse_metric(raw: Any, path: str) -> MetricDefinition:
         "id", "field", "value_type", "direction", "role", "value_range",
         "derived", "filterable",
     }
-    _keys(obj, required, set(), path)
+    _keys(obj, required, {"binary_classification"}, path)
     field = _string(obj["field"], f"{path}.field")
     if not _FIELD_PATTERN.fullmatch(field):
         raise RegistryError(f"{path}.field is not a valid annotation field")
@@ -538,6 +556,68 @@ def _parse_metric(raw: Any, path: str) -> MetricDefinition:
         value_range = (float(values[0]), float(values[1]))
         if value_range[0] > value_range[1]:
             raise RegistryError(f"{path}.value_range minimum exceeds maximum")
+    binary_classification = None
+    binary_raw = obj.get("binary_classification")
+    if binary_raw is not None:
+        binary_obj = _mapping(binary_raw, f"{path}.binary_classification")
+        binary_required = {
+            "threshold", "comparison", "positive_label", "negative_label",
+            "threshold_set", "source_url",
+        }
+        _keys(binary_obj, binary_required, set(), f"{path}.binary_classification")
+        threshold = binary_obj["threshold"]
+        if isinstance(threshold, bool) or not isinstance(threshold, (int, float)):
+            raise RegistryError(f"{path}.binary_classification.threshold must be numeric")
+        threshold = float(threshold)
+        if not math.isfinite(threshold):
+            raise RegistryError(
+                f"{path}.binary_classification.threshold must be finite"
+            )
+        if value_type not in numeric_types or direction is ScoreDirection.NONE:
+            raise RegistryError(
+                f"{path}.binary_classification requires a directed numeric metric"
+            )
+        if value_range is not None and not value_range[0] <= threshold <= value_range[1]:
+            raise RegistryError(
+                f"{path}.binary_classification.threshold is outside value_range"
+            )
+        comparison = _enum(
+            BinaryComparison,
+            binary_obj["comparison"],
+            f"{path}.binary_classification.comparison",
+        )
+        expected_comparison = {
+            ScoreDirection.HIGHER: BinaryComparison.GREATER_THAN_OR_EQUAL,
+            ScoreDirection.LOWER: BinaryComparison.LESS_THAN_OR_EQUAL,
+            ScoreDirection.ABSOLUTE: BinaryComparison.ABSOLUTE_GREATER_THAN_OR_EQUAL,
+        }.get(direction)
+        if comparison is not expected_comparison:
+            raise RegistryError(
+                f"{path}.binary_classification.comparison does not match "
+                f"direction {direction.value}"
+            )
+        source_url = _string(
+            binary_obj["source_url"], f"{path}.binary_classification.source_url"
+        )
+        if not source_url.startswith("https://"):
+            raise RegistryError(f"{path}.binary_classification.source_url must use https")
+        binary_classification = BinaryClassificationDefinition(
+            threshold=threshold,
+            comparison=comparison,
+            positive_label=_string(
+                binary_obj["positive_label"],
+                f"{path}.binary_classification.positive_label",
+            ),
+            negative_label=_string(
+                binary_obj["negative_label"],
+                f"{path}.binary_classification.negative_label",
+            ),
+            threshold_set=_string(
+                binary_obj["threshold_set"],
+                f"{path}.binary_classification.threshold_set",
+            ),
+            source_url=source_url,
+        )
     return MetricDefinition(
         id=_identifier(obj["id"], f"{path}.id"),
         field=field,
@@ -547,6 +627,7 @@ def _parse_metric(raw: Any, path: str) -> MetricDefinition:
         value_range=value_range,
         derived=_boolean(obj["derived"], f"{path}.derived"),
         filterable=_boolean(obj["filterable"], f"{path}.filterable"),
+        binary_classification=binary_classification,
     )
 
 
@@ -657,7 +738,8 @@ def load_registry(path: str | Path | None = None) -> PredictorRegistry:
 
 
 __all__ = [
-    "Adapter", "AnnotatorDefinition", "Cardinality", "Distribution",
+    "Adapter", "AnnotatorDefinition", "BinaryClassificationDefinition",
+    "BinaryComparison", "Cardinality", "Distribution",
     "MatchDefinition", "MatchDimension", "MatchFallback", "MatchScope",
     "MetricDefinition", "MetricRole", "MetricType", "PredictorDefinition",
     "PredictorRegistry", "REGISTRY_PATH", "RegistryError", "ResourceAsset",

@@ -53,7 +53,7 @@ ClinVar-release drift between files, and refuse duplicate sample names.
 ## Sample Library
 
 The persistent **Sample Library** is the source of truth for retained
-workbench imports. **Keep in Sample Library** is enabled by default after
+workbench imports. **Keep in Sample Library** is enabled by default during
 review intake; **Include qualifying variants in Cohort Search** is also
 enabled by default. Choose **Review once** when no managed copy or cohort
 entry should remain. The library uses the hierarchy Individual →
@@ -72,6 +72,12 @@ source/retained record counts; timestamps; and a hash of the complete import
 settings. The **Sample Library** page reopens a review, edits its sample
 label, connects phenotype records, rebuilds its cohort entry, or removes the
 managed dataset without deleting an external original VCF.
+
+Retention and cohort indexing finish before browser row materialization, so a
+large transcript expansion cannot leave a default import half-completed. For
+retained exomes, the managed VCF keeps the complete CSQ data. The browser uses
+a bounded MANE/PICK/per-gene view when needed and restores every transcript for
+the selected variant from the cohort-indexed source record.
 
 **Bulk intake queue.** `POST /api/bulk-intake` accepts a list of files or
 directories (directories are expanded recursively to `.vcf`/`.vcf.gz`; up

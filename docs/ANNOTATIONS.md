@@ -115,9 +115,13 @@ ones; CTE excludes clinically trained predictors and also excludes
 AlphaMissense because its development used ClinVar variants for model selection
 and tuning; and SP
 excludes all features derived from other variant-effect predictors. Higher is
-more damaging. These are not clinical pathogenicity classifications. The
-official upstream archive also contains ClinVEP outputs, but GUIDE-IEI
-deliberately excludes those columns from preparation and annotation.
+more damaging. GUIDE-IEI uses the final publication's Supplementary Table 13
+binary cutoffs—CTI ≥0.419606448098318, CTE ≥0.519261866786599, and SP
+≥0.440940891937106—to label an available score **Damaging** or **Neutral**.
+These functional-effect labels are not clinical pathogenicity classifications
+and are separate from calibrated ACMG PP3/BP4 evidence strengths. The official
+upstream archive also contains ClinVEP outputs, but GUIDE-IEI deliberately
+excludes those columns from preparation and annotation.
 
 ---
 

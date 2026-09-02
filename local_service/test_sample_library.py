@@ -152,6 +152,21 @@ class SampleLibraryTests(unittest.TestCase):
             ).fetchall()
         self.assertEqual(before, after)
 
+    def test_import_and_listing_expose_cohort_sample_entry_identity(self):
+        result = self.library.import_vcf(self.vcf, self.payload(include=True))
+        by_name = {item["vcf_sample_name"]: item for item in result["datasets"]}
+        self.assertEqual(set(by_name), {"P1", "P2"})
+        self.assertTrue(all(item["cohort_sample_entry_id"] for item in by_name.values()))
+        self.assertEqual(
+            {item["vcf_sample_name"]: item["cohort_sample_entry_id"] for item in self.library.list()},
+            {name: item["cohort_sample_entry_id"] for name, item in by_name.items()},
+        )
+        first = next(iter(by_name.values()))
+        self.assertEqual(
+            self.library.get(first["id"])["cohort_sample_entry_id"],
+            first["cohort_sample_entry_id"],
+        )
+
     def test_import_refuses_a_source_that_changes_mid_import(self):
         """The checksum and the managed copy are two reads of the source; a
         file still being written must fail the import loudly instead of

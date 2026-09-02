@@ -25,7 +25,12 @@ from pipeline.funcvep_dataset import (  # noqa: E402
     prepare_archive,
     publish_bundle,
 )
-from pipeline.indexed_scores import ManifestError, validate_manifest  # noqa: E402
+from pipeline.indexed_scores import (  # noqa: E402
+    ManifestError,
+    validate_manifest,
+    validate_manifest_registry_contract,
+)
+from pipeline.predictor_registry import load_registry  # noqa: E402
 
 
 def source_row(
@@ -269,6 +274,34 @@ class FuncVEPPreparationTests(unittest.TestCase):
             self.assertEqual(
                 [item["id"] for item in manifest["outputs"]],
                 ["FuncVEP_CTI", "FuncVEP_CTE", "FuncVEP_SP"],
+            )
+            self.assertEqual(
+                {
+                    item["id"]: item["binary_classification"]["threshold"]
+                    for item in manifest["outputs"]
+                },
+                {
+                    "FuncVEP_CTI": 0.419606448098318,
+                    "FuncVEP_CTE": 0.519261866786599,
+                    "FuncVEP_SP": 0.440940891937106,
+                },
+            )
+            self.assertTrue(all(
+                item["binary_classification"]["positive_label"] == "Damaging"
+                and item["binary_classification"]["negative_label"] == "Neutral"
+                and "Supplementary Table 13"
+                in item["binary_classification"]["threshold_set"]
+                for item in manifest["outputs"]
+            ))
+            registry = load_registry()
+            self.assertIs(
+                validate_manifest_registry_contract(
+                    manifest,
+                    [registry.predictor("funcvep")],
+                    resource=registry.resource("funcvep"),
+                    annotator=registry.annotator("funcvep"),
+                ),
+                manifest,
             )
             self.assertTrue(manifest["source"]["archive"]["preserved"])
             self.assertEqual(manifest["source"]["kind"], "user_supplied_official_archive")

@@ -387,6 +387,14 @@ case "$RUNTIME" in
         IMAGE_ID="$("$RUNTIME" image ls --quiet --no-trunc "$IMAGE" 2>/dev/null | head -n 1)"
         [[ -n "$IMAGE_ID" ]] || die \
             "container image not found: $IMAGE (build it with: bash docker/build.sh)"
+        EXPECTED_IMAGE_FINGERPRINT="$(bash "$ROOT/docker/image_fingerprint.sh")"
+        ACTUAL_IMAGE_FINGERPRINT="$(
+            "$RUNTIME" image inspect --format \
+                '{{ index .Config.Labels "org.guide-iei.source-fingerprint" }}' \
+                "$IMAGE" 2>/dev/null || true
+        )"
+        [[ "$ACTUAL_IMAGE_FINGERPRINT" = "$EXPECTED_IMAGE_FINGERPRINT" ]] || die \
+            "container image is from an older GUIDE-IEI version: $IMAGE (rebuild it with: bash docker/build.sh)"
         "$RUNTIME" run --rm --entrypoint sh "$IMAGE" -c "$CHECK" \
             || die "container image cannot run or is missing a required executable: $IMAGE"
         ;;

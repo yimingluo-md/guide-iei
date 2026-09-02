@@ -58,7 +58,15 @@ FORBIDDEN_RELEASE_PATHS = (
 # Changes to these mean the next start must do extra work; the updater
 # reports them so the UI can set expectations honestly.
 DEPENDENCY_FILES = ("webui/package.json", "webui/package-lock.json")
-CONTAINER_FILES = ("docker/Dockerfile", "docker/build.sh")
+CONTAINER_FILES = (
+    "docker/.dockerignore",
+    "docker/Dockerfile",
+    "docker/build.sh",
+    "docker/image_fingerprint.sh",
+    "docker/PromoterAI.pm",
+    "docker/LoGoFunc.pm",
+    "docker/IndexedScores.pm",
+)
 MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
 
 
@@ -302,6 +310,7 @@ class SoftwareUpdater:
         restored_version = version_file.read_text().strip()
         restored = self._read_manifest(manifest_file, allow_empty=True)
         dependency_before = self._dependency_bytes()
+        container_before = self._container_bytes()
         for path in restored:
             source = self.rollback_dir / "files" / path
             if not source.is_file():
@@ -340,6 +349,7 @@ class SoftwareUpdater:
         else:
             installed.unlink(missing_ok=True)
         dependencies_changed = dependency_before != self._dependency_bytes()
+        container_changed = container_before != self._container_bytes()
         if dependencies_changed:
             (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
         # A rollback changes application code even when package manifests are
@@ -357,6 +367,7 @@ class SoftwareUpdater:
             "restored_version": restored_version,
             "restart_required": True,
             "dependencies_changed": dependencies_changed,
+            "container_changed": container_changed,
             "wsl_origin_synced": synced,
         }
 
@@ -417,6 +428,13 @@ class SoftwareUpdater:
     def _dependency_bytes(self) -> tuple[bytes, ...]:
         values = []
         for path in DEPENDENCY_FILES:
+            target = self.repo_root / path
+            values.append(target.read_bytes() if target.is_file() else b"")
+        return tuple(values)
+
+    def _container_bytes(self) -> tuple[bytes, ...]:
+        values = []
+        for path in CONTAINER_FILES:
             target = self.repo_root / path
             values.append(target.read_bytes() if target.is_file() else b"")
         return tuple(values)
@@ -542,6 +560,8 @@ class SoftwareUpdater:
                     removed.append(path)
                     if path.startswith("webui/"):
                         web_changed = True
+                    if path in CONTAINER_FILES:
+                        container_changed = True
             self._prune_empty_dirs(removed, self.repo_root)
 
         if deps_changed:

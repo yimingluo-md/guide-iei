@@ -555,6 +555,25 @@ class SampleLibrary:
                     "UPDATE library_datasets SET warnings=?, updated_at=? WHERE id=?",
                     [(_json(warnings), utc_now(), item["id"]) for item in datasets],
                 )
+        cohort_sample_ids = {}
+        if cohort_result and cohort_result.get("id") is not None:
+            with self._session() as connection:
+                cohort_sample_ids = {
+                    row["name"]: row["id"]
+                    for row in connection.execute(
+                        "SELECT id,name FROM cohort_samples WHERE file_id=?",
+                        (cohort_result["id"],),
+                    ).fetchall()
+                }
+        datasets = [
+            {
+                **item,
+                "cohort_sample_entry_id": cohort_sample_ids.get(
+                    item["vcf_sample_name"]
+                ),
+            }
+            for item in datasets
+        ]
         return {
             "datasets": datasets,
             "managed_path": str(managed_path),
@@ -585,6 +604,13 @@ class SampleLibrary:
             rows = connection.execute(
                 f"""
                 SELECT d.*,s.label AS sample_label,s.individual_id,s.created_at AS sample_created_at,
+                       (
+                         SELECT cs.id FROM cohort_samples cs
+                         JOIN cohort_files cf ON cf.id=cs.file_id
+                         WHERE cf.id=d.cohort_file_id AND cs.name=d.vcf_sample_name
+                           AND cf.profile_hash=d.settings_hash
+                         LIMIT 1
+                       ) AS cohort_sample_entry_id,
                        EXISTS(
                          SELECT 1 FROM cohort_files cf
                          JOIN cohort_samples cs ON cs.file_id=cf.id
@@ -602,6 +628,13 @@ class SampleLibrary:
         with self._session() as connection:
             row = connection.execute(
                 """SELECT d.*,s.label AS sample_label,s.individual_id,
+                          (
+                            SELECT cs.id FROM cohort_samples cs
+                            JOIN cohort_files cf ON cf.id=cs.file_id
+                            WHERE cf.id=d.cohort_file_id AND cs.name=d.vcf_sample_name
+                              AND cf.profile_hash=d.settings_hash
+                            LIMIT 1
+                          ) AS cohort_sample_entry_id,
                           EXISTS(
                             SELECT 1 FROM cohort_files cf
                             JOIN cohort_samples cs ON cs.file_id=cf.id

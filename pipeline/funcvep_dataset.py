@@ -30,8 +30,10 @@ from typing import BinaryIO
 
 try:
     from .indexed_scores import MANIFEST_SCHEMA, validate_manifest
+    from .predictor_registry import load_registry
 except ImportError:  # direct script execution
     from indexed_scores import MANIFEST_SCHEMA, validate_manifest
+    from predictor_registry import load_registry
 
 
 RECORD_ID = "20595206"
@@ -87,6 +89,25 @@ class ReleasePin:
 
 
 PINNED_RELEASE = ReleasePin()
+
+
+def published_binary_classification(field: str) -> dict[str, object]:
+    """Return the registry-pinned final-publication binary score contract."""
+    metric = next(
+        item for item in load_registry().predictor("funcvep").metrics
+        if item.field == field
+    )
+    classification = metric.binary_classification
+    if classification is None:
+        raise ValueError(f"FuncVEP metric {field} lacks a binary classification")
+    return {
+        "threshold": classification.threshold,
+        "comparison": classification.comparison.value,
+        "positive_label": classification.positive_label,
+        "negative_label": classification.negative_label,
+        "threshold_set": classification.threshold_set,
+        "source_url": classification.source_url,
+    }
 
 
 def utc_now() -> str:
@@ -548,6 +569,7 @@ def build_manifest(
                 "maximum": 1,
                 "direction": "higher_is_more_functionally_damaging",
                 "description": "FuncVEP score with clinically trained component predictors included",
+                "binary_classification": published_binary_classification("FuncVEP_CTI"),
             },
             {
                 "id": "FuncVEP_CTE",
@@ -557,6 +579,7 @@ def build_manifest(
                 "maximum": 1,
                 "direction": "higher_is_more_functionally_damaging",
                 "description": "FuncVEP score with clinically trained component predictors excluded",
+                "binary_classification": published_binary_classification("FuncVEP_CTE"),
             },
             {
                 "id": "FuncVEP_SP",
@@ -566,6 +589,7 @@ def build_manifest(
                 "maximum": 1,
                 "direction": "higher_is_more_functionally_damaging",
                 "description": "FuncVEP score with other variant-effect predictors excluded",
+                "binary_classification": published_binary_classification("FuncVEP_SP"),
             },
         ],
         "provenance": {

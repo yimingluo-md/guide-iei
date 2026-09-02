@@ -224,6 +224,22 @@ class SoftwareUpdateTests(unittest.TestCase):
         self.assertTrue(summary["web_build_required"])
         self.assertTrue((self.repo / "webui" / ".build-required").is_file())
 
+    def test_predictor_plugin_change_requires_a_container_rebuild(self):
+        github = FakeGitHub("0.6.0", self.release_files(
+            **{"docker/IndexedScores.pm": b"new indexed predictor adapter\n"}
+        ))
+        summary = self.updater(github).install()
+        self.assertTrue(summary["container_changed"])
+
+    def test_rollback_of_a_predictor_plugin_change_requires_a_container_rebuild(self):
+        github = FakeGitHub("0.6.0", self.release_files(
+            **{"docker/IndexedScores.pm": b"new indexed predictor adapter\n"}
+        ))
+        updater = self.updater(github)
+        updater.install()
+        result = updater.rollback()
+        self.assertTrue(result["container_changed"])
+
     def test_rollback_restores_the_previous_version(self):
         github = FakeGitHub("0.6.0", self.release_files())
         updater = self.updater(github)

@@ -27,8 +27,10 @@ configuration hashes remain available under provenance details.
 
 ## Reopening a review
 
-**Open review** on any dataset restores the variant list exactly as
-imported — no recomputation, no re-annotation, seconds not hours.
+**Open review** on any dataset restores the managed variants without
+re-annotation. When the complete transcript expansion would be too large for
+the browser, the list uses MANE/PICK/per-gene representatives and restores the
+complete transcript table when a variant is opened.
 Selections of several individuals open together (**Open combined
 review**), with the joint-versus-separately-called semantics described in
 [Cohort analysis](08-cohort-search.md). Maintenance actions live on each

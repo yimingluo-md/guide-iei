@@ -140,9 +140,15 @@ class BgzfRecordCounter:
 # Ordered pipeline stages; each starts when its pattern first appears in
 # the job log. These match the log lines run_annotation.sh already emits.
 STAGES: tuple[tuple[str, str, str], ...] = (
-    ("preflight", "Preparing", r"preflight container checks passed|input assembly:"),
+    ("preflight", "Checking annotation setup", r"Job .* started"),
+    ("input", "Detecting genome assembly", r"preflight container checks passed|input assembly:"),
     ("liftover", "GRCh37 → GRCh38 liftover", r"running BCFtools/liftover|reusing cached hg19"),
-    ("prefilter", "Filtering input records", r"input pre-filter \(|input pre-filter OFF"),
+    (
+        "prefilter",
+        "Filtering input records",
+        r"coding BED missing; building it|region restriction (?:ON|OFF)"
+        r"|whole-genome input|PASS filter OFF|input pre-filter \(|input pre-filter OFF",
+    ),
     ("clinvar", "Refreshing ClinVar", r"=== fetching latest ClinVar ===|=== building ClinVar aa-match reference ==="),
     ("vep", "VEP annotation", r"=== VEP invocation ==="),
     ("ptc50", "LOFTEE 50-bp recheck", r"=== LOFTEE frameshift PTC 50-bp recomputation ==="),
@@ -157,6 +163,9 @@ _DENOMINATOR = re.compile(
     r"|input pre-filter OFF: (\d+) variants"
 )
 _VEP_FINISHED = re.compile(r"VEP finished")
+_RESOLVED_ASSEMBLY = re.compile(
+    r"input assembly:\s*requested=[^,\s]+,\s*resolved=(GRCh37|GRCh38)"
+)
 
 
 class _JobState:
@@ -170,6 +179,7 @@ class _JobState:
         self.baseline: tuple[float, int] | None = None
         self.vep_seen_wall: float | None = None
         self.liftover_seen = False
+        self.resolved_assembly: str | None = None
         self.last_access = 0.0
         self.lock = threading.Lock()
 
@@ -208,6 +218,13 @@ class JobProgressTracker:
         with state.lock:
             self._consume_log(state, job.get("log_path"))
             stage_id = STAGES[state.stage_index][0]
+            stage_label = STAGES[state.stage_index][1]
+            if stage_id == "input" and state.resolved_assembly is not None:
+                stage_label = (
+                    "Preparing GRCh37 input for liftover"
+                    if state.resolved_assembly == "GRCh37"
+                    else "Preparing GRCh38 input"
+                )
             if stage_id == "vep" and state.vep_seen_wall is None:
                 state.vep_seen_wall = time.time()
             done = None
@@ -243,7 +260,7 @@ class JobProgressTracker:
             past_vep = state.stage_index > _stage_index("vep") or state.vep_finished
             return {
                 "stage": stage_id,
-                "stage_label": STAGES[state.stage_index][1],
+                "stage_label": stage_label,
                 "stages": [
                     {
                         "id": identifier,
@@ -261,8 +278,10 @@ class JobProgressTracker:
                     # shows the liftover actually running.
                     if identifier != "liftover"
                     or job.get("input_assembly") == "GRCh37"
+                    or state.resolved_assembly == "GRCh37"
                     or state.liftover_seen
                 ],
+                "resolved_assembly": state.resolved_assembly,
                 "variants_total": state.variants_total,
                 "variants_done": done,
                 "vep_percent": percent,
@@ -295,6 +314,10 @@ class JobProgressTracker:
                     state.variants_total = int(match.group(1) or match.group(2))
             if not state.vep_finished and _VEP_FINISHED.search(line):
                 state.vep_finished = True
+            if state.resolved_assembly is None:
+                assembly_match = _RESOLVED_ASSEMBLY.search(line)
+                if assembly_match:
+                    state.resolved_assembly = assembly_match.group(1)
             if not state.liftover_seen and re.search(STAGES[_stage_index("liftover")][2], line):
                 state.liftover_seen = True
             for index in range(state.stage_index + 1, len(STAGES)):

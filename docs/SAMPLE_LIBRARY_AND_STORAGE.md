@@ -27,13 +27,20 @@ readable.
 
 ## Import choices
 
-- **Keep in Sample Library** is the default. It creates a managed compact VCF
-  and index under `~/.iei-variant-review/sample-library/files/`.
+- **Keep in Sample Library** is the default. Persistence happens before the
+  browser review opens: GUIDE-IEI creates a managed VCF and index under
+  `~/.iei-variant-review/sample-library/files/`, then builds Cohort Search when
+  selected. An exome VCF keeps its complete transcript annotations in that
+  managed copy. If those annotations would exceed the browser row limit, the
+  list uses MANE, then VEP PICK, then one fallback per allele/gene; opening a
+  variant restores its complete transcript table from the indexed VCF.
 - **Include qualifying variants in Cohort Search** is enabled when the sample
   is retained. A healthy entry is shown only as **Included in Cohort Search**.
   Samples not currently indexed show **Add to Cohort Search**, while a missing
   derived entry shows **Repair Cohort Search**.
-- **Review once** opens the VCF without creating library or cohort records.
+- **Review once** opens the VCF without creating library or cohort records. A
+  file whose transcript expansion exceeds the browser limit must instead be
+  retained or reduced before it can be opened safely.
 
 Routine review does not require index maintenance. Rebuild, removal from
 Cohort Search, and the advanced full-WGS index are under **More actions**; none

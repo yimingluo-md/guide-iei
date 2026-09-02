@@ -96,7 +96,7 @@ see it in place.
 : Research predictor of missense mechanism: gain of function, loss of function, or neutral. A hypothesis generator, not a pathogenicity call.
 
 **FuncVEP**
-: Research predictor of damaging functional effects for GRCh38 missense SNVs. GUIDE-IEI reports CTI, CTE, and SP only after exact allele-and-Ensembl-gene matching. Higher scores predict greater functional damage; they are not clinical pathogenicity classifications.
+: Research predictor of damaging functional effects for GRCh38 missense SNVs. GUIDE-IEI reports CTI, CTE, and SP only after exact allele-and-Ensembl-gene matching and applies the final publication's binary thresholds to show **Damaging** or **Neutral**. These are functional-effect predictions, not clinical pathogenicity classifications or ACMG PP3/BP4 evidence strengths.
 
 ## Inheritance & family
 

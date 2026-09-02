@@ -314,10 +314,14 @@ predictors; CTE excludes clinically trained predictors and also excludes
 AlphaMissense because its development used ClinVar variants for model selection
 and tuning; SP excludes all
 features derived from other variant-effect predictors. Higher values predict
-greater functional damage, not clinical pathogenicity. The official archive
-also contains ClinVEP scores, but this integration deliberately neither
-prepares nor displays them. FuncVEP remains optional, and an absent archive
-does not prevent other annotation.
+greater functional damage. GUIDE-IEI applies the final publication's binary
+cutoffs (CTI ≥0.419606448098318, CTE ≥0.519261866786599, and SP
+≥0.440940891937106) and displays **Damaging** or **Neutral**. These are
+functional-effect predictions, not clinical pathogenicity classifications or
+ACMG PP3/BP4 evidence strengths. The official archive also contains ClinVEP
+scores, but this integration deliberately neither prepares nor displays them.
+FuncVEP remains optional, and an absent archive does not prevent other
+annotation.
 
 ## PromoterAI — licensed integration
 

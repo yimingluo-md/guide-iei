@@ -48,8 +48,9 @@ than restart.
 
 Before a large first-time transfer, GUIDE-IEI checks that the annotation and
 indexing tools are ready. On a clean machine it builds the configured local
-tool image at this point, so this one-time preparation happens before any
-multi-hour downloads. No separate installation of bioinformatics command-line
+tool image at this point. After a software update, it also detects and rebuilds
+an image from an older GUIDE-IEI version. This preparation happens before any
+multi-hour downloads; no separate installation of bioinformatics command-line
 tools is required.
 
 ## Step 1 — One click for the public datasets
@@ -162,8 +163,11 @@ version-independent Ensembl gene ID match exactly. The three models are CTI
 predictors and AlphaMissense excluded; AlphaMissense used ClinVar variants for
 model selection and tuning), and SP (features from other
 variant-effect predictors excluded). A higher score means a stronger predicted
-functional effect. It is not a clinical pathogenicity classification, and a
-missing score is not evidence that a variant is benign.
+functional effect. The final publication's binary cutoffs are CTI
+≥0.419606448098318, CTE ≥0.519261866786599, and SP ≥0.440940891937106;
+GUIDE-IEI displays **Damaging** or **Neutral** accordingly. These labels are not
+clinical pathogenicity classifications or ACMG PP3/BP4 evidence strengths,
+and a missing score is not evidence that a variant is neutral or benign.
 
 Already bundled with the software, requiring no download: the ENCODE SCREEN
 cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge

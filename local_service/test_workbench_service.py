@@ -28,6 +28,7 @@ from local_service.storage_locations import (
     storage_path_warning,
 )
 from local_service.workbench_service import (
+    CONTAINER_FINGERPRINT_FILES,
     FUNCVEP_ARCHIVE_NAME,
     AnnotationJobService,
     JobStore,
@@ -42,6 +43,9 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.root = Path(self.temp.name) / "pipeline"
         (self.root / "scripts").mkdir(parents=True)
         (self.root / "config").mkdir()
+        (self.root / "docker").mkdir()
+        for name in CONTAINER_FINGERPRINT_FILES:
+            (self.root / "docker" / name).write_text(f"test container input: {name}\n")
         (self.root / "config" / "annotation.config.yaml").write_text(
             "container:\n  vep_image_tag: release_113.4\n"
             "reference:\n  species: homo_sapiens\n"
@@ -707,6 +711,47 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(status["state"], "image_missing")
         self.assertIn("bash docker/build.sh", status["message"])
 
+    def test_container_status_rejects_an_image_from_an_older_checkout(self):
+        completed = Mock(returncode=0, stdout="old-fingerprint\n", stderr="")
+        with patch(
+            "local_service.workbench_service.shutil.which",
+            return_value="/usr/local/bin/docker",
+        ), patch(
+            "local_service.workbench_service.subprocess.run",
+            return_value=completed,
+        ):
+            status = self.service._container_image_status({
+                "container": {"runtime": "docker", "image": "vep-annotate:latest"},
+            })
+        self.assertFalse(status["available"])
+        self.assertEqual(status["state"], "image_stale")
+        self.assertIn("older GUIDE-IEI version", status["message"])
+
+    def test_container_status_accepts_the_matching_source_fingerprint(self):
+        fingerprint = hashlib.sha256()
+        fingerprint.update(b"GUIDE-IEI container inputs v1\n")
+        for name in CONTAINER_FINGERPRINT_FILES:
+            content = (self.root / "docker" / name).read_bytes()
+            file_hash = hashlib.sha256(content).hexdigest()
+            fingerprint.update(f"{file_hash}  {name}\n".encode("utf-8"))
+        completed = Mock(
+            returncode=0,
+            stdout=f"{fingerprint.hexdigest()}\n",
+            stderr="",
+        )
+        with patch(
+            "local_service.workbench_service.shutil.which",
+            return_value="/usr/local/bin/docker",
+        ), patch(
+            "local_service.workbench_service.subprocess.run",
+            return_value=completed,
+        ):
+            status = self.service._container_image_status({
+                "container": {"runtime": "docker", "image": "vep-annotate:latest"},
+            })
+        self.assertTrue(status["available"])
+        self.assertEqual(status["state"], "ready")
+
     def test_stopped_runtime_is_not_duplicated_as_dataset_profile_error(self):
         stopped = {
             "available": False,
@@ -1212,6 +1257,7 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(sources["funcvep"]["recommendation"], "optional")
         self.assertEqual(sources["funcvep"]["prepare_id"], "funcvep")
         self.assertFalse(sources["funcvep"]["enabled"])
+        self.assertEqual(sources["clingen_erepo"]["label"], "ClinGen")
         expected_references = {
             "spliceai": ("SpliceAI published manuscript", "10.1016/j.cell.2018.12.015"),
             "logofunc": ("LoGoFunc published manuscript", "s13073-023-01261-9"),

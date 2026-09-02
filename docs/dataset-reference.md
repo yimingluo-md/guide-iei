@@ -90,7 +90,10 @@ webpage; each section holds the process detail the UI no longer shows.
   never scores. CTI includes clinically trained component predictors; CTE
   excludes those and AlphaMissense; SP excludes features from all other
   variant-effect predictors. Higher values mean stronger predicted functional
-  damage, not clinical pathogenicity.
+  damage. GUIDE-IEI labels scores **Damaging** at CTI ≥0.419606448098318, CTE
+  ≥0.519261866786599, or SP ≥0.440940891937106; lower available scores are
+  labeled **Neutral**. These are functional-effect labels, not clinical
+  pathogenicity classifications or ACMG PP3/BP4 evidence strengths.
 
 ## GRCh37/hg19 input conversion
 - Uses the pinned BCFtools/liftover plugin (bcftools 1.20, pinned commit)

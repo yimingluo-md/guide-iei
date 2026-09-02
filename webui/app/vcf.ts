@@ -193,7 +193,29 @@ type BrowserPredictorContract = {
     filterable: boolean;
     valueType: "float" | "integer" | "category" | "boolean" | "text";
     valueRange: number[] | null;
+    binaryClassification?: PredictorBinaryClassificationContract;
   }>;
+};
+
+type PredictorBinaryClassificationContract = {
+  threshold: number;
+  comparison:
+    | "greater_than_or_equal"
+    | "less_than_or_equal"
+    | "absolute_greater_than_or_equal";
+  positive_label: string;
+  negative_label: string;
+  threshold_set: string;
+  source_url: string;
+};
+
+export type PredictorBinaryClassification = {
+  label: string;
+  isPositive: boolean;
+  threshold: number;
+  comparison: PredictorBinaryClassificationContract["comparison"];
+  thresholdSet: string;
+  sourceUrl: string;
 };
 
 const REGISTRY_ANNOTATORS = Object.fromEntries(
@@ -207,15 +229,47 @@ const BROWSER_PREDICTOR_CONTRACTS = Object.fromEntries(
       scope: annotator.match.scope as PredictorObservation["scope"],
       dimensions: annotator.match.dimensions,
       metrics: Object.fromEntries(
-        predictor.metrics.map((metric) => [metric.id, {
-          filterable: metric.filterable,
-          valueType: metric.value_type as BrowserPredictorContract["metrics"][string]["valueType"],
-          valueRange: metric.value_range,
-        }]),
+        predictor.metrics.map((metric) => {
+          const binaryClassification = (metric as typeof metric & {
+            binary_classification?: PredictorBinaryClassificationContract;
+          }).binary_classification;
+          return [metric.id, {
+            filterable: metric.filterable,
+            valueType: metric.value_type as BrowserPredictorContract["metrics"][string]["valueType"],
+            valueRange: metric.value_range,
+            ...(binaryClassification ? { binaryClassification } : {}),
+          }];
+        }),
       ),
     } satisfies BrowserPredictorContract];
   }),
 ) as Record<string, BrowserPredictorContract>;
+
+export function predictorBinaryClassification(
+  predictorId: string,
+  metricId: string,
+  value: number | null | undefined,
+): PredictorBinaryClassification | null {
+  if (value === null || value === undefined || !Number.isFinite(value)) return null;
+  const classification = BROWSER_PREDICTOR_CONTRACTS[predictorId]
+    ?.metrics[metricId]?.binaryClassification;
+  if (!classification) return null;
+  const isPositive = classification.comparison === "greater_than_or_equal"
+    ? value >= classification.threshold
+    : classification.comparison === "less_than_or_equal"
+      ? value <= classification.threshold
+      : Math.abs(value) >= classification.threshold;
+  return {
+    label: isPositive
+      ? classification.positive_label
+      : classification.negative_label,
+    isPositive,
+    threshold: classification.threshold,
+    comparison: classification.comparison,
+    thresholdSet: classification.threshold_set,
+    sourceUrl: classification.source_url,
+  };
+}
 
 export type VariantRow = {
   key: string;
@@ -231,6 +285,13 @@ export type VariantRow = {
   libraryDatasetId?: string;
   librarySampleId?: string;
   libraryIndividualId?: string | null;
+  /** Cohort index identity used to restore the complete source record on demand. */
+  cohortSampleEntryId?: number;
+  /** This browser row came from the bounded MANE/PICK/per-gene view. */
+  compactTranscriptView?: boolean;
+  /** Status of restoring every transcript annotation for this one variant. */
+  transcriptDetailStatus?: "loading" | "loaded" | "unavailable";
+  transcriptDetailError?: string;
   id: string;
   chrom: string;
   pos: number;
@@ -614,6 +675,55 @@ export const COHORT_SIZE_GUARD_BYTES = 20 * 1024 * 1024;
 // rows comfortably. The cap sits ~4x above it; routine loads (single genome
 // ~40k rows, genome trio ~120k) stay far below.
 export const REVIEW_ROW_CAP = 350_000;
+
+export class ReviewRowLimitError extends Error {
+  readonly rowCap: number;
+  readonly passingVariantRecords: number;
+
+  constructor(rowCap: number, passingVariantRecords: number) {
+    super(
+      `This import contains ${passingVariantRecords.toLocaleString()} passing variant `
+      + `record${passingVariantRecords === 1 ? "" : "s"}, but they expand beyond `
+      + `${rowCap.toLocaleString()} transcript annotation rows. A variant can have many `
+      + "transcript annotations. Choose “Keep in Sample Library” to save and index the "
+      + "complete VCF, then open a responsive MANE/PICK clinical-transcript view.",
+    );
+    this.name = "ReviewRowLimitError";
+    this.rowCap = rowCap;
+    this.passingVariantRecords = passingVariantRecords;
+  }
+}
+
+export type ParseVcfOptions = {
+  intake?: "user" | "prepared-review" | "server-records";
+  carrierEntryCap?: number;
+  aggregateMaxPopmax?: number | null;
+  rowCap?: number;
+  /** Keep MANE rows, otherwise PICK rows, otherwise one fallback per allele/gene. */
+  clinicalTranscriptsOnly?: boolean;
+};
+
+function compactClinicalConsequences(
+  consequences: Record<string, string>[],
+  alleleInfo: Record<string, string>,
+) {
+  const groups = new Map<string, Record<string, string>[]>();
+  consequences.forEach((csq) => {
+    const combined = { ...alleleInfo, ...csq };
+    const gene = first(combined, ["SYMBOL", "Gene", "HGNC"]) || "intergenic";
+    groups.set(gene, [...(groups.get(gene) ?? []), csq]);
+  });
+  return [...groups.values()].flatMap((entries) => {
+    const mane = entries.filter((csq) => truthy(first(
+      { ...alleleInfo, ...csq }, ["MANE_SELECT", "MANE_PLUS_CLINICAL"],
+    )));
+    if (mane.length) return mane;
+    const picked = entries.filter((csq) => truthy(first(
+      { ...alleleInfo, ...csq }, ["PICK"],
+    )));
+    return picked.length ? picked : entries.slice(0, 1);
+  });
+}
 
 function decode(value: string | undefined) {
   // VEP CSQ fields are percent-encoded only: '+' is a literal character and
@@ -1191,7 +1301,7 @@ async function vcfHeaderLines(file: File) {
 
 export async function parseVcfFiles(
   files: File[],
-  options: { intake?: "user" | "prepared-review" | "server-records"; carrierEntryCap?: number; aggregateMaxPopmax?: number | null; rowCap?: number } = {},
+  options: ParseVcfOptions = {},
 ): Promise<{ rows: VariantRow[]; summary: ImportSummary }> {
   const rows: VariantRow[] = [];
   let importCohortMode = false;
@@ -1221,6 +1331,7 @@ export async function parseVcfFiles(
   let multiallelicRecords = 0;
   let filesWithContigDefinitions = 0;
   let duplicateRecordOccurrences = 0;
+  let fullTranscriptRows = 0;
 
   for (const file of files) {
     // In-browser parsing materializes the decompressed VCF (roughly 10x the
@@ -1510,18 +1621,6 @@ export async function parseVcfFiles(
         const rowSamples = cohortMode
           ? (cohortRepresentative ? [COHORT_ROW_SAMPLE] : [])
           : fallbackSamples;
-        if (rows.length > rowCap) {
-          throw new Error(
-            `This import exceeds ${rowCap.toLocaleString()} review rows — beyond `
-            + "what a browser review stays responsive at. "
-            + (aggregatedCohort
-              ? "Open fewer individuals at once, or index these files in Cohort "
-                + "search and query carriers by gene list — only matched records "
-                + "are ever opened."
-              : "Open fewer files or samples at once, or use Cohort search for "
-                + "cross-sample questions."),
-          );
-        }
         rowSamples.forEach((sample) => {
           const genotype = cohortMode
             ? cohortRepresentative!.evidence
@@ -1539,11 +1638,16 @@ export async function parseVcfFiles(
           // allele match, falling back to ALL consequences would attach the
           // other alleles' genes, HGVS, and scores to this allele — emit one
           // unannotated row instead so the carrier stays visible.
-          const selected = matching.length
+          const allSelected = matching.length
             ? matching
             : alts.length === 1
               ? consequences
               : [{} as Record<string, string>];
+          fullTranscriptRows += allSelected.length;
+          const selected = options.clinicalTranscriptsOnly
+            ? compactClinicalConsequences(allSelected, alleleInfo)
+            : allSelected;
+          const recordTranscriptsCompacted = selected.length < allSelected.length;
           const legacyFallbackGenes = new Set<string>();
           if (!csqFields.includes("PICK")) {
             const byGene = new Map<string, Record<string, string>[]>();
@@ -2300,11 +2404,15 @@ export async function parseVcfFiles(
               mane,
               maneSelect: truthy(first(combined, ["MANE_SELECT"])),
               picked,
+              compactTranscriptView: recordTranscriptsCompacted || undefined,
               repeat: truthy(first(combined, ["RepeatMasker", "REPEATMASKER"])),
               segdup: truthy(first(combined, ["SegDup", "SEGDUP"])),
               phase: genotype.phased ? "phased" : "unknown",
               otherPredictors,
             });
+            if (rows.length > rowCap) {
+              throw new ReviewRowLimitError(rowCap, passRecords);
+            }
           });
         });
       });
@@ -2478,6 +2586,15 @@ export async function parseVcfFiles(
     warnings.push(
       "Separately called files: carrier counts have no denominator — an individual "
       + "without a record at a site is not confirmed reference.",
+    );
+  }
+  if (options.clinicalTranscriptsOnly && fullTranscriptRows > rows.length) {
+    warnings.push(
+      `Responsive clinical-transcript view: showing ${rows.length.toLocaleString()} MANE, `
+      + `VEP PICK, or per-gene fallback row${rows.length === 1 ? "" : "s"} from `
+      + `${fullTranscriptRows.toLocaleString()} transcript annotations. The complete `
+      + "annotations remain in the managed VCF and load for an opened variant when its "
+      + "Cohort Search index is available.",
     );
   }
   return {

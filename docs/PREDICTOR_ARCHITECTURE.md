@@ -154,7 +154,9 @@ The same registry is consumed at several boundaries:
    fields to normalized `PredictorObservation` objects. At parse time it
    rejects unknown predictors, wrong scopes, out-of-scope target dimensions,
    wrong value types or numeric ranges, and values placed on the wrong side
-   of the value/provenance boundary.
+   of the value/provenance boundary. Optional registry-pinned binary
+   classifications are also evaluated here so every UI consumer uses the same
+   threshold and labels.
    Predictor-specific presentation remains explicit UI code.
 4. **Service and cohort storage.** The local service validates installed
    manifests before advertising supported managed datasets.
@@ -191,6 +193,8 @@ is the VEP adapter. The manifest declares:
 - table columns and index metadata;
 - required match dimensions and their normalization;
 - typed output fields, ranges, directions and descriptions;
+- optional binary-classification thresholds, labels, comparison direction and
+  public threshold-set provenance;
 - four required provenance fields: match, match status, source target and
   allele availability; and
 - optional installed-file names, sizes, timestamps and SHA-256 checksums.
@@ -202,6 +206,15 @@ the registry scope, that applicability agrees with predictor applicability,
 and that every output/provenance field agrees with the registry's type, range,
 direction, role and filterability. It then invokes one `IndexedScores` plugin
 for that resource.
+
+A numeric registry metric may declare `binary_classification` when an upstream
+release publishes an authoritative binary cutoff. The threshold must be finite,
+inside the metric's value range, and use the comparison implied by score
+direction. New manifests copy this metadata from the registry. Older manifests
+without it remain valid because classification is derived from the current
+registry; a manifest that declares conflicting metadata is rejected. Such a
+label describes the predictor's stated endpoint and must not be presented as a
+clinical classification unless the upstream contract truly defines one.
 
 The adapter emits scores only when exactly one record satisfies every required
 dimension. An allele-only match, missing query target, or duplicate exact
@@ -235,6 +248,8 @@ Follow this order so scientific matching is settled before UI work begins.
    only when the shared contract cannot express the source safely.
 4. **Extend the registry.** Add the resource and its assets, one annotator, and
    one or more predictors. Declare every emitted score and provenance field.
+   When an authoritative release supplies a binary cutoff, declare it once as
+   metric `binary_classification` metadata with labels and source provenance.
    If a new match scope or metric concept is genuinely required, extend the
    enums and dimension validation rather than using an approximate existing
    scope.

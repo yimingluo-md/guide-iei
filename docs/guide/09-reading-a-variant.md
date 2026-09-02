@@ -138,6 +138,9 @@ applicable, the genome-wide sources on every annotation:
   from human/primate population frequency. Score 0–1, higher = more
   likely pathogenic; the authors' three-way call (likely benign /
   ambiguous / likely pathogenic) is shown as their label, not ours.
+  When the selected MANE transcript has no score but the same allele has
+  scores on other transcripts of that gene, the card says so and lets you
+  expand those transcript-specific scores and source labels.
 - **REVEL** — an ensemble over thirteen component predictors, trained on
   rare disease-causing versus rare neutral missense variants —
   deliberately rare-versus-rare, to avoid learning allele frequency.
@@ -223,10 +226,27 @@ Three structural caveats apply to any predictor comparison:
 
 When the optional FuncVEP resource
 ([Kayaalp et al., *Nature Genetics* 2026](https://www.nature.com/articles/s41588-026-02727-3))
-is installed, the variant page shows its CTI score by default for GRCh38
-missense SNVs. CTE and SP can be enabled under **Display settings → FuncVEP
-models**. All three are 0–1 scores; higher values mean that a damaging
+is installed, the **Predictors** section shows a **FuncVEP CTI** card by default
+for GRCh38 missense SNVs, alongside AlphaMissense, CADD, and the other predictor
+cards. CTE and SP can be enabled under **Display settings → FuncVEP models**.
+They then appear as additional cards in the same section. All three are 0–1
+scores; higher values mean that a damaging
 **functional effect** is more likely:
+
+The distributed archive supplies continuous scores. GUIDE-IEI applies the
+binary cutoffs recalibrated in the final publication's Supplementary Table 13
+and shows **Damaging** or **Neutral** beneath each available score:
+
+- **CTI:** Damaging at ≥0.419606448098318
+- **CTE:** Damaging at ≥0.519261866786599
+- **SP:** Damaging at ≥0.440940891937106
+
+These are predicted functional-effect labels, not pathogenicity
+classifications: **Damaging** does not mean pathogenic/likely pathogenic, and
+**Neutral** does not mean benign/likely benign. They are also separate from
+the publication's calibrated ACMG PP3/BP4 evidence-strength bands. A missing
+score receives no label and is not evidence that the variant is neutral or
+benign.
 
 - **CTI** includes features from all available component variant-effect
   predictors, including clinically trained predictors.

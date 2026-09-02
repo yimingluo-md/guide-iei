@@ -146,13 +146,14 @@ The following are approximate operational limits observed during development,
 not validated performance specifications.
 
 - **Review size.** A browser review stays responsive to roughly 350,000
-  rows — routine loads sit far below it (a genome ~40k rows, a genome trio
-  ~120k, an 88-sample cohort exome ~87k), and the line is reached around
-  8–9 genomes opened together. Beyond it, and beyond ~3 million carrier
-  genotypes for unfiltered callsets, the import stops with directions —
-  open fewer individuals, or use the gene-list search — rather than
-  freezing. Large collections belong in Cohort search, which has no such
-  limit.
+  transcript rows. A retained exome is saved and indexed first; if its full
+  transcript expansion crosses that boundary, the browser list uses MANE,
+  VEP PICK, or one per-gene fallback while the complete transcript table is
+  restored for an opened variant. A **Review once** import cannot use that
+  managed fallback and is refused with directions instead. Imports beyond
+  ~3 million carrier genotypes for unfiltered callsets are also refused.
+  Large multi-sample collections belong in Cohort Search, which queries its
+  local index instead of materializing every row in the browser.
 - **No cohort allele frequencies.** The software deliberately does not
   compute them: callability, capture, and retention profiles are not
   comparable across heterogeneous imports. Positive carrier findings are

@@ -96,6 +96,12 @@ attention:
   qualifying variants join the local cohort index, so future carrier
   searches include this case ([Cohort search](08-cohort-search.md)).
 
+With these defaults, the managed copy and cohort entry are created before the
+browser review opens. A typical exome may contain tens of thousands of variant
+records but several hundred thousand transcript annotations. GUIDE-IEI keeps
+the complete VCF while showing a responsive MANE/PICK/per-gene list; opening a
+variant loads its complete transcript table from the indexed source record.
+
 Choose **Review once** instead when the analysis should leave no stored
 trace. After intake, each VCF sample may be linked to an individual — new
 or existing — or left unlinked.
