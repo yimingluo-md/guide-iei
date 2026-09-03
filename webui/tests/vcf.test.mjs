@@ -23,6 +23,8 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString(
 const {
   ADDITIONAL_DBNSFP_PREDICTORS,
   candidateCompoundHetKeys,
+  hasClinGenPathogenicEvidence,
+  hasGeniaPathogenicEvidence,
   isHeterozygousGenotype,
   STANDARD_VARIANT_QC,
   ReviewRowLimitError,
@@ -32,6 +34,23 @@ const {
   preferredClinicalTranscriptRows,
   variantQcFailures,
 } = await import(moduleUrl);
+
+test("recognizes only source-specific pathogenic and likely-pathogenic assertions", () => {
+  const clingen = (assertion) => [{
+    uuid: "u", caid: "CA1", assertion, disease: "D", mondoId: "MONDO:1",
+    modeOfInheritance: "AD", expertPanel: "EP", approvalDate: "2026-01-01",
+  }];
+  const genia = (classCode) => [{
+    recordId: "1", shortName: "p.X", classCode, relevantSubjects: 1,
+  }];
+  assert.equal(hasClinGenPathogenicEvidence(clingen("Pathogenic")), true);
+  assert.equal(hasClinGenPathogenicEvidence(clingen("Likely_Pathogenic")), true);
+  assert.equal(hasClinGenPathogenicEvidence(clingen("Uncertain Significance")), false);
+  assert.equal(hasGeniaPathogenicEvidence(genia("P")), true);
+  assert.equal(hasGeniaPathogenicEvidence(genia("lp")), true);
+  assert.equal(hasGeniaPathogenicEvidence(genia("RF")), false);
+  assert.equal(hasGeniaPathogenicEvidence(genia("NC")), false);
+});
 
 const CSQ_FIELDS = [
   "Allele", "Consequence", "IMPACT", "SYMBOL", "HGVSc", "HGVSp", "MANE_SELECT", "PICK",
@@ -493,6 +512,69 @@ test("filters legacy record-wide ClinGen observations by encoded ALT", async () 
   assert.equal(
     byAlt.get("T").predictions.clingen_erepo_assertions.provenance.assertions,
     tAssertion,
+  );
+});
+
+test("parses GenIA exact-allele records and preserves NC and RF meanings", async () => {
+  const encodeRecord = (alt, id, name, classification, relevant) => [
+    alt, id, name, classification, relevant,
+  ].map((value) => encodeURIComponent(value)).join("|");
+  const records = [
+    encodeRecord("G", "GENIA-1", "p.Synthetic1", "NC", "0"),
+    encodeRecord("G", "GENIA-2", "p.Synthetic2", "RF", "2"),
+  ].join("&");
+  const vcf = VCF.replace(
+    `CSQ=${PASS_CSQ};IEI_UNSCORED_INDEL=SpliceAI_intronic&PromoterAI_promoter`,
+    `CSQ=${PASS_CSQ};GenIA=${records};GenIA_count=2`,
+  );
+  const result = await parseVcfFiles([new File([vcf], "genia.vcf")]);
+  const row = result.rows[0];
+  assert.deepEqual(row.genia, [
+    { recordId: "GENIA-1", shortName: "p.Synthetic1", classCode: "NC", relevantSubjects: 0 },
+    { recordId: "GENIA-2", shortName: "p.Synthetic2", classCode: "RF", relevantSubjects: 2 },
+  ]);
+  assert.deepEqual(row.predictions.genia_variant_evidence, {
+    scope: "allele",
+    matchStatus: "exact",
+    matchedOn: ["chromosome", "position", "reference", "alternate"],
+    values: { count: 2 },
+    provenance: { records },
+  });
+});
+
+test("keeps Number=A GenIA records isolated to their ALT allele", async () => {
+  const encodeRecord = (alt, id, classification, relevant) => [
+    alt, id, `p.${id}`, classification, relevant,
+  ].map((value) => encodeURIComponent(value)).join("|");
+  const gRecords = [
+    encodeRecord("G", "G1", "NC", "0"),
+    encodeRecord("G", "G2", "RF", "1"),
+  ].join("&");
+  const tRecord = encodeRecord("T", "T1", "LP", "3");
+  const fields = ["Allele", "ALLELE_NUM", "Consequence", "IMPACT", "SYMBOL", "PICK"];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "##INFO=<ID=GenIA,Number=A,Type=String,Description=\"per ALT\">",
+    "##INFO=<ID=GenIA_count,Number=A,Type=Integer,Description=\"per ALT\">",
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    `1\t100\t.\tA\tG,T\t99\tPASS\tCSQ=G|1|missense_variant|MODERATE|GENE1|1,T|2|missense_variant|MODERATE|GENE2|1;GenIA=${gRecords},${tRecord};GenIA_count=2,1\tGT\t1/2`,
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "genia-number-a.vcf")]);
+  const byAlt = new Map(result.rows.map((row) => [row.alt, row]));
+  assert.deepEqual(byAlt.get("G").genia.map((record) => record.recordId), ["G1", "G2"]);
+  assert.deepEqual(byAlt.get("T").genia.map((record) => record.recordId), ["T1"]);
+  assert.equal(byAlt.get("G").predictions.genia_variant_evidence.values.count, 2);
+  assert.equal(byAlt.get("T").predictions.genia_variant_evidence.values.count, 1);
+  assert.equal(
+    byAlt.get("G").predictions.genia_variant_evidence.provenance.records,
+    gRecords,
+  );
+  assert.equal(
+    byAlt.get("T").predictions.genia_variant_evidence.provenance.records,
+    tRecord,
   );
 });
 

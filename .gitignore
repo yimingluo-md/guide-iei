@@ -58,3 +58,5 @@ webui/.build-required
 config/annotation.config.yaml.new
 release-manifest.txt
 dist/
+.next/
+.pnpm-store/

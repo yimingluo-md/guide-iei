@@ -23,6 +23,10 @@ test("keeps the clinical review defaults visible", async () => {
   assert.match(source, /Exclude SegDup/);
   assert.match(source, /ClinVar P \/ LP only/);
   assert.match(source, /Candidate compound het/);
+  assert.match(source, /<th>ClinVar<\/th><th>GenIA<\/th><th>Flags<\/th>/);
+  assert.doesNotMatch(source, /<th>SpliceAI<\/th>/);
+  assert.match(source, /GENIA_LIST_CLASS_ORDER = \["P", "LP", "VUS", "LB", "B", "NC", "RF"\]/);
+  assert.doesNotMatch(source, /hasVisibleFuncVepScore\(row, visibleInfo\)/);
   assert.match(source, /current-review-table/);
   assert.match(source, /<VariantIdentifier row=\{row\}\/>/);
   assert.match(source, /Research use only\. GUIDE-IEI organizes evidence but does not classify variants or generate diagnostic reports/);
@@ -130,6 +134,14 @@ test("provides a persistent Sample Library, stable identity mapping, and storage
   assert.match(source, /Included in Cohort Search/);
   assert.match(source, /Add to Cohort Search/);
   assert.match(source, /Repair Cohort Search/);
+  assert.match(source, /Checking whether these samples are already in the Sample Library/);
+  assert.match(source, /Possible dataset update/);
+  assert.match(source, /Replace current version/);
+  assert.match(source, /Keep as separate dataset/);
+  assert.match(source, /Previous versions/);
+  assert.match(source, /Stored once for all/);
+  assert.match(service, /sample-library\/inspect/);
+  assert.match(service, /activate-version/);
   assert.match(source, /More actions/);
   assert.match(source, /Rebuild search index/);
   assert.match(source, /Remove from Cohort Search/);
@@ -168,7 +180,7 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Files that completed successfully are preserved/);
   assert.match(source, /Recommended for WGS/);
   assert.match(source, /Update installed datasets/);
-  assert.match(source, /Needs a one-time registration or license/);
+  assert.match(source, /Needs registration, a license, or private files/);
   assert.match(source, /Installed with the one-click setup/);
   assert.match(source, /Optional add-ons/);
   assert.match(source, /Download bundled files/);
@@ -244,6 +256,41 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(service, /license_accepted: licenseAccepted/);
 });
 
+test("supports explicit subset repair for an unreadable GenIA index", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(source, /Add or update GenIA files/);
+  assert.match(source, /Replace the unreadable derived GenIA index/);
+  assert.match(source, /Only the selected components will remain\. Any unselected components from the prior index will be removed/);
+  assert.match(source, /Boolean\(status\?\.error && !replaceUnreadable\)/);
+  assert.match(source, /replacingUnreadableIndex/);
+  assert.doesNotMatch(source, /Select all five GenIA exports for a complete replacement/);
+  assert.doesNotMatch(source, /I confirm that I am authorized to process these GenIA exports locally/);
+  assert.doesNotMatch(source, /No GenIA download link, credentials, or source data are bundled or uploaded/);
+  assert.match(source, /Some GenIA variants were not indexed/);
+  assert.doesNotMatch(source, /Installed with validation notes/);
+  assert.match(source, /Needs registration, a license, or private files/);
+  assert.match(source, /datasetCards\(accessRequiredSources\)\}\{geniaSource && <GeniaDatasetSetupCard/);
+  assert.doesNotMatch(source, /datasetCards\(optionalSources\).*geniaSource && <GeniaDatasetSetupCard/);
+  assert.match(source, /Set up annotation datasets → User action needed/);
+  assert.match(source, /https:\/\/doi\.org\/10\.1016\/j\.jaci\.2023\.11\.022/);
+  assert.match(service, /replaceUnreadable = false/);
+  assert.match(service, /replace_unreadable: replaceUnreadable/);
+});
+
+test("filters Variant Review by ClinGen and GenIA pathogenic assertions and GEI genes", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  const service = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(source, /ClinGen P \/ LP only/);
+  assert.match(source, /GenIA P \/ LP only/);
+  assert.match(source, /hasClinGenPathogenicEvidence\(row\.clingenErepo\)/);
+  assert.match(source, /hasGeniaPathogenicEvidence\(row\.genia\)/);
+  assert.match(source, /GenIA GEI gene/);
+  assert.match(source, /geneKnowledgeFilters\?\.genia_gei_genes/);
+  assert.match(service, /genia_gei_genes: string\[\]/);
+  assert.doesNotMatch(source, /GenIA-associated gene/);
+});
+
 test("builds compound-het candidates only from rows surviving active filters", async () => {
   const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
   assert.match(source, /candidateCompoundHetKeys\(screenFilteredRows\)/);
@@ -315,13 +362,21 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.doesNotMatch(source, /Functional evidence model/);
   assert.doesNotMatch(source, /<FuncVepEvidence/);
   assert.match(source, /item === "funcVep" \? \["funcVepCti"\]/);
-  assert.match(source, /currentPreference === null && !migrated\.includes\("funcVepCti"\)/);
+  assert.match(source, /const DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v3"/);
+  assert.match(source, /const PREVIOUS_DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v2"/);
+  assert.match(source, /item !== "funcVepCte" && item !== "funcVepSp"/);
+  assert.match(source, /if \(!migrated\.includes\("funcVepCti"\)\) migrated\.push\("funcVepCti"\)/);
   assert.doesNotMatch(source, /Exact allele \+ Ensembl gene\. CTI includes features/);
   assert.doesNotMatch(source, /Exact allele \+ Ensembl gene\. CTE excludes clinically trained predictors/);
   assert.match(source, /No score for the selected MANE transcript/);
-  assert.match(source, /AlphaMissense scores are available on/);
-  assert.match(source, /className="predictor-transcript-alternatives"/);
-  assert.match(styles, /\.predictor-transcript-alternatives summary span/);
+  assert.match(source, /selectedManeAlphaMissenseMissing = selected\.mane/);
+  assert.match(source, /noteWhenMissing: selectedManeAlphaMissenseMissing/);
+  assert.doesNotMatch(source, /AlphaMissense scores are available on/);
+  assert.doesNotMatch(source, /predictor-transcript-alternatives/);
+  assert.match(source, /const restorationIdentity = row\.carriers/);
+  assert.match(source, /Any indexed carrier can retrieve the same complete source/);
+  assert.match(source, /attachLibraryIdentity\(row, identityBySample\)/);
+  assert.doesNotMatch(styles, /\.predictor-transcript-alternatives/);
   assert.match(source, /CADD raw/);
   assert.match(source, /GERP\+\+ RS/);
   assert.match(source, /phyloP 100-way/);

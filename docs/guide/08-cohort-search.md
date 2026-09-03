@@ -68,8 +68,8 @@ files.
 
 ## Reviewing individuals and subsets from a cohort
 
-The Sample Library lists every individual of an imported cohort as its own
-dataset. From there:
+The Sample Library shows an imported cohort as one callset card; expand its
+sample list to work with individual samples. From there:
 
 - **Open review** on one individual opens a normal single-patient review —
   the service projects that person's genotype column and carried variants

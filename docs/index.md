@@ -26,7 +26,8 @@ a clinician-developed, locally run, open-source WES/WGS analysis platform.
 
 GUIDE-IEI annotates exome and genome VCFs with a curated annotation stack
 (Ensembl VEP, LOFTEE, dbNSFP, ClinVar, ClinGen, SpliceAI, ENCODE SCREEN
-regulatory data, and more) and presents the results in a local review
+regulatory data, and more), with optional registered-user GenIA gene,
+phenotype, and exact-allele evidence, and presents the results in a local review
 workbench. All analysis is performed on the user's own computer; patient
 variants do not leave the machine, with a single opt-in exception described
 in the [FAQ](FAQ.md).

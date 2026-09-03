@@ -49,6 +49,7 @@ from local_service.gene_knowledge import (
     extract_omim_download_urls,
     validate_omim_download_url,
 )
+from local_service.genia import COMPONENT_LABELS
 from local_service.phenotype_store import PhenotypeStore
 from local_service.screen_context import ScreenContextStore
 from local_service.job_progress import JobProgressTracker
@@ -109,6 +110,7 @@ ANNOTATION_SOURCE_PATHS = {
     "ccre": ("wgs_review", "ccre"),
     "screen_context": ("wgs_review", "screen_context"),
     "clingen_erepo": ("clingen_erepo", None),
+    "genia": ("genia", None),
 }
 REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp", "clingen_erepo"}
 SOURCE_RECOMMENDATION_DEFAULTS = {
@@ -128,6 +130,7 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "ccre": "included",
     "screen_context": "recommended_wgs",
     "clingen_erepo": "required",
+    "genia": "optional",
 }
 DBNSFP_OPTIONAL_PREDICTORS = [
     {"id": "metarnn", "label": "MetaRNN", "category": "Ensemble", "columns": ["MetaRNN_score", "MetaRNN_pred"]},
@@ -405,6 +408,18 @@ ANNOTATION_SOURCE_SETUP = {
             "Click Install latest (or Check and update) to fetch the official public export; a failed update leaves the previous working copy unchanged.",
             "Every disease- and inheritance-specific expert-panel assertion is kept separately rather than collapsed into one verdict.",
             "Annotation uses only this local snapshot — your variants are never sent to ClinGen.",
+        ],
+    },
+    "genia": {
+        "setup_mode": "manual",
+        "access": "registration",
+        "recommendation": "optional",
+        "reference_url": "https://geniadb.org/",
+        "reference_label": "GenIA website and registration",
+        "size_hint": "small private local index; source files are not copied",
+        "instructions": [
+            "Select any one or any subset of the supported GenIA exports; unselected installed components are preserved.",
+            "GUIDE-IEI detects each component by its schema, builds its own local index, and does not require the downloaded VCF index.",
         ],
     },
 }
@@ -757,11 +772,38 @@ class AnnotationJobService:
             self.state_dir, self.cohort, workspace_dir=self.workspace_dir
         )
         gene_knowledge_override = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
+        genia_database = self.annotation_root / "genia" / "genia.sqlite3"
+        genia_reference_fasta = (
+            self.annotation_root
+            / "fasta"
+            / "Homo_sapiens.GRCh38.dna.primary_assembly.fa.gz"
+        )
+        try:
+            annotation_config = self._load_config(
+                self.pipeline_root / "config" / "annotation.config.yaml"
+            )
+            genia_block = annotation_config.get("genia") or {}
+            reference_block = annotation_config.get("reference") or {}
+            fasta_block = reference_block.get("fasta") or {}
+            configured_genia = self._resolved_reference_path(genia_block.get("database"))
+            configured_fasta = self._resolved_reference_path(fasta_block.get("path"))
+            if configured_genia is not None:
+                genia_database = configured_genia
+            if configured_fasta is not None:
+                genia_reference_fasta = configured_fasta
+        except (OSError, UnicodeError, ValueError):
+            # Keep the service usable when annotation settings are temporarily
+            # unreadable; the profile endpoint reports that configuration
+            # problem separately, and these stock managed paths remain safe.
+            pass
         self.gene_knowledge = GeneKnowledgeStore(
             gene_knowledge_override if gene_knowledge_override.is_file() else
             self.pipeline_root / "webui" / "public" / "bundled-data" / "gene_knowledge_public.sqlite3",
             self.state_dir / "gene-knowledge" / "omim.sqlite3",
+            genia_database,
+            genia_reference_fasta,
         )
+        self.genia = self.gene_knowledge.genia
         self.clingen_erepo = ClinGenErepoStore(
             self.annotation_root / "clingen_erepo" / "clingen_erepo.sqlite3",
             self.annotation_root / "clingen_erepo" / "manifest.json",
@@ -966,6 +1008,30 @@ class AnnotationJobService:
                 options["original_is_ephemeral"] = False
             results.append(self.sample_library.import_vcf(path, options))
         return {"imports": results, "datasets": [dataset for result in results for dataset in result["datasets"]]}
+
+    def inspect_sample_library(self, payload: dict) -> dict:
+        """Classify retained-import identity before any library rows change."""
+        self._ensure_active_storage_available(require_workspace=True)
+        sources = payload.get("sources")
+        if not isinstance(sources, list) or not sources:
+            raise ValueError("sources must contain at least one review VCF")
+        results = []
+        for source in sources:
+            if not isinstance(source, dict):
+                raise ValueError("each source must be an object")
+            if source.get("review_id"):
+                path = self.wgs_review_file(str(source["review_id"]))
+            else:
+                path = Path(str(source.get("path") or "")).expanduser().resolve()
+            inspected = self.sample_library.inspect_vcf(path, {
+                "analysis_scope": payload.get("analysis_scope") or "exome",
+            })
+            results.append({
+                **inspected,
+                "source_name": str(source.get("original_name") or path.name),
+                "path": str(path),
+            })
+        return {"inspections": results}
 
     def cleanup_storage(self, categories: list[str]) -> dict:
         if self.storage_migration_active():
@@ -2242,24 +2308,37 @@ class AnnotationJobService:
             "logofunc": ("file", "Choose the downloaded LoGoFunc .csv.gz file"),
             "funcvep": ("file", "Choose the downloaded official FuncVEP .zip archive"),
             "omim": ("folder", "Choose the folder containing the four OMIM data files"),
+            "genia": ("files", "Choose one or more GenIA export files"),
             "storage_annotation": ("folder", "Choose the folder for annotation datasets"),
             "storage_data": ("folder", "Choose the folder for the Sample Library & Cohort"),
             "storage_temporary": ("folder", "Choose the folder for the temporary workspace"),
         }
         if resource_id not in choices:
             raise ValueError(
-                "resource picker supports dbNSFP, PromoterAI, LoGoFunc, FuncVEP, OMIM, or a storage location"
+                "resource picker supports dbNSFP, PromoterAI, LoGoFunc, FuncVEP, OMIM, GenIA, or a storage location"
             )
         selection_type, prompt = choices[resource_id]
         system = platform.system()
         command: list[str]
         if system == "Darwin":
-            verb = "choose folder" if selection_type == "folder" else "choose file"
             escaped_prompt = prompt.replace("\\", "\\\\").replace('"', '\\"')
-            command = [
-                "osascript", "-e",
-                f'POSIX path of ({verb} with prompt "{escaped_prompt}")',
-            ]
+            if selection_type == "files":
+                script = (
+                    f'set chosenFiles to choose file with prompt "{escaped_prompt}" '
+                    "with multiple selections allowed\n"
+                    'set outputText to ""\n'
+                    "repeat with chosenFile in chosenFiles\n"
+                    "set outputText to outputText & POSIX path of chosenFile & linefeed\n"
+                    "end repeat\n"
+                    "return outputText"
+                )
+                command = ["osascript", "-e", script]
+            else:
+                verb = "choose folder" if selection_type == "folder" else "choose file"
+                command = [
+                    "osascript", "-e",
+                    f'POSIX path of ({verb} with prompt "{escaped_prompt}")',
+                ]
         elif os.name == "nt" or is_wsl():
             powershell = "powershell.exe"
             if is_wsl() and not shutil.which(powershell):
@@ -2279,27 +2358,38 @@ class AnnotationJobService:
                 file_filter = (
                     "ZIP archive (*.zip)|*.zip|All files (*.*)|*.*"
                     if resource_id == "funcvep"
+                    else "GenIA exports (*.csv;*.tsv;*.vcf;*.vcf.gz)|*.csv;*.tsv;*.vcf;*.vcf.gz|All files (*.*)|*.*"
+                    if resource_id == "genia"
                     else "Compressed table (*.csv.gz)|*.csv.gz|All files (*.*)|*.*"
                 )
-                script = (
+                script = "".join([
                     "Add-Type -AssemblyName System.Windows.Forms;"
                     "$d=New-Object System.Windows.Forms.OpenFileDialog;"
                     f"$d.Title={json.dumps(prompt)};"
-                    f"$d.Filter={json.dumps(file_filter)};"
-                    "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)"
-                    "{[Console]::Write($d.FileName)}"
-                )
+                    f"$d.Filter={json.dumps(file_filter)};",
+                    "$d.Multiselect=$true;" if selection_type == "files" else "",
+                    "if($d.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK)",
+                    (
+                        "{foreach($f in $d.FileNames){[Console]::WriteLine($f)}}"
+                        if selection_type == "files"
+                        else "{[Console]::Write($d.FileName)}"
+                    ),
+                ])
             command = [powershell, "-NoProfile", "-STA", "-Command", script]
         elif shutil.which("zenity"):
             command = ["zenity", "--file-selection", f"--title={prompt}"]
             if selection_type == "folder":
                 command.append("--directory")
+            elif selection_type == "files":
+                command.extend(["--multiple", "--separator=\n"])
         elif shutil.which("kdialog"):
             command = [
                 "kdialog",
                 "--getexistingdirectory" if selection_type == "folder" else "--getopenfilename",
                 str(Path.home()),
             ]
+            if selection_type == "files":
+                command.extend(["--multiple", "--separate-output"])
         else:
             raise ValueError(
                 "a native file chooser is unavailable; install zenity or kdialog, then try again"
@@ -2320,10 +2410,25 @@ class AnnotationJobService:
             ):
                 return {"cancelled": True, "resource_id": resource_id}
             raise ValueError(result.stderr.strip() or "the local file chooser did not return a selection")
-        path = self._selected_source_path(selected)
-        valid = path.is_dir() if selection_type == "folder" else path.is_file()
-        if not valid:
-            raise ValueError(f"the selected {selection_type} is no longer available: {path}")
+        selected_values = selected.splitlines() if selection_type == "files" else [selected]
+        paths = [self._selected_source_path(value) for value in selected_values if value.strip()]
+        valid = all(
+            path.is_dir() if selection_type == "folder" else path.is_file()
+            for path in paths
+        )
+        if not paths or not valid:
+            raise ValueError(f"one or more selected {selection_type} are no longer available")
+        if selection_type == "files":
+            inspection = self.genia.inspect(paths)
+            return {
+                "cancelled": False,
+                "resource_id": resource_id,
+                "selection_type": selection_type,
+                "paths": [str(path) for path in paths],
+                "names": [path.name for path in paths],
+                "detected": inspection.get("files", []),
+            }
+        path = paths[0]
         return {
             "cancelled": False,
             "resource_id": resource_id,
@@ -4543,6 +4648,7 @@ class AnnotationJobService:
             "ccre": ("ENCODE cCRE regions", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
             "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: SCREEN records a positive regulatory signature in reference tissues and immune cell types, adding context to the aggregate cCRE map"),
             "clingen_erepo": ("ClinGen", "Variant interpretations from ClinGen's disease-specific expert panels — the highest review level available. Stored locally; your variants are never sent to any server"),
+            "genia": ("GenIA", "Registered-user GenIA evidence for immune gene–disease knowledge, reported phenotypes, and exact GRCh38 alleles. Install any available component; source files stay on this computer"),
         }
         try:
             config = self._prefer_installed_managed_resources(
@@ -4607,6 +4713,8 @@ class AnnotationJobService:
                 ]
             elif source_id == "clingen_erepo":
                 values = [block.get("database"), block.get("vcf"), block.get("manifest")]
+            elif source_id == "genia":
+                values = [block.get("database")]
             else:
                 values = [block.get("file")]
             return [
@@ -4719,6 +4827,12 @@ class AnnotationJobService:
                 database, vcf, manifest = paths
                 installed = database.is_file() and vcf.is_file() and manifest.is_file() \
                     and self.clingen_erepo.status().get("available", False)
+            if source_id == "genia":
+                genia_status = self.genia.status()
+                installed = bool(
+                    paths and paths[0].is_file()
+                    and (genia_status.get("capabilities") or {}).get("variant_evidence")
+                )
             if installed and source_id == "liftover" and paths:
                 source_fasta = paths[0]
                 installed = (
@@ -4746,6 +4860,9 @@ class AnnotationJobService:
             if source_id == "clingen_erepo" and installed:
                 generated = str(self.clingen_erepo.status().get("generated_utc") or "")
                 source_version = generated[:10]
+            if source_id == "genia" and installed:
+                component = (self.genia.status().get("components") or {}).get("variant_vcf") or {}
+                source_version = str(component.get("installed_at") or "")[:10]
             available_in = (
                 ["whole_genome"]
                 if source_id in {"promoterai", "cadd_wgs", "ccre", "screen_context"}
@@ -4912,7 +5029,7 @@ class AnnotationJobService:
             if source_id not in options:
                 continue
             parent = config.setdefault(location[0], {})
-            block = parent.setdefault(location[1], {})
+            block = parent if location[1] is None else parent.setdefault(location[1], {})
             block["enabled"] = bool(options[source_id]) and (
                 analysis_scope == "whole_genome"
                 or source_id not in {"promoterai", "cadd_wgs", "ccre"}
@@ -5311,6 +5428,17 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         elif path.startswith("/api/gene-knowledge/gene/"):
             identifier = unquote(path.removeprefix("/api/gene-knowledge/gene/"))
             self._json(self.service.gene_knowledge.gene(identifier))
+        elif path == "/api/genia/variant":
+            try:
+                chrom = (query.get("chrom") or [""])[0]
+                pos = int((query.get("pos") or ["0"])[0])
+                ref = (query.get("ref") or [""])[0]
+                alt = (query.get("alt") or [""])[0]
+                if not chrom or pos < 1 or not ref or not alt:
+                    raise ValueError("chrom, pos, ref, and alt are required")
+                self._json(self.service.genia.variant(chrom, pos, ref, alt))
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
         elif path == "/api/clingen-erepo/status":
             self._json(self.service.clingen_erepo.status())
         elif path == "/api/clingen-erepo/variant":
@@ -5507,6 +5635,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     "/api/phenotypes/individual",
                     "/api/gene-knowledge/omim/download",
                     "/api/gene-knowledge/omim/install",
+                    "/api/gene-knowledge/genia/install",
                     "/api/screen-context/install",
                     "/api/software-update/install",
                     "/api/software-update/rollback",
@@ -5625,6 +5754,33 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
                 return
+            if path == "/api/gene-knowledge/genia/inspect":
+                body = self._body()
+                raw_paths = body.get("paths")
+                if not isinstance(raw_paths, list) or not raw_paths:
+                    raise ValueError("paths must contain one or more GenIA export files")
+                paths = [self.service._selected_source_path(str(value)) for value in raw_paths]
+                self._json(self.service.genia.inspect(paths))
+                return
+            if path == "/api/gene-knowledge/genia/install":
+                body = self._body()
+                raw_paths = body.get("paths")
+                if not isinstance(raw_paths, list) or not raw_paths:
+                    raise ValueError("paths must contain one or more GenIA export files")
+                self.service._ensure_active_storage_available(require_annotation_root=True)
+                paths = [self.service._selected_source_path(str(value)) for value in raw_paths]
+                if len(paths) > len(COMPONENT_LABELS):
+                    raise ValueError("select at most one file for each supported GenIA component")
+                if not all(path.is_file() for path in paths):
+                    raise ValueError("one or more selected GenIA files are unavailable")
+                self._json(
+                    self.service.gene_knowledge.install_genia(
+                        paths,
+                        replace_unreadable=body.get("replace_unreadable") is True,
+                    ),
+                    HTTPStatus.CREATED,
+                )
+                return
             if path == "/api/cohort/import":
                 body = self._body()
                 paths = body.get("paths")
@@ -5658,6 +5814,23 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     str(body.get("action") or ""),
                 ))
                 return
+            if path == "/api/sample-library/review-record":
+                body = self._body()
+                try:
+                    self._json(self.service.sample_library.original_review_record(
+                        str(body.get("dataset_id") or ""),
+                        str(body.get("variant_key") or ""),
+                    ))
+                except KeyError:
+                    self._json(
+                        {"error": "library dataset not found"},
+                        HTTPStatus.NOT_FOUND,
+                    )
+                except FileNotFoundError as exc:
+                    self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+                return
             if path == "/api/sample-library/review-file":
                 body = self._body()
                 dataset_ids = body.get("dataset_ids")
@@ -5680,6 +5853,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
                 return
+            if path == "/api/sample-library/inspect":
+                self._json(self.service.inspect_sample_library(self._body()))
+                return
             if path.startswith("/api/sample-library/") and path.endswith("/identity"):
                 dataset_id = path.split("/")[3]
                 self._json(self.service.sample_library.map_identity(dataset_id, self._body()))
@@ -5694,6 +5870,10 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.sample_library.reindex(
                     dataset_id, full_wgs=bool(body.get("full_wgs", False))
                 ))
+                return
+            if path.startswith("/api/sample-library/") and path.endswith("/activate-version"):
+                dataset_id = path.split("/")[3]
+                self._json(self.service.sample_library.activate_version(dataset_id))
                 return
             if path.startswith("/api/sample-library/") and path.endswith("/cohort/remove"):
                 dataset_id = path.split("/")[3]

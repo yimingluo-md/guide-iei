@@ -25,6 +25,13 @@ annotation-resource versions, and other provenance needed to understand how
 the review set was produced. Technical identifiers, checksums, and
 configuration hashes remain available under provenance details.
 
+A multi-sample VCF is shown as one callset with an expandable sample list.
+Importing the same file again reuses its existing library records. A new
+annotation of the same calls becomes the current version while the prior one
+remains available under **Previous versions**. If sample names match but the
+called variants or genotypes changed, GUIDE-IEI asks whether this is an update
+or a separate dataset. Only the current version is placed in Cohort Search.
+
 ## Reopening a review
 
 **Open review** on any dataset restores the managed variants without

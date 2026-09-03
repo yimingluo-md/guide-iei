@@ -19,6 +19,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from local_service.genia import GeniaStore
+
 
 
 def _open_ro(path):
@@ -571,9 +573,19 @@ def build_omim_database(source_dir: Path, destination: Path) -> dict[str, object
 
 
 class GeneKnowledgeStore:
-    def __init__(self, public_database: Path, private_database: Path):
+    def __init__(
+        self,
+        public_database: Path,
+        private_database: Path,
+        genia_database: Path | None = None,
+        genia_reference_fasta: Path | None = None,
+    ):
         self.public_database = public_database
         self.private_database = private_database
+        self.genia = GeniaStore(
+            genia_database or private_database.with_name("genia.sqlite3"),
+            reference_fasta=genia_reference_fasta,
+        )
 
     @staticmethod
     def _rows(connection: sqlite3.Connection, query: str, parameters: tuple = ()) -> list[dict]:
@@ -604,10 +616,38 @@ class GeneKnowledgeStore:
                     }
             except sqlite3.Error as exc:
                 omim = {"installed": False, "error": str(exc), "license": "User installation required; OMIM data are not shipped"}
-        return {"available": bool(resources), "error": error, "resources": resources, "omim": omim}
+        return {
+            "available": bool(resources), "error": error, "resources": resources,
+            "omim": omim, "genia": self.genia.status(),
+        }
 
     def install_omim(self, source_dir: Path) -> dict[str, object]:
         return build_omim_database(source_dir.expanduser().resolve(), self.private_database)
+
+    def install_genia(
+        self, source_paths: list[Path], *, replace_unreadable: bool = False,
+    ) -> dict[str, object]:
+        return self.genia.install(
+            [path.expanduser().resolve() for path in source_paths],
+            replace_unreadable=replace_unreadable,
+        )
+
+    def _genia_gene(self, identifier: str) -> dict[str, object]:
+        """Keep an optional private-index read failure isolated from public data."""
+        try:
+            return self.genia.gene(identifier)
+        except (OSError, UnicodeError, ValueError, sqlite3.Error) as exc:
+            return {
+                **self.genia.status(),
+                "relationships": [],
+                "error": f"GenIA gene lookup is unavailable: {exc}",
+            }
+
+    def _genia_gei_genes(self) -> list[str]:
+        try:
+            return self.genia.gei_genes()
+        except (OSError, UnicodeError, ValueError, sqlite3.Error):
+            return []
 
     def _identity(self, connection: sqlite3.Connection, identifier: str) -> dict | None:
         key = identifier.split(".")[0].upper()
@@ -629,8 +669,11 @@ class GeneKnowledgeStore:
             "query": identifier, "found": False, "identity": None, "aliases": [],
             "iuis": [], "clingen_validity": [], "clingen_dosage": None,
             "omim": [], "omim_installed": self.private_database.is_file(),
+            "genia": self._genia_gene(identifier),
         }
         if not self.public_database.is_file():
+            if (result["genia"] or {}).get("relationships"):
+                result["found"] = True
             return result
         with closing(_open_ro(self.public_database)) as connection:
             identity = self._identity(connection, identifier)
@@ -661,11 +704,17 @@ class GeneKnowledgeStore:
                     "ORDER BY p.phenotype",
                     (symbol,),
                 )
+        result["genia"] = self._genia_gene(symbol)
+        if (result["genia"] or {}).get("relationships"):
+            result["found"] = True
         return result
 
     def filter_catalog(self) -> dict[str, object]:
         if not self.public_database.is_file():
-            return {"iuis_categories": [], "iuis_category_genes": {}, "omim_genes": []}
+            return {
+                "iuis_categories": [], "iuis_category_genes": {},
+                "omim_genes": [], "genia_gei_genes": self._genia_gei_genes(),
+            }
         with closing(_open_ro(self.public_database)) as connection:
             iuis_categories = self._rows(connection, "SELECT major_category AS category,count(DISTINCT gene_symbol) AS genes FROM iuis_assertions WHERE gene_symbol<>'' GROUP BY major_category ORDER BY major_category")
             iuis_category_genes: dict[str, list[str]] = {}
@@ -684,4 +733,5 @@ class GeneKnowledgeStore:
             "iuis_categories": iuis_categories,
             "iuis_category_genes": iuis_category_genes,
             "omim_genes": omim_genes,
+            "genia_gei_genes": self._genia_gei_genes(),
         }

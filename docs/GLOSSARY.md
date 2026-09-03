@@ -98,6 +98,9 @@ see it in place.
 **FuncVEP**
 : Research predictor of damaging functional effects for GRCh38 missense SNVs. GUIDE-IEI reports CTI, CTE, and SP only after exact allele-and-Ensembl-gene matching and applies the final publication's binary thresholds to show **Damaging** or **Neutral**. These are functional-effect predictions, not clinical pathogenicity classifications or ACMG PP3/BP4 evidence strengths.
 
+**GenIA**
+: Optional registered-user immune gene–disease, phenotype, and GRCh38 variant evidence. GUIDE-IEI can install any subset of its five supported exports into a private local index. Variant labels are retained as source evidence; `NC` means **Not classified**, `RF` means **Risk factor**, and neither should be treated as a new GUIDE-IEI or ACMG/AMP classification.
+
 ## Inheritance & family
 
 **de novo** *(also: de-novo)*

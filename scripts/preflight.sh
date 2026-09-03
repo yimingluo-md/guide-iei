@@ -27,6 +27,7 @@ python3 - "$CONFIG" "$INPUT" "$OUTPUT" "$ROOT" "$MODE" "$INPUT_ASSEMBLY" <<'PY'
 import gzip
 import os
 import re
+import sqlite3
 import sys
 import yaml
 from pathlib import Path
@@ -313,6 +314,37 @@ if mode != "--dry-run":
             if not path or not os.path.isfile(path):
                 message = f"ClinGen Evidence Repository {key} missing: {path} (update it from Annotation datasets)"
             if message:
+                (errors if required else warnings).append(message)
+    genia = cfg.get("genia", {}) or {}
+    if genia.get("enabled", False):
+        required = genia.get("required", False)
+        path = absolute(genia.get("database"))
+        if not path or not os.path.isfile(path):
+            if required:
+                errors.append(f"required GenIA database missing: {path}")
+        else:
+            try:
+                uri = Path(path).resolve().as_uri() + "?mode=ro&immutable=1"
+                with sqlite3.connect(uri, uri=True) as connection:
+                    if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+                        raise ValueError("database quick check failed")
+                    component = connection.execute(
+                        "SELECT release_hint FROM components WHERE id='variant_vcf'"
+                    ).fetchone()
+                    if component is None:
+                        raise ValueError("variant VCF component is not installed")
+                    if "GRCh38" not in str(component[0] or ""):
+                        raise ValueError("variant VCF component is not identified as GRCh38")
+                    connection.execute(
+                        """
+                        SELECT record_id,short_name,class_code,relevant_subjects
+                        FROM variants
+                        WHERE chrom=? AND pos=? AND ref=? AND alt=? LIMIT 0
+                        """,
+                        ("1", 1, "A", "C"),
+                    )
+            except (sqlite3.Error, ValueError) as exc:
+                message = f"GenIA variant component is unavailable: {exc}"
                 (errors if required else warnings).append(message)
     for name, track in (cfg.get("custom_tracks", {}) or {}).items():
         if track.get("enabled") and str(track.get("file", "")).endswith(".gz"):

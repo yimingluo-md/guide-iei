@@ -39,6 +39,45 @@ webpage; each section holds the process detail the UI no longer shows.
 - Retracted rows remain in the audit database but are never emitted as
   active evidence.
 
+## GenIA
+- Optional registered-user data from the [GenIA homepage](https://geniadb.org/),
+  whose scope is described in the
+  [published paper](https://doi.org/10.1016/j.jaci.2023.11.022). GUIDE-IEI
+  includes no GenIA credentials, direct-download URLs, source exports, or real
+  source rows in fixtures.
+- Five schemas are recognized independently: GEI gene–disease list, disease
+  catalog, disease–phenotype associations, phenotype vocabulary, and GRCh38
+  variant VCF. Any one or subset can be installed. Reinstalling a subset
+  copies forward omitted installed components, then atomically replaces the
+  prior database only after validation and SQLite integrity checks pass.
+- The private derived `genia.sqlite3` stores each component's source filename,
+  SHA-256, schema fingerprint, usable row count, installation time, and its
+  normalized rows. It does not retain a copy of the selected source file. HTML
+  account/sign-in responses and unrecognized schemas are rejected without
+  changing the existing installation.
+- An unreadable prior index can be recovered by reinstalling all five exports,
+  or a subset can replace it after explicit replacement confirmation. A subset
+  recovery
+  keeps the selected components and removes omitted components instead of
+  attempting to copy unreadable data forward.
+- The VCF's external CSI index is not used. Its records must declare GRCh38 and
+  match by exact normalized chromosome, position, reference, and alternate.
+  Alleles containing ambiguous `N` bases or a `REF` that disagrees with the
+  configured GRCh38 reference are excluded from exact matching with their
+  reason counts reported; reference-backed left alignment is used when the
+  configured GRCh38 FASTA is available.
+- Source classifications are preserved as `P`, `LP`, `VUS`, `LB`, `B`, `NC`
+  (Not classified), and `RF` (Risk factor). They are not presented as a new
+  GUIDE-IEI or ACMG/AMP classification. `Relevant_in=0` is a zero reported-
+  subject count, not benign evidence. The variant VCF has no gene/disease
+  context, so none is inferred from a VEP transcript.
+- GEI supplies source curation status and relationships. The disease catalog
+  supplies identifiers and, for `IEI=Y` rows, standalone relationships with
+  unknown curation status. Disease–phenotype data remain useful independently;
+  the vocabulary enriches those observations but has no standalone gene
+  assertion. The **GenIA GEI gene** filter uses only genes in the installed GEI
+  gene–disease list; the other component types do not add filter genes.
+
 ## LOFTEE (bundled data)
 - LOFTEE code ships in the pinned VEP container; the GRCh38 ancestral
   sequence, conservation database, and GERP bigwig install with the

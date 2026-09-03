@@ -35,8 +35,12 @@ pipeline/loftee_ptc_50bp.py     replace frameshift 50_BP_RULE using the resultin
 pipeline/haplotype_consequences.py validate sample GT/phase for frame-restoring haplotypes
 pipeline/clinvar_aa_match.py    add INFO/ClinVar_path_aa_match to the VCF
 pipeline/clingen_erepo_annotate.py  add exact allele-level ClinGen assertion IDs
+pipeline/genia_alleles.py       shared GRCh38 contig/allele normalization for GenIA
+pipeline/genia_annotate.py      add exact allele-level GenIA records from local SQLite
 pipeline/reduce_vep_to_aa_reference.py  VEP-tab -> aa-match catalog
 local_service/                  loopback API + persistent SQLite job queue
+local_service/genia.py          detect/import five private GenIA components atomically
+local_service/test_genia.py     synthetic-only GenIA installer and lookup tests
 webui/                          the local review workbench (Next.js)
 test/                           tiny VCF + config + tests (no container needed)
 ```

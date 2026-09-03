@@ -147,11 +147,17 @@ def main() -> int:
         pipeline_version = "unknown"
     registry_path = Path(args.base_dir) / "config" / "predictor-registry.json"
     predictor_registry, registry = registry_metadata(registry_path, cfg)
+    input_metadata = file_metadata(args.input)
+    if input_metadata["exists"]:
+        # Bind the annotated result to the exact source VCF bytes. The Sample
+        # Library also records an annotation-insensitive callset fingerprint,
+        # while this full digest preserves strict run provenance.
+        input_metadata["sha256"] = sha256(args.input)
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "pipeline_version": pipeline_version,
         "config": {"path": os.path.abspath(args.config), "sha256": sha256(args.config)},
-        "input": file_metadata(args.input),
+        "input": input_metadata,
         "output": file_metadata(args.output),
         "container": {"runtime": args.runtime, "image": args.image, "identity": args.image_id},
         "clinvar_release": args.clinvar_release,

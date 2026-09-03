@@ -31,6 +31,31 @@ export type ClinGenErepoCompact = {
   approvalDate: string;
 };
 
+export type GeniaCompact = {
+  recordId: string;
+  shortName: string;
+  classCode: string;
+  relevantSubjects: number | null;
+};
+
+export function hasClinGenPathogenicEvidence(
+  assertions: ClinGenErepoCompact[] | undefined,
+) {
+  return (assertions ?? []).some((item) => {
+    const classification = item.assertion
+      .replace(/[\s_]+/g, " ")
+      .trim()
+      .toLowerCase();
+    return classification === "pathogenic" || classification === "likely pathogenic";
+  });
+}
+
+export function hasGeniaPathogenicEvidence(records: GeniaCompact[] | undefined) {
+  return (records ?? []).some((item) =>
+    ["P", "LP"].includes(item.classCode.trim().toUpperCase()),
+  );
+}
+
 export type VariantQcSettings = {
   minDp: number | null;
   minGq: number | null;
@@ -285,6 +310,8 @@ export type VariantRow = {
   libraryDatasetId?: string;
   librarySampleId?: string;
   libraryIndividualId?: string | null;
+  /** Sample Library dataset whose original VCF can restore omitted transcripts. */
+  transcriptSourceDatasetId?: string;
   /** Cohort index identity used to restore the complete source record on demand. */
   cohortSampleEntryId?: number;
   /** This browser row came from the bounded MANE/PICK/per-gene view. */
@@ -351,6 +378,7 @@ export type VariantRow = {
   clinvarAaMatch?: boolean;
   clinvarAaChangeMatch?: boolean;
   clingenErepo?: ClinGenErepoCompact[];
+  genia?: GeniaCompact[];
   haplotypeFrameStatus?: "FRAME_RESTORED_CONFIRMED" | "FRAME_RESTORATION_PARTIAL_CONFIRMED" | "FRAME_RESTORING_POSSIBLE_UNPHASED" | "";
   haplotypeFramePartners?: string[];
   haplotypeProteinChange?: string;
@@ -817,6 +845,28 @@ function clinGenErepoAssertions(raw: string | undefined, alt: string): ClinGenEr
       mondoId: fields[5], modeOfInheritance: fields[6], expertPanel: fields[7],
       approvalDate: fields[8],
     }];
+  });
+}
+
+function geniaTokens(raw: string | undefined, alt: string) {
+  return (raw ?? "").split(/[,&]/).filter((token) => {
+    const fields = token.split("|").map((value) => {
+      try { return decodeURIComponent(value); } catch { return value; }
+    });
+    return fields.length === 5 && fields[0].toUpperCase() === alt.toUpperCase();
+  });
+}
+
+function geniaRecords(raw: string | undefined, alt: string): GeniaCompact[] {
+  return geniaTokens(raw, alt).map((token) => {
+    const fields = token.split("|").map((value) => {
+      try { return decodeURIComponent(value); } catch { return value; }
+    });
+    const relevantSubjects = fields[4] === "" ? null : Number(fields[4]);
+    return {
+      recordId: fields[1], shortName: fields[2], classCode: fields[3],
+      relevantSubjects: Number.isFinite(relevantSubjects) ? relevantSubjects : null,
+    };
   });
 }
 
@@ -1351,6 +1401,10 @@ export async function parseVcfFiles(
       );
     }
     const lines = await vcfHeaderLines(file);
+    const sourceTranscriptsCompacted = lines.some((line) => (
+      line.startsWith("##IEI_WGS_PREFILTER=<")
+      && line.includes("Transcripts=MANEThenPICKThenOnePerGene")
+    ));
     const assembly = assemblyFromHeader(lines);
     if (assembly.assembly === "GRCh37") {
       throw new Error(
@@ -1790,6 +1844,8 @@ export async function parseVcfFiles(
             const clinGenCompactAssertions = clinGenErepoAssertions(
               info.ClinGen_ERepo, alt,
             );
+            const geniaRecordTokens = geniaTokens(info.GenIA, alt);
+            const geniaCompactRecords = geniaRecords(info.GenIA, alt);
             const ptcCdsPosition = number(first(combined, ["PTC_cds_pos"]));
             const ptcAminoAcidPosition = number(first(combined, ["PTC_aa_pos"]));
             const ptcDistanceFromLastExon = number(first(combined, [
@@ -2210,6 +2266,15 @@ export async function parseVcfFiles(
               clinGenAssertionsRaw ? { assertions: clinGenAssertionsRaw } : undefined,
             );
             addPrediction(
+              "genia_variant_evidence", "allele", ALLELE_MATCH_DIMENSIONS,
+              { count: geniaRecordTokens.length || null },
+              "exact",
+              undefined,
+              geniaRecordTokens.length
+                ? { records: geniaRecordTokens.join("&") }
+                : undefined,
+            );
+            addPrediction(
               "loftee_ptc_50bp", "transcript_consequence",
               TRANSCRIPT_CONSEQUENCE_MATCH_DIMENSIONS,
               {
@@ -2354,6 +2419,7 @@ export async function parseVcfFiles(
               clinvarAaMatch: truthy(first(combined, ["ClinVar_path_aa_match"])),
               clinvarAaChangeMatch: truthy(first(combined, ["ClinVar_path_aa_change_match"])),
               clingenErepo: clinGenCompactAssertions,
+              genia: geniaCompactRecords,
               haplotypeFrameStatus: haplotypeFrame.status,
               haplotypeFramePartners: haplotypeFrame.partners,
               haplotypeProteinChange: haplotypeFrame.protein,
@@ -2404,7 +2470,8 @@ export async function parseVcfFiles(
               mane,
               maneSelect: truthy(first(combined, ["MANE_SELECT"])),
               picked,
-              compactTranscriptView: recordTranscriptsCompacted || undefined,
+              compactTranscriptView:
+                recordTranscriptsCompacted || sourceTranscriptsCompacted || undefined,
               repeat: truthy(first(combined, ["RepeatMasker", "REPEATMASKER"])),
               segdup: truthy(first(combined, ["SegDup", "SEGDUP"])),
               phase: genotype.phased ? "phased" : "unknown",

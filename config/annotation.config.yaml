@@ -379,6 +379,18 @@ clingen_erepo:
   manifest: "references/clingen_erepo/manifest.json"
 
 # -----------------------------------------------------------------------------
+# GenIA registered-user exports
+# -----------------------------------------------------------------------------
+# GUIDE-IEI never bundles or downloads GenIA data. The optional local importer
+# accepts any supported subset, so the database may contain gene/phenotype
+# components without variant evidence. Exact-allele annotation is available
+# only when the user has supplied the variant VCF component.
+genia:
+  enabled: true
+  required: false
+  database: "references/genia/genia.sqlite3"
+
+# -----------------------------------------------------------------------------
 # Post-processing (after VEP)
 # -----------------------------------------------------------------------------
 post_processing:

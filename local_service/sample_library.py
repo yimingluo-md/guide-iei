@@ -7,9 +7,11 @@ The cohort tables remain a disposable, rebuildable genotype-first index.
 from __future__ import annotations
 
 import hashlib
+import gzip
 import json
 import os
 import sqlite3
+import threading
 import time
 import uuid
 import zlib
@@ -17,7 +19,12 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
-from local_service.cohort_store import CohortStore, read_vcf_header
+from local_service.cohort_store import (
+    CohortStore,
+    normalize_chromosome,
+    read_vcf_header,
+    read_vcf_header_lines,
+)
 
 
 def utc_now() -> str:
@@ -65,6 +72,9 @@ class SampleLibrary:
         self.root = self.state_dir / "sample-library"
         self.files_dir = self.root / "files"
         self.files_dir.mkdir(parents=True, exist_ok=True)
+        self._import_lock = threading.RLock()
+        self._checksum_cache: dict[tuple[str, int, int], str] = {}
+        self._fingerprint_cache: dict[str, str] = {}
         self._initialize()
         self.cleanup_partials()
 
@@ -191,6 +201,13 @@ class SampleLibrary:
                   warnings TEXT NOT NULL DEFAULT '[]',
                   imported_at TEXT NOT NULL,
                   updated_at TEXT NOT NULL,
+                  callset_id TEXT NOT NULL DEFAULT '',
+                  callset_fingerprint TEXT NOT NULL DEFAULT '',
+                  version_id TEXT NOT NULL DEFAULT '',
+                  version_number INTEGER NOT NULL DEFAULT 1,
+                  is_current INTEGER NOT NULL DEFAULT 1,
+                  cohort_preferred INTEGER NOT NULL DEFAULT 0,
+                  supersedes_version_id TEXT,
                   UNIQUE(sample_id, managed_checksum, vcf_sample_name, settings_hash)
                 );
 
@@ -210,6 +227,125 @@ class SampleLibrary:
                   value TEXT NOT NULL
                 );
                 """
+            )
+            dataset_columns = {
+                row["name"]
+                for row in connection.execute(
+                    "PRAGMA table_info(library_datasets)"
+                ).fetchall()
+            }
+            migrations = {
+                "callset_id": "TEXT NOT NULL DEFAULT ''",
+                "callset_fingerprint": "TEXT NOT NULL DEFAULT ''",
+                "version_id": "TEXT NOT NULL DEFAULT ''",
+                "version_number": "INTEGER NOT NULL DEFAULT 1",
+                "is_current": "INTEGER NOT NULL DEFAULT 1",
+                "cohort_preferred": "INTEGER NOT NULL DEFAULT 0",
+                "supersedes_version_id": "TEXT",
+            }
+            added = set()
+            for column, declaration in migrations.items():
+                if column not in dataset_columns:
+                    connection.execute(
+                        f"ALTER TABLE library_datasets ADD COLUMN {column} {declaration}"
+                    )
+                    added.add(column)
+            # Existing rows each represent the first known version of their
+            # content-addressed callset. Fingerprints are backfilled lazily
+            # only when an overlapping import is inspected; opening a large
+            # existing library must never scan every VCF at startup.
+            connection.execute(
+                "UPDATE library_datasets SET callset_id=managed_checksum "
+                "WHERE callset_id=''"
+            )
+            if "cohort_preferred" in added:
+                # Capture the user's former include choice before historical
+                # versions have their live cohort linkage cleared below.
+                connection.execute(
+                    "UPDATE library_datasets SET cohort_preferred=include_in_cohort"
+                )
+            if "version_id" in added:
+                # A legacy library may contain the same managed VCF more than
+                # once under different import settings. Treat each old import
+                # batch as a preserved version, rather than assigning every
+                # row the same version ID and mixing historical samples into
+                # the active UI group. Rows written by one old import share
+                # checksum and timestamp; settings are intentionally excluded
+                # because a later per-sample metadata edit can change only one
+                # sibling's profile hash.
+                legacy_groups = connection.execute(
+                    """SELECT DISTINCT callset_id,managed_checksum,imported_at
+                       FROM library_datasets
+                       ORDER BY callset_id,imported_at"""
+                ).fetchall()
+                by_callset: dict[str, list[sqlite3.Row]] = {}
+                for row in legacy_groups:
+                    by_callset.setdefault(row["callset_id"], []).append(row)
+                for callset_id, groups in by_callset.items():
+                    previous_version_id = None
+                    for number, group in enumerate(groups, start=1):
+                        version_id = hashlib.sha256(
+                            (
+                                "legacy-library-version\0"
+                                f"{callset_id}\0{group['managed_checksum']}\0"
+                                f"{group['imported_at']}"
+                            ).encode("utf-8")
+                        ).hexdigest()
+                        is_current = number == len(groups)
+                        connection.execute(
+                            """UPDATE library_datasets
+                               SET version_id=?,version_number=?,is_current=?,
+                                   include_in_cohort=CASE WHEN ? THEN include_in_cohort ELSE 0 END,
+                                   cohort_file_id=CASE WHEN ? THEN cohort_file_id ELSE NULL END,
+                                   supersedes_version_id=?
+                               WHERE callset_id=? AND managed_checksum=?
+                                 AND imported_at=?""",
+                            (
+                                version_id, number, int(is_current), int(is_current),
+                                int(is_current), previous_version_id, callset_id,
+                                group["managed_checksum"], group["imported_at"],
+                            ),
+                        )
+                        previous_version_id = version_id
+            else:
+                connection.execute(
+                    "UPDATE library_datasets SET version_id=managed_checksum "
+                    "WHERE version_id=''"
+                )
+            # The old UNIQUE constraint included the freshly generated
+            # sample_id and therefore could not stop two concurrent imports
+            # from creating the same logical row. Preserve any legacy rows,
+            # but mark all except the newest exact copy as historical before
+            # installing effective partial uniqueness guards.
+            duplicate_groups = connection.execute(
+                """SELECT managed_checksum,vcf_sample_name
+                   FROM library_datasets WHERE is_current=1
+                   GROUP BY managed_checksum,vcf_sample_name HAVING COUNT(*)>1"""
+            ).fetchall()
+            for group in duplicate_groups:
+                copies = connection.execute(
+                    """SELECT id FROM library_datasets
+                       WHERE managed_checksum=? AND vcf_sample_name=? AND is_current=1
+                       ORDER BY imported_at DESC,id DESC""",
+                    (group["managed_checksum"], group["vcf_sample_name"]),
+                ).fetchall()
+                connection.executemany(
+                    "UPDATE library_datasets SET is_current=0,include_in_cohort=0,cohort_file_id=NULL WHERE id=?",
+                    [(row["id"],) for row in copies[1:]],
+                )
+            connection.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS library_datasets_current_content_idx
+                   ON library_datasets(managed_checksum,vcf_sample_name)
+                   WHERE is_current=1"""
+            )
+            connection.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS library_datasets_current_callset_idx
+                   ON library_datasets(callset_id,vcf_sample_name)
+                   WHERE is_current=1"""
+            )
+            connection.execute(
+                "CREATE INDEX IF NOT EXISTS library_datasets_callset_idx "
+                "ON library_datasets(callset_id,is_current,version_number)"
             )
             converted = connection.execute(
                 "SELECT value FROM sample_library_meta WHERE key='portable_paths_v2'"
@@ -251,6 +387,219 @@ class SampleLibrary:
                 )
 
     @staticmethod
+    def _genotype_fingerprint(path: Path) -> str:
+        """Hash the biological callset while ignoring annotation-only fields.
+
+        VEP and GUIDE-IEI post-processing may change VCF metadata, ID and INFO
+        while leaving the called alleles and genotypes untouched. Hashing the
+        coordinate/allele/QC columns, FORMAT and samples recognizes that case
+        without conflating a genuinely changed callset. The complete byte
+        checksum remains the stronger exact-file identity.
+        """
+        digest = hashlib.sha256()
+        digest.update(b"GUIDE-IEI genotype callset fingerprint v1\n")
+        opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+        chromosome_header = False
+        with opener(path, "rb") as handle:
+            for raw in handle:
+                line = raw.rstrip(b"\r\n")
+                if line.startswith(b"##"):
+                    continue
+                if line.startswith(b"#CHROM\t"):
+                    fields = line.split(b"\t")
+                    if len(fields) < 10:
+                        raise ValueError("VCF header has no sample columns")
+                    digest.update(b"samples\0" + b"\0".join(fields[9:]) + b"\n")
+                    chromosome_header = True
+                    continue
+                if line.startswith(b"#") or not line:
+                    continue
+                if not chromosome_header:
+                    raise ValueError("VCF data appeared before the #CHROM header")
+                fields = line.split(b"\t")
+                if len(fields) < 10:
+                    raise ValueError("VCF record has no FORMAT/sample columns")
+                # Exclude ID (which may be populated from a reference) and
+                # INFO (where predictors live). Include QUAL/FILTER and every
+                # genotype field so a variant-calling or sample change yields
+                # a different callset fingerprint.
+                retained = (
+                    fields[0], fields[1], fields[3], fields[4], fields[5],
+                    fields[6], *fields[8:],
+                )
+                digest.update(b"\0".join(retained) + b"\n")
+        if not chromosome_header:
+            raise ValueError("VCF header is incomplete")
+        return digest.hexdigest()
+
+    def _fingerprint(self, path: Path, checksum: str) -> str:
+        cached = self._fingerprint_cache.get(checksum)
+        if cached:
+            return cached
+        value = self._genotype_fingerprint(path)
+        # Keep the cache bounded; staged uploads are intentionally ephemeral.
+        if len(self._fingerprint_cache) >= 32:
+            self._fingerprint_cache.pop(next(iter(self._fingerprint_cache)))
+        self._fingerprint_cache[checksum] = value
+        return value
+
+    def _checksum(self, path: Path) -> str:
+        """Reuse the immediately preceding inspection hash when safe.
+
+        Browser intake deliberately inspects identity before importing. A
+        size/mtime-keyed cache avoids rereading a large VCF merely to obtain
+        the same digest. Import still performs an uncached final hash after
+        publishing the managed copy, so a source changed between those steps
+        is rejected rather than trusted from metadata alone.
+        """
+        stat = path.stat()
+        key = (str(path.resolve()), stat.st_size, stat.st_mtime_ns)
+        cached = self._checksum_cache.get(key)
+        if cached:
+            return cached
+        value = _sha256(path)
+        if len(self._checksum_cache) >= 32:
+            self._checksum_cache.pop(next(iter(self._checksum_cache)))
+        self._checksum_cache[key] = value
+        return value
+
+    def _current_callsets(
+        self, connection: sqlite3.Connection, analysis_scope: str,
+    ) -> list[dict]:
+        rows = connection.execute(
+            """SELECT d.callset_id,d.callset_fingerprint,d.version_id,
+                      d.version_number,d.managed_path,d.managed_checksum,
+                      d.original_name,d.imported_at,d.vcf_sample_name
+               FROM library_datasets d
+               WHERE d.is_current=1 AND d.analysis_scope=?
+               ORDER BY d.imported_at DESC,d.id""",
+            (analysis_scope,),
+        ).fetchall()
+        grouped: dict[str, dict] = {}
+        for row in rows:
+            group = grouped.setdefault(row["callset_id"], {
+                "callset_id": row["callset_id"],
+                "callset_fingerprint": row["callset_fingerprint"] or "",
+                "version_id": row["version_id"],
+                "version_number": int(row["version_number"] or 1),
+                "managed_path": row["managed_path"],
+                "managed_checksum": row["managed_checksum"],
+                "original_name": row["original_name"],
+                "imported_at": row["imported_at"],
+                "samples": [],
+            })
+            group["samples"].append(row["vcf_sample_name"])
+        return list(grouped.values())
+
+    def _backfill_callset_fingerprint(
+        self, connection: sqlite3.Connection, group: dict,
+    ) -> str:
+        fingerprint = str(group.get("callset_fingerprint") or "")
+        if fingerprint:
+            return fingerprint
+        try:
+            managed = self._managed_path(group["managed_path"])
+            checksum = str(group.get("managed_checksum") or _sha256(managed))
+            fingerprint = self._fingerprint(managed, checksum)
+        except (OSError, EOFError, ValueError, zlib.error):
+            return ""
+        connection.execute(
+            "UPDATE library_datasets SET callset_fingerprint=? WHERE callset_id=?",
+            (fingerprint, group["callset_id"]),
+        )
+        group["callset_fingerprint"] = fingerprint
+        return fingerprint
+
+    def _inspect_identity(
+        self, path: Path, *, analysis_scope: str,
+        checksum: str | None = None, header=None,
+    ) -> dict:
+        header = header or read_vcf_header(path)
+        checksum = checksum or self._checksum(path)
+        samples = list(header.samples)
+        with self._session() as connection:
+            exact_rows = connection.execute(
+                """SELECT d.id,d.callset_id,d.version_id,d.version_number,
+                          d.is_current,d.imported_at,d.original_name,d.vcf_sample_name
+                   FROM library_datasets d
+                   WHERE d.managed_checksum=?
+                   ORDER BY d.is_current DESC,d.imported_at DESC""",
+                (checksum,),
+            ).fetchall()
+            exact_by_sample: dict[str, dict] = {}
+            for row in exact_rows:
+                exact_by_sample.setdefault(row["vcf_sample_name"], dict(row))
+            if set(exact_by_sample) == set(samples):
+                exact = list(exact_by_sample.values())
+                return {
+                    "status": "exact_current" if all(row["is_current"] for row in exact) else "exact_previous",
+                    "checksum": checksum,
+                    "samples": samples,
+                    "sample_count": len(samples),
+                    "existing_datasets": exact,
+                    "matches": [],
+                }
+
+            fingerprint = self._fingerprint(path, checksum)
+            incoming = set(samples)
+            groups = self._current_callsets(connection, analysis_scope)
+            possible = []
+            for group in groups:
+                present = set(group["samples"])
+                overlap = sorted(incoming & present)
+                if not overlap:
+                    continue
+                existing_fingerprint = self._backfill_callset_fingerprint(
+                    connection, group
+                )
+                summary = {
+                    "callset_id": group["callset_id"],
+                    "version_id": group["version_id"],
+                    "version_number": group["version_number"],
+                    "original_name": group["original_name"],
+                    "imported_at": group["imported_at"],
+                    "sample_count": len(present),
+                    "matching_samples": overlap[:20],
+                    "matching_sample_count": len(overlap),
+                    "same_sample_set": present == incoming,
+                }
+                if existing_fingerprint and existing_fingerprint == fingerprint:
+                    return {
+                        "status": "reannotation",
+                        "checksum": checksum,
+                        "callset_fingerprint": fingerprint,
+                        "samples": samples,
+                        "sample_count": len(samples),
+                        "match": summary,
+                        "matches": [summary],
+                    }
+                possible.append(summary)
+            possible.sort(
+                key=lambda value: (
+                    not value["same_sample_set"],
+                    -value["matching_sample_count"],
+                    value["original_name"],
+                )
+            )
+            return {
+                "status": "possible_update" if possible else "new",
+                "checksum": checksum,
+                "callset_fingerprint": fingerprint,
+                "samples": samples,
+                "sample_count": len(samples),
+                "matches": possible[:10],
+            }
+
+    def inspect_vcf(self, path: Path, payload: dict) -> dict:
+        path = path.expanduser().resolve()
+        if not path.is_file():
+            raise ValueError(f"review VCF does not exist: {path}")
+        analysis_scope = str(payload.get("analysis_scope") or "exome")
+        if analysis_scope not in {"exome", "whole_genome"}:
+            raise ValueError("analysis_scope must be exome or whole_genome")
+        return self._inspect_identity(path, analysis_scope=analysis_scope)
+
+    @staticmethod
     def build_profile(
         *, analysis_scope: str, index_scope: str, qc_settings: dict,
         prefilter_settings: dict, retention_routes: list[str],
@@ -284,7 +633,32 @@ class SampleLibrary:
             parts.append(f"{retained_record_count:,} of {source_record_count:,} records retained")
         return settings, settings_hash, " · ".join(parts)
 
+    def _remove_cohort_records(self, records: list[dict]) -> None:
+        """Remove superseded sample entries from the rebuildable cohort index."""
+        with self._session() as connection:
+            sample_ids: set[int] = set()
+            for record in records:
+                if not record.get("cohort_file_id"):
+                    continue
+                sample_ids.update(
+                    row["id"] for row in connection.execute(
+                        "SELECT id FROM cohort_samples WHERE file_id=? AND name=?",
+                        (record["cohort_file_id"], record["vcf_sample_name"]),
+                    ).fetchall()
+                )
+        ordered = sorted(sample_ids)
+        for start in range(0, len(ordered), 5_000):
+            self.cohort.remove_samples(ordered[start:start + 5_000])
+
     def import_vcf(self, path: Path, payload: dict) -> dict:
+        # Identity inspection, version switching, and row creation must be one
+        # process-local critical section. The database partial indexes are the
+        # final guard, but the lock also lets a concurrent importer receive the
+        # already-created IDs instead of an IntegrityError.
+        with self._import_lock:
+            return self._import_vcf_locked(path, payload)
+
+    def _import_vcf_locked(self, path: Path, payload: dict) -> dict:
         path = path.resolve()
         if not path.is_file():
             raise ValueError(f"review VCF does not exist: {path}")
@@ -307,12 +681,43 @@ class SampleLibrary:
         if original_candidate.is_file():
             original_candidate = original_candidate.resolve()
             original_path = self._stored_original_path(original_candidate) or str(original_candidate)
-            original_checksum = _sha256(original_candidate)
+            original_checksum = self._checksum(original_candidate)
             original_stat = original_candidate.stat()
             original_size = original_stat.st_size
             original_mtime = original_stat.st_mtime_ns
 
-        review_checksum = _sha256(path)
+        review_checksum = self._checksum(path)
+        inspection = self._inspect_identity(
+            path, analysis_scope=analysis_scope,
+            checksum=review_checksum, header=header,
+        )
+        identity_status = inspection["status"]
+        identity_action = str(payload.get("identity_action") or "")
+        replace_callset_id = str(payload.get("replace_callset_id") or "")
+        if identity_status == "possible_update":
+            allowed = {item["callset_id"] for item in inspection["matches"]}
+            if identity_action == "replace" and replace_callset_id in allowed:
+                callset_id = replace_callset_id
+                import_outcome = "updated_version"
+            elif identity_action == "separate":
+                callset_id = uuid.uuid4().hex
+                import_outcome = "separate_dataset"
+            else:
+                raise ValueError(
+                    "this VCF shares sample names with an existing dataset but "
+                    "its callset differs; choose Replace current version or "
+                    "Keep as a separate specimen/dataset"
+                )
+        elif identity_status == "reannotation":
+            callset_id = inspection["match"]["callset_id"]
+            import_outcome = "updated_annotation"
+        elif identity_status.startswith("exact_"):
+            callset_id = inspection["existing_datasets"][0]["callset_id"]
+            import_outcome = identity_status
+        else:
+            callset_id = uuid.uuid4().hex
+            import_outcome = "new"
+        callset_fingerprint = str(inspection.get("callset_fingerprint") or "")
         already_managed = any(
             candidate.is_file()
             for candidate in (
@@ -386,8 +791,55 @@ class SampleLibrary:
             retained_record_count=int(retained_count) if retained_count is not None else None,
         )
         warnings = [value for value in [preparation_warning] if value]
+        if import_outcome == "exact_current":
+            warnings.append(
+                "Already in the Sample Library; GUIDE-IEI reused the existing "
+                "copy and preserved its current Cohort Search membership."
+            )
+        elif import_outcome == "exact_previous":
+            warnings.append(
+                "This exact file is already retained as a previous version; "
+                "the current version was not replaced."
+            )
+        elif import_outcome == "updated_annotation":
+            warnings.append(
+                "Recognized the same genotype callset with updated annotations; "
+                "the prior annotation version was moved to Previous versions."
+            )
+        elif import_outcome == "updated_version":
+            warnings.append(
+                "Replaced the selected dataset with this updated version; the "
+                "prior version remains available under Previous versions."
+            )
         now = utc_now()
-        datasets = []
+        datasets: list[dict] = []
+        prior_rows: list[dict] = []
+        version_id = ""
+        version_number = 1
+
+        if not identity_status.startswith("exact_"):
+            with self._session() as connection:
+                prior_rows = [
+                    dict(row) for row in connection.execute(
+                        """SELECT d.*,s.individual_id,s.label AS sample_label
+                           FROM library_datasets d
+                           JOIN library_samples s ON s.id=d.sample_id
+                           WHERE d.callset_id=? AND d.is_current=1""",
+                        (callset_id,),
+                    ).fetchall()
+                ]
+                version_number = int(connection.execute(
+                    "SELECT COALESCE(MAX(version_number),0)+1 FROM library_datasets WHERE callset_id=?",
+                    (callset_id,),
+                ).fetchone()[0])
+            # Validation and managed-copy publication have completed. Remove
+            # the old derived cohort rows before the new library version is
+            # made current, so a crash or indexing failure can never leave two
+            # versions counted at once.
+            if prior_rows:
+                self._remove_cohort_records(prior_rows)
+            version_id = uuid.uuid4().hex
+
         with self._session() as connection:
             if original_checksum and not bool(payload.get("original_is_ephemeral")):
                 # The original location is a property of the CONTENT: when the
@@ -431,25 +883,64 @@ class SampleLibrary:
                             for row_id in heal
                         ],
                     )
-            for vcf_sample in header.samples:
-                existing_dataset = connection.execute(
-                    """SELECT d.id,d.sample_id,d.vcf_sample_name,s.individual_id
-                       FROM library_datasets d JOIN library_samples s ON s.id=d.sample_id
-                       WHERE d.managed_checksum=? AND d.vcf_sample_name=? AND d.settings_hash=?
-                       ORDER BY d.imported_at DESC LIMIT 1""",
-                    (review_checksum, vcf_sample, settings_hash),
-                ).fetchone()
-                if existing_dataset:
+            if identity_status.startswith("exact_"):
+                for vcf_sample in header.samples:
+                    existing_dataset = connection.execute(
+                        """SELECT d.id,d.sample_id,d.vcf_sample_name,s.individual_id,
+                                  d.version_id,d.version_number,d.is_current,
+                                  d.settings_hash,d.profile_label,d.complete_settings,
+                                  d.prefilter_settings,d.analysis_scope,d.index_scope
+                           FROM library_datasets d
+                           JOIN library_samples s ON s.id=d.sample_id
+                           WHERE d.managed_checksum=? AND d.vcf_sample_name=?
+                           ORDER BY d.is_current DESC,d.imported_at DESC LIMIT 1""",
+                        (review_checksum, vcf_sample),
+                    ).fetchone()
+                    if not existing_dataset:
+                        raise RuntimeError("exact library identity lost during import")
                     datasets.append(dict(existing_dataset))
-                    continue
-                individual_id = self._legacy_individual(connection, vcf_sample)
-                sample_id = uuid.uuid4().hex
-                connection.execute(
-                    "INSERT INTO library_samples(id,label,individual_id,created_at,updated_at) VALUES(?,?,?,?,?)",
-                    (sample_id, vcf_sample, individual_id, now, now),
-                )
-                dataset_id = uuid.uuid4().hex
-                connection.execute(
+                version_id = str(datasets[0].get("version_id") or review_checksum)
+                version_number = int(datasets[0].get("version_number") or 1)
+                # An exact reimport is an OPEN/REUSE operation, not a chance
+                # for the workstation's current settings to rewrite the
+                # provenance of already-retained bytes.
+                settings_hash = str(datasets[0]["settings_hash"])
+                profile_label = str(datasets[0]["profile_label"])
+                try:
+                    settings = json.loads(datasets[0]["complete_settings"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    settings = {}
+                try:
+                    prefilter_settings = json.loads(datasets[0]["prefilter_settings"] or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    prefilter_settings = {}
+                analysis_scope = str(datasets[0]["analysis_scope"])
+                index_scope = str(datasets[0]["index_scope"])
+            else:
+                prior_by_sample = {
+                    row["vcf_sample_name"]: row for row in prior_rows
+                }
+                if prior_rows:
+                    connection.execute(
+                        """UPDATE library_datasets
+                           SET is_current=0,include_in_cohort=0,cohort_file_id=NULL,updated_at=?
+                           WHERE callset_id=? AND is_current=1""",
+                        (now, callset_id),
+                    )
+                for vcf_sample in header.samples:
+                    prior = prior_by_sample.get(vcf_sample)
+                    if prior:
+                        sample_id = prior["sample_id"]
+                        individual_id = prior.get("individual_id")
+                    else:
+                        individual_id = self._legacy_individual(connection, vcf_sample)
+                        sample_id = uuid.uuid4().hex
+                        connection.execute(
+                            "INSERT INTO library_samples(id,label,individual_id,created_at,updated_at) VALUES(?,?,?,?,?)",
+                            (sample_id, vcf_sample, individual_id, now, now),
+                        )
+                    dataset_id = uuid.uuid4().hex
+                    connection.execute(
                     """
                     INSERT INTO library_datasets(
                       id,sample_id,vcf_sample_name,original_name,original_path,
@@ -458,8 +949,10 @@ class SampleLibrary:
                       analysis_scope,index_scope,capture_kit,target_bed,annotation_bundle,
                       resource_versions,qc_settings,prefilter_settings,retention_routes,
                       complete_settings,settings_hash,profile_label,source_record_count,
-                      retained_record_count,include_in_cohort,status,warnings,imported_at,updated_at
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                      retained_record_count,include_in_cohort,status,warnings,imported_at,updated_at,
+                      callset_id,callset_fingerprint,version_id,version_number,is_current,
+                      cohort_preferred,supersedes_version_id
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         dataset_id, sample_id, vcf_sample, original_name, original_path,
@@ -474,16 +967,26 @@ class SampleLibrary:
                         int(source_count) if source_count is not None else None,
                         int(retained_count) if retained_count is not None else None,
                         int(include_in_cohort), "ready", _json(warnings), now, now,
+                        callset_id, callset_fingerprint, version_id, version_number,
+                        1, int(include_in_cohort),
+                        prior_rows[0]["version_id"] if prior_rows else None,
                     ),
-                )
-                datasets.append({
-                    "id": dataset_id, "sample_id": sample_id,
-                    "vcf_sample_name": vcf_sample, "individual_id": individual_id,
-                })
+                    )
+                    datasets.append({
+                        "id": dataset_id, "sample_id": sample_id,
+                        "vcf_sample_name": vcf_sample, "individual_id": individual_id,
+                        "version_id": version_id, "version_number": version_number,
+                        "is_current": 1,
+                    })
 
         cohort_result = None
         cohort_error = ""
-        if include_in_cohort:
+        # Exact re-import is deliberately state preserving. In particular, a
+        # user may have removed one sample of a multi-sample callset from
+        # Cohort Search; re-opening the same VCF must not silently add that
+        # sample back merely because intake defaults to cohort inclusion.
+        effective_include = include_in_cohort and not identity_status.startswith("exact_")
+        if effective_include:
           try:
             cohort_result = self.cohort.import_vcf(
                 managed_path,
@@ -507,7 +1010,7 @@ class SampleLibrary:
                 # shares it, and a path-scoped UPDATE silently repointed
                 # sibling datasets and reverted deliberate cohort exclusions.
                 connection.executemany(
-                    "UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,updated_at=? WHERE id=?",
+                    "UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,cohort_preferred=1,updated_at=? WHERE id=?",
                     [
                         (cohort_result.get("id"), utc_now(), item["id"])
                         for item in datasets
@@ -518,28 +1021,6 @@ class SampleLibrary:
                        WHERE id=?""",
                     (profile_label, settings_hash, _json(settings), cohort_result.get("id")),
                 )
-                # cohort_files holds ONE profile per indexed file. Importing
-                # the same content under a new profile replaces that row, so
-                # sibling datasets imported under other profiles now point at
-                # a dangling cohort entry while showing "ready" — surface
-                # them as needing repair instead, and say why.
-                # Siblings imported under other profiles now point at a
-                # cohort row carrying THIS profile; the coherence-derived
-                # status marks them needs-repair automatically — count them
-                # so the takeover is named, not silent.
-                displaced = connection.execute(
-                    """SELECT COUNT(*) FROM library_datasets
-                       WHERE managed_checksum=? AND settings_hash != ?
-                         AND cohort_file_id IS NOT NULL""",
-                    (review_checksum, settings_hash),
-                ).fetchone()[0]
-                if displaced:
-                    warnings.append(
-                        f"This file's Cohort Search index now reflects the profile "
-                        f"'{profile_label}'; {displaced} sibling dataset(s) imported "
-                        "under other profiles were marked for repair — repairing one "
-                        "re-indexes the file under that dataset's profile."
-                    )
           except Exception as exc:  # noqa: BLE001 — the library import stands
             # The library rows are already committed and remain fully usable;
             # a cohort-indexing failure must not present as a failed import
@@ -556,6 +1037,7 @@ class SampleLibrary:
                     [(_json(warnings), utc_now(), item["id"]) for item in datasets],
                 )
         cohort_sample_ids = {}
+        cohort_sample_ids_by_dataset = {}
         if cohort_result and cohort_result.get("id") is not None:
             with self._session() as connection:
                 cohort_sample_ids = {
@@ -565,11 +1047,31 @@ class SampleLibrary:
                         (cohort_result["id"],),
                     ).fetchall()
                 }
+        elif identity_status.startswith("exact_"):
+            # Reuse the existing per-sample linkage without reindexing the
+            # entire shared VCF (which would undo deliberate exclusions).
+            with self._session() as connection:
+                for item in datasets:
+                    linked = connection.execute(
+                        """SELECT cs.id FROM library_datasets d
+                           JOIN cohort_samples cs
+                             ON cs.file_id=d.cohort_file_id
+                            AND cs.name=d.vcf_sample_name
+                           JOIN cohort_files cf ON cf.id=cs.file_id
+                           WHERE d.id=? AND d.include_in_cohort=1
+                             AND cf.profile_hash=d.settings_hash
+                           LIMIT 1""",
+                        (item["id"],),
+                    ).fetchone()
+                    cohort_sample_ids_by_dataset[item["id"]] = (
+                        linked["id"] if linked else None
+                    )
         datasets = [
             {
                 **item,
-                "cohort_sample_entry_id": cohort_sample_ids.get(
-                    item["vcf_sample_name"]
+                "cohort_sample_entry_id": (
+                    cohort_sample_ids.get(item["vcf_sample_name"])
+                    if cohort_result else cohort_sample_ids_by_dataset.get(item["id"])
                 ),
             }
             for item in datasets
@@ -580,6 +1082,10 @@ class SampleLibrary:
             "deduplicated_file": already_managed,
             "profile_label": profile_label,
             "profile_hash": settings_hash,
+            "callset_id": callset_id,
+            "version_id": version_id,
+            "version_number": version_number,
+            "import_outcome": import_outcome,
             "cohort": cohort_result,
             "warnings": warnings,
         }
@@ -792,6 +1298,112 @@ class SampleLibrary:
             partial.unlink(missing_ok=True)
             staged.unlink(missing_ok=True)
         return projected
+
+    def original_review_record(self, dataset_id: str, variant_key: str) -> dict:
+        """Return one exact record from the original, un-compacted VCF.
+
+        Managed review files intentionally omit redundant CSQ rows. When a
+        reviewer opens one variant, this bounded lookup restores its complete
+        transcript evidence from the original source without sending the full
+        cohort VCF to the browser. This keeps library imports useful as long
+        as their original VCF remains available.
+        """
+        record = self.get(dataset_id)
+        if not record:
+            raise KeyError(dataset_id)
+        parsed = self.cohort._parse_variant_query(str(variant_key or "").strip())
+        if not parsed or parsed[0] != "v.variant_key = ?":
+            raise ValueError("variant_key must be CHROM:POS:REF:ALT")
+        canonical_key = parsed[1][0]
+        chrom, pos_raw, ref, alt = canonical_key.split(":", 3)
+        pos = int(pos_raw)
+        source = self._original_path(record.get("original_path"))
+        if not source.is_file():
+            raise FileNotFoundError(
+                "the original annotated VCF is no longer available; re-import it "
+                "to restore omitted transcript annotations"
+            )
+        backend = self.cohort.hts_backend
+        header = read_vcf_header(source)
+        header_lines = read_vcf_header_lines(source)
+        sample = str(record.get("vcf_sample_name") or "")
+        if sample not in header.samples:
+            raise ValueError(
+                f"sample {sample!r} is absent from the original annotated VCF"
+            )
+        sample_index = header.samples.index(sample) + 9
+        source_indexes = (Path(f"{source}.tbi"), Path(f"{source}.csi"))
+        has_source_index = any(index.is_file() for index in source_indexes)
+        if has_source_index and backend is None:
+            raise RuntimeError(
+                "bcftools/tabix is unavailable; complete transcript annotations "
+                "cannot be restored from the indexed original VCF"
+            )
+        contigs = tuple(header.contigs)
+        if not contigs and has_source_index and backend is not None:
+            contigs = tuple(backend.list_contigs(source))
+        contig_by_normalized = {
+            normalize_chromosome(contig): contig for contig in contigs
+        }
+        source_contig = contig_by_normalized.get(chrom, chrom)
+        selected_line = ""
+        if has_source_index:
+            assert backend is not None
+            source_records = backend.iter_records(
+                source, [f"{source_contig}:{pos}-{pos}"]
+            )
+            source_handle = None
+        else:
+            # Older staged uploads copied the VCF but not its sidecar index.
+            # A bounded exome-sized scan keeps those imports repairable; never
+            # scan a multi-gigabyte genome interactively.
+            if source.stat().st_size > 512 * 1024 * 1024:
+                raise RuntimeError(
+                    "the original VCF has no tabix/CSI index and is too large "
+                    "for an interactive scan; re-import it to retain compact "
+                    "transcript-score summaries"
+                )
+            source_handle = (
+                gzip.open(source, "rt", encoding="utf-8", errors="replace")
+                if source.name.lower().endswith((".gz", ".bgz"))
+                else source.open("rt", encoding="utf-8", errors="replace")
+            )
+            source_records = (line for line in source_handle if not line.startswith("#"))
+        try:
+            for line in source_records:
+                columns = line.rstrip("\r\n").split("\t")
+                if len(columns) <= sample_index:
+                    continue
+                try:
+                    record_pos = int(columns[1])
+                except (IndexError, ValueError):
+                    continue
+                if (
+                    normalize_chromosome(columns[0]) == chrom
+                    and record_pos == pos
+                    and columns[3].upper() == ref.upper()
+                    and alt.upper() in {value.upper() for value in columns[4].split(",")}
+                ):
+                    selected_line = "\t".join([*columns[:9], columns[sample_index]])
+                    break
+        finally:
+            if source_handle is not None:
+                source_handle.close()
+        if not selected_line:
+            raise FileNotFoundError(
+                f"exact allele {canonical_key} was not found in the original annotated VCF"
+            )
+        header_columns = header_lines[-1].split("\t")
+        projected_header = [
+            *header_lines[:-1],
+            "\t".join([*header_columns[:9], sample]),
+        ]
+        return {
+            "variant_key": canonical_key,
+            "sample": sample,
+            "name": f"library-{dataset_id[:8]}-transcripts.vcf",
+            "vcf": "\n".join([*projected_header, selected_line, ""]),
+        }
 
     def review_file_combined(self, dataset_ids: list[str]) -> Path:
         """Path a combined review should open for several datasets.
@@ -1013,6 +1625,11 @@ class SampleLibrary:
         record = self.get(dataset_id)
         if not record:
             raise ValueError("library dataset was not found")
+        if not record.get("is_current", True):
+            raise ValueError(
+                "this is a previous dataset version; restore it before adding "
+                "it to Cohort Search"
+            )
         if full_wgs:
             if record["analysis_scope"] != "whole_genome":
                 raise ValueError("Full WGS indexing is available only for WGS datasets")
@@ -1070,6 +1687,7 @@ class SampleLibrary:
                 # addressed dataset may be repointed.
                 connection.execute(
                     """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
+                           cohort_preferred=1,
                            index_scope=?,complete_settings=?,settings_hash=?,profile_label=?,updated_at=?
                            WHERE id=?""",
                     (result.get("id"), index_scope, _json(profile_settings), profile_hash,
@@ -1087,13 +1705,14 @@ class SampleLibrary:
                 # needs-repair even though its sample is in the index.
                 connection.execute(
                     """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
-                           updated_at=? WHERE managed_path=?""",
+                           cohort_preferred=1,
+                           updated_at=? WHERE managed_path=? AND is_current=1""",
                     (result.get("id"), utc_now(),
                      self._stored_state_path(record["managed_path"])),
                 )
                 connection.execute(
                     """UPDATE library_datasets SET index_scope=?,updated_at=?
-                           WHERE managed_path=? AND settings_hash=?""",
+                           WHERE managed_path=? AND settings_hash=? AND is_current=1""",
                     (index_scope, utc_now(),
                      self._stored_state_path(record["managed_path"]),
                      record["settings_hash"]),
@@ -1111,6 +1730,105 @@ class SampleLibrary:
                 (profile_label, profile_hash, _json(profile_settings), result.get("id")),
             )
         return {"dataset": self.get(dataset_id), "cohort": result}
+
+    def activate_version(self, dataset_id: str) -> dict:
+        """Restore one historical callset version as the active version."""
+        with self._import_lock:
+            record = self.get(dataset_id)
+            if not record:
+                raise ValueError("library dataset was not found")
+            if record.get("is_current"):
+                return {"datasets": [record], "already_current": True}
+            callset_id = record["callset_id"]
+            version_id = record["version_id"]
+            with self._session() as connection:
+                target = [dict(row) for row in connection.execute(
+                    "SELECT * FROM library_datasets WHERE callset_id=? AND version_id=?",
+                    (callset_id, version_id),
+                ).fetchall()]
+                current = [dict(row) for row in connection.execute(
+                    "SELECT * FROM library_datasets WHERE callset_id=? AND is_current=1",
+                    (callset_id,),
+                ).fetchall()]
+            if not target:
+                raise ValueError("the selected previous version is unavailable")
+            managed_path = self._managed_path(target[0]["managed_path"])
+            if not managed_path.is_file():
+                raise ValueError(
+                    f"managed review VCF is missing: {managed_path}"
+                )
+            include_in_cohort = any(
+                bool(row.get("cohort_preferred")) for row in current
+            ) or any(bool(row.get("cohort_preferred")) for row in target)
+            self._remove_cohort_records(current)
+            now = utc_now()
+            with self._session() as connection:
+                connection.execute(
+                    """UPDATE library_datasets
+                       SET is_current=0,include_in_cohort=0,cohort_file_id=NULL,updated_at=?
+                       WHERE callset_id=? AND is_current=1""",
+                    (now, callset_id),
+                )
+                connection.execute(
+                    """UPDATE library_datasets
+                       SET is_current=1,include_in_cohort=?,cohort_file_id=NULL,updated_at=?
+                       WHERE callset_id=? AND version_id=?""",
+                    (int(include_in_cohort), now, callset_id, version_id),
+                )
+
+            cohort_result = None
+            warning = ""
+            if include_in_cohort:
+                try:
+                    prefilter = json.loads(target[0]["prefilter_settings"] or "{}")
+                    settings = json.loads(target[0]["complete_settings"] or "{}")
+                    cohort_result = self.cohort.import_vcf(
+                        managed_path,
+                        force=True,
+                        import_profile=(
+                            "prefiltered"
+                            if target[0]["analysis_scope"] == "whole_genome"
+                            and target[0]["index_scope"] == "compact"
+                            else "full"
+                        ),
+                        analysis_scope=target[0]["analysis_scope"],
+                        prefilter_options=prefilter,
+                    )
+                    with self._session() as connection:
+                        connection.execute(
+                            """UPDATE library_datasets
+                               SET cohort_file_id=?,include_in_cohort=1,cohort_preferred=1,updated_at=?
+                               WHERE callset_id=? AND version_id=?""",
+                            (cohort_result.get("id"), utc_now(), callset_id, version_id),
+                        )
+                        connection.execute(
+                            """UPDATE cohort_files
+                               SET profile_label=?,profile_hash=?,profile_json=? WHERE id=?""",
+                            (target[0]["profile_label"], target[0]["settings_hash"],
+                             _json(settings), cohort_result.get("id")),
+                        )
+                except Exception as exc:  # active library version remains valid
+                    warning = (
+                        f"Previous version restored, but Cohort Search indexing failed: "
+                        f"{str(exc)[:300]} — use Repair Cohort Search."
+                    )
+                    with self._session() as connection:
+                        connection.execute(
+                            """UPDATE library_datasets SET warnings=?,updated_at=?
+                               WHERE callset_id=? AND version_id=?""",
+                            (_json([warning]), utc_now(), callset_id, version_id),
+                        )
+            with self._session() as connection:
+                ids = [row["id"] for row in connection.execute(
+                    "SELECT id FROM library_datasets WHERE callset_id=? AND version_id=? ORDER BY vcf_sample_name",
+                    (callset_id, version_id),
+                ).fetchall()]
+            return {
+                "datasets": [self.get(value) for value in ids],
+                "cohort": cohort_result,
+                "warning": warning,
+                "already_current": False,
+            }
 
     def exclude_from_cohort(self, dataset_id: str) -> dict:
         """Remove the derived carrier entry while retaining the library dataset."""
@@ -1131,13 +1849,13 @@ class SampleLibrary:
         with self._session() as connection:
             connection.execute(
                 """UPDATE library_datasets
-                   SET include_in_cohort=0,cohort_file_id=NULL,updated_at=?
+                   SET include_in_cohort=0,cohort_preferred=0,cohort_file_id=NULL,updated_at=?
                    WHERE cohort_file_id=? AND vcf_sample_name=?""",
                 (utc_now(), cohort_file_id, record["vcf_sample_name"]),
             )
             connection.execute(
                 """UPDATE library_datasets
-                   SET include_in_cohort=0,cohort_file_id=NULL,updated_at=?
+                   SET include_in_cohort=0,cohort_preferred=0,cohort_file_id=NULL,updated_at=?
                    WHERE id=?""",
                 (utc_now(), dataset_id),
             )
@@ -1270,6 +1988,15 @@ class SampleLibrary:
                 "SELECT COUNT(DISTINCT managed_checksum) FROM library_datasets"
             ).fetchone()[0]
             datasets = connection.execute("SELECT COUNT(*) FROM library_datasets").fetchone()[0]
+            current_datasets = connection.execute(
+                "SELECT COUNT(*) FROM library_datasets WHERE is_current=1"
+            ).fetchone()[0]
+            callsets = connection.execute(
+                "SELECT COUNT(DISTINCT callset_id) FROM library_datasets"
+            ).fetchone()[0]
+            versions = connection.execute(
+                "SELECT COUNT(DISTINCT version_id) FROM library_datasets"
+            ).fetchone()[0]
         locations = {
             "database": self.database_path.stat().st_size if self.database_path.exists() else 0,
             "managed_library": _directory_size(self.root),
@@ -1288,6 +2015,8 @@ class SampleLibrary:
         return {
             "state_dir": str(self.state_dir), "workspace_dir": str(self.workspace_dir), "locations": locations,
             "total_bytes": state_total + workspace_extra, "datasets": datasets,
+            "current_datasets": current_datasets, "callsets": callsets,
+            "versions": versions,
             "managed_unique_files": managed_unique,
             "database_page_bytes": page_size * page_count,
             "database_reclaimable_bytes": page_size * freelist,
@@ -1405,4 +2134,8 @@ class SampleLibrary:
                 result["cohort_index_status"] = "ready"
             else:
                 result["cohort_index_status"] = "needs_repair"
+        if "is_current" in result:
+            result["is_current"] = bool(result["is_current"])
+        if "cohort_preferred" in result:
+            result["cohort_preferred"] = bool(result["cohort_preferred"])
         return result

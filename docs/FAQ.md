@@ -23,6 +23,25 @@ possible somatic or mosaic events for manual review. Allele fractions from a
 standard germline caller are suggestive, not diagnostic; deep targeted
 sequencing remains the appropriate confirmation.
 
+## Why is AlphaMissense blank for the selected MANE transcript?
+
+This can be normal. AlphaMissense predictions are specific to a particular
+protein/transcript consequence, and the released prediction tables do not
+contain a score for every possible consequence on every Ensembl transcript.
+GUIDE-IEI shows a score only when the installed source provides one for the
+selected transcript; it does not substitute a score from another isoform.
+A blank value means **unavailable**, not benign, and does not by itself mean
+that annotation failed.
+
+The AlphaMissense authors released reference code and precomputed human
+predictions, but [did not release the trained model
+weights](https://github.com/google-deepmind/alphamissense#alphamissense).
+Their official repository therefore states that the code is not intended for
+making new predictions. GUIDE-IEI cannot rerun the published model locally to
+fill a missing transcript score, and training a different model would not
+reproduce the published AlphaMissense result. Review the other available
+variant, transcript, gene, population, and clinical evidence instead.
+
 ## Does GUIDE-IEI ever send data off my machine?
 
 Annotation and review are fully local: patient VCFs, genotypes, and

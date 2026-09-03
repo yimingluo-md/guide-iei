@@ -74,7 +74,7 @@ developer cannot label a gene-specific score as an allele-only score.
 | Scope | Required identity | Typical use |
 |-------|-------------------|-------------|
 | `none` | no biological target | Runtime metadata; no active predictor currently uses it |
-| `allele` | chromosome, position, reference, alternate | CADD, conservation, ClinVar/ClinGen and allele-attached regional flags |
+| `allele` | chromosome, position, reference, alternate | CADD, conservation, ClinVar/ClinGen/GenIA and allele-attached regional flags |
 | `allele_gene` | allele + stable Ensembl gene ID | FuncVEP |
 | `allele_gene_symbol` | allele + gene symbol | SpliceAI's source-gene contract |
 | `allele_transcript` | allele + Ensembl transcript | Transcript-specific dbNSFP outputs |
@@ -129,6 +129,7 @@ annotator in schema version 1:
 | `repeatmasker`, `segdup` — regional overlap labels | `vep_custom_track` | `allele` |
 | `clinvar` — ClinVar assertions | `vep_custom_track` | `allele` |
 | `clingen_erepo` — ClinGen Evidence Repository assertions | `postprocessor` | `allele` |
+| `genia` — registered-user GenIA variant records | `postprocessor` | `allele` |
 | `loftee_ptc_50bp` — frameshift PTC/50-bp recalculation | `postprocessor` | `transcript_consequence` |
 | `haplotype_consequences` — phased frame-restoration evidence | `postprocessor` | `sample_haplotype` |
 | `clinvar_aa_match` — ClinVar protein-change/residue match flags | `postprocessor` | `allele` |
@@ -137,6 +138,12 @@ The registry also inventories non-predictor resources such as liftover,
 ENCODE cCREs, SCREEN context and the VEP runtime. They participate in setup
 and reproducibility but do not create a typed predictor observation merely by
 being listed.
+
+Postprocessor order is also part of the runtime contract. The main run writes
+the VEP result, applies PTC/haplotype and ClinVar amino-acid processing, then
+applies ClinGen exact-allele records followed by optional GenIA exact-allele
+records. QC and the run manifest are written last. This keeps each source's
+multi-record INFO evidence independent and ensures QC reads the final fields.
 
 ## Runtime contracts
 
@@ -296,6 +303,17 @@ the preparer verifies its identity, excludes ClinVEP, creates the local indexed
 table, and records public release provenance without shipping the licensed
 scores.
 
+GenIA uses the local-file variant of this policy. GUIDE-IEI links only to the
+[GenIA homepage](https://geniadb.org/) and its
+[published paper](https://doi.org/10.1016/j.jaci.2023.11.022); it includes no
+credential, account-specific or direct-download URL, and no source records.
+`local_service/genia.py` detects five independently installable schemas,
+rebuilds a derived SQLite database transactionally, copies forward installed
+components omitted from an update, and stores provenance per component. The
+four gene/phenotype components use local service lookup; the GRCh38 variant
+component feeds the allele-scoped `genia` postprocessor. Its upstream CSI index
+is not part of the installed asset contract.
+
 ## Test checklist
 
 At minimum, a predictor change should cover these layers:
@@ -320,6 +338,7 @@ python3 test/test_funcvep_dataset.py
 python3 test/test_build_command.py
 python3 test/test_preflight.py
 python3 -m unittest local_service.test_predictor_storage
+python3 -m unittest local_service.test_genia
 (cd webui && npm test)
 ```
 

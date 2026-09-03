@@ -29,6 +29,7 @@ work whether or not you have the large/custom datasets on hand.
 | **local updateable snapshot** | ClinGen Evidence Repository variant curations | installed or updated from the annotation-dataset UI; prepared by `scripts/update_clingen_erepo.sh` |
 | **large local** | dbNSFP; CADD v1.7 whole genome (WGS only) | dbNSFP requires academic registration and one-time rebuilding (`scripts/prepare_dbnsfp.sh`). CADD's required score-only files are downloadable/resumable from the UI or `scripts/download_cadd_wgs.sh`. |
 | **licensed** | PromoterAI; FuncVEP | obtain PromoterAI from Illumina; after acknowledgement, FuncVEP can be downloaded directly from official Zenodo and prepared locally (`scripts/download_funcvep.sh`), or an existing ZIP can be used (`scripts/prepare_funcvep.sh`); auto-skipped if absent |
+| **registered-user, supplied locally** | GenIA | obtain authorized exports from the [GenIA homepage](https://geniadb.org/) and select any one or subset in the User action needed card; GUIDE-IEI detects their roles and builds a private component-based SQLite index; no credentials, download URLs, or source data are bundled |
 | **optional public** | LoGoFunc | resumable direct download from Zenodo in the UI or `scripts/download_logofunc.sh`; an existing download can be validated and moved into managed storage with `scripts/prepare_logofunc.sh`; auto-skipped if absent |
 | **auto (region)** | coding+splice BED | built once from the release-matched Ensembl GTF by `scripts/build_coding_bed.sh`; used to pre-filter the input VCF |
 
@@ -289,6 +290,45 @@ The manifest records source and derived-file checksums, GRCh38 scope, the row
 count and indexed contig list, license acknowledgement, excluded columns, and the exact
 allele-plus-stable-Ensembl-gene match contract. An absent or disabled FuncVEP
 resource is an explicit optional skip.
+
+### GenIA
+
+[GenIA](https://geniadb.org/) is an optional registered-user evidence source;
+its scope is described in the [published paper](https://doi.org/10.1016/j.jaci.2023.11.022).
+GUIDE-IEI does not supply or retain credentials, download URLs, or source
+exports. Under **Import & QC → Set up annotation datasets → Optional add-ons
+→ GenIA**, the user can select one or more of five independently
+installable exports: the GEI gene–disease list, disease catalog,
+disease–phenotype associations, phenotype vocabulary, and GRCh38 variant VCF.
+The installer recognizes each role from its schema, accepts arbitrary
+filenames, and does not need the VCF's downloaded CSI index.
+
+Selected components are validated into
+`references/genia/genia.sqlite3` under the configured Annotation datasets
+root. Its component table records the source filename and SHA-256, schema
+fingerprint, usable row count, and installation time. The selected raw files
+remain user-managed and are neither copied into the database area nor
+uploaded. Installing a subset replaces only that subset and preserves omitted
+installed components. A temporary database is checked and atomically replaces
+the prior index only after the full operation succeeds, so an HTML sign-in
+page, unrecognized schema, empty component, or integrity failure does not
+damage the working installation.
+
+When the prior derived index is unreadable, either a complete all-five reinstall
+or a selected-subset recovery requires the separate replacement confirmation
+(`replace_unreadable` in the local install request). In subset mode the
+unreadable index is replaced atomically by only the selected components;
+omitted components are intentionally removed.
+
+Only the variant component participates in annotation. It must explicitly
+declare GRCh38/hg38, and its alleles are normalized before exact
+chromosome/position/reference/alternate matching. Ambiguous source alleles
+containing `N` are excluded. The postprocessor writes `INFO/GenIA` and
+`INFO/GenIA_count` after ClinGen; its source classification and reported
+subject count remain allele-level evidence rather than transcript annotations.
+The other four components are queried locally by Gene Knowledge and do not
+need to be written into each VCF. See [Gene knowledge](GENE_KNOWLEDGE.md) for
+their subset behavior.
 
 ### CADD v1.7 whole genome
 
@@ -559,6 +599,9 @@ A field absent from the required VEP schema is a failure. Coverage below its
 configured threshold is a warning. No eligible records is
 `NOT_APPLICABLE`—not a failure. Optional LoGoFunc and promoterAI checks are
 reported as `SKIPPED_NOT_INSTALLED` when their local sources are unavailable.
+When the GenIA variant component is enabled, the report records descriptive
+exact-match and emitted-record counts; zero matches is not treated as benign
+or as a pipeline failure.
 
 The complementary regression panel verifies known public examples against the
 actual installed VEP image and data:
@@ -594,3 +637,21 @@ row matches, the display is **No ClinGen variant classification found.**
 The snapshot is required by the diagnostic profile and can be safely refreshed
 from the dataset setup screen. Updating is never performed during patient
 annotation, and no patient variant is sent to an external service.
+
+## GenIA exact-allele records
+
+The optional GenIA variant component is applied after ClinGen and before QC as
+normalized GRCh38 allele evidence. `INFO/GenIA` contains URL-encoded compact
+records with ALT allele, GenIA record ID, short name, source classification
+code, and `Relevant_in` subject count. Multiple records for one ALT remain
+separate; `INFO/GenIA_count` records their per-ALT count.
+
+GUIDE-IEI displays the source codes `P`, `LP`, `VUS`, `LB`, `B`, `NC`, and
+`RF` as Pathogenic, Likely pathogenic, Uncertain significance, Likely benign,
+Benign, Not classified, and Risk factor. These are GenIA-supplied labels, not
+an independent GUIDE-IEI classification or a claim that an ACMG/AMP framework
+was applied. **Not classified** is distinct from uncertain significance;
+**Risk factor** is not a pathogenic classification; and `Relevant_in=0` means
+zero subjects were reported in the export, not that the allele is benign. The
+variant export supplies no gene or disease context, so the software does not
+borrow that context from the selected VEP transcript.

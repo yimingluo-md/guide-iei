@@ -25,6 +25,30 @@ VCF sample names are retained as assay identifiers, but are not used as the
 stable individual primary key. Legacy phenotype links by VCF sample name remain
 readable.
 
+The library groups every multi-sample VCF as one **callset** instead of showing
+one top-level card per sample. Expanding the callset shows its samples. The
+managed VCF is stored once and shared by those sample records.
+
+## Duplicate imports and updated versions
+
+Before saving a VCF, GUIDE-IEI compares both its complete SHA-256 and an
+annotation-insensitive callset fingerprint made from alleles, filters, FORMAT,
+and genotypes:
+
+- importing the same bytes again reuses the existing library records and
+  managed file, even when the currently selected import settings differ;
+- the same callset with changed annotations becomes a new current annotation
+  version automatically;
+- a file with overlapping sample names but changed variants or genotypes asks
+  whether it should replace the current version or remain a separate dataset;
+- a file with no matching samples is stored as a new callset.
+
+Replacing a callset does not delete its history. The prior managed review VCF
+is shown under **Previous versions**, can still be opened, and can be restored
+as current. Only the current version is eligible for Cohort Search, so rerunning
+annotation cannot count the same samples twice. A deliberately separate dataset
+may use the same VCF sample name; its library UUID keeps it distinct.
+
 ## Import choices
 
 - **Keep in Sample Library** is the default. Persistence happens before the
@@ -192,8 +216,8 @@ per-file failures are recorded with their errors and never stop the run.
 One bulk job runs at a time, up to 5,000 files per job.
 
 The design target is a 1,000-genome collection on one workstation. At that
-size the library page paginates (50 datasets per page; search and bulk
-actions always apply to the full collection), library additions and
+size the library page paginates (25 callsets per page; search and bulk actions
+apply to current samples), library additions and
 removals run as a single batched request with a per-item outcome report,
 and every Cohort Search query form — variant, gene, gene list, region —
 answers from covering indexes rather than table scans (the test suite

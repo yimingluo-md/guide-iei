@@ -65,7 +65,13 @@ unavailable.
 
 Managed review VCFs and indexes are content-addressed under
 `~/.iei-variant-review/sample-library/files/`, so identical file content is
-not stored twice. Each dataset records the original name/path/checksum when
+not stored twice. A multi-sample VCF appears as one callset card with an
+expandable sample list. Re-importing identical bytes reuses the existing
+records. Annotation-only changes create a new current version automatically;
+when sample names overlap but variants or genotypes changed, the importer asks
+whether to replace the current version or retain a separate dataset. Previous
+versions remain available to open or restore, but only the current version can
+be included in Cohort Search. Each dataset records the original name/path/checksum when
 the path remains available; WES/WGS and Compact/Full scope; QC and WGS
 prefilter settings; retention routes; installed annotation/resource versions;
 source/retained record counts; timestamps; and a hash of the complete import
@@ -92,9 +98,8 @@ service start. One job runs at a time; `GET /api/bulk-intake` reports
 progress and `POST /api/bulk-intake/{id}/cancel` stops a running job
 (already-imported files are kept). Bulk library maintenance uses
 `POST /api/sample-library/bulk` (`remove` or `cohort_add` over a list of
-dataset ids, with a per-item outcome report), and the library page
-paginates at 50 datasets while search, selection, and bulk actions operate
-on the full filtered set.
+dataset ids, with a per-item outcome report), and the library page paginates
+at 25 callsets while selection and bulk actions target current samples.
 
 See [Sample Library & storage](SAMPLE_LIBRARY_AND_STORAGE.md) for the full
 model.
@@ -274,6 +279,32 @@ or index files already downloaded from a local folder under **Import & QC →
 Set up annotation datasets → Optional add-ons**. See
 [Bundled workbench references](BUNDLED_WORKBENCH_REFERENCES.md) and
 [Gene knowledge](GENE_KNOWLEDGE.md).
+
+Registered users may also install any one or subset of five GenIA exports from
+the **GenIA** Optional add-on. The GEI list and IEI-marked disease-catalog rows
+can populate GenIA gene relationships; the **GenIA GEI gene** filter is
+deliberately limited to genes in the GEI list;
+disease–phenotype associations add their reported phenotype observations; and
+the phenotype vocabulary enriches those observations but does not assert a
+gene relationship on its own. Omitted installed components are preserved by a
+partial update. The separate GRCh38 variant component supplies exact normalized
+allele evidence on the variant page and during annotation; it is not joined to
+the selected transcript to invent gene or disease context. GUIDE-IEI retains a
+private derived SQLite index with component provenance, not the selected GenIA
+source files.
+
+If that derived index becomes unreadable, the setup card supports either a
+complete all-five reinstall or a selected-subset replacement, both with an
+explicit replacement confirmation.
+Subset repair retains only the selected components and removes omitted
+capabilities rather than pretending that unreadable component data were
+preserved.
+
+Under **Clinical database**, **ClinGen P / LP only** retains variants with at
+least one embedded ClinGen expert-panel Pathogenic or Likely pathogenic
+assertion, and **GenIA P / LP only** retains variants whose exact allele has a
+GenIA `P` or `LP` record. These filters do not reinterpret `NC`, `RF`, or VUS
+as pathogenic evidence.
 
 ## Phenotype records
 

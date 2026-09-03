@@ -138,9 +138,10 @@ applicable, the genome-wide sources on every annotation:
   from human/primate population frequency. Score 0–1, higher = more
   likely pathogenic; the authors' three-way call (likely benign /
   ambiguous / likely pathogenic) is shown as their label, not ours.
-  When the selected MANE transcript has no score but the same allele has
-  scores on other transcripts of that gene, the card says so and lets you
-  expand those transcript-specific scores and source labels.
+  A blank score for the selected MANE transcript can be a normal source-data
+  limitation and is not evidence that the variant is benign. GUIDE-IEI does
+  not substitute a score from another transcript. See the
+  [FAQ](../FAQ.md#why-is-alphamissense-blank-for-the-selected-mane-transcript).
 - **REVEL** — an ensemble over thirteen component predictors, trained on
   rare disease-causing versus rare neutral missense variants —
   deliberately rare-versus-rare, to avoid learning allele frequency.
@@ -323,7 +324,7 @@ mechanism for expression-level confirmation; it does not establish one.
 Because promoters lie outside exome capture, PromoterAI annotation
 applies to whole-genome analysis only.
 
-## ClinVar and ClinGen
+## ClinVar, ClinGen, and GenIA
 
 - **ClinVar** entries are **reports**, not established facts: submitters
   differ in rigor, and classifications age. The annotation is refreshed at
@@ -347,12 +348,32 @@ applies to whole-genome analysis only.
   detail, and gene-level validity and dosage curation. One dosage caution
   bears repeating: a haploinsufficiency score of 30 denotes an
   autosomal-recessive phenotype, **not** evidence of haploinsufficiency.
+- **GenIA**, when its optional registered-user variant component is installed,
+  contributes source records only for an exact normalized GRCh38 allele. The
+  page keeps multiple matching records separate and shows their source
+  classification and `Relevant_in` reported-subject count. `NC` means **Not
+  classified**, not VUS; `RF` means **Risk factor**, not a pathogenic
+  classification; and a count of 0 is not evidence that the allele is benign.
+  These labels are not a new GUIDE-IEI or ACMG/AMP classification. The GenIA
+  variant export contains no gene or disease context, so none is inferred from
+  the transcript being viewed.
+
+The **Clinical database** filters can retain only ClinVar P/LP, ClinGen P/LP,
+or exact-allele GenIA `P`/`LP` records. Multiple selected source filters are
+combined, so a row must satisfy each one that is turned on.
 
 ## Gene context
 
 The Gene tab joins the bundled knowledge: gnomAD constraint (the gene's
 depletion for LoF and missense variation in the population), IUIS IEI
 classification and disease association, and ClinGen gene–disease validity.
+Optional GenIA components can add GEI or IEI-marked catalog relationships and
+reported disease–phenotype observations. A separately installed phenotype
+vocabulary enriches those observations but does not assert a gene relationship
+on its own. The **GenIA GEI gene** filter is limited to the GEI list; catalog
+and phenotype records do not broaden it. A user may install any subset, so the Gene tab states which
+components are available rather than treating an omitted component as negative
+evidence.
 Constraint describes a gene's population-level intolerance to variation; it
 does not classify individual variants. It may help generate hypotheses about
 novel monogenic conditions caused by haploinsufficiency.

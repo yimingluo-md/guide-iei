@@ -728,7 +728,42 @@ if [[ "$(yaml_get "$CONFIG" clingen_erepo.enabled)" == "true" ]]; then
 fi
 
 # ============================================================================ #
-# 8. Annotation coverage report
+# 8. GenIA registered-user exact allele evidence
+# ============================================================================ #
+if [[ "$(yaml_get "$CONFIG" genia.enabled)" == "true" ]]; then
+    GENIA_DB="$(yaml_get "$CONFIG" genia.database)"
+    [[ -z "$GENIA_DB" || "$GENIA_DB" = /* ]] || GENIA_DB="${ROOT}/${GENIA_DB}"
+    GENIA_REQUIRED="$(yaml_get "$CONFIG" genia.required)"
+    log "=== GenIA exact allele annotation ==="
+    GENIA_TMP="${FINAL_OUTPUT%.gz}.genia.$$.tmp"
+    POSTPROC_TMPS+=("$GENIA_TMP")
+    GENIA_FASTA="$(yaml_get "$CONFIG" reference.fasta.path)"
+    [[ -z "$GENIA_FASTA" || "$GENIA_FASTA" = /* ]] || GENIA_FASTA="${ROOT}/${GENIA_FASTA}"
+    GENIA_ARGS=(
+        --input "$FINAL_OUTPUT" --output "$GENIA_TMP"
+        --database "$GENIA_DB"
+    )
+    [[ -n "$GENIA_FASTA" ]] && GENIA_ARGS+=(--reference "$GENIA_FASTA")
+    [[ "$GENIA_REQUIRED" == "true" ]] || GENIA_ARGS+=(--allow-unavailable)
+    if python3 "${ROOT}/pipeline/genia_annotate.py" "${GENIA_ARGS[@]}"; then
+        if [[ "$FINAL_OUTPUT" == *.gz ]]; then
+            hts bgzip -f "$GENIA_TMP" || die "GenIA annotation bgzip failed"
+            mv "${GENIA_TMP}.gz" "$FINAL_OUTPUT"
+            hts tabix -p vcf -f "$FINAL_OUTPUT" || die "GenIA annotation tabix failed"
+        else
+            mv "$GENIA_TMP" "$FINAL_OUTPUT"
+        fi
+        log "GenIA exact-allele postprocessing complete -> $FINAL_OUTPUT"
+    elif [[ "$GENIA_REQUIRED" == "true" ]]; then
+        die "required GenIA annotation failed"
+    else
+        warn "optional GenIA annotation failed"
+        rm -f "$GENIA_TMP"
+    fi
+fi
+
+# ============================================================================ #
+# 9. Annotation coverage report
 # ============================================================================ #
 if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
     log "=== annotation coverage report ==="
@@ -739,7 +774,7 @@ if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
 fi
 
 # ============================================================================ #
-# 9. Reproducibility manifest (decision D6): a machine-readable record of the
+# 10. Reproducibility manifest (decision D6): a machine-readable record of the
 #    config (with hash), container identity, exact VEP argv, and reference
 #    file identities that produced this deliverable. Reference identity is
 #    size+mtime plus any recorded checksum sidecars — multi-GB references are

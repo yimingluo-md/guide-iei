@@ -35,7 +35,8 @@ and PromoterAI requires a separate Illumina license. FuncVEP remains outside
 the recommended bulk profiles because it is optional and requires explicit
 acknowledgement; its own card can download the official archive directly after
 that acknowledgement. dbNSFP and PromoterAI remain prominent guided setups;
-FuncVEP appears with LoGoFunc and CADD under **Optional add-ons**.
+FuncVEP and the registered-user GenIA importer appear with LoGoFunc and CADD
+under **Optional add-ons**.
 
 When GUIDE-IEI is launched from a clean source checkout rather than a packaged
 release, the same recommended action also downloads any release reference
@@ -48,7 +49,8 @@ button.
 
 For a normal workstation setup, use **Storage → Annotation datasets → Change
 location** before downloading large resources. This central annotation root
-holds the VEP cache, FASTA, dbNSFP, CADD, SpliceAI, FuncVEP, ClinVar, SCREEN, and other
+holds the VEP cache, FASTA, dbNSFP, CADD, SpliceAI, FuncVEP, the derived GenIA
+database, ClinVar, SCREEN, and other
 release-matched tracks. The UI resolves stock `references/...` configuration
 paths through this selected root for both VEP jobs and resource downloads, so
 the bundle remains coherent without exposing YAML paths in ordinary use.
@@ -322,6 +324,61 @@ ACMG PP3/BP4 evidence strengths. The official archive also contains ClinVEP
 scores, but this integration deliberately neither prepares nor displays them.
 FuncVEP remains optional, and an absent archive does not prevent other
 annotation.
+
+## GenIA — optional registered-user components
+
+[GenIA](https://geniadb.org/) provides immune gene–disease, phenotype, and
+variant records described in its
+[published paper](https://doi.org/10.1016/j.jaci.2023.11.022). GUIDE-IEI does
+not bundle GenIA credentials, download URLs, source exports, or data rows.
+Obtain the GenIA exports outside GUIDE-IEI, then use
+the **GenIA** card under **User action needed**:
+
+1. Select one or more local export files.
+2. Review the detected roles. GUIDE-IEI recognizes the GEI gene–disease list,
+   disease catalog, disease–phenotype associations, phenotype vocabulary, and
+   GRCh38 variant VCF by schema rather than filename.
+3. Select **Add or update GenIA files**. Any single component or subset is
+   valid; installed components not selected in this update remain installed.
+
+The downloaded VCF's CSI index is not required. GUIDE-IEI reads the selected
+files in place, validates them, and writes only a private derived
+`genia/genia.sqlite3` under Annotation datasets storage. Component provenance
+contains the source filename, SHA-256, detected schema, usable row count, and
+installation time. The user-managed source files are not copied, retained by
+GUIDE-IEI, changed, or uploaded.
+
+Installation uses a new temporary database and publishes it only after every
+selected component and SQLite integrity have passed. A web login page,
+unrecognized schema, malformed component, or failed update therefore leaves
+the current GenIA database intact. A partial update copies forward the omitted
+installed component tables and their provenance.
+
+If the card reports that the derived GenIA index is unreadable, omitted
+components cannot be copied safely. Select all five exports to reinstall the
+complete index, or select the available subset, then check the separate
+**Replace the unreadable derived GenIA index** confirmation. A subset repair discards the unreadable
+index and installs only the selected components; every omitted component must
+be added again later if it is still needed.
+
+The four gene/phenotype roles work independently: GEI supplies source
+relationships and curation status; `IEI=Y` disease-catalog rows can supply
+relationships with unknown curation status; disease–phenotype associations can
+stand alone; and the vocabulary enriches installed associations but creates no
+gene assertion on its own. The **GenIA GEI gene** filter uses only genes from
+the GEI gene–disease list; the other four component types do not add genes to
+that filter.
+
+The fifth role is separate allele evidence. It must explicitly declare
+GRCh38/hg38, and GUIDE-IEI matches its records only to the exact normalized
+chromosome, position, reference, and alternate. Ambiguous source alleles with
+`N`, and source `REF` alleles that disagree with the configured GRCh38
+reference, are not indexed; the card reports the reason counts without treating
+the otherwise successful installation as failed. The source codes include `NC` (**Not classified**) and `RF`
+(**Risk factor**); neither is reinterpreted as a clinical classification.
+Likewise, `Relevant_in=0` is a zero reported-subject count, not benign
+evidence. The export has no gene/disease context, so none is inferred from a
+selected transcript.
 
 ## PromoterAI — licensed integration
 

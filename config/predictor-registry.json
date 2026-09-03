@@ -190,6 +190,21 @@
       ]
     },
     {
+      "id": "genia",
+      "label": "GenIA",
+      "family": "clinical_evidence",
+      "config_path": "genia",
+      "assembly": "GRCh38",
+      "distribution": "user_supplied",
+      "default_enabled": true,
+      "license_ack_required": false,
+      "license_name": "GenIA registered-user data terms",
+      "source_url": "https://geniadb.org/",
+      "assets": [
+        {"id": "database", "config_path": "genia.database", "role": "clinical_database", "required": true, "indexed": true}
+      ]
+    },
+    {
       "id": "loftee_ptc_50bp",
       "label": "LOFTEE PTC 50-bp recalculation",
       "family": "derived_annotation",
@@ -393,6 +408,15 @@
       "config_path": "clingen_erepo",
       "adapter": "postprocessor",
       "implementation": "clingen_erepo",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_many"}
+    },
+    {
+      "id": "genia",
+      "label": "GenIA exact-allele postprocessor",
+      "resource_id": "genia",
+      "config_path": "genia",
+      "adapter": "postprocessor",
+      "implementation": "genia",
       "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_many"}
     },
     {
@@ -1089,6 +1113,20 @@
       "metrics": [
         {"id": "assertions", "field": "ClinGen_ERepo", "value_type": "text", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": false},
         {"id": "count", "field": "ClinGen_ERepo_count", "value_type": "integer", "direction": "none", "role": "count", "value_range": [0, 1000000], "derived": true, "filterable": true}
+      ]
+    },
+    {
+      "id": "genia_variant_evidence",
+      "label": "GenIA exact-allele records",
+      "category": "Clinical evidence",
+      "resource_id": "genia",
+      "annotator_id": "genia",
+      "applicability": ["genomic_variant"],
+      "default_enabled": true,
+      "optional": true,
+      "metrics": [
+        {"id": "records", "field": "GenIA", "value_type": "text", "direction": "none", "role": "classification", "value_range": null, "derived": false, "filterable": false},
+        {"id": "count", "field": "GenIA_count", "value_type": "integer", "direction": "none", "role": "count", "value_range": [0, 1000000], "derived": true, "filterable": true}
       ]
     },
     {

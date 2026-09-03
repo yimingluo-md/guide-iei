@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
 import sys
@@ -10,7 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from local_service.cohort_store import CohortStore
 from local_service.phenotype_store import PhenotypeStore
 from local_service.sample_library import SampleLibrary
-from local_service.test_cohort_store import write_vcf
+from local_service.test_cohort_store import FakeHtsBackend, write_vcf
 
 
 class SampleLibraryTests(unittest.TestCase):
@@ -79,6 +80,40 @@ class SampleLibraryTests(unittest.TestCase):
         # The projection is cached: a second open returns the same file.
         again = self.library.review_file(by_sample["P1"]["id"])
         self.assertEqual(again, projected)
+
+    def test_original_review_record_restores_transcripts_omitted_from_managed_vcf(self):
+        fields = "Allele|Consequence|IMPACT|SYMBOL|Feature|HGVSp|MANE_SELECT|PICK"
+        header = (
+            "##fileformat=VCFv4.2\n"
+            "##reference=GRCh38\n"
+            "##contig=<ID=1,length=248956422>\n"
+            f'##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: {fields}">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
+        )
+        mane = "G|missense_variant|MODERATE|GENE1|ENST_MANE|p.Gly1Asp|NM_1|1"
+        alternative = "G|missense_variant|MODERATE|GENE1|ENST_ALT|p.Gly1Asp||"
+        original = self.state / "original.vcf"
+        original.write_text(
+            header + f"1\t100\t.\tA\tG\t50\tPASS\tCSQ={mane},{alternative}\tGT\t0/1\n",
+            encoding="utf-8",
+        )
+        managed = self.state / "managed.vcf"
+        managed.write_text(
+            header + f"1\t100\t.\tA\tG\t50\tPASS\tCSQ={mane}\tGT\t0/1\n",
+            encoding="utf-8",
+        )
+        payload = {
+            **self.payload(include=False),
+            "original_path": str(original),
+            "original_name": original.name,
+        }
+        result = self.library.import_vcf(managed, payload)
+        dataset = result["datasets"][0]
+        self.cohort.hts_backend = FakeHtsBackend()
+        restored = self.library.original_review_record(dataset["id"], "1:100:A:G")
+        self.assertEqual(restored["sample"], "P1")
+        self.assertIn(f"CSQ={mane},{alternative}", restored["vcf"])
+        self.assertEqual(restored["vcf"].count("\n1\t100\t"), 1)
 
     def test_review_file_cache_keys_cannot_collide_across_sanitized_names(self):
         """Sample names that differ only in special characters (PAT/1 vs
@@ -263,9 +298,8 @@ class SampleLibraryTests(unittest.TestCase):
         )
         record = self.library.get(first["datasets"][0]["id"])
         self.assertEqual(record["original_path"], str(moved.resolve()))
-        # The location is a property of the CONTENT: rows imported under a
-        # DIFFERENT profile must learn the live path too, or their full-WGS
-        # reindex keeps reading the deleted file.
+        # A changed intake setting still reuses exact content and its stored
+        # provenance; healing must continue to follow a later real move.
         other_payload = self.payload(include=False)
         other_payload["qc_settings"] = {"minDp": 30}
         other = self.library.import_vcf(moved, other_payload)
@@ -274,8 +308,8 @@ class SampleLibraryTests(unittest.TestCase):
         moved2.write_bytes(moved.read_bytes())
         moved.unlink()
         self.library.import_vcf(moved2, self.payload(include=False))
-        stale_profile = self.library.get(other["datasets"][0]["id"])
-        self.assertEqual(stale_profile["original_path"], str(moved2.resolve()))
+        reused = self.library.get(other["datasets"][0]["id"])
+        self.assertEqual(reused["original_path"], str(moved2.resolve()))
 
     def test_cohort_indexing_failure_degrades_to_needs_repair_with_reason(self):
         """A cohort-indexing failure must not present as a failed import
@@ -338,24 +372,28 @@ class SampleLibraryTests(unittest.TestCase):
         good = self.library.review_file(by_sample["P1"]["id"])
         self.assertTrue(good.is_file())
 
-    def test_profile_takeover_marks_displaced_siblings_for_repair(self):
-        """Reimporting the same file under a new profile replaces the single
-        file-level cohort entry; the displaced datasets must surface as
-        needing repair with the reason, not stay 'ready' over a dangling
-        index."""
+    def test_exact_reimport_with_changed_settings_reuses_stored_profile(self):
+        """Screen settings cannot turn identical bytes into a duplicate.
+
+        Exact re-import reuses both stable dataset IDs and their original
+        provenance. A changed setting applies only to a genuinely new
+        prepared review file.
+        """
         first = self.library.import_vcf(self.vcf, self.payload(include=True))
+        original = self.library.get(first["datasets"][0]["id"])
         second_payload = self.payload(include=True)
         second_payload["qc_settings"] = {"minDp": 25, "minGq": 40}
         second = self.library.import_vcf(self.vcf, second_payload)
-        self.assertNotEqual(
+        self.assertEqual(second["import_outcome"], "exact_current")
+        self.assertEqual(
             {d["id"] for d in first["datasets"]},
             {d["id"] for d in second["datasets"]},
         )
-        displaced = self.library.get(first["datasets"][0]["id"])
-        self.assertEqual(displaced["cohort_index_status"], "needs_repair")
-        self.assertTrue(any("marked for repair" in w for w in second["warnings"]))
-        current = self.library.get(second["datasets"][0]["id"])
+        self.assertEqual(len(self.library.list()), 2)
+        current = self.library.get(first["datasets"][0]["id"])
         self.assertEqual(current["cohort_index_status"], "ready")
+        self.assertEqual(current["settings_hash"], original["settings_hash"])
+        self.assertEqual(current["qc_settings"], original["qc_settings"])
 
     def test_bulk_apply_reports_per_item_outcomes(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=False))
@@ -595,6 +633,93 @@ class SampleLibraryTests(unittest.TestCase):
         self.library.map_identity(second_id, {"mode": "existing", "individual_id": "IND-002"})
         records = {record["id"]: record for record in self.library.list()}
         self.assertEqual(records[first_id]["sample_id"], records[second_id]["sample_id"])
+
+    def test_legacy_duplicate_imports_migrate_as_separate_versions(self):
+        """Upgrading an old library must not mix duplicate sample cards.
+
+        Old releases allowed the same bytes to be imported again under a
+        different settings hash. The migration groups each old import batch
+        into a version and makes only the newest batch current.
+        """
+        legacy_state = self.state / "legacy-library"
+        legacy_state.mkdir()
+        legacy_database = legacy_state / "cohort.sqlite3"
+        legacy_cohort = CohortStore(legacy_database)
+        legacy_library = SampleLibrary(legacy_state, legacy_cohort)
+        legacy_vcf = legacy_state / "legacy.vcf"
+        write_vcf(legacy_vcf)
+        legacy_library.import_vcf(
+            legacy_vcf,
+            {**self.payload(include=False), "qc_settings": {"minDp": 10}},
+        )
+
+        version_columns = {
+            "callset_id", "callset_fingerprint", "version_id", "version_number",
+            "is_current", "cohort_preferred", "supersedes_version_id",
+        }
+        with sqlite3.connect(legacy_database) as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("DROP INDEX library_datasets_current_content_idx")
+            connection.execute("DROP INDEX library_datasets_current_callset_idx")
+            rows = connection.execute("SELECT * FROM library_datasets").fetchall()
+            columns = [
+                row["name"] for row in connection.execute(
+                    "PRAGMA table_info(library_datasets)"
+                ).fetchall()
+            ]
+            for row in rows:
+                copied_sample_id = row["sample_id"] + "-second"
+                sample = connection.execute(
+                    "SELECT * FROM library_samples WHERE id=?", (row["sample_id"],)
+                ).fetchone()
+                connection.execute(
+                    "INSERT INTO library_samples(id,label,individual_id,created_at,updated_at) VALUES(?,?,?,?,?)",
+                    (copied_sample_id, sample["label"], sample["individual_id"],
+                     sample["created_at"], "2026-01-02T00:00:00+00:00"),
+                )
+                values = dict(row)
+                values.update({
+                    "id": row["id"] + "-second",
+                    "sample_id": copied_sample_id,
+                    "settings_hash": "legacy-second-profile",
+                    "profile_label": "legacy second profile",
+                    "imported_at": "2026-01-02T00:00:00+00:00",
+                    "updated_at": "2026-01-02T00:00:00+00:00",
+                })
+                placeholders = ",".join("?" for _ in columns)
+                connection.execute(
+                    f"INSERT INTO library_datasets({','.join(columns)}) VALUES({placeholders})",
+                    [values[column] for column in columns],
+                )
+            connection.execute(
+                "UPDATE library_datasets SET imported_at='2026-01-01T00:00:00+00:00', "
+                "updated_at='2026-01-01T00:00:00+00:00' WHERE settings_hash!='legacy-second-profile'"
+            )
+            connection.execute(
+                "UPDATE library_datasets SET settings_hash='legacy-sibling-edit' "
+                "WHERE settings_hash!='legacy-second-profile' AND vcf_sample_name='P1'"
+            )
+            old_columns = [column for column in columns if column not in version_columns]
+            connection.execute(
+                f"CREATE TABLE library_datasets_legacy AS SELECT {','.join(old_columns)} FROM library_datasets"
+            )
+            connection.execute("DROP TABLE library_datasets")
+            connection.execute("ALTER TABLE library_datasets_legacy RENAME TO library_datasets")
+
+        migrated = SampleLibrary(legacy_state, legacy_cohort)
+        records = migrated.list()
+        self.assertEqual(len(records), 4)
+        self.assertEqual(len({record["callset_id"] for record in records}), 1)
+        versions = {}
+        for record in records:
+            versions.setdefault(record["version_id"], []).append(record)
+        self.assertEqual(len(versions), 2)
+        self.assertEqual(sorted(len(members) for members in versions.values()), [2, 2])
+        self.assertEqual(sum(record["is_current"] for record in records), 2)
+        self.assertEqual(
+            {record["version_number"] for record in records if record["is_current"]},
+            {2},
+        )
 
 
 if __name__ == "__main__":

@@ -46,9 +46,21 @@ The run will:
 4. build the VEP command from your config and run it in the container,
 5. write `results/sample.vep.vcf.gz`,
 6. recompute the frameshift PTC 50-bp rule and run sample-specific Haplosaurus
-   consequence post-processing, then
+   consequence post-processing,
 7. write `results/sample.vep.aamatch.vcf.gz` (+ tabix index) with the
-   `ClinVar_path_aa_match` flag added.
+   `ClinVar_path_aa_match` flag added,
+8. attach locally installed ClinGen exact-allele assertions,
+9. attach optional GenIA records when its independently installed GRCh38
+   variant component is available, then
+10. write annotation QC and the run manifest against that final VCF.
+
+GenIA processing is local and optional. It uses only the derived
+component-based SQLite database in Annotation datasets storage; no source
+export or patient variant is uploaded. Its postprocessor requires an exact
+normalized GRCh38 chromosome/position/reference/alternate match and writes
+allele-level `INFO/GenIA` and `INFO/GenIA_count` fields, not transcript CSQ
+fields. Gene–disease and phenotype GenIA components remain Gene Knowledge
+lookups and are not repeated in the VCF.
 
 Useful flags: `--dry-run` (print the assembled container command and stop),
 `--no-clinvar` (skip the per-run ClinVar download), `--all-variants` (annotate

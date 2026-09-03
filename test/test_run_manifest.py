@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import pathlib
 import subprocess
 import tempfile
@@ -82,6 +83,7 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
     assert configured_resources["funcvep"] is True
     assert configured_resources["liftover"] is False
     assert manifest["input"]["exists"] and manifest["output"]["exists"]
+    assert manifest["input"]["sha256"] == hashlib.sha256(source.read_bytes()).hexdigest()
 
     fasta_entry = next(
         item for item in manifest["references"] if item["path"] == str(fasta)

@@ -23,6 +23,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from local_service.test_cohort_store import FakeHtsBackend, write_parallel_vcf, write_vcf
+from local_service.test_genia import GEI_HEADER, gei_row, write_table, write_variant_vcf
 from local_service.storage_locations import (
     StorageLocationRegistry, StorageRegistryError, _filesystem_type,
     storage_path_warning,
@@ -163,6 +164,126 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(stored["annotation_bundle"]["workbench_service"], SERVICE_VERSION)
         self.assertIn("foundations", stored["annotation_bundle"])
         self.assertEqual(self.service.sample_library.storage_stats()["datasets"], 2)
+
+    def test_sample_library_reuses_exact_import_and_versions_reannotation(self):
+        review = self.root / "versioned-review.vcf"
+        write_vcf(review)
+        self.service.cohort.hts_backend = FakeHtsBackend()
+        options = {
+            "sources": [{"path": str(review), "original_name": review.name}],
+            "analysis_scope": "exome",
+            "index_scope": "compact",
+            "include_in_cohort": True,
+            "qc_settings": {"minDp": 10},
+        }
+
+        first = self.service.import_sample_library(options)["imports"][0]
+        repeated = self.service.import_sample_library({
+            **options,
+            # Exact content identity wins over a changed screen setting: this
+            # is reuse, not a second retained copy or rewritten provenance.
+            "qc_settings": {"minDp": 20},
+        })["imports"][0]
+        self.assertEqual(repeated["import_outcome"], "exact_current")
+        self.assertEqual(
+            [item["id"] for item in repeated["datasets"]],
+            [item["id"] for item in first["datasets"]],
+        )
+        self.assertEqual(len(self.service.sample_library.list()), 2)
+
+        annotated = self.root / "versioned-review-updated.vcf"
+        annotated.write_text(
+            review.read_text().replace(
+                "##fileformat=VCFv4.2\n",
+                "##fileformat=VCFv4.2\n##GUIDE_IEI_annotation_release=updated\n",
+                1,
+            )
+        )
+        inspection = self.service.inspect_sample_library({
+            "sources": [{"path": str(annotated)}],
+            "analysis_scope": "exome",
+        })["inspections"][0]
+        self.assertEqual(inspection["status"], "reannotation")
+
+        updated = self.service.import_sample_library({
+            **options,
+            "sources": [{"path": str(annotated), "original_name": annotated.name}],
+        })["imports"][0]
+        self.assertEqual(updated["import_outcome"], "updated_annotation")
+        self.assertEqual(updated["callset_id"], first["callset_id"])
+        self.assertEqual(updated["version_number"], 2)
+        self.assertEqual(
+            {item["sample_id"] for item in updated["datasets"]},
+            {item["sample_id"] for item in first["datasets"]},
+        )
+        rows = self.service.sample_library.list()
+        self.assertEqual(len(rows), 4)
+        self.assertEqual(sum(item["is_current"] for item in rows), 2)
+        self.assertEqual(self.service.cohort.stats()["sample_entries"], 2)
+
+        exact_previous = self.service.import_sample_library(options)["imports"][0]
+        self.assertEqual(exact_previous["import_outcome"], "exact_previous")
+        self.assertEqual(len(self.service.sample_library.list()), 4)
+        with self.assertRaisesRegex(ValueError, "previous dataset version"):
+            self.service.sample_library.reindex(first["datasets"][0]["id"])
+
+        restored = self.service.sample_library.activate_version(
+            first["datasets"][0]["id"]
+        )
+        self.assertFalse(restored["already_current"])
+        self.assertTrue(all(item["is_current"] for item in restored["datasets"]))
+        self.assertEqual(self.service.cohort.stats()["sample_entries"], 2)
+
+    def test_sample_library_requires_decision_for_changed_overlapping_callset(self):
+        review = self.root / "initial-callset.vcf"
+        write_vcf(review)
+        self.service.cohort.hts_backend = None
+        first = self.service.import_sample_library({
+            "sources": [{"path": str(review)}],
+            "analysis_scope": "exome",
+            "include_in_cohort": False,
+        })["imports"][0]
+
+        changed = self.root / "changed-callset.vcf"
+        changed.write_text(review.read_text().replace("1\t200\t", "1\t201\t", 1))
+        inspection = self.service.inspect_sample_library({
+            "sources": [{"path": str(changed)}],
+            "analysis_scope": "exome",
+        })["inspections"][0]
+        self.assertEqual(inspection["status"], "possible_update")
+        self.assertTrue(inspection["matches"][0]["same_sample_set"])
+        with self.assertRaisesRegex(ValueError, "choose Replace current version"):
+            self.service.import_sample_library({
+                "sources": [{"path": str(changed)}],
+                "analysis_scope": "exome",
+                "include_in_cohort": False,
+            })
+
+        replaced = self.service.import_sample_library({
+            "sources": [{
+                "path": str(changed),
+                "identity_action": "replace",
+                "replace_callset_id": first["callset_id"],
+            }],
+            "analysis_scope": "exome",
+            "include_in_cohort": False,
+        })["imports"][0]
+        self.assertEqual(replaced["import_outcome"], "updated_version")
+        self.assertEqual(replaced["callset_id"], first["callset_id"])
+        self.assertEqual(replaced["version_number"], 2)
+
+        separate = self.root / "separate-callset.vcf"
+        separate.write_text(changed.read_text().replace("1\t300\t", "1\t301\t", 1))
+        kept_separate = self.service.import_sample_library({
+            "sources": [{
+                "path": str(separate),
+                "identity_action": "separate",
+            }],
+            "analysis_scope": "exome",
+            "include_in_cohort": False,
+        })["imports"][0]
+        self.assertEqual(kept_separate["import_outcome"], "separate_dataset")
+        self.assertNotEqual(kept_separate["callset_id"], first["callset_id"])
 
     def _write_script(self, name, body):
         path = self.root / "scripts" / name
@@ -1077,6 +1198,100 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(result["name"], selected.name)
         self.assertIn("choose file", run.call_args.args[0][2])
         self.assertIn("official FuncVEP .zip archive", run.call_args.args[0][2])
+
+    def test_native_resource_picker_accepts_a_genia_component_subset(self):
+        relationship = write_table(
+            self.root / "authorized-relationships.data",
+            GEI_HEADER,
+            [gei_row()],
+            delimiter=",",
+        )
+        variants = write_variant_vcf(self.root / "authorized-variants.vcf.gz")
+        completed = Mock(
+            returncode=0,
+            stdout=f"{relationship}\n{variants}\n",
+            stderr="",
+        )
+        with patch(
+            "local_service.workbench_service.platform.system", return_value="Darwin"
+        ), patch(
+            "local_service.workbench_service.subprocess.run", return_value=completed
+        ) as run:
+            result = self.service.choose_local_resource_source({"resource_id": "genia"})
+        self.assertFalse(result["cancelled"])
+        self.assertEqual(result["selection_type"], "files")
+        self.assertEqual(result["paths"], [str(relationship.resolve()), str(variants.resolve())])
+        self.assertEqual(
+            {item["role"] for item in result["detected"]},
+            {"gei_disease", "variant_vcf"},
+        )
+        self.assertIn("multiple selections allowed", run.call_args.args[0][2])
+
+    def test_genia_annotation_source_requires_the_variant_component(self):
+        with (self.root / "config" / "annotation.config.yaml").open("a") as handle:
+            handle.write(
+                "genia:\n"
+                "  enabled: true\n"
+                "  required: false\n"
+                "  database: references/genia/genia.sqlite3\n"
+            )
+        relationship = write_table(
+            self.root / "authorized-relationships.data",
+            GEI_HEADER,
+            [gei_row()],
+            delimiter=",",
+        )
+        self.service.gene_knowledge.install_genia([relationship])
+        source = next(
+            item
+            for item in self.service.capabilities()["annotation_profile"]["sources"]
+            if item["id"] == "genia"
+        )
+        self.assertFalse(source["installed"])
+        self.assertEqual(source["status"], "optional_missing")
+        self.assertTrue(
+            self.service.gene_knowledge.status()["genia"]["capabilities"]["gene_disease"]
+        )
+
+        variants = write_variant_vcf(self.root / "authorized-variants.vcf.gz")
+        self.service.gene_knowledge.install_genia([variants])
+        source = next(
+            item
+            for item in self.service.capabilities()["annotation_profile"]["sources"]
+            if item["id"] == "genia"
+        )
+        self.assertTrue(source["installed"])
+        self.assertTrue(source["enabled"])
+
+    def test_genia_store_uses_configured_managed_database_and_reference_paths(self):
+        config_path = self.root / "config" / "annotation.config.yaml"
+        config = config_path.read_text(encoding="utf-8").replace(
+            "  vep_cache_dir: references/vep_cache\n",
+            "  vep_cache_dir: references/vep_cache\n"
+            "  fasta:\n"
+            "    path: references/custom/reference.fa.gz\n",
+        )
+        config += (
+            "genia:\n"
+            "  enabled: true\n"
+            "  database: references/custom/genia.sqlite3\n"
+        )
+        config_path.write_text(config, encoding="utf-8")
+        registry = self.service.storage_registry
+        annotation_root = self.service.annotation_root
+        self.service.shutdown()
+        self.service = AnnotationJobService(
+            self.root, self.state, storage_registry=registry,
+        )
+
+        self.assertEqual(
+            self.service.genia.database,
+            (annotation_root / "custom" / "genia.sqlite3").resolve(),
+        )
+        self.assertEqual(
+            self.service.genia.reference_fasta,
+            (annotation_root / "custom" / "reference.fa.gz").resolve(),
+        )
 
     def test_dbnsfp_download_accepts_safelink_and_keeps_authorized_url_secret(self):
         target = "https://dist.genos.us/academic/authorized/dbNSFP6.0b_grch38.gz"

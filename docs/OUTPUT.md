@@ -19,6 +19,22 @@ plugins and custom tracks are CSQ subfields; the amino-acid-match adds
 the ClinVar release used. Sample columns (`FORMAT` / genotype) are passed
 through unchanged, so zygosity is preserved.
 
+When the optional GenIA GRCh38 variant component is installed,
+`INFO/GenIA` carries one compact source record per exact normalized allele and
+`INFO/GenIA_count` carries the number of matching records for each ALT. The
+compact record retains the ALT, GenIA ID, short name, source classification,
+and reported-subject count. These are INFO-level allele records, not CSQ
+transcript assertions. Source alleles containing ambiguous `N` bases are
+excluded during installation, and a non-match is absence of a record in the
+installed export—not evidence that the variant is benign.
+
+The displayed classification labels are the GenIA source terms. `NC` means
+**Not classified**, not uncertain significance; `RF` means **Risk factor**,
+not a pathogenic classification. A `Relevant_in` count of 0 means zero
+reported subjects in that export and is not a benign label. GUIDE-IEI does not
+claim that these terms are ACMG/AMP classifications or infer gene/disease
+context from the selected VEP transcript.
+
 ## Loss-of-function curation details
 
 For frameshift consequences, the postprocessor recalculates LOFTEE's
@@ -51,6 +67,12 @@ examples of missing annotations, ClinVar matches, repeat/segdup overlaps,
 configured resource versions, and whether promoterAI is installed. `WARN`
 means annotation coverage needs review; it does not remove variants or assign
 clinical significance.
+
+If the GenIA variant component is enabled, QC also records descriptive exact
+allele-match and emitted-record counts. The run manifest captures the
+configured derived SQLite asset. The database itself retains separate
+provenance for every installed GenIA component, so a later partial update can
+be distinguished without retaining the original exports.
 
 ## Notes on the container and annotation sources
 

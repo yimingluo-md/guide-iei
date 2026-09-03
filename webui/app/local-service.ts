@@ -129,7 +129,7 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
+  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "genia" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
   operation?: "download" | "preparation" | "installation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;
@@ -153,6 +153,39 @@ export type GeneKnowledgeResource = {
   imported_at: string;
 };
 
+export type GeniaComponentId =
+  | "gei_disease"
+  | "disease_catalog"
+  | "disease_phenotypes"
+  | "phenotype_vocabulary"
+  | "variant_vcf";
+
+export type GeniaComponent = {
+  id: GeniaComponentId;
+  label: string;
+  source_name: string;
+  source_sha256: string;
+  schema_fingerprint: string;
+  record_count: number;
+  rejected_record_count?: number;
+  installed_at: string;
+  release_hint: string;
+};
+
+export type GeniaStatus = {
+  installed: boolean;
+  components: Partial<Record<GeniaComponentId, GeniaComponent>>;
+  capabilities: {
+    gene_disease: boolean;
+    phenotype_evidence: boolean;
+    phenotype_details: boolean;
+    variant_evidence: boolean;
+  };
+  updated_at?: string;
+  license: string;
+  error?: string;
+};
+
 export type GeneKnowledgeStatus = {
   available: boolean;
   error: string;
@@ -165,6 +198,25 @@ export type GeneKnowledgeStatus = {
     license: string;
     error?: string;
   };
+  genia: GeniaStatus;
+};
+
+export type GeniaVariantRecord = {
+  record_id: string;
+  short_name: string;
+  class_code: string;
+  class_label: string;
+  relevant_subjects: number | null;
+  relevant_subjects_raw: string;
+  source_chrom: string;
+  source_pos: number;
+  source_ref: string;
+  source_alt: string;
+};
+
+export type GeniaVariant = GeniaStatus & {
+  available: boolean;
+  records: GeniaVariantRecord[];
 };
 
 export type ClinGenErepoAssertion = {
@@ -188,6 +240,7 @@ export type GeneKnowledgeFilters = {
   iuis_categories: { category: string; genes: number }[];
   iuis_category_genes: Record<string, string[]>;
   omim_genes: string[];
+  genia_gei_genes: string[];
 };
 
 export type GeneKnowledgeGene = {
@@ -227,6 +280,27 @@ export type GeneKnowledgeGene = {
     mapping_key: string; inheritance: string; cytoband: string; gene_title: string;
   }[];
   omim_installed: boolean;
+  genia: GeniaStatus & {
+    relationships: {
+      source_id: string; disease_id: string; disease_name: string;
+      synonyms: string; gene_symbol: string; moi: string; moa: string;
+      publication_year: string; iuis_classification: string;
+      curation_status: "curated" | "ongoing" | "not_curated" | "unknown";
+      curation_status_raw: string; case_count: string; family_count: string;
+      omim_id: string; mondo_id: string; clingen_class: string;
+      clingen_review_date?: string; last_updated: string;
+      relationship_source: "gei" | "disease_catalog" | "phenotype_export";
+      phenotypes: {
+        clinical_term_id: string; clinical_term: string;
+        hpo_term: string; hpo_id: string; rank: number | null;
+        count_yes: number | null; percent_yes: number | null;
+        count_no: number | null; percent_no: number | null;
+        count_unreported: number | null; percent_unreported: number | null;
+        phenotype_description: string; phenotype_alternate_terms: string;
+        phenotype_parent_terms: string;
+      }[];
+    }[];
+  };
 };
 
 export type SubmitJob = {
@@ -712,6 +786,13 @@ export type SampleLibraryDataset = {
   cohort_file_id: number | null;
   cohort_sample_entry_id: number | null;
   cohort_index_status: "ready" | "not_included" | "needs_repair";
+  callset_id: string;
+  callset_fingerprint: string;
+  version_id: string;
+  version_number: number;
+  is_current: boolean;
+  cohort_preferred: boolean;
+  supersedes_version_id: string | null;
   status: string;
   warnings: string[];
   imported_at: string;
@@ -725,6 +806,30 @@ export type SampleLibraryImportSource = {
   original_name?: string;
   source_record_count?: number;
   retained_record_count?: number;
+  identity_action?: "replace" | "separate";
+  replace_callset_id?: string;
+};
+
+export type SampleLibraryIdentityMatch = {
+  callset_id: string;
+  version_id: string;
+  version_number: number;
+  original_name: string;
+  imported_at: string;
+  sample_count: number;
+  matching_samples: string[];
+  matching_sample_count: number;
+  same_sample_set: boolean;
+};
+
+export type SampleLibraryInspection = {
+  status: "new" | "exact_current" | "exact_previous" | "reannotation" | "possible_update";
+  source_name: string;
+  path: string;
+  sample_count: number;
+  samples: string[];
+  matches: SampleLibraryIdentityMatch[];
+  match?: SampleLibraryIdentityMatch;
 };
 
 export type SampleLibraryImportResult = {
@@ -734,10 +839,24 @@ export type SampleLibraryImportResult = {
     deduplicated_file: boolean;
     profile_label: string;
     profile_hash: string;
+    callset_id: string;
+    version_id: string;
+    version_number: number;
+    import_outcome: "new" | "exact_current" | "exact_previous" | "updated_annotation" | "updated_version" | "separate_dataset";
     warnings: string[];
   }[];
   datasets: Pick<SampleLibraryDataset, "id" | "sample_id" | "vcf_sample_name" | "individual_id" | "cohort_sample_entry_id">[];
 };
+
+export async function inspectSampleLibrary(payload: {
+  sources: SampleLibraryImportSource[];
+  analysis_scope: "exome" | "whole_genome";
+}) {
+  return (await request<{ inspections: SampleLibraryInspection[] }>(
+    "/api/sample-library/inspect",
+    { method: "POST", body: JSON.stringify(payload) },
+  )).inspections;
+}
 
 export type StorageStats = {
   state_dir: string;
@@ -745,6 +864,9 @@ export type StorageStats = {
   locations: Record<string, number>;
   total_bytes: number;
   datasets: number;
+  current_datasets: number;
+  callsets: number;
+  versions: number;
   managed_unique_files: number;
   database_page_bytes: number;
   database_reclaimable_bytes: number;
@@ -1015,12 +1137,16 @@ export type LocalResourceSelection = {
     | "logofunc"
     | "funcvep"
     | "omim"
+    | "genia"
     | "storage_annotation"
     | "storage_data"
     | "storage_temporary";
-  selection_type?: "file" | "folder";
+  selection_type?: "file" | "files" | "folder";
   path?: string;
   name?: string;
+  paths?: string[];
+  names?: string[];
+  detected?: { role: GeniaComponentId; label: string; name: string; path: string }[];
 };
 
 export async function chooseLocalResourceSource(
@@ -1035,6 +1161,34 @@ export async function chooseLocalResourceSource(
 export async function getClinGenErepoVariant(chrom: string, pos: number, ref: string, alt: string) {
   const query = new URLSearchParams({ chrom, pos: String(pos), ref, alt });
   return request<ClinGenErepoVariant>(`/api/clingen-erepo/variant?${query.toString()}`);
+}
+
+export async function getGeniaVariant(chrom: string, pos: number, ref: string, alt: string) {
+  const query = new URLSearchParams({ chrom, pos: String(pos), ref, alt });
+  return request<GeniaVariant>(`/api/genia/variant?${query.toString()}`);
+}
+
+export async function inspectGeniaFiles(paths: string[]) {
+  return request<{ files: NonNullable<LocalResourceSelection["detected"]>; selected_components: GeniaComponentId[] }>(
+    "/api/gene-knowledge/genia/inspect",
+    { method: "POST", body: JSON.stringify({ paths }) },
+  );
+}
+
+export async function installGeniaFiles(
+  paths: string[],
+  replaceUnreadable = false,
+) {
+  return request<GeniaStatus & { updated_components: GeniaComponentId[]; warnings: string[] }>(
+    "/api/gene-knowledge/genia/install",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        paths,
+        replace_unreadable: replaceUnreadable,
+      }),
+    },
+  );
 }
 
 export async function startPromoterAiPreparation(sourceDir: string) {
@@ -1346,6 +1500,13 @@ export async function importSampleLibrary(payload: {
   });
 }
 
+export async function activateSampleLibraryVersion(datasetId: string) {
+  return request<{ datasets: SampleLibraryDataset[]; warning: string; already_current: boolean }>(
+    `/api/sample-library/${encodeURIComponent(datasetId)}/activate-version`,
+    { method: "POST", body: "{}" },
+  );
+}
+
 export type BulkIntakeJob = {
   id: string;
   status: "queued" | "running" | "completed" | "cancelled" | "failed";
@@ -1422,6 +1583,21 @@ export async function openSampleLibraryReviewSelection(
   const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
   return new File([await response.blob()], name, {
     type: response.headers.get("Content-Type") || "application/octet-stream",
+  });
+}
+
+export async function getSampleLibraryReviewRecord(
+  datasetId: string,
+  variantKey: string,
+) {
+  return request<{
+    variant_key: string;
+    sample: string;
+    name: string;
+    vcf: string;
+  }>("/api/sample-library/review-record", {
+    method: "POST",
+    body: JSON.stringify({ dataset_id: datasetId, variant_key: variantKey }),
   });
 }
 

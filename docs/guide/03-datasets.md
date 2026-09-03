@@ -33,6 +33,7 @@ plain language what it contributes; this chapter is a tour of those cards.
 | CADD whole-genome (optional) | ~83 GB | non-coding CADD only |
 | LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
 | FuncVEP (optional; licensed) | 4.24 GB source ZIP; 24 GiB free for automatic setup | missense functional-effect scores |
+| GenIA (optional; registration required) | source-release dependent; small derived SQLite index | gene–disease, phenotype, and exact-allele evidence |
 
 Dataset sizes are approximate and may change between releases. Allow about
 110 GB for the recommended exome resources and 150–250 GB for a more complete
@@ -169,14 +170,54 @@ GUIDE-IEI displays **Damaging** or **Neutral** accordingly. These labels are not
 clinical pathogenicity classifications or ACMG PP3/BP4 evidence strengths,
 and a missing score is not evidence that a variant is neutral or benign.
 
+- **GenIA**
+  ([website](https://geniadb.org/);
+  [published paper](https://doi.org/10.1016/j.jaci.2023.11.022)). This
+  registered-user resource can add immune gene–disease knowledge, reported
+  phenotypes, and exact GRCh38 variant records. GUIDE-IEI does not bundle a
+  credential, download URL, or GenIA source file. After obtaining the exports,
+  open **Import & QC → Set up annotation datasets → Optional add-ons →
+  GenIA**, select one or more files, and install them locally.
+
+  The five recognized components are **GEI gene–disease list**, **GenIA
+  disease catalog**, **disease–phenotype associations**, **GenIA phenotype
+  vocabulary**, and **GenIA GRCh38 variants**. Filenames can vary because the
+  installer recognizes the schema. Any one or subset works, and updating a
+  subset preserves previously installed components that were not selected.
+  The VCF's downloaded index is not needed.
+
+  GUIDE-IEI validates the selected data, creates a private derived SQLite
+  index with per-component filename, checksum, schema, row-count, and
+  installation provenance, and does not copy or retain the source exports.
+  Nothing is uploaded. Publication is atomic: if a selected file is a login
+  page, has the wrong schema, or otherwise fails, the existing GenIA index
+  remains unchanged.
+
+  If the card says the derived GenIA index is unreadable, select all five
+  exports for a normal complete recovery. If you have only a subset, select
+  those files and check **Replace the unreadable derived GenIA index**. This
+  explicit repair keeps only the selected components and removes omitted
+  components; you can add those components again later. The replacement is
+  still validated before it becomes active.
+
+  Variant records require an exact normalized GRCh38 allele. Source alleles
+  containing ambiguous `N` bases are excluded. GenIA labels are shown as
+  source evidence, not as a new GUIDE-IEI or ACMG/AMP classification. `NC`
+  means **Not classified**, `RF` means **Risk factor**, and neither should be
+  read as VUS or pathogenic, respectively. `Relevant_in=0` means zero subjects
+  were reported in that export; it does not mean benign. The variant export
+  has no gene or disease context, so the selected VEP transcript is not used
+  to invent one.
+
 Already bundled with the software, requiring no download: the ENCODE SCREEN
 cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge
 resources (gnomAD constraint, HGNC, the IUIS IEI classification, and
-ClinGen gene–disease validity and dosage). Licensed OMIM data are never
-shipped. An authorized user can paste their four private links for local
-download and indexing, or select an institution's already-downloaded copy,
-under **Import & QC → Set up annotation datasets → Optional add-ons**, after
-CADD non-coding and LoGoFunc.
+ClinGen gene–disease validity and dosage). Licensed OMIM data and registered-
+user GenIA exports are never shipped. Both are set up under **Import & QC → Set
+up annotation datasets → Optional add-ons**. An authorized OMIM user can paste
+their four private links for local download and indexing, or select an
+institution's already-downloaded copy. GenIA instead accepts authorized local
+exports and retains only its derived component database.
 
 ## Verifying the installation
 

@@ -502,6 +502,13 @@ def compact_review_transcripts(line: str, header: VcfHeader) -> tuple[str, int, 
 
     retained = [entry for index, entry in enumerate(entries) if index in selected]
     info_parts[csq_index] = "CSQ=" + ",".join(retained)
+    # Remove summaries produced by the short-lived AlphaMissense-specific
+    # alternative-transcript UI. Transcript exploration should be designed as
+    # a predictor-independent feature rather than carried as hidden metadata.
+    info_parts = [
+        item for item in info_parts
+        if not item.startswith("IEI_AM_TRANSCRIPTS=")
+    ]
     columns[7] = ";".join(info_parts)
     return "\t".join(columns) + "\n", len(entries), len(retained)
 
@@ -898,6 +905,7 @@ class WgsReviewStore:
                     if (
                         line.startswith("##IEI_WGS_PREFILTER=<")
                         or line.startswith("##INFO=<ID=IEI_UNSCORED_INDEL,")
+                        or line.startswith("##INFO=<ID=IEI_AM_TRANSCRIPTS,")
                     ):
                         continue
                     if line.startswith("#CHROM\t"):

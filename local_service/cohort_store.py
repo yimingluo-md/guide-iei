@@ -625,6 +625,38 @@ def _clingen_assertions_for_alt(
     return selected
 
 
+def _genia_records_for_alt(
+    raw: str, *, alt: str, alt_index: int, alts: tuple[str, ...],
+) -> list[str]:
+    """Select compact Number=A GenIA records for one ALT."""
+    if not raw or raw in EMPTY:
+        return []
+    slots = raw.split(",")
+    all_tokens = [token for slot in slots for token in slot.split("&")]
+    known_alts = {item.upper() for item in alts}
+    has_explicit_alt = any(
+        separator and decode(leading).upper() in known_alts
+        for token in all_tokens
+        for leading, separator, _ in [token.partition("|")]
+    )
+    # Explicit ALT identity wins over comma shape.  In particular, an
+    # externally produced record-wide list can contain exactly as many GenIA
+    # records as ALTs while all records still belong to the first ALT.
+    candidates = (
+        all_tokens
+        if has_explicit_alt
+        else slots[alt_index].split("&")
+        if len(slots) == len(alts) and alt_index < len(slots)
+        else all_tokens
+    )
+    selected = []
+    for token in candidates:
+        leading, separator, _ = token.partition("|")
+        if token not in EMPTY and separator and decode(leading).upper() == alt.upper():
+            selected.append(token)
+    return selected
+
+
 def _prediction_info_for_alt(
     info: dict[str, str], *, alt: str, alt_index: int, alts: tuple[str, ...],
 ) -> dict[str, str]:
@@ -644,6 +676,12 @@ def _prediction_info_for_alt(
         selected["ClinGen_ERepo_count"] = (
             str(len(assertions)) if assertions else ""
         )
+    if "GenIA" in info or "GenIA_count" in info:
+        records = _genia_records_for_alt(
+            info.get("GenIA", ""), alt=alt, alt_index=alt_index, alts=alts,
+        )
+        selected["GenIA"] = "&".join(records)
+        selected["GenIA_count"] = str(len(records)) if records else ""
     return selected
 
 

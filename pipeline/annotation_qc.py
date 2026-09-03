@@ -421,6 +421,15 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                         )
                     )
                 )
+            if present(info.get("GenIA")):
+                counters["genia_match_records"] += 1
+                # GenIA_count is a convenience field derived from GenIA.  Use
+                # the evidence tokens themselves for QC so a malformed or
+                # externally generated count cannot inflate the report.
+                counters["genia_records"] += sum(
+                    token not in MISSING
+                    for token in re.split(r"[,&]", info.get("GenIA", ""))
+                )
             haplotype_entries = info.get("IEI_HAPLOTYPE_FRAME", "").split(",")
             haplotype_statuses = {
                 item.split("|")[3]
@@ -638,6 +647,27 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         "note": "Match count is descriptive; absence of a ClinGen assertion is not an annotation failure.",
     })
 
+    genia_config = config.get("genia") or {}
+    genia_schema = all(
+        field in header_info_fields for field in ("GenIA", "GenIA_count")
+    )
+    metrics.append({
+        "name": "GenIA exact allele annotation",
+        "eligible_records": counters["records"],
+        "annotated_records": counters["genia_match_records"],
+        "assertions": counters["genia_records"],
+        "coverage": None,
+        "warning_threshold": None,
+        "schema_present": genia_schema,
+        "status": (
+            "SKIPPED_DISABLED" if not genia_config.get("enabled")
+            else "PASS" if genia_schema
+            else "FAIL" if genia_config.get("required")
+            else "SKIPPED_NOT_INSTALLED"
+        ),
+        "note": "Match count is descriptive; absence of a GenIA record is not an annotation failure.",
+    })
+
     statuses = {item["status"] for item in metrics}
     promoter_schema = any(field in csq_fields for field in PROMOTERAI_FIELDS)
     promoter_status = (
@@ -679,6 +709,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             "ClinGen_ERepo_required": bool(
                 (config.get("clingen_erepo") or {}).get("required")
             ),
+            "GenIA_required": bool((config.get("genia") or {}).get("required")),
             "LoGoFunc_version": logofunc_config.get("version"),
             "FuncVEP_version": funcvep_config.get("version"),
             "FuncVEP_required": bool(funcvep_config.get("required")),

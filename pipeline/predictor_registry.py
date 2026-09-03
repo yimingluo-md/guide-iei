@@ -24,13 +24,13 @@ REGISTRY_PATH = Path(__file__).resolve().parents[1] / "config" / "predictor-regi
 
 _ID_PATTERN = re.compile(r"^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$")
 _CONFIG_PATH_PATTERN = re.compile(
-    r"^(?:core|reference|plugins|custom_tracks|post_processing|clingen_erepo|"
+    r"^(?:core|reference|plugins|custom_tracks|post_processing|clingen_erepo|genia|"
     r"wgs_review|liftover)(?:\.[A-Za-z][A-Za-z0-9_]*)*$"
 )
 _FIELD_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_.+\-]*$")
 _CONFIG_ROOTS = {
     "core", "reference", "plugins", "custom_tracks", "post_processing",
-    "clingen_erepo", "wgs_review", "liftover",
+    "clingen_erepo", "genia", "wgs_review", "liftover",
 }
 
 

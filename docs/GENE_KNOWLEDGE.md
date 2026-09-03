@@ -63,18 +63,64 @@ must not imply that a gene lacks an OMIM association. Reinstalling replaces the
 private index atomically only after all four schemas, record counts, and SQLite
 integrity have been validated.
 
+## GenIA registration and component installation
+
+[GenIA](https://geniadb.org/) is an optional registered-user source described
+in its [published paper](https://doi.org/10.1016/j.jaci.2023.11.022). No GenIA
+credentials, download URLs, data, or source files are bundled with or retained
+by GUIDE-IEI. The user selects one or more exports under **Import &
+QC → Set up annotation datasets → User action needed → GenIA**. The installer
+detects each component by its schema rather than its filename and creates a
+private derived SQLite database in Annotation datasets storage. It records
+per-component source filename, checksum, schema fingerprint, row count, and
+installation time, but does not copy the selected source files.
+
+Each of the five components can be installed alone or in any subset:
+
+- the **GEI gene–disease list** supplies gene–disease relationships and the
+  source's curated, ongoing, not-curated, or unknown status;
+- the **GenIA disease catalog** supplies disease identifiers,
+  cross-references, and IEI markers. When installed without the GEI list,
+  catalog records explicitly marked `IEI=Y` can still appear as relationships,
+  with curation status left unknown;
+- **disease–phenotype associations** supply gene-, disease-, and HPO-linked
+  phenotype observations and source frequencies. They remain usable without
+  the other components and can form their own relationship rows;
+- the **GenIA phenotype vocabulary** enriches installed phenotype observations
+  with definitions, alternate terms, and hierarchy. On its own it does not
+  assert a gene–disease relationship; and
+- the **GenIA GRCh38 variant export** supports separate exact-allele evidence
+  in Variant Review and during annotation. It is not required for the gene
+  knowledge features above, and its downloaded CSI index is not required.
+
+When compatible components coexist, GUIDE-IEI joins them conservatively by
+their supplied disease and gene identifiers or unambiguous source keys. The
+**GenIA GEI gene** filter is populated only from the GEI gene–disease list.
+Disease-catalog, disease–phenotype, and phenotype-vocabulary rows do not add
+genes to that filter. Updating a subset
+replaces only those selected components and
+preserves omitted installed components. The new database is published only
+after all selected imports and an integrity check succeed, so a malformed or
+misidentified source leaves the prior installation unchanged.
+
+If the existing derived index itself is unreadable, the installer cannot copy
+omitted components from it. Select all five exports for a complete recovery,
+or select an available subset, then explicitly confirm **Replace the unreadable derived GenIA index**; the
+replacement then contains only that subset, and omitted gene, phenotype, or
+variant capabilities are removed until their exports are installed again.
+
 ## Identity and assertion handling
 
 HGNC is the identity authority. Lookups prefer stable HGNC/Ensembl identifiers
 or an approved symbol, then use an alias only when that alias maps
-unambiguously to one approved gene. Every IUIS, ClinGen, and OMIM assertion is
+unambiguously to one approved gene. Every IUIS, ClinGen, OMIM, and GenIA assertion is
 retained as a separate source row; the software does not collapse several
 diseases, inheritance modes, or mechanisms into a single synthetic label.
 
 The Gene review warns that gene-level association, dosage, and constraint
 evidence do not establish the pathogenicity or disease relevance of the
-selected variant. ClinGen variant-level evidence is intentionally outside this
-gene-level implementation and can be added independently later.
+selected variant. ClinGen and GenIA exact-allele evidence remain separate from
+gene-level knowledge; neither is inferred from a selected transcript.
 
 ### IUIS immune-profile summaries
 
