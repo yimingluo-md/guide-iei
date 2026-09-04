@@ -206,8 +206,17 @@ and a missing score is not evidence that a variant is neutral or benign.
   means **Not classified**, `RF` means **Risk factor**, and neither should be
   read as VUS or pathogenic, respectively. `Relevant_in=0` means zero subjects
   were reported in that export; it does not mean benign. The variant export
-  has no gene or disease context, so the selected VEP transcript is not used
-  to invent one.
+  has no gene or disease context, so the exact-allele display does not use the
+  selected VEP transcript to invent one.
+
+  Only the **GenIA GRCh38 variants** component enables GenIA protein matching.
+  Its `P` and `LP` missense records are prepared with the same VEP cache used
+  for the patient VCF. Matches require the same gene, stable Ensembl
+  transcript, protein position, and reference amino acid; same-change matches
+  also require the same alternate amino acid. An identical genomic allele is
+  kept as exact-allele evidence rather than repeated as a protein match. These
+  locally derived VEP coordinates support the comparison only; they do not add
+  GenIA gene–disease context.
 
 Already bundled with the software, requiring no download: the ENCODE SCREEN
 cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge

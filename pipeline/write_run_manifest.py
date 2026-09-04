@@ -49,6 +49,44 @@ def config_value(cfg: dict, dotted_path: str):
     return value
 
 
+def clinical_protein_catalog_paths(cfg: dict) -> list[str]:
+    """Return the derived clinical-source protein-match catalogs.
+
+    Catalog content is run-defining even when its source database is also
+    recorded: transcript and protein coordinates depend on the VEP cache used
+    to derive it, so the manifest hashes each small catalog itself.
+    """
+    paths: list[str] = []
+    clinvar = cfg.get("clinvar", {}) or {}
+    paths.append(
+        clinvar.get("protein_match_catalog")
+        or (
+            str(Path(clinvar["dest_dir"]) / "clinvar_aa_reference.tsv")
+            if clinvar.get("dest_dir")
+            else None
+        )
+    )
+    clingen = cfg.get("clingen_erepo", {}) or {}
+    paths.append(
+        clingen.get("protein_match_catalog")
+        or (
+            str(Path(clingen["dest_dir"]) / "clingen_aa_reference.tsv")
+            if clingen.get("dest_dir")
+            else None
+        )
+    )
+    genia = cfg.get("genia", {}) or {}
+    paths.append(
+        genia.get("protein_match_catalog")
+        or (
+            str(Path(genia["database"]).parent / "genia_aa_reference.tsv")
+            if genia.get("database")
+            else None
+        )
+    )
+    return [path for path in paths if path]
+
+
 def reference_paths(cfg: dict, registry=None) -> list[str]:
     paths = []
     ref = cfg.get("reference", {}) or {}
@@ -69,6 +107,11 @@ def reference_paths(cfg: dict, registry=None) -> list[str]:
     paths.extend(track.get("file") for track in (cfg.get("custom_tracks", {}) or {}).values())
     clingen = cfg.get("clingen_erepo", {}) or {}
     paths.extend(clingen.get(key) for key in ("database", "vcf", "manifest"))
+    # These compact catalogs are derived from the installed clinical source
+    # plus the release-matched VEP cache.  They directly determine candidate
+    # same-change/same-residue evidence and therefore belong in run
+    # provenance just as much as the exact-allele databases do.
+    paths.extend(clinical_protein_catalog_paths(cfg))
     # Run-defining inputs previously absent from the manifest: the liftover
     # chain and source reference, the ClinVar amino-acid-match catalog, and
     # the GTF the frameshift 50-bp recalculation reads exon structure from.
@@ -76,9 +119,6 @@ def reference_paths(cfg: dict, registry=None) -> list[str]:
     paths.extend(liftover.get(key) for key in ("chain", "source_fasta"))
     post = cfg.get("post_processing", {}) or {}
     paths.append(((post.get("loftee_ptc_50bp", {}) or {}).get("gtf")))
-    clinvar_dir = (cfg.get("clinvar", {}) or {}).get("dest_dir")
-    if clinvar_dir:
-        paths.append(str(Path(clinvar_dir) / "clinvar_aa_reference.tsv"))
     region = cfg.get("region", {}) or {}
     # The BED that decided which variants reached VEP is run-defining.
     paths.extend([region.get("custom_bed"), region.get("bed")])
@@ -153,6 +193,26 @@ def main() -> int:
         # Library also records an annotation-insensitive callset fingerprint,
         # while this full digest preserves strict run provenance.
         input_metadata["sha256"] = sha256(args.input)
+    raw_reference_paths = sorted({
+        *reference_paths(cfg, registry),
+        *([args.region_bed] if args.region_bed else []),
+    })
+    catalog_paths = {
+        path if os.path.isabs(path) else os.path.join(args.base_dir, path)
+        for path in clinical_protein_catalog_paths(cfg)
+    }
+    reference_metadata = []
+    for path in raw_reference_paths:
+        resolved_path = path if os.path.isabs(path) else os.path.join(args.base_dir, path)
+        entry = file_metadata(resolved_path)
+        if (
+            resolved_path in catalog_paths
+            and entry["exists"]
+            and os.path.isfile(resolved_path)
+        ):
+            entry["sha256"] = sha256(resolved_path)
+        reference_metadata.append(entry)
+
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "pipeline_version": pipeline_version,
@@ -167,13 +227,7 @@ def main() -> int:
         "region_bed": args.region_bed or None,
         "vep_argv": plan.get("argv", []),
         "predictor_registry": predictor_registry,
-        "references": [
-            file_metadata(
-                path if os.path.isabs(path) else os.path.join(args.base_dir, path)
-            )
-            for path in sorted({*reference_paths(cfg, registry),
-                                *([args.region_bed] if args.region_bed else [])})
-        ],
+        "references": reference_metadata,
     }
     with open(args.output + ".run_manifest.json", "w") as out:
         json.dump(manifest, out, indent=2, sort_keys=True)

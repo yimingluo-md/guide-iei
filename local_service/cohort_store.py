@@ -563,9 +563,16 @@ def allele_info_value(
     return "" if value in EMPTY else decode(value)
 
 
-_CLINVAR_AA_ALLELE_FIELDS = (
+_PROTEIN_MATCH_ALLELE_FIELDS = (
     "ClinVar_path_aa_match",
     "ClinVar_path_aa_change_match",
+    "ClinVar_path_aa_details",
+    "ClinGen_path_aa_match",
+    "ClinGen_path_aa_change_match",
+    "ClinGen_path_aa_details",
+    "GenIA_path_aa_match",
+    "GenIA_path_aa_change_match",
+    "GenIA_path_aa_details",
 )
 
 
@@ -662,7 +669,7 @@ def _prediction_info_for_alt(
 ) -> dict[str, str]:
     """Return INFO fields whose predictor evidence belongs to one ALT."""
     selected = dict(info)
-    for key in _CLINVAR_AA_ALLELE_FIELDS:
+    for key in _PROTEIN_MATCH_ALLELE_FIELDS:
         if key in info:
             selected[key] = allele_info_value(info, key, alt_index)
     if "ClinGen_ERepo" in info:

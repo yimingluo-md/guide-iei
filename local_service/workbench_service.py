@@ -353,7 +353,7 @@ ANNOTATION_SOURCE_SETUP = {
         "size_hint": "",
         "instructions": [
             "Included with the software — no action needed.",
-            "Its residue table is rebuilt automatically from each downloaded ClinVar release.",
+            "Transcript-specific protein evidence is rebuilt automatically from the installed ClinVar and ClinGen releases and, when available, the user-provided GenIA variant export.",
         ],
     },
     "liftover": {
@@ -4643,7 +4643,7 @@ class AnnotationJobService:
             "funcvep": ("FuncVEP", "Research-grade estimates of a missense variant's functional effect from three complementary model settings — not a clinical pathogenicity classification"),
             "clinvar": ("ClinVar", "What clinical laboratories have reported about each variant. Reports come from many submitters and can conflict; review status matters. Refreshed automatically before every run"),
             "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create and flags cases where the rule suggests possible NMD escape"),
-            "clinvar_aa_match": ("ClinVar protein-change and residue matching", "Identifies ClinVar P/LP reports with the same protein change or a P/LP missense report at the same residue. These are candidate PS1/PM5 evidence only; the reviewer must confirm transcript, condition, review status, disease mechanism, and evidence independence"),
+            "clinvar_aa_match": ("Clinical protein-change and residue matching", "Identifies P/LP reports in ClinVar, ClinGen, and an installed GenIA variant export with the same protein change or a different missense change at the same residue. These are candidate PS1/PM5 evidence only; the reviewer must confirm transcript, condition, review status, disease mechanism, and evidence independence"),
             "liftover": ("GRCh37/hg19 input conversion", "Lets you analyze VCFs made against the older GRCh37/hg19 reference. Variants are converted to GRCh38 with safeguards and a full audit trail — nothing is silently dropped"),
             "ccre": ("ENCODE cCRE regions", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
             "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: SCREEN records a positive regulatory signature in reference tissues and immune cell types, adding context to the aggregate cCRE map"),

@@ -84,6 +84,18 @@ def write_predictor_vcf(path: Path) -> None:
         "1:100:A:G|P1|ENST_SOURCE|FRAME_RESTORED_CONFIRMED|"
         "1:110:AG:A|ENSP1:p.Lys1Arg"
     )
+    clingen_detail = (
+        "change|CG-1|1%3A101%3AA%3AT|Pathogenic|GENE1|ENST_SOURCE|"
+        "1|K|R|Disease%20one"
+    )
+    genia_detail = (
+        "residue|GENIA-1|1%3A102%3AC%3AT|LP|GENE1|ENST_SOURCE|"
+        "1|K|Q|"
+    )
+    clinvar_detail = (
+        "residue|CV-1|1%3A103%3AG%3AA|Likely_pathogenic|GENE1|"
+        "ENST_SOURCE|1|K|Q|Disease%20two"
+    )
     path.write_text(
         "##fileformat=VCFv4.2\n"
         "##reference=GRCh38\n"
@@ -92,10 +104,22 @@ def write_predictor_vcf(path: Path) -> None:
         + "|".join(PREDICTOR_FIELDS) + '">\n'
         '##INFO=<ID=ClinVar_path_aa_match,Number=A,Type=Integer,Description="test">\n'
         '##INFO=<ID=ClinVar_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=ClinVar_path_aa_details,Number=A,Type=String,Description="test">\n'
+        '##INFO=<ID=ClinGen_path_aa_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=ClinGen_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=ClinGen_path_aa_details,Number=A,Type=String,Description="test">\n'
+        '##INFO=<ID=GenIA_path_aa_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=GenIA_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=GenIA_path_aa_details,Number=A,Type=String,Description="test">\n'
         '##INFO=<ID=IEI_HAPLOTYPE_FRAME,Number=.,Type=String,Description="test">\n'
         "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
         f"1\t100\trsDual\tA\tG\t99\tPASS\tCSQ={partial_logofunc},{exact_logofunc};"
         f"ClinVar_path_aa_match=1;ClinVar_path_aa_change_match=0;"
+        f"ClinVar_path_aa_details={clinvar_detail};"
+        f"ClinGen_path_aa_match=1;ClinGen_path_aa_change_match=1;"
+        f"ClinGen_path_aa_details={clingen_detail};"
+        f"GenIA_path_aa_match=1;GenIA_path_aa_change_match=0;"
+        f"GenIA_path_aa_details={genia_detail};"
         f"IEI_HAPLOTYPE_FRAME={haplotype}"
         "\tGT:PS:AD:DP:GQ\t0|1:7:10,10:20:99\n"
         f"1\t200\t.\tC\tT\t99\tPASS\tCSQ={partial_funcvep}"
@@ -670,6 +694,11 @@ class PredictorImportIntegrationTests(unittest.TestCase):
             }
         )
         self.assertEqual(
+            amino_acid[0]["provenance"]["details"],
+            "residue|CV-1|1:103:G:A|Likely_pathogenic|GENE1|"
+            "ENST_SOURCE|1|K|Q|Disease two",
+        )
+        self.assertEqual(
             len(store.filter_predictions(
                 predictor_id="clinvar_aa_match",
                 metric="residue_match",
@@ -677,6 +706,38 @@ class PredictorImportIntegrationTests(unittest.TestCase):
                 value=True,
             )),
             1,
+        )
+
+        clingen_match = store.query_predictions(
+            predictor_id="clingen_aa_match"
+        )
+        self.assertEqual(len(clingen_match), 1)
+        self.assertEqual(clingen_match[0]["values"], {
+            "change_match": True, "residue_match": True,
+        })
+        self.assertEqual(
+            clingen_match[0]["provenance"]["details"],
+            "change|CG-1|1:101:A:T|Pathogenic|GENE1|ENST_SOURCE|"
+            "1|K|R|Disease one",
+        )
+        self.assertEqual(
+            len(store.filter_predictions(
+                predictor_id="clingen_aa_match",
+                metric="change_match",
+                operator="=",
+                value=True,
+            )),
+            1,
+        )
+
+        genia_match = store.query_predictions(predictor_id="genia_aa_match")
+        self.assertEqual(len(genia_match), 1)
+        self.assertEqual(genia_match[0]["values"], {
+            "change_match": False, "residue_match": True,
+        })
+        self.assertEqual(
+            genia_match[0]["provenance"]["details"],
+            "residue|GENIA-1|1:102:C:T|LP|GENE1|ENST_SOURCE|1|K|Q|",
         )
 
         haplotype = store.query_predictions(predictor_id="haplotype_frame")
@@ -694,6 +755,19 @@ class PredictorImportIntegrationTests(unittest.TestCase):
 
     def test_legacy_rowwise_import_dual_writes_predictions(self):
         self._assert_dual_write(self._import(legacy=True))
+
+    def test_absent_protein_match_schema_does_not_store_negative_evidence(self):
+        vcf = self.root / "no-protein-match-schema.vcf"
+        write_cadd_vcf(vcf, 20)
+        store = CohortStore(self.root / "no-protein-match-schema.sqlite3")
+        store.import_vcf(vcf)
+        for predictor_id in (
+            "clinvar_aa_match", "clingen_aa_match", "genia_aa_match",
+        ):
+            with self.subTest(predictor_id=predictor_id):
+                self.assertEqual(
+                    store.query_predictions(predictor_id=predictor_id), []
+                )
 
     def test_invalid_metrics_do_not_abort_either_cohort_import_path(self):
         for legacy in (False, True):
@@ -857,6 +931,9 @@ class PredictorImportIntegrationTests(unittest.TestCase):
             "T|u2|CA2|Pathogenic|D2|M2|AD|Panel|2026",
             "T|u3|CA3|Likely_pathogenic|D3|M3|AR|Panel|2026",
         ))
+        genia_detail = (
+            "change|G1|1%3A401%3AA%3AC|P|GENE2|ENST2|20|A|V|"
+        )
         vcf = self.root / "allele-info.vcf"
         vcf.write_text(
             "##fileformat=VCFv4.2\n##reference=GRCh38\n"
@@ -867,12 +944,19 @@ class PredictorImportIntegrationTests(unittest.TestCase):
             '##INFO=<ID=ClinVar_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
             '##INFO=<ID=ClinGen_ERepo,Number=A,Type=String,Description="test">\n'
             '##INFO=<ID=ClinGen_ERepo_count,Number=A,Type=Integer,Description="test">\n'
+            '##INFO=<ID=GenIA_path_aa_match,Number=A,Type=Integer,Description="test">\n'
+            '##INFO=<ID=GenIA_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
+            '##INFO=<ID=GenIA_path_aa_details,Number=A,Type=String,Description="test">\n'
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
             f"1\t400\t.\tA\tG,T\t99\tPASS\tCSQ={','.join(consequences)};"
             "ClinVar_path_aa_match=0,1;"
             "ClinVar_path_aa_change_match=0,0;"
             f"ClinGen_ERepo={g_assertion},{t_assertions};"
-            "ClinGen_ERepo_count=1,2\tGT:AD\t1/2:0,10,10\n",
+            "ClinGen_ERepo_count=1,2;"
+            "GenIA_path_aa_match=0,1;"
+            "GenIA_path_aa_change_match=0,1;"
+            f"GenIA_path_aa_details=.,{genia_detail}"
+            "\tGT:AD\t1/2:0,10,10\n",
             encoding="utf-8",
         )
         store = CohortStore(self.root / "allele-info.sqlite3")
@@ -909,6 +993,23 @@ class PredictorImportIntegrationTests(unittest.TestCase):
                 for observation in clingen
             ),
             [1, 2],
+        )
+        genia_matches = store.query_predictions(predictor_id="genia_aa_match")
+        self.assertEqual(len(genia_matches), 2)
+        genia_by_alt = {
+            json.loads(observation["target_key"])["alternate"]: observation
+            for observation in genia_matches
+        }
+        self.assertEqual(genia_by_alt["G"]["values"], {
+            "change_match": False, "residue_match": False,
+        })
+        self.assertEqual(genia_by_alt["T"]["values"], {
+            "change_match": True, "residue_match": True,
+        })
+        self.assertNotIn("details", genia_by_alt["G"]["provenance"])
+        self.assertEqual(
+            genia_by_alt["T"]["provenance"]["details"],
+            "change|G1|1:401:A:C|P|GENE2|ENST2|20|A|V|",
         )
 
     def test_haplotype_without_phase_set_is_partial_provenance(self):

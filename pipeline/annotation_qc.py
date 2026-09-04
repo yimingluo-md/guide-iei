@@ -63,6 +63,28 @@ FUNCVEP_PROVENANCE_FIELDS = (
     "FuncVEP_source_gene",
 )
 
+# Protein-level clinical evidence is emitted at INFO/Number=A because one VCF
+# record can contain several ALT alleles.  Presence of the flag pair means the
+# source was evaluated; an absent schema means "not evaluated", which must not
+# be collapsed into a negative result for an optional source such as GenIA.
+PROTEIN_MATCH_FIELDS = {
+    "clinvar": (
+        "ClinVar_path_aa_match",
+        "ClinVar_path_aa_change_match",
+        "ClinVar_path_aa_details",
+    ),
+    "clingen": (
+        "ClinGen_path_aa_match",
+        "ClinGen_path_aa_change_match",
+        "ClinGen_path_aa_details",
+    ),
+    "genia": (
+        "GenIA_path_aa_match",
+        "GenIA_path_aa_change_match",
+        "GenIA_path_aa_details",
+    ),
+}
+
 
 def open_text(path: Path):
     return gzip.open(path, "rt") if path.name.endswith(".gz") else path.open()
@@ -404,6 +426,21 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 clinvar_significance.update(terms)
             if "1" in (info.get("ClinVar_path_aa_match") or "").split(","):
                 counters["clinvar_pathogenic_aa_match_records"] += 1
+            for source, (residue_field, change_field, details_field) in (
+                PROTEIN_MATCH_FIELDS.items()
+            ):
+                residue_hit = "1" in (info.get(residue_field) or "").split(",")
+                change_hit = "1" in (info.get(change_field) or "").split(",")
+                if residue_hit:
+                    counters[f"{source}_protein_residue_match_records"] += 1
+                if change_hit:
+                    counters[f"{source}_protein_change_match_records"] += 1
+                if residue_hit or change_hit:
+                    counters[f"{source}_protein_match_records"] += 1
+                counters[f"{source}_protein_match_details"] += sum(
+                    token not in MISSING
+                    for token in re.split(r"[,&]", info.get(details_field, ""))
+                )
             if present(info.get("ClinGen_ERepo")):
                 counters["clingen_erepo_match_records"] += 1
                 count_slots = [
@@ -625,6 +662,120 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         )
     metrics.append(funcvep_metric)
 
+    post_config = config.get("post_processing") or {}
+    clinical_protein_config = post_config.get("clinical_protein_match")
+    clinical_protein_config = (
+        clinical_protein_config
+        if isinstance(clinical_protein_config, dict)
+        else {}
+    )
+    legacy_clinvar_config = post_config.get("clinvar_aa_match") or {}
+    shared_match_configured = "clinical_protein_match" in post_config
+    shared_match_enabled = (
+        clinical_protein_config.get("enabled", True) is not False
+        if shared_match_configured
+        else legacy_clinvar_config.get("enabled", True) is not False
+    )
+    protein_match_configs = {
+        "clinvar": legacy_clinvar_config,
+        "clingen": config.get("clingen_erepo") or {},
+        "genia": config.get("genia") or {},
+    }
+    protein_match_labels = {
+        "clinvar": "ClinVar",
+        "clingen": "ClinGen",
+        "genia": "GenIA",
+    }
+    protein_match_details: dict[str, dict] = {}
+    for source, (residue_field, change_field, details_field) in (
+        PROTEIN_MATCH_FIELDS.items()
+    ):
+        label = protein_match_labels[source]
+        source_config = protein_match_configs[source]
+        residue_schema = residue_field in header_info_fields
+        change_schema = change_field in header_info_fields
+        any_flag_schema = residue_schema or change_schema
+        flag_schema = residue_schema and change_schema
+        details_schema = details_field in header_info_fields
+        schema_present = flag_schema and details_schema
+        if source == "clinvar":
+            enabled = (
+                shared_match_enabled
+                and (
+                    not shared_match_configured
+                    or clinical_protein_config.get("clinvar", True) is not False
+                )
+            )
+            # Preserve the explicit legacy opt-out while old job profiles are
+            # still supported by the runner.
+            enabled = enabled and legacy_clinvar_config.get("enabled", True) is not False
+        else:
+            enabled = (
+                shared_match_enabled
+                and clinical_protein_config.get(source, True) is not False
+                and source_config.get("enabled") is True
+            )
+        status = (
+            "SKIPPED_DISABLED"
+            if not enabled
+            else "PASS"
+            if schema_present
+            else "WARN"
+            if any_flag_schema
+            else "FAIL"
+            if source_config.get("required")
+            else "WARN"
+            if source == "clinvar"
+            else "SKIPPED_NOT_INSTALLED"
+        )
+        item = {
+            "name": f"{label} P/LP protein-change and residue matching",
+            "eligible_records": missense_n,
+            # These are descriptive hit counts, not annotation coverage: most
+            # correctly evaluated variants are expected to have no match.
+            "annotated_records": counters[f"{source}_protein_match_records"],
+            "change_match_records": counters[
+                f"{source}_protein_change_match_records"
+            ],
+            "residue_match_records": counters[
+                f"{source}_protein_residue_match_records"
+            ],
+            "detail_matches": counters[f"{source}_protein_match_details"],
+            "coverage": None,
+            "warning_threshold": None,
+            "schema_present": schema_present,
+            "flag_schema_present": flag_schema,
+            "residue_schema_present": residue_schema,
+            "change_schema_present": change_schema,
+            "details_schema_present": details_schema,
+            # Legacy ClinVar outputs may contain only the broad same-residue
+            # field.  That is a real residue evaluation, not an unevaluated
+            # source, but it cannot support the newer same-change result.
+            "evaluated": any_flag_schema,
+            "residue_evaluated": residue_schema,
+            "change_evaluated": change_schema,
+            "status": status,
+            "match_contract": (
+                "same gene, Ensembl transcript stable ID, protein position, "
+                "and reference amino acid; identical genomic source alleles "
+                "are excluded"
+            ),
+            "note": (
+                "Counts are descriptive candidate PS1/PM5-style matches, not "
+                "pathogenicity classifications or independent evidence counts."
+            ),
+        }
+        metrics.append(item)
+        protein_match_details[source] = {
+            "evaluated": any_flag_schema,
+            "residue_evaluated": residue_schema,
+            "change_evaluated": change_schema,
+            "schema_present": schema_present,
+            "change_match_records": item["change_match_records"],
+            "residue_match_records": item["residue_match_records"],
+            "detail_matches": item["detail_matches"],
+        }
+
     clingen_config = config.get("clingen_erepo") or {}
     clingen_schema = all(
         field in header_info_fields
@@ -739,6 +890,11 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 ).get("required")
             ),
             "ClinVar_aa_reference_release": clinvar_aa_release,
+            "protein_match_sources_evaluated": [
+                source
+                for source, values in protein_match_details.items()
+                if values["evaluated"]
+            ],
         },
         "summary": {
             "records": counters["records"],
@@ -805,6 +961,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                     "clinvar_pathogenic_aa_match_records"
                 ],
             },
+            "protein_matching": protein_match_details,
             "regions": {
                 "RepeatMasker_overlap_records": counters["repeatmasker_overlap_records"],
                 "SegDup_overlap_records": counters["segdup_overlap_records"],

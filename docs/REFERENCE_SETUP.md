@@ -178,8 +178,9 @@ records its release date, and updates the stable local `clinvar_latest` copy.
 ClinVar is updated regularly, so this action may be repeated. The default
 annotation workflow can also refresh ClinVar immediately before a VEP run.
 
-ClinVar residue matching uses the downloaded release. Its pathogenic
-amino-acid residue table is rebuilt automatically when ClinVar changes.
+ClinVar protein-change and residue matching uses the downloaded release. Its
+P/LP missense catalog is rebuilt automatically when ClinVar or the VEP cache
+changes.
 
 ## ClinGen variant curations — installable and updateable in the UI
 
@@ -191,6 +192,10 @@ classification export and builds two local resources:
 - a compact exact-GRCh38-allele VCF for audit and provenance;
 - SQLite containing the complete disease-, inheritance-, and expert-panel-
   specific assertion rows, including evidence codes and interpretation text.
+
+The annotation workflow also maintains a compact P/LP missense catalog for
+ClinGen protein-change and residue matching. It is bound to the ClinGen source
+checksum and VEP cache, and is rebuilt rather than reused when either changes.
 
 ClinGen assertions are not collapsed to a single strongest classification: the
 same allele can have different assertions for different diseases or modes of
@@ -233,8 +238,9 @@ No separate user setup is required for:
   the pinned hg19-to-GRCh38 chain.
 - **Frameshift PTC 50-bp rule** — implemented by this software using the
   release-matched GTF and GRCh38 FASTA.
-- **ClinVar residue match** — implemented by this software and rebuilt from
-  the locally installed ClinVar release.
+- **Clinical-source protein matching** — implemented by this software and
+  rebuilt from the locally installed ClinVar, ClinGen, and optional GenIA
+  variant sources.
 
 If a bundled component is reported missing, repair or reinstall the validated
 reference bundle rather than substituting an untested release.
@@ -377,8 +383,16 @@ reference, are not indexed; the card reports the reason counts without treating
 the otherwise successful installation as failed. The source codes include `NC` (**Not classified**) and `RF`
 (**Risk factor**); neither is reinterpreted as a clinical classification.
 Likewise, `Relevant_in=0` is a zero reported-subject count, not benign
-evidence. The export has no gene/disease context, so none is inferred from a
-selected transcript.
+evidence. The export has no gene/disease context, so the exact-allele display
+does not infer either from a selected transcript.
+
+Only this fifth component enables GenIA protein matching. On the next
+annotation run, GUIDE-IEI derives a P/LP missense catalog with the configured
+VEP cache. The source short name is not trusted as a gene or transcript;
+matching uses VEP-derived gene, stable Ensembl transcript, protein position,
+and amino acids as comparison coordinates only; it does not create GenIA
+gene–disease context. A later update of only a gene or phenotype component
+preserves the catalog belonging to the installed variant component.
 
 ## PromoterAI — licensed integration
 

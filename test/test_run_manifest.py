@@ -24,6 +24,10 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
     funcvep.write_bytes(b"prepared FuncVEP")
     funcvep_manifest = tmp_path / "refs" / "funcvep.manifest.json"
     funcvep_manifest.write_text("{}\n")
+    clingen_aa = tmp_path / "refs" / "clingen_aa_reference.tsv"
+    clingen_aa.write_text("STAT3\t100\tR\tH\tENST1\n")
+    genia_aa = tmp_path / "refs" / "genia_aa_reference.tsv"
+    genia_aa.write_text("IL2RG\t100\tR\tH\tENST2\n")
     registry_dir = tmp_path / "config"
     registry_dir.mkdir()
     registry_path = registry_dir / "predictor-registry.json"
@@ -45,6 +49,8 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
             "grch37_to_grch38": {"enabled": True},
         },
         "custom_tracks": {},
+        "clingen_erepo": {"protein_match_catalog": str(clingen_aa)},
+        "genia": {"protein_match_catalog": str(genia_aa)},
     }))
     source = tmp_path / "in.vcf"
     source.write_text("##fileformat=VCFv4.2\n")
@@ -102,6 +108,18 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
         item for item in manifest["references"] if item["path"] == str(funcvep)
     )
     assert funcvep_entry["size"] == len(b"prepared FuncVEP")
+    clingen_entry = next(
+        item for item in manifest["references"]
+        if item["path"] == str(clingen_aa)
+    )
+    assert clingen_entry["size"] == clingen_aa.stat().st_size
+    assert clingen_entry["sha256"] == hashlib.sha256(clingen_aa.read_bytes()).hexdigest()
+    genia_entry = next(
+        item for item in manifest["references"]
+        if item["path"] == str(genia_aa)
+    )
+    assert genia_entry["size"] == genia_aa.stat().st_size
+    assert genia_entry["sha256"] == hashlib.sha256(genia_aa.read_bytes()).hexdigest()
 
 
 if __name__ == "__main__":

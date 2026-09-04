@@ -138,7 +138,10 @@ def test_dbnsfp_optional_predictors_are_complete_and_keep_existing_columns():
     assert optional["popeve"] == {"popEVE_score", "popEVE_pred"}
     assert {
         metric.field for metric in registry.predictor("clinvar_aa_match").metrics
-    } == {"ClinVar_path_aa_match", "ClinVar_path_aa_change_match"}
+    } == {
+        "ClinVar_path_aa_match", "ClinVar_path_aa_change_match",
+        "ClinVar_path_aa_details",
+    }
 
 
 def test_registry_models_existing_and_future_match_contracts():
@@ -151,6 +154,8 @@ def test_registry_models_existing_and_future_match_contracts():
     assert registry.annotator("logofunc").match.scope is MatchScope.ALLELE_TRANSCRIPT_PROTEIN
     assert registry.annotator("promoterai").match.scope is MatchScope.ALLELE_TRANSCRIPT_TSS_STRAND
     assert registry.annotator("clinvar_aa_match").match.scope is MatchScope.ALLELE
+    assert registry.annotator("clingen_aa_match").match.scope is MatchScope.ALLELE
+    assert registry.annotator("genia_aa_match").match.scope is MatchScope.ALLELE
     assert registry.annotator("repeatmasker").match.scope is MatchScope.ALLELE
     assert registry.annotator("segdup").match.scope is MatchScope.ALLELE
     assert {metric.field for metric in registry.predictor("promoterai").metrics} >= {

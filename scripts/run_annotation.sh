@@ -19,7 +19,7 @@
 #   3. run vep inside the container                  -> docker/podman/singularity
 #   4. frameshift PTC-based LOFTEE 50-bp correction  -> loftee_ptc_50bp.py
 #   5. sample-specific haplotype consequences         -> Haplosaurus
-#   6. ClinVar amino-acid-match post-processing       -> clinvar_aa_match.py
+#   6. Clinical-source protein residue/change matching -> clinical_protein_match.py
 #   7. exact allele-level ClinGen expert assertions    -> clingen_erepo_annotate.py
 #   8. annotation coverage report                     -> annotation_qc.py
 #
@@ -344,15 +344,30 @@ else
 fi
 
 # --- build the pathogenic-missense residue reference (for aa-match) ----------
-# Rebuild when missing or older than the current ClinVar release. Requires the
-# container (VEP). Skipped on --dry-run and when aa-match is disabled.
+# Rebuild when the source content or VEP cache changes.  ClinVar keeps its
+# historic variable/name for output compatibility; ClinGen and GenIA use the
+# same provenance-preserving catalog contract below.
 AA_REF=""
+CLINGEN_AA_REF=""
+GENIA_AA_REF=""
+PROTEIN_MATCH_ENABLED="$(yaml_get "$CONFIG" post_processing.clinical_protein_match.enabled)"
+[[ -n "$PROTEIN_MATCH_ENABLED" ]] || \
+    PROTEIN_MATCH_ENABLED="$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)"
+PROTEIN_MATCH_ENABLED="${PROTEIN_MATCH_ENABLED:-true}"
+CLINVAR_MATCH_REQUESTED="true"
+if [[ "$(yaml_get "$CONFIG" post_processing.clinical_protein_match.clinvar)" == "false" ]] \
+   || [[ "$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)" == "false" ]]; then
+    CLINVAR_MATCH_REQUESTED="false"
+fi
 if [[ "$DRY" != "1" ]] \
-   && [[ "$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)" != "false" ]] \
+   && [[ "$PROTEIN_MATCH_ENABLED" != "false" ]] \
+   && [[ "$CLINVAR_MATCH_REQUESTED" == "true" ]] \
    && [[ -n "$CLINVAR_VCF" && -f "$CLINVAR_VCF" ]]; then
     DEST_DIR="$(yaml_get "$CONFIG" clinvar.dest_dir)"; DEST_DIR="${DEST_DIR:-references/clinvar}"
     [[ "$DEST_DIR" = /* ]] || DEST_DIR="${ROOT}/${DEST_DIR}"
-    AA_REF="${DEST_DIR}/clinvar_aa_reference.tsv"
+    AA_REF="$(yaml_get "$CONFIG" clinvar.protein_match_catalog)"
+    AA_REF="${AA_REF:-${DEST_DIR}/clinvar_aa_reference.tsv}"
+    [[ "$AA_REF" = /* ]] || AA_REF="${ROOT}/${AA_REF}"
     STAMP="${DEST_DIR}/.aa_reference.release"
     NEED_BUILD=1
     # The stamp carries a format tag: catalogs built before the
@@ -360,7 +375,7 @@ if [[ "$DRY" != "1" ]] \
     # rebuild once even though the ClinVar release is unchanged — otherwise
     # the newer matching guards stay silently inactive until the next
     # release.
-    AA_REF_FORMAT="aa5"
+    AA_REF_FORMAT="aa9-provenance-v1-pick-allele-gene"
     # Bind the stamp to the ClinVar CONTENT, not just its release string: a
     # replaced or damaged ClinVar VCF under an unchanged release name must
     # trigger a rebuild (the same rule the ClinGen updater applies).
@@ -380,8 +395,9 @@ if [[ "$DRY" != "1" ]] \
     fi
     AA_MATCH_RELEASE="$CLINVAR_RELEASE"
     if [[ "$NEED_BUILD" == "1" ]]; then
-        log "=== building ClinVar aa-match reference ==="
-        if bash "${HERE}/build_clinvar_aa_reference.sh" "$CONFIG" "$CLINVAR_VCF"; then
+        log "=== building ClinVar clinical protein-match catalog ==="
+        if bash "${HERE}/build_clinical_protein_catalog.sh" \
+            "$CONFIG" clinvar "$CLINVAR_VCF" "$AA_REF"; then
             echo "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA $VEP_CACHE_TAG" > "$STAMP"
         else
             # The matcher will run against the previous catalog; its output
@@ -391,6 +407,99 @@ if [[ "$DRY" != "1" ]] \
             AA_MATCH_RELEASE="$(cut -d' ' -f1 "$STAMP" 2>/dev/null || true)"
             AA_MATCH_RELEASE="${AA_MATCH_RELEASE:-unknown}"
             warn "aa-match reference rebuild failed; using the previous catalog (release ${AA_MATCH_RELEASE}) and labeling the evidence accordingly."
+        fi
+    fi
+fi
+
+# Build the same catalog shape for ClinGen and the optional GenIA variant
+# component.  A content hash plus VEP-cache tag makes this lazy: ordinary jobs
+# pay only two small hash checks, while a newly installed/refreshed source is
+# annotated once.  Catalog publication is atomic inside the builder, so a
+# failed refresh can safely retain the previous auditable snapshot.
+ensure_clinical_protein_catalog() {
+    local source_type="$1" source_path="$2" catalog_path="$3" label="$4"
+    local stamp_path="${catalog_path}.stamp" source_sha cache_dir cache_tag expected
+    CATALOG_SOURCE_SHA=""
+    [[ -s "$source_path" ]] || return 1
+    source_sha="$(shasum -a 256 "$source_path" 2>/dev/null | cut -d' ' -f1)"
+    source_sha="${source_sha:-unknown}"
+    cache_dir="$(yaml_get "$CONFIG" reference.vep_cache_dir)"
+    [[ "$cache_dir" = /* ]] || cache_dir="${ROOT}/${cache_dir}"
+    cache_tag="$(ls "${cache_dir}/homo_sapiens" 2>/dev/null | sort | tail -1)"
+    cache_tag="${cache_tag:-unknown}"
+    expected="${source_sha} aa9-provenance-v1-pick-allele-gene ${cache_tag}"
+    if [[ -s "$catalog_path" && -f "$stamp_path" ]] \
+       && [[ "$(cat "$stamp_path" 2>/dev/null)" == "$expected" ]]; then
+        CATALOG_SOURCE_SHA="$source_sha"
+        log "$label protein-match catalog is current; skip rebuild."
+        return 0
+    fi
+    log "=== building $label clinical protein-match catalog ==="
+    if bash "${HERE}/build_clinical_protein_catalog.sh" \
+        "$CONFIG" "$source_type" "$source_path" "$catalog_path"; then
+        echo "$expected" > "$stamp_path"
+        CATALOG_SOURCE_SHA="$source_sha"
+        return 0
+    fi
+    if [[ -s "$catalog_path" ]]; then
+        CATALOG_SOURCE_SHA="$(cut -d' ' -f1 "$stamp_path" 2>/dev/null || true)"
+        CATALOG_SOURCE_SHA="${CATALOG_SOURCE_SHA:-unknown}"
+        warn "$label protein-match catalog refresh failed; using the previous catalog."
+        return 0
+    fi
+    warn "$label protein-match catalog is unavailable; exact-allele annotation remains enabled."
+    return 1
+}
+
+CLINGEN_AA_RELEASE="unknown"
+GENIA_AA_RELEASE="unknown"
+if [[ "$DRY" != "1" && "$PROTEIN_MATCH_ENABLED" != "false" ]]; then
+    if [[ "$(yaml_get "$CONFIG" post_processing.clinical_protein_match.clingen)" != "false" ]] \
+       && [[ "$(yaml_get "$CONFIG" clingen_erepo.enabled)" == "true" ]]; then
+        CLINGEN_DB_FOR_AA="$(yaml_get "$CONFIG" clingen_erepo.database)"
+        [[ -z "$CLINGEN_DB_FOR_AA" || "$CLINGEN_DB_FOR_AA" = /* ]] || \
+            CLINGEN_DB_FOR_AA="${ROOT}/${CLINGEN_DB_FOR_AA}"
+        CLINGEN_AA_REF="$(yaml_get "$CONFIG" clingen_erepo.protein_match_catalog)"
+        CLINGEN_AA_REF="${CLINGEN_AA_REF:-references/clingen_erepo/clingen_aa_reference.tsv}"
+        [[ "$CLINGEN_AA_REF" = /* ]] || CLINGEN_AA_REF="${ROOT}/${CLINGEN_AA_REF}"
+        if ensure_clinical_protein_catalog clingen "$CLINGEN_DB_FOR_AA" \
+            "$CLINGEN_AA_REF" ClinGen; then
+            CLINGEN_AA_RELEASE="${CATALOG_SOURCE_SHA:0:12}"
+        else
+            CLINGEN_AA_REF=""
+        fi
+    fi
+
+    if [[ "$(yaml_get "$CONFIG" post_processing.clinical_protein_match.genia)" != "false" ]] \
+       && [[ "$(yaml_get "$CONFIG" genia.enabled)" == "true" ]]; then
+        GENIA_DB_FOR_AA="$(yaml_get "$CONFIG" genia.database)"
+        [[ -z "$GENIA_DB_FOR_AA" || "$GENIA_DB_FOR_AA" = /* ]] || \
+            GENIA_DB_FOR_AA="${ROOT}/${GENIA_DB_FOR_AA}"
+        GENIA_AA_REF="$(yaml_get "$CONFIG" genia.protein_match_catalog)"
+        GENIA_AA_REF="${GENIA_AA_REF:-references/genia/genia_aa_reference.tsv}"
+        [[ "$GENIA_AA_REF" = /* ]] || GENIA_AA_REF="${ROOT}/${GENIA_AA_REF}"
+        # Gene/disease-only GenIA installations are valid but cannot support
+        # protein matching. Do not emit all-zero fields that imply evaluation.
+        if [[ -s "$GENIA_DB_FOR_AA" ]] && python3 - "$GENIA_DB_FOR_AA" <<'PY'
+import sqlite3,sys
+try:
+    db=sqlite3.connect(f"file:{sys.argv[1]}?mode=ro&immutable=1", uri=True)
+    row=db.execute("SELECT 1 FROM components WHERE id='variant_vcf'").fetchone()
+    db.close()
+except sqlite3.Error:
+    raise SystemExit(1)
+raise SystemExit(0 if row else 1)
+PY
+        then
+            if ensure_clinical_protein_catalog genia "$GENIA_DB_FOR_AA" \
+                "$GENIA_AA_REF" GenIA; then
+                GENIA_AA_RELEASE="${CATALOG_SOURCE_SHA:0:12}"
+            else
+                GENIA_AA_REF=""
+            fi
+        else
+            GENIA_AA_REF=""
+            log "GenIA variant component not installed; protein matching not evaluated."
         fi
     fi
 fi
@@ -660,41 +769,79 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
 fi
 
 # ============================================================================ #
-# 6. ClinVar amino-acid-match post-processing
+# 6. Clinical-source amino-acid-match post-processing
 # ============================================================================ #
-if [[ "$(yaml_get "$CONFIG" post_processing.clinvar_aa_match.enabled)" != "false" ]]; then
-    log "=== ClinVar amino-acid-match post-processing ==="
+if [[ "$PROTEIN_MATCH_ENABLED" != "false" ]]; then
+    log "=== clinical protein residue/change post-processing ==="
     FINAL="${OUTPUT%.vcf.gz}.aamatch.vcf.gz"
     [[ "$OUTPUT" == *.vcf.gz ]] || FINAL="${OUTPUT%.vcf}.aamatch.vcf"
-    MATCH_OUTPUT="$FINAL"
-    if [[ "$FINAL" == *.gz ]]; then
-        MATCH_OUTPUT="${FINAL%.gz}.$$.tmp"
-        POSTPROC_TMPS+=("$MATCH_OUTPUT")
+    MATCH_INPUT="$OUTPUT"
+    MATCH_STEP=0
+
+    apply_protein_match() {
+        local source_label="$1" info_key="$2" reference="$3" release="$4" allow_missing="$5"
+        local match_output="${OUTPUT%.gz}.protein-match-${MATCH_STEP}.$$.tmp"
+        local match_args=(
+            --input "$MATCH_INPUT" --output "$match_output"
+            --reference "$reference" --info-key "$info_key"
+            --source-label "$source_label" --clinvar-release "$release"
+            --include-details
+        )
+        [[ "$allow_missing" == "1" ]] && match_args+=(--allow-missing-reference)
+        python3 "${ROOT}/pipeline/clinical_protein_match.py" "${match_args[@]}" \
+            || die "$source_label protein-match post-processing failed"
+        [[ "$MATCH_INPUT" == "$OUTPUT" ]] || rm -f "$MATCH_INPUT"
+        MATCH_INPUT="$match_output"
+        POSTPROC_TMPS+=("$MATCH_INPUT")
+        MATCH_STEP=$((MATCH_STEP + 1))
+    }
+
+    # A missing catalog means "not evaluated", represented by absent INFO
+    # fields. All-zero flags would falsely look like a completed negative
+    # evaluation. Existing catalogs remain usable with --no-clinvar.
+    if [[ "$CLINVAR_MATCH_REQUESTED" == "true" ]]; then
+        if [[ -z "$AA_REF" ]]; then
+            AA_REF="$(yaml_get "$CONFIG" clinvar.protein_match_catalog)"
+            AA_REF="${AA_REF:-references/clinvar/clinvar_aa_reference.tsv}"
+            [[ "$AA_REF" = /* ]] || AA_REF="${ROOT}/${AA_REF}"
+        fi
+        if [[ -s "$AA_REF" ]]; then
+            if [[ -z "${AA_MATCH_RELEASE:-}" || "${AA_MATCH_RELEASE:-}" == "NA" ]]; then
+                AA_MATCH_RELEASE="$(cut -d' ' -f1 "$(dirname "$AA_REF")/.aa_reference.release" 2>/dev/null || true)"
+                AA_MATCH_RELEASE="${AA_MATCH_RELEASE:-unknown}"
+            fi
+            apply_protein_match ClinVar ClinVar_path_aa_match "$AA_REF" \
+                "${AA_MATCH_RELEASE:-$CLINVAR_RELEASE}" 0
+        else
+            warn "ClinVar protein-match catalog unavailable; ClinVar protein matching not evaluated."
+        fi
     fi
-    if [[ -n "$AA_REF" && -s "$AA_REF" ]]; then
-        python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
-            --config "$CONFIG" --input "$OUTPUT" --output "$MATCH_OUTPUT" \
-            --reference "$AA_REF" \
-            --clinvar-release "${AA_MATCH_RELEASE:-$CLINVAR_RELEASE}" || die "post-processing failed"
+
+    if [[ -n "$CLINGEN_AA_REF" && -s "$CLINGEN_AA_REF" ]]; then
+        apply_protein_match ClinGen ClinGen_path_aa_match "$CLINGEN_AA_REF" \
+            "$CLINGEN_AA_RELEASE" 1
+    fi
+    if [[ -n "$GENIA_AA_REF" && -s "$GENIA_AA_REF" ]]; then
+        apply_protein_match GenIA GenIA_path_aa_match "$GENIA_AA_REF" \
+            "$GENIA_AA_RELEASE" 1
+    fi
+
+    if [[ "$MATCH_STEP" == "0" ]]; then
+        FINAL_OUTPUT="$OUTPUT"
     else
-        # No freshly built reference: the config-resolved one may still load;
-        # if it too is empty, proceeding all-zero is this branch's explicit
-        # choice (e.g. --no-clinvar runs), so opt in rather than fail.
-        python3 "${ROOT}/pipeline/clinvar_aa_match.py" \
-            --config "$CONFIG" --input "$OUTPUT" --output "$MATCH_OUTPUT" \
-            --allow-missing-reference \
-            --clinvar-release "$CLINVAR_RELEASE" || die "post-processing failed"
+        if [[ "$FINAL" == *.gz ]]; then
+            hts bgzip -f "$MATCH_INPUT" || die "protein-match post-processing bgzip failed"
+            mv "${MATCH_INPUT}.gz" "$FINAL"
+        else
+            mv "$MATCH_INPUT" "$FINAL"
+        fi
+        log "clinical protein-match post-processing done -> $FINAL"
+        # index final if bgzipped
+        if [[ "$FINAL" == *.gz ]]; then
+            hts tabix -p vcf -f "$FINAL" || die "post-processing tabix index failed"
+        fi
+        FINAL_OUTPUT="$FINAL"
     fi
-    if [[ "$FINAL" == *.gz ]]; then
-        hts bgzip -f "$MATCH_OUTPUT" || die "post-processing bgzip failed"
-        mv "${MATCH_OUTPUT}.gz" "$FINAL"
-    fi
-    log "post-processing done -> $FINAL"
-    # index final if bgzipped
-    if [[ "$FINAL" == *.gz ]]; then
-        hts tabix -p vcf -f "$FINAL" || die "post-processing tabix index failed"
-    fi
-    FINAL_OUTPUT="$FINAL"
 else
     FINAL_OUTPUT="$OUTPUT"
 fi
@@ -794,7 +941,7 @@ if python3 "${ROOT}/pipeline/write_run_manifest.py" \
     --input "$SOURCE_INPUT" --output "$FINAL_OUTPUT" \
     --plan-json "$PLAN_JSON" \
     --runtime "$RUNTIME" --image "$IMAGE" --image-id "$IMAGE_ID" \
-    --clinvar-release "$CLINVAR_RELEASE" \
+    --clinvar-release "${AA_MATCH_RELEASE:-$CLINVAR_RELEASE}" \
     --requested-assembly "$REQUESTED_ASSEMBLY" \
     --resolved-assembly "$RESOLVED_ASSEMBLY" \
     --filter-policy "${FILTER_LABELS[*]:-none}" \

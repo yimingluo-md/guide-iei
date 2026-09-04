@@ -93,7 +93,9 @@ def write_config(path: pathlib.Path) -> None:
                     },
                 },
                 "post_processing": {
-                    "loftee_ptc_50bp": {"enabled": True, "required": True}
+                    "loftee_ptc_50bp": {"enabled": True, "required": True},
+                    "clinical_protein_match": {"enabled": False},
+                    "clinvar_aa_match": {"enabled": False},
                 },
             }
         ),
@@ -495,6 +497,109 @@ def test_clingen_qc_sums_per_alt_counts_instead_of_counting_slots(tmp_path):
     assert metric["assertions"] == 3
 
 
+def test_protein_match_qc_reports_each_source_and_evaluation_state(tmp_path):
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "result.vcf"
+    write_config(config)
+    loaded = yaml.safe_load(config.read_text())
+    loaded["post_processing"]["clinvar_aa_match"] = {
+        "enabled": True,
+        "required": False,
+    }
+    loaded["post_processing"]["clinical_protein_match"] = {
+        "enabled": True,
+        "clinvar": True,
+        "clingen": True,
+        "genia": True,
+    }
+    loaded["clingen_erepo"] = {"enabled": True, "required": False}
+    loaded["genia"] = {"enabled": True, "required": False}
+    config.write_text(yaml.safe_dump(loaded))
+    detail = (
+        "change|record-1|1%3A101%3AA%3AG|Pathogenic|STAT3|"
+        "ENST00000316484|100|R|H|Disease"
+    )
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence">\n'
+        '##INFO=<ID=ClinVar_path_aa_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=ClinVar_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=ClinVar_path_aa_details,Number=A,Type=String,Description="test">\n'
+        '##INFO=<ID=ClinGen_path_aa_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=ClinGen_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
+        '##INFO=<ID=ClinGen_path_aa_details,Number=A,Type=String,Description="test">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "1\t100\t.\tA\tG,T\t99\tPASS\t"
+        "CSQ=G|missense_variant,T|missense_variant;"
+        f"ClinVar_path_aa_match=1,0;ClinVar_path_aa_change_match=1,0;ClinVar_path_aa_details={detail},.;"
+        f"ClinGen_path_aa_match=0,1;ClinGen_path_aa_change_match=0,0;ClinGen_path_aa_details=.,{detail}\n",
+        encoding="utf-8",
+    )
+
+    report = build_report(config, vcf)
+    metrics = {
+        item["name"].split()[0]: item
+        for item in report["metrics"]
+        if "P/LP protein-change" in item["name"]
+    }
+    assert metrics["ClinVar"]["evaluated"] is True
+    assert metrics["ClinVar"]["schema_present"] is True
+    assert metrics["ClinVar"]["annotated_records"] == 1
+    assert metrics["ClinVar"]["change_match_records"] == 1
+    assert metrics["ClinVar"]["residue_match_records"] == 1
+    assert metrics["ClinVar"]["detail_matches"] == 1
+    assert metrics["ClinGen"]["evaluated"] is True
+    assert metrics["ClinGen"]["change_match_records"] == 0
+    assert metrics["ClinGen"]["residue_match_records"] == 1
+    assert metrics["GenIA"]["evaluated"] is False
+    assert metrics["GenIA"]["status"] == "SKIPPED_NOT_INSTALLED"
+    assert report["annotation_profile"]["protein_match_sources_evaluated"] == [
+        "clinvar", "clingen",
+    ]
+
+
+def test_legacy_residue_only_clinvar_schema_is_partially_evaluated(tmp_path):
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "legacy.vcf"
+    write_config(config)
+    loaded = yaml.safe_load(config.read_text())
+    loaded["post_processing"]["clinical_protein_match"] = {
+        "enabled": True,
+        "clinvar": True,
+    }
+    loaded["post_processing"]["clinvar_aa_match"] = {
+        "enabled": True,
+        "required": False,
+    }
+    config.write_text(yaml.safe_dump(loaded))
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence">\n'
+        '##INFO=<ID=ClinVar_path_aa_match,Number=A,Type=Integer,Description="legacy">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+        "1\t100\t.\tA\tG\t99\tPASS\t"
+        "CSQ=G|missense_variant;ClinVar_path_aa_match=1\n",
+        encoding="utf-8",
+    )
+
+    report = build_report(config, vcf)
+    metric = next(
+        item for item in report["metrics"]
+        if item["name"].startswith("ClinVar P/LP protein-change")
+    )
+    assert metric["evaluated"] is True
+    assert metric["residue_evaluated"] is True
+    assert metric["change_evaluated"] is False
+    assert metric["residue_schema_present"] is True
+    assert metric["change_schema_present"] is False
+    assert metric["schema_present"] is False
+    assert metric["status"] == "WARN"
+    assert metric["residue_match_records"] == 1
+    assert report["annotation_profile"]["protein_match_sources_evaluated"] == [
+        "clinvar",
+    ]
+
+
 if __name__ == "__main__":
     tests = [
         test_report_uses_annotation_specific_denominators,
@@ -508,6 +613,8 @@ if __name__ == "__main__":
         test_optional_funcvep_without_schema_is_skipped,
         test_required_funcvep_without_schema_fails,
         test_clingen_qc_sums_per_alt_counts_instead_of_counting_slots,
+        test_protein_match_qc_reports_each_source_and_evaluation_state,
+        test_legacy_residue_only_clinvar_schema_is_partially_evaluated,
     ]
     for test in tests:
         with tempfile.TemporaryDirectory() as directory:

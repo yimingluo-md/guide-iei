@@ -160,6 +160,12 @@ only the selected component(s); previously installed omitted components stay
 available. The downloaded VCF's CSI index is not required because GUIDE-IEI
 builds its own lookup database.
 
+Only **GenIA GRCh38 variants** enables GenIA protein-change and residue
+matching. GUIDE-IEI uses its `P` and `LP` records to build a transcript-aware
+missense catalog on the next annotation run. The other four components can be
+used independently for gene or phenotype knowledge but cannot support protein
+matching.
+
 Installation validates the selected schemas and builds a private derived
 SQLite database under Annotation datasets storage. Per-component provenance
 records the source filename, SHA-256, schema fingerprint, record count, and
@@ -186,8 +192,21 @@ shown without treating them as an independent clinical conclusion: `P`
 In particular, **Not classified** is not VUS, **Risk factor** is not a
 pathogenic classification, and `Relevant_in=0` reports zero subjects in that
 export—it is not evidence that the allele is benign. The variant export does
-not supply gene or disease context, so GUIDE-IEI does not infer either from the
-selected VEP transcript.
+not supply gene or disease context, so the exact-allele display does not infer
+either from the selected VEP transcript.
+
+For a protein match, both the patient consequence and source record must agree
+on gene, Ensembl transcript stable ID, protein position, and reference amino
+acid. Same-change evidence must also agree on the alternate amino acid. An
+identical genomic allele remains exact-allele evidence and is excluded from
+the derived same-change/residue results. If the GenIA match fields are absent
+from an output VCF, GenIA was not evaluated; zero-valued fields mean it was
+evaluated and no P/LP protein match was found.
+
+To create those protein-match coordinates, GUIDE-IEI annotates each qualifying
+GenIA source allele locally with the run's VEP cache. The resulting gene,
+transcript, and protein consequence is used only for the protein comparison; it
+does not add GenIA gene–disease context, and no disease is inferred.
 
 ## 8. CADD whole-genome scores (optional, WGS only, ~83 GiB)
 

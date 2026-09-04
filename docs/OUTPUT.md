@@ -14,10 +14,21 @@ The pipeline produces an annotated, bgzipped VCF. All VEP annotations live in
 the `CSQ` INFO field, with every transcript consequence retained and the
 preferred consequence for each ALT allele + gene marked `PICK=1`. MANE Select
 and MANE Plus Clinical are preferred by the explicit pick order; LOFTEE,
-plugins and custom tracks are CSQ subfields; the amino-acid-match adds
-`INFO/ClinVar_path_aa_match` (0/1). The `##INFO` header for that flag records
-the ClinVar release used. Sample columns (`FORMAT` / genotype) are passed
-through unchanged, so zygosity is preserved.
+plugins and custom tracks are CSQ subfields. The clinical-source protein
+matcher adds same-change, same-residue, and detail INFO fields for each source
+that was evaluated: `ClinVar_path_aa_*`, `ClinGen_path_aa_*`, and
+`GenIA_path_aa_*`. They are `Number=A`, so each ALT retains only its own
+evidence. Sample columns (`FORMAT` / genotype) are passed through unchanged,
+so zygosity is preserved.
+
+Protein matching requires the same gene, Ensembl transcript stable ID, protein
+position, and reference amino acid. Same-change evidence also requires the
+same alternate amino acid; residue-only evidence comes from a different
+substitution. Detail records retain the source record, classification,
+transcript, protein change, genomic allele, and disease when available. An
+identical source allele is excluded because its exact-allele record already
+carries that evidence. An absent source field means **not evaluated**; zero
+means evaluated with no match.
 
 When the optional GenIA GRCh38 variant component is installed,
 `INFO/GenIA` carries one compact source record per exact normalized allele and
@@ -32,8 +43,11 @@ The displayed classification labels are the GenIA source terms. `NC` means
 **Not classified**, not uncertain significance; `RF` means **Risk factor**,
 not a pathogenic classification. A `Relevant_in` count of 0 means zero
 reported subjects in that export and is not a benign label. GUIDE-IEI does not
-claim that these terms are ACMG/AMP classifications or infer gene/disease
-context from the selected VEP transcript.
+claim that these terms are ACMG/AMP classifications. The exact-allele display
+does not infer gene/disease context from the selected VEP transcript. For the
+separate protein-match calculation, source alleles are annotated locally with
+the same VEP cache to derive comparison coordinates only; no GenIA disease
+context is inferred.
 
 ## Loss-of-function curation details
 
@@ -69,10 +83,12 @@ means annotation coverage needs review; it does not remove variants or assign
 clinical significance.
 
 If the GenIA variant component is enabled, QC also records descriptive exact
-allele-match and emitted-record counts. The run manifest captures the
-configured derived SQLite asset. The database itself retains separate
-provenance for every installed GenIA component, so a later partial update can
-be distinguished without retaining the original exports.
+allele-match and emitted-record counts. For ClinVar, ClinGen, and GenIA, QC
+separately records protein-change hits, residue hits, detail counts, and
+whether each source was evaluated. The run manifest captures the derived
+protein catalogs as well as the exact-allele databases. The GenIA database
+retains separate provenance for every installed component, so a later partial
+update can be distinguished without retaining the original exports.
 
 ## Notes on the container and annotation sources
 

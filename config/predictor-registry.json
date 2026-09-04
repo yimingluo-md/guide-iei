@@ -234,14 +234,14 @@
     },
     {
       "id": "clinvar_aa_match",
-      "label": "ClinVar amino-acid match",
+      "label": "Clinical protein-change and residue matching",
       "family": "derived_annotation",
       "config_path": "post_processing.clinvar_aa_match",
       "assembly": "GRCh38",
       "distribution": "derived",
       "default_enabled": true,
       "license_ack_required": false,
-      "license_name": "GUIDE-IEI implementation over ClinVar",
+      "license_name": "GUIDE-IEI implementation over installed clinical evidence sources",
       "source_url": null,
       "assets": []
     },
@@ -441,9 +441,27 @@
       "id": "clinvar_aa_match",
       "label": "ClinVar pathogenic amino-acid match postprocessor",
       "resource_id": "clinvar_aa_match",
-      "config_path": "post_processing.clinvar_aa_match",
+      "config_path": "post_processing.clinical_protein_match",
       "adapter": "postprocessor",
-      "implementation": "clinvar_aa_match",
+      "implementation": "clinical_protein_match",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "clingen_aa_match",
+      "label": "ClinGen pathogenic amino-acid match postprocessor",
+      "resource_id": "clingen_erepo",
+      "config_path": "post_processing.clinical_protein_match",
+      "adapter": "postprocessor",
+      "implementation": "clinical_protein_match",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "genia_aa_match",
+      "label": "GenIA pathogenic amino-acid match postprocessor",
+      "resource_id": "genia",
+      "config_path": "post_processing.clinical_protein_match",
+      "adapter": "postprocessor",
+      "implementation": "clinical_protein_match",
       "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
     }
   ],
@@ -1174,7 +1192,38 @@
       "optional": false,
       "metrics": [
         {"id": "residue_match", "field": "ClinVar_path_aa_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
-        {"id": "change_match", "field": "ClinVar_path_aa_change_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true}
+        {"id": "change_match", "field": "ClinVar_path_aa_change_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
+        {"id": "details", "field": "ClinVar_path_aa_details", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false}
+      ]
+    },
+    {
+      "id": "clingen_aa_match",
+      "label": "ClinGen pathogenic amino-acid match",
+      "category": "Clinical evidence",
+      "resource_id": "clingen_erepo",
+      "annotator_id": "clingen_aa_match",
+      "applicability": ["protein_altering_variant"],
+      "default_enabled": true,
+      "optional": false,
+      "metrics": [
+        {"id": "residue_match", "field": "ClinGen_path_aa_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
+        {"id": "change_match", "field": "ClinGen_path_aa_change_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
+        {"id": "details", "field": "ClinGen_path_aa_details", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false}
+      ]
+    },
+    {
+      "id": "genia_aa_match",
+      "label": "GenIA pathogenic amino-acid match",
+      "category": "Clinical evidence",
+      "resource_id": "genia",
+      "annotator_id": "genia_aa_match",
+      "applicability": ["protein_altering_variant"],
+      "default_enabled": true,
+      "optional": true,
+      "metrics": [
+        {"id": "residue_match", "field": "GenIA_path_aa_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
+        {"id": "change_match", "field": "GenIA_path_aa_change_match", "value_type": "boolean", "direction": "none", "role": "flag", "value_range": null, "derived": true, "filterable": true},
+        {"id": "details", "field": "GenIA_path_aa_details", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false}
       ]
     }
   ]

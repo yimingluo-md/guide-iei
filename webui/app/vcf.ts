@@ -38,6 +38,87 @@ export type GeniaCompact = {
   relevantSubjects: number | null;
 };
 
+export type ProteinMatchDetail = {
+  kind: "change" | "residue";
+  recordId: string;
+  sourceAllele: string;
+  classification: string;
+  gene: string;
+  transcript: string;
+  proteinPosition: string;
+  referenceAminoAcid: string;
+  alternateAminoAcid: string;
+  disease: string;
+};
+
+export type ProteinMatchEvidence = {
+  /** True when at least one matcher field was declared for this source. */
+  evaluated: boolean;
+  /** Optional for compatibility with older in-memory rows. */
+  residueEvaluated?: boolean;
+  /** Optional for compatibility with older in-memory rows. */
+  changeEvaluated?: boolean;
+  residueMatch: boolean;
+  changeMatch: boolean;
+  details: ProteinMatchDetail[];
+};
+
+function stableTranscriptId(value: string) {
+  return value.trim().split(".", 1)[0];
+}
+
+function proteinMatchKindEvaluated(
+  evidence: ProteinMatchEvidence | undefined,
+  kind: ProteinMatchDetail["kind"],
+) {
+  if (!evidence) return false;
+  const kindEvaluated = kind === "change"
+    ? evidence.changeEvaluated
+    : evidence.residueEvaluated;
+  return kindEvaluated ?? evidence.evaluated;
+}
+
+export function proteinMatchDisplayStatus(
+  evidence: ProteinMatchEvidence | undefined,
+  kind: ProteinMatchDetail["kind"],
+  selectedTranscript: string | undefined,
+) {
+  if (!evidence || !proteinMatchKindEvaluated(evidence, kind)) return "Not evaluated";
+  const details = evidence.details.filter((item) => item.kind === kind);
+  if (details.length) {
+    const selectedStable = stableTranscriptId(selectedTranscript ?? "");
+    if (selectedStable && details.some(
+      (item) => stableTranscriptId(item.transcript) === selectedStable,
+    )) return "Yes · selected transcript";
+    const transcripts = [...new Set(details.map((item) => item.transcript).filter(Boolean))];
+    if (selectedStable && transcripts.length) {
+      return `Match on ${transcripts.length === 1 ? transcripts[0] : `${transcripts.length} other transcripts`}`;
+    }
+    return "Yes";
+  }
+  if (evidence.details.length) return "No match";
+  const legacyMatch = kind === "change"
+    ? evidence.changeMatch
+    : evidence.residueMatch;
+  return legacyMatch ? "Yes · match details unavailable" : "No match";
+}
+
+export function proteinMatchAppliesToTranscript(
+  evidence: ProteinMatchEvidence | undefined,
+  kind: ProteinMatchDetail["kind"],
+  transcript: string | undefined,
+) {
+  if (!evidence || !proteinMatchKindEvaluated(evidence, kind)) return false;
+  if (!evidence.details.length) {
+    return kind === "change" ? evidence.changeMatch : evidence.residueMatch;
+  }
+  const transcriptStable = stableTranscriptId(transcript ?? "");
+  return Boolean(transcriptStable) && evidence.details.some((detail) => (
+    detail.kind === kind
+    && stableTranscriptId(detail.transcript) === transcriptStable
+  ));
+}
+
 export function hasClinGenPathogenicEvidence(
   assertions: ClinGenErepoCompact[] | undefined,
 ) {
@@ -203,6 +284,7 @@ export type PredictorObservation = {
     | "interval"
     | "transcript_consequence"
     | "gene_protein_residue"
+    | "gene_transcript_protein"
     | "sample_haplotype";
   matchStatus: "exact" | "partial" | "ambiguous" | "unmatched";
   matchedOn: string[];
@@ -377,6 +459,9 @@ export type VariantRow = {
   clinvarDisease?: string;
   clinvarAaMatch?: boolean;
   clinvarAaChangeMatch?: boolean;
+  clinvarProteinMatch?: ProteinMatchEvidence;
+  clingenProteinMatch?: ProteinMatchEvidence;
+  geniaProteinMatch?: ProteinMatchEvidence;
   clingenErepo?: ClinGenErepoCompact[];
   genia?: GeniaCompact[];
   haplotypeFrameStatus?: "FRAME_RESTORED_CONFIRMED" | "FRAME_RESTORATION_PARTIAL_CONFIRMED" | "FRAME_RESTORING_POSSIBLE_UNPHASED" | "";
@@ -868,6 +953,75 @@ function geniaRecords(raw: string | undefined, alt: string): GeniaCompact[] {
       relevantSubjects: Number.isFinite(relevantSubjects) ? relevantSubjects : null,
     };
   });
+}
+
+type ProteinMatchSource = "ClinVar" | "ClinGen" | "GenIA";
+
+const PROTEIN_MATCH_FIELDS: Record<ProteinMatchSource, {
+  residue: string;
+  change: string;
+  details: string;
+}> = {
+  ClinVar: {
+    residue: "ClinVar_path_aa_match",
+    change: "ClinVar_path_aa_change_match",
+    details: "ClinVar_path_aa_details",
+  },
+  ClinGen: {
+    residue: "ClinGen_path_aa_match",
+    change: "ClinGen_path_aa_change_match",
+    details: "ClinGen_path_aa_details",
+  },
+  GenIA: {
+    residue: "GenIA_path_aa_match",
+    change: "GenIA_path_aa_change_match",
+    details: "GenIA_path_aa_details",
+  },
+};
+
+function proteinMatchDetails(raw: string | undefined): ProteinMatchDetail[] {
+  if (!raw || EMPTY.has(raw)) return [];
+  return raw.split("&").flatMap((token) => {
+    if (!token || EMPTY.has(token)) return [];
+    const fields = token.split("|").map(decode);
+    if (fields.length !== 10 || !["change", "residue"].includes(fields[0])) {
+      return [];
+    }
+    return [{
+      kind: fields[0] as ProteinMatchDetail["kind"],
+      recordId: fields[1],
+      sourceAllele: fields[2],
+      classification: fields[3],
+      gene: fields[4],
+      transcript: fields[5],
+      proteinPosition: fields[6],
+      referenceAminoAcid: fields[7],
+      alternateAminoAcid: fields[8],
+      disease: fields[9],
+    }];
+  });
+}
+
+function proteinMatchEvidence(
+  source: ProteinMatchSource,
+  record: Record<string, string>,
+  declaredInfoFields: ReadonlySet<string>,
+  csqFields: readonly string[],
+): ProteinMatchEvidence {
+  const fields = PROTEIN_MATCH_FIELDS[source];
+  const declared = (field: string) => (
+    declaredInfoFields.has(field) || csqFields.includes(field)
+  );
+  const residueEvaluated = declared(fields.residue);
+  const changeEvaluated = declared(fields.change);
+  return {
+    evaluated: residueEvaluated || changeEvaluated,
+    residueEvaluated,
+    changeEvaluated,
+    residueMatch: truthy(record[fields.residue]),
+    changeMatch: truthy(record[fields.change]),
+    details: proteinMatchDetails(record[fields.details]),
+  };
 }
 
 export function haplotypeFrameEvidence(
@@ -1401,6 +1555,10 @@ export async function parseVcfFiles(
       );
     }
     const lines = await vcfHeaderLines(file);
+    const declaredInfoFields = new Set(lines.flatMap((line) => {
+      const match = line.match(/^##INFO=<ID=([^,>]+)/);
+      return match ? [match[1]] : [];
+    }));
     const sourceTranscriptsCompacted = lines.some((line) => (
       line.startsWith("##IEI_WGS_PREFILTER=<")
       && line.includes("Transcripts=MANEThenPICKThenOnePerGene")
@@ -1832,10 +1990,15 @@ export async function parseVcfFiles(
               "ClinVar_CLNREVSTAT", "CLNREVSTAT",
             ]);
             const clinvarDisease = first(combined, ["ClinVar_CLNDN", "CLNDN"]);
-            const clinvarAaResidueRaw = first(combined, ["ClinVar_path_aa_match"]);
-            const clinvarAaChangeRaw = first(combined, [
-              "ClinVar_path_aa_change_match",
-            ]);
+            const clinvarProteinMatch = proteinMatchEvidence(
+              "ClinVar", combined, declaredInfoFields, csqFields,
+            );
+            const clingenProteinMatch = proteinMatchEvidence(
+              "ClinGen", combined, declaredInfoFields, csqFields,
+            );
+            const geniaProteinMatch = proteinMatchEvidence(
+              "GenIA", combined, declaredInfoFields, csqFields,
+            );
             const clinGenAssertionTokens = clinGenErepoTokens(
               info.ClinGen_ERepo, alt,
             );
@@ -2306,14 +2469,61 @@ export async function parseVcfFiles(
             addPrediction(
               "clinvar_aa_match", "allele", ALLELE_MATCH_DIMENSIONS,
               {
-                residue_match: clinvarAaResidueRaw
-                  ? truthy(clinvarAaResidueRaw)
+                residue_match: (clinvarProteinMatch.residueEvaluated
+                  ?? clinvarProteinMatch.evaluated)
+                  ? clinvarProteinMatch.residueMatch
                   : undefined,
-                change_match: clinvarAaChangeRaw
-                  ? truthy(clinvarAaChangeRaw)
+                change_match: (clinvarProteinMatch.changeEvaluated
+                  ?? clinvarProteinMatch.evaluated)
+                  ? clinvarProteinMatch.changeMatch
                   : undefined,
               },
+              "exact",
+              undefined,
+              clinvarProteinMatch.details.length
+                ? { details: first(combined, ["ClinVar_path_aa_details"]) }
+                : undefined,
             );
+            if (clingenProteinMatch.evaluated) {
+              addPrediction(
+                "clingen_aa_match", "allele", ALLELE_MATCH_DIMENSIONS,
+                {
+                  residue_match: (clingenProteinMatch.residueEvaluated
+                    ?? clingenProteinMatch.evaluated)
+                    ? clingenProteinMatch.residueMatch
+                    : undefined,
+                  change_match: (clingenProteinMatch.changeEvaluated
+                    ?? clingenProteinMatch.evaluated)
+                    ? clingenProteinMatch.changeMatch
+                    : undefined,
+                },
+                "exact",
+                undefined,
+                clingenProteinMatch.details.length
+                  ? { details: first(combined, ["ClinGen_path_aa_details"]) }
+                  : undefined,
+              );
+            }
+            if (geniaProteinMatch.evaluated) {
+              addPrediction(
+                "genia_aa_match", "allele", ALLELE_MATCH_DIMENSIONS,
+                {
+                  residue_match: (geniaProteinMatch.residueEvaluated
+                    ?? geniaProteinMatch.evaluated)
+                    ? geniaProteinMatch.residueMatch
+                    : undefined,
+                  change_match: (geniaProteinMatch.changeEvaluated
+                    ?? geniaProteinMatch.evaluated)
+                    ? geniaProteinMatch.changeMatch
+                    : undefined,
+                },
+                "exact",
+                undefined,
+                geniaProteinMatch.details.length
+                  ? { details: first(combined, ["GenIA_path_aa_details"]) }
+                  : undefined,
+              );
+            }
             addPrediction(
               "haplotype_frame", "sample_haplotype",
               [
@@ -2416,8 +2626,11 @@ export async function parseVcfFiles(
               ]),
               clinvarReviewStatus: first(combined, ["ClinVar_CLNREVSTAT", "CLNREVSTAT"]),
               clinvarDisease: first(combined, ["ClinVar_CLNDN", "CLNDN"]),
-              clinvarAaMatch: truthy(first(combined, ["ClinVar_path_aa_match"])),
-              clinvarAaChangeMatch: truthy(first(combined, ["ClinVar_path_aa_change_match"])),
+              clinvarAaMatch: clinvarProteinMatch.residueMatch,
+              clinvarAaChangeMatch: clinvarProteinMatch.changeMatch,
+              clinvarProteinMatch,
+              clingenProteinMatch,
+              geniaProteinMatch,
               clingenErepo: clinGenCompactAssertions,
               genia: geniaCompactRecords,
               haplotypeFrameStatus: haplotypeFrame.status,

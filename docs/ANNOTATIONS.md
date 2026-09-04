@@ -452,39 +452,50 @@ read from the `##fileDate=` header and stamped into the filename
 (`clinvar_<YYYYMMDD>.GRCh38.vcf.gz`) and into the amino-acid-match INFO
 description, so every annotated VCF records exactly which ClinVar it used.
 
-## ClinVar amino-acid-match post-processing
+## Clinical-source protein-change and residue matching
 
-After annotation, `pipeline/clinvar_aa_match.py` writes two separate
-per-ALT (`Number=A`) INFO flags from a catalog of reported
-pathogenic/likely-pathogenic missense changes
-(`SYMBOL<TAB>Protein_position<TAB>ref_aa<TAB>alt_aa<TAB>transcript`, built
-per ClinVar release by `build_clinvar_aa_reference.sh` →
-`reduce_vep_to_aa_reference.py`):
+The protein matcher applies one biological contract to P/LP missense records
+from **ClinVar, ClinGen, and GenIA**. Each installed source gets two per-ALT
+(`Number=A`) flags and an auditable detail field:
 
-- `ClinVar_path_aa_change_match` — the allele produces the **same
-  amino-acid change** as a reported P/LP variant through any nucleotide
-  change (PS1-style evidence).
-- `ClinVar_path_aa_match` — the allele is a missense at the **same
-  residue** as a reported P/LP missense, any substitution (PM5-style
-  evidence; residue-level matching is intentional).
+| Source | Same residue | Same protein change | Match details |
+| --- | --- | --- | --- |
+| ClinVar | `ClinVar_path_aa_match` | `ClinVar_path_aa_change_match` | `ClinVar_path_aa_details` |
+| ClinGen | `ClinGen_path_aa_match` | `ClinGen_path_aa_change_match` | `ClinGen_path_aa_details` |
+| GenIA | `GenIA_path_aa_match` | `GenIA_path_aa_change_match` | `GenIA_path_aa_details` |
 
-A protein position is only meaningful relative to one transcript, so the
-catalog records which transcript numbered each position (the VEP `--pick`
-choice, version-stripped) and a match requires the patient's CSQ entry to
-come from that same transcript. A second guard requires the patient
-entry's own reference amino acid to agree with the catalog's — together
-these keep an isoform whose numbering merely happens to line up from
-claiming PS1/PM5-style evidence. CSQ entries are attributed to their ALT
-via `ALLELE_NUM`, so a match on one ALT of a multiallelic record is never
-copied to its siblings. Both header descriptions carry the ClinVar
-release the catalog was built from; when a catalog rebuild fails, the run
-proceeds on the previous catalog and labels the evidence with **that**
-release, never the current one. A headered build input with zero
-pathogenic missense rows is refused rather than stamped as a valid empty
-catalog. Legacy two- and three-column catalogs load as residue-only (the
-change-level flag stays 0), and four-column catalogs match without the
-transcript gate, until the catalog rebuilds — which the versioned release
-stamp forces once.
+ClinVar includes `Pathogenic`, `Likely pathogenic`, and combined P/LP source
+terms. ClinGen includes active `Pathogenic` and `Likely Pathogenic`
+expert-panel assertions. GenIA includes only source codes `P` and `LP`;
+`VUS`, `LB`, `B`, `NC`, and `RF` do not enter its protein-match catalog.
+Only the optional GenIA **variant VCF** component can enable GenIA protein
+matching. Its gene, disease, and phenotype components cannot.
+
+A candidate must be a missense consequence with the same gene, Ensembl
+transcript stable ID, protein position, and reference amino acid as the source
+record. The same-change result additionally requires the same alternate amino
+acid; a residue-only detail represents a different substitution at that
+residue. Transcript versions are ignored only after both sides identify the
+same stable Ensembl transcript. A match on another transcript is retained with
+that transcript and is not presented as a match for the selected MANE row.
+
+An identical genomic source allele is excluded from these derived matches. It
+already appears in that source's exact-allele evidence and must not be counted
+again as PS1/PM5-style evidence. Distinct ClinVar, ClinGen, and GenIA records
+can also reflect the same underlying observation, so source agreement is not
+proof of evidence independence.
+
+Each detail token retains the match kind, source record ID, source genomic
+allele, source classification, gene, transcript, protein position and amino
+acids, plus disease when the source supplies it. Multiple tokens in one ALT
+slot are kept separate. CSQ entries are assigned with `ALLELE_NUM`, preventing
+one ALT in a multiallelic record from lending a match to its siblings.
+
+Field presence is meaningful: if a source's match fields are absent, that
+source was **not evaluated**. Present zero-valued flags mean it was evaluated
+and no match was found. This distinction is especially important when GenIA
+is not installed. These outputs nominate candidate PS1/PM5-style evidence;
+they do not assign an ACMG/AMP criterion or pathogenicity classification.
 
 ## Frameshift PTC-based LOFTEE 50-bp rule
 

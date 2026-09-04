@@ -59,8 +59,12 @@ fmt = out_cfg.get("format", "vcf")
 compression = out_cfg.get("compress", "none")
 if fmt == "vcf" and compression == "bgzip" and not output_path.endswith(".vcf.gz"):
     errors.append("output.format=vcf + compress=bgzip requires an output ending in .vcf.gz")
-if fmt != "vcf" and (cfg.get("post_processing", {}).get("clinvar_aa_match", {}) or {}).get("enabled", False):
-    errors.append("ClinVar amino-acid matching requires output.format=vcf")
+post = cfg.get("post_processing", {}) or {}
+legacy_protein_match = (post.get("clinvar_aa_match", {}) or {}).get("enabled", False)
+clinical_protein_match = post.get("clinical_protein_match") or {}
+protein_match_enabled = clinical_protein_match.get("enabled", legacy_protein_match)
+if fmt != "vcf" and protein_match_enabled:
+    errors.append("Clinical protein residue/change matching requires output.format=vcf")
 
 opener = gzip.open if input_path.endswith(".gz") else open
 sample_count = None

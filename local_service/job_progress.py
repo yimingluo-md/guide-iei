@@ -150,10 +150,20 @@ STAGES: tuple[tuple[str, str, str], ...] = (
         r"|whole-genome input|PASS filter OFF|input pre-filter \(|input pre-filter OFF",
     ),
     ("clinvar", "Refreshing ClinVar", r"=== fetching latest ClinVar ===|=== building ClinVar aa-match reference ==="),
+    (
+        "protein_catalogs",
+        "Preparing clinical protein evidence",
+        r"=== building (?:ClinVar|ClinGen|GenIA) clinical protein-match catalog ===",
+    ),
     ("vep", "VEP annotation", r"=== VEP invocation ==="),
     ("ptc50", "LOFTEE 50-bp recheck", r"=== LOFTEE frameshift PTC 50-bp recomputation ==="),
     ("haplotypes", "Haplotype evidence", r"=== sample-specific Haplosaurus post-processing ==="),
-    ("aa_match", "ClinVar residue matching", r"=== ClinVar amino-acid-match post-processing ==="),
+    (
+        "aa_match",
+        "Clinical protein matching",
+        r"=== clinical protein residue/change post-processing ==="
+        r"|=== ClinVar amino-acid-match post-processing ===",
+    ),
     ("clingen", "ClinGen assertions", r"=== ClinGen Evidence Repository"),
     ("qc", "Coverage report", r"=== annotation coverage report ==="),
     ("done", "Complete", r"\] DONE\."),

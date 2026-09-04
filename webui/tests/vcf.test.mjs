@@ -29,6 +29,8 @@ const {
   STANDARD_VARIANT_QC,
   ReviewRowLimitError,
   parseVcfFiles,
+  proteinMatchAppliesToTranscript,
+  proteinMatchDisplayStatus,
   predictorBinaryClassification,
   collapseToOneRowPerVariant,
   preferredClinicalTranscriptRows,
@@ -50,6 +52,34 @@ test("recognizes only source-specific pathogenic and likely-pathogenic assertion
   assert.equal(hasGeniaPathogenicEvidence(genia("lp")), true);
   assert.equal(hasGeniaPathogenicEvidence(genia("RF")), false);
   assert.equal(hasGeniaPathogenicEvidence(genia("NC")), false);
+});
+
+test("protein-match status distinguishes selected transcripts, other transcripts, and absent evaluation", () => {
+  const detail = {
+    kind: "change", recordId: "R1", sourceAllele: "1:2:A:G",
+    classification: "Pathogenic", gene: "GENE1", transcript: "ENST1.4",
+    proteinPosition: "10", referenceAminoAcid: "A",
+    alternateAminoAcid: "V", disease: "Disease",
+  };
+  const evidence = {
+    evaluated: true, residueEvaluated: true, changeEvaluated: true,
+    residueMatch: true, changeMatch: true, details: [detail],
+  };
+  assert.equal(
+    proteinMatchDisplayStatus(evidence, "change", "ENST1"),
+    "Yes · selected transcript",
+  );
+  assert.equal(
+    proteinMatchDisplayStatus(evidence, "change", "ENST9"),
+    "Match on ENST1.4",
+  );
+  assert.equal(proteinMatchDisplayStatus(evidence, "residue", "ENST1"), "No match");
+  assert.equal(proteinMatchDisplayStatus({ ...evidence, residueMatch: false }, "residue", "ENST1"), "No match");
+  assert.equal(proteinMatchDisplayStatus(undefined, "change", "ENST1"), "Not evaluated");
+  assert.equal(proteinMatchAppliesToTranscript(evidence, "change", "ENST1.9"), true);
+  assert.equal(proteinMatchAppliesToTranscript(evidence, "change", "ENST9"), false);
+  assert.equal(proteinMatchAppliesToTranscript(evidence, "residue", "ENST1"), false);
+  assert.equal(proteinMatchAppliesToTranscript({ ...evidence, details: [] }, "change", "ENST9"), true);
 });
 
 const CSQ_FIELDS = [
@@ -603,6 +633,140 @@ test("normalizes regional context and ClinVar amino-acid flags as allele observa
   assert.equal(observations.repeatmasker_context.scope, "allele");
   assert.equal(observations.segdup_context.scope, "allele");
   assert.equal(observations.clinvar_aa_match.scope, "allele");
+});
+
+test("keeps ClinVar, ClinGen, and GenIA protein matches source-specific and allele-specific", async () => {
+  const detail = ({ kind, id, allele, classification, gene, transcript, pos, ref, alt, disease }) => [
+    kind, id, allele, classification, gene, transcript, pos, ref, alt, disease,
+  ].map((value) => encodeURIComponent(value)).join("|");
+  const clinvarChange = detail({
+    kind: "change", id: "123", allele: "1:101:A:T",
+    classification: "Pathogenic", gene: "GENE1", transcript: "ENST1.2",
+    pos: "10", ref: "A", alt: "V", disease: "Disease one",
+  });
+  const clingenResidue = detail({
+    kind: "residue", id: "uuid-1", allele: "1:102:C:T",
+    classification: "Likely pathogenic", gene: "GENE2", transcript: "ENST2",
+    pos: "20", ref: "G", alt: "D", disease: "Disease two",
+  });
+  const geniaChange = detail({
+    kind: "change", id: "GENIA-1", allele: "1:103:G:A",
+    classification: "LP", gene: "GENE2", transcript: "ENST2.4",
+    pos: "20", ref: "G", alt: "R", disease: "",
+  });
+  const fields = [
+    "Allele", "ALLELE_NUM", "Consequence", "IMPACT", "SYMBOL", "Feature",
+    "Protein_position", "Amino_acids", "PICK",
+  ];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "##INFO=<ID=ClinVar_path_aa_match,Number=A,Type=Integer,Description=\"per ALT\">",
+    "##INFO=<ID=ClinVar_path_aa_change_match,Number=A,Type=Integer,Description=\"per ALT\">",
+    "##INFO=<ID=ClinVar_path_aa_details,Number=A,Type=String,Description=\"per ALT\">",
+    "##INFO=<ID=ClinGen_path_aa_match,Number=A,Type=Integer,Description=\"per ALT\">",
+    "##INFO=<ID=ClinGen_path_aa_change_match,Number=A,Type=Integer,Description=\"per ALT\">",
+    "##INFO=<ID=ClinGen_path_aa_details,Number=A,Type=String,Description=\"per ALT\">",
+    "##INFO=<ID=GenIA_path_aa_match,Number=A,Type=Integer,Description=\"per ALT\">",
+    "##INFO=<ID=GenIA_path_aa_change_match,Number=A,Type=Integer,Description=\"per ALT\">",
+    "##INFO=<ID=GenIA_path_aa_details,Number=A,Type=String,Description=\"per ALT\">",
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\tG,T\t99\tPASS\t"
+      + "CSQ=G|1|missense_variant|MODERATE|GENE1|ENST1|10|A/V|1,T|2|missense_variant|MODERATE|GENE2|ENST2|20|G/R|1;"
+      + `ClinVar_path_aa_match=1,0;ClinVar_path_aa_change_match=1,0;ClinVar_path_aa_details=${clinvarChange},.;`
+      + `ClinGen_path_aa_match=0,1;ClinGen_path_aa_change_match=0,0;ClinGen_path_aa_details=.,${clingenResidue};`
+      + `GenIA_path_aa_match=0,1;GenIA_path_aa_change_match=0,1;GenIA_path_aa_details=.,${geniaChange}`
+      + "\tGT\t1/2",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "clinical-protein-matches.vcf")]);
+  const byAlt = new Map(result.rows.map((row) => [row.alt, row]));
+  assert.deepEqual(byAlt.get("G").clinvarProteinMatch, {
+    evaluated: true,
+    residueEvaluated: true,
+    changeEvaluated: true,
+    residueMatch: true,
+    changeMatch: true,
+    details: [{
+      kind: "change", recordId: "123", sourceAllele: "1:101:A:T",
+      classification: "Pathogenic", gene: "GENE1", transcript: "ENST1.2",
+      proteinPosition: "10", referenceAminoAcid: "A",
+      alternateAminoAcid: "V", disease: "Disease one",
+    }],
+  });
+  assert.deepEqual(byAlt.get("T").clingenProteinMatch, {
+    evaluated: true,
+    residueEvaluated: true,
+    changeEvaluated: true,
+    residueMatch: true,
+    changeMatch: false,
+    details: [{
+      kind: "residue", recordId: "uuid-1", sourceAllele: "1:102:C:T",
+      classification: "Likely pathogenic", gene: "GENE2", transcript: "ENST2",
+      proteinPosition: "20", referenceAminoAcid: "G",
+      alternateAminoAcid: "D", disease: "Disease two",
+    }],
+  });
+  assert.equal(byAlt.get("G").clingenProteinMatch.residueMatch, false);
+  assert.equal(byAlt.get("G").geniaProteinMatch.changeMatch, false);
+  assert.equal(byAlt.get("T").geniaProteinMatch.details[0].recordId, "GENIA-1");
+  assert.equal(byAlt.get("T").predictions.genia_aa_match.values.change_match, true);
+  assert.equal(
+    byAlt.get("T").predictions.clingen_aa_match.provenance.details,
+    clingenResidue,
+  );
+});
+
+test("distinguishes an absent protein matcher from an evaluated zero", async () => {
+  const vcf = VCF.replace(
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">`,
+    `##INFO=<ID=ClinGen_path_aa_match,Number=A,Type=Integer,Description="per ALT">\n`
+      + `##INFO=<ID=ClinGen_path_aa_change_match,Number=A,Type=Integer,Description="per ALT">\n`
+      + `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">`,
+  ).replace(`CSQ=${PASS_CSQ}`, `ClinGen_path_aa_match=0;ClinGen_path_aa_change_match=0;CSQ=${PASS_CSQ}`);
+  const result = await parseVcfFiles([new File([vcf], "evaluated-zero.vcf")]);
+  assert.equal(result.rows[0].clingenProteinMatch.evaluated, true);
+  assert.equal(result.rows[0].clingenProteinMatch.residueMatch, false);
+  assert.equal(result.rows[0].geniaProteinMatch.evaluated, false);
+  assert.equal(result.rows[0].predictions.clingen_aa_match.values.residue_match, false);
+  assert.equal(result.rows[0].predictions.genia_aa_match, undefined);
+});
+
+test("keeps legacy residue-only ClinVar evidence without inventing change evaluation", async () => {
+  const csqHeader = `##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: ${CSQ_FIELDS.join("|")}">`;
+  const vcf = VCF.replace(
+    csqHeader,
+    `##INFO=<ID=ClinVar_path_aa_match,Number=A,Type=Integer,Description="legacy per ALT">\n${csqHeader}`,
+  ).replace(
+    `CSQ=${PASS_CSQ};`,
+    `ClinVar_path_aa_match=1;CSQ=${PASS_CSQ};`,
+  );
+  const result = await parseVcfFiles([new File([vcf], "legacy-clinvar-residue.vcf")]);
+  const row = result.rows[0];
+  assert.deepEqual(row.clinvarProteinMatch, {
+    evaluated: true,
+    residueEvaluated: true,
+    changeEvaluated: false,
+    residueMatch: true,
+    changeMatch: false,
+    details: [],
+  });
+  assert.equal(
+    proteinMatchDisplayStatus(row.clinvarProteinMatch, "residue", row.transcript),
+    "Yes · match details unavailable",
+  );
+  assert.equal(
+    proteinMatchDisplayStatus(row.clinvarProteinMatch, "change", row.transcript),
+    "Not evaluated",
+  );
+  assert.equal(
+    proteinMatchAppliesToTranscript(row.clinvarProteinMatch, "residue", row.transcript),
+    true,
+  );
+  assert.deepEqual(row.predictions.clinvar_aa_match.values, {
+    residue_match: true,
+  });
 });
 
 test("models SpliceAI as an allele-and-source-gene predictor with delta positions", async () => {

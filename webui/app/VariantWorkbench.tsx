@@ -133,10 +133,14 @@ import {
   NO_VARIANT_QC,
   parseVcfFiles,
   predictorBinaryClassification,
+  proteinMatchAppliesToTranscript,
+  proteinMatchDisplayStatus,
   preferredClinicalTranscriptRows,
   STANDARD_VARIANT_QC,
   variantQcFailures, genotypeQcFailures, type GenotypeEvidence,
   type ImportSummary,
+  type ProteinMatchDetail,
+  type ProteinMatchEvidence,
   type PredictorObservation,
   type VariantQcSettings,
   type VariantRow,
@@ -237,6 +241,22 @@ type DisplayItem =
 
 const RESEARCH_USE_NOTICE = "Research use only. GUIDE-IEI organizes evidence but does not classify variants or generate diagnostic reports. Confirm clinically actionable findings in a certified clinical laboratory before patient care.";
 const CLINVAR_AA_MATCH_HELP = "Candidate PS1/PM5 evidence only. Confirm transcript, reference amino acid, condition, review status, disease mechanism, and evidence independence before applying ACMG/AMP criteria.";
+
+function hasClinicalProteinMatch(
+  row: VariantRow,
+  kind: ProteinMatchDetail["kind"],
+) {
+  const sources = [
+    row.clinvarProteinMatch,
+    row.clingenProteinMatch,
+    row.geniaProteinMatch,
+  ];
+  if (sources.some((evidence) => {
+    return proteinMatchAppliesToTranscript(evidence, kind, row.transcript);
+  })) return true;
+  if (row.clinvarProteinMatch) return false;
+  return kind === "change" ? row.clinvarAaChangeMatch === true : row.clinvarAaMatch === true;
+}
 
 function confirmResearchUseExport() {
   return window.confirm(`${RESEARCH_USE_NOTICE}\n\nContinue with this export?`);
@@ -704,6 +724,8 @@ export default function VariantWorkbench() {
   const [clinvarConflictOnly, setClinvarConflictOnly] = useState(false);
   const [clingenPathogenicOnly, setClingenPathogenicOnly] = useState(false);
   const [geniaPathogenicOnly, setGeniaPathogenicOnly] = useState(false);
+  const [proteinChangeMatchOnly, setProteinChangeMatchOnly] = useState(false);
+  const [proteinResidueMatchOnly, setProteinResidueMatchOnly] = useState(false);
   const [excludeConfirmedFrameRestored, setExcludeConfirmedFrameRestored] = useState(true);
   const [qcSettings, setQcSettings] = useState<VariantQcSettings>({ ...STANDARD_VARIANT_QC });
   const [qcPreset, setQcPreset] = useState<"standard" | "none" | "custom">("standard");
@@ -1043,6 +1065,8 @@ export default function VariantWorkbench() {
     if (clinvarOnly && !isPathogenic(row.clinvar)) return false;
     if (clingenPathogenicOnly && !hasClinGenPathogenicEvidence(row.clingenErepo)) return false;
     if (geniaPathogenicOnly && !hasGeniaPathogenicEvidence(row.genia)) return false;
+    if (proteinChangeMatchOnly && !hasClinicalProteinMatch(row, "change")) return false;
+    if (proteinResidueMatchOnly && !hasClinicalProteinMatch(row, "residue")) return false;
     if (
       clinvarConflictOnly
       && !isClinvarConflictWithPathogenic(
@@ -1074,7 +1098,7 @@ export default function VariantWorkbench() {
       if (loGoFuncMin !== null && (score === null || score < loGoFuncMin)) return false;
     }
     return true;
-  }), [referencedRows, preferredClinicalKeys, query, samples, impacts, popmax, maneOnly, excludeRepeat, excludeSegdup, clinvarOnly, clinvarConflictOnly, clingenPathogenicOnly, geniaPathogenicOnly, excludeConfirmedFrameRestored, ieiOnly, hiOnly, dominantOnly, lofConstrainedOnly, iuisCategory, selectedIuisCategoryGenes, omimAssociatedOnly, omimGenes, geniaGeiOnly, geniaGeiGenes, selectedCustomListIds, selectedCustomGenes, alphaMin, caddMin, spliceMin, promoterAbsMin, loGoFuncClass, loGoFuncMin, ieiGenes, hiGenes, dominantGenes, lofConstrainedGenes, qcSettings, includeQcFailing]);
+  }), [referencedRows, preferredClinicalKeys, query, samples, impacts, popmax, maneOnly, excludeRepeat, excludeSegdup, clinvarOnly, clinvarConflictOnly, clingenPathogenicOnly, geniaPathogenicOnly, proteinChangeMatchOnly, proteinResidueMatchOnly, excludeConfirmedFrameRestored, ieiOnly, hiOnly, dominantOnly, lofConstrainedOnly, iuisCategory, selectedIuisCategoryGenes, omimAssociatedOnly, omimGenes, geniaGeiOnly, geniaGeiGenes, selectedCustomListIds, selectedCustomGenes, alphaMin, caddMin, spliceMin, promoterAbsMin, loGoFuncClass, loGoFuncMin, ieiGenes, hiGenes, dominantGenes, lofConstrainedGenes, qcSettings, includeQcFailing]);
 
   const selectedRegulatorySet = useMemo(
     () => activeRegulatorySet(screenCatalog, regulatoryContextSets, activeRegulatorySetId),
@@ -1485,6 +1509,7 @@ export default function VariantWorkbench() {
     setQuery(""); setSamples(new Set()); setImpacts(new Set(["HIGH", "MODERATE"]));
     setPopmax(0.01); setPopmaxDraft("0.01"); setPopmaxError(""); setManeOnly(true); setExcludeRepeat(true); setExcludeSegdup(true);
     setClinvarOnly(false); setClinvarConflictOnly(false); setClingenPathogenicOnly(false); setGeniaPathogenicOnly(false);
+    setProteinChangeMatchOnly(false); setProteinResidueMatchOnly(false);
     setExcludeConfirmedFrameRestored(true);
     setIncludeQcFailing(false);
     setIeiOnly(false); setHiOnly(false); setDominantOnly(false); setLofConstrainedOnly(false);
@@ -1592,6 +1617,8 @@ export default function VariantWorkbench() {
             <Check label="ClinVar conflict with ≥1 P / LP" checked={clinvarConflictOnly} onChange={(checked) => { setClinvarConflictOnly(checked); if (checked) setClinvarOnly(false); }} />
             <Check label="ClinGen P / LP only" checked={clingenPathogenicOnly} onChange={setClingenPathogenicOnly} />
             <Check label="GenIA P / LP only" checked={geniaPathogenicOnly} onChange={setGeniaPathogenicOnly} />
+            <Check label="P / LP same protein change · any clinical source" checked={proteinChangeMatchOnly} onChange={setProteinChangeMatchOnly} />
+            <Check label="P / LP different missense at same residue · any clinical source" checked={proteinResidueMatchOnly} onChange={setProteinResidueMatchOnly} />
           </FilterSection>
           <FilterSection title="Prediction scores">
             <Threshold label="AlphaMissense ≥" value={alphaMin} placeholder="optional" onChange={setAlphaMin} />
@@ -1670,6 +1697,8 @@ export default function VariantWorkbench() {
               setClinvarConflictOnly(false);
               setClingenPathogenicOnly(false);
               setGeniaPathogenicOnly(false);
+              setProteinChangeMatchOnly(false);
+              setProteinResidueMatchOnly(false);
               setExcludeConfirmedFrameRestored(true);
               setIeiOnly(false);
               setHiOnly(false);
@@ -2225,10 +2254,10 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
               : "Pass"], ["Record warning", duplicateRecordLabel(selected) || "None"], ["QUAL", compactNumber(selected.qual ?? null, 1)], ["Site depth", selected.siteDepth ?? "—"], ["Depth (DP)", selected.dp ?? "—"], ["Genotype quality", selected.gq ?? "—"], ["Allele depths", selected.adRef !== undefined || selected.adAlt !== undefined ? `${selected.adRef ?? "—"}, ${selected.adAlt ?? "—"}` : "—"], ["Allele balance", compactNumber(selected.alleleBalance, 3)], ["Genotype FT", selected.genotypeFilter || "—"], ["Genotype", selected.genotype], ["Phase", selected.phaseSet ? `${selected.phase} · PS ${selected.phaseSet}` : selected.phase],
         ]} /></EvidenceSection>}
         {visibleInfo.has("clinvar") && <EvidenceSection eyebrow="Clinical evidence" title="ClinVar"><EvidenceGrid items={[
-          ["Significance", cleanLabel(selected.clinvar)], ["Conflicting submissions", cleanLabel(selected.clinvarConflictingEvidence)], ["Conflict includes P / LP", isClinvarConflictWithPathogenic(selected.clinvar, selected.clinvarConflictingEvidence) ? "Yes" : "No"], ["Review status", cleanLabel(selected.clinvarReviewStatus)], ["Condition", cleanLabel(selected.clinvarDisease)], [<EvidenceHelpLabel key="clinvar-aa-change" label="ClinVar P/LP report with the same protein change" help={CLINVAR_AA_MATCH_HELP}/>, selected.clinvarAaChangeMatch ? "Yes" : "No / not annotated"], [<EvidenceHelpLabel key="clinvar-aa-residue" label="ClinVar P/LP missense report at the same residue" help={CLINVAR_AA_MATCH_HELP}/>, selected.clinvarAaMatch ? "Yes" : "No / not annotated"],
-        ]} /></EvidenceSection>}
-        {visibleInfo.has("clinvar") && <ClinGenVariantEvidence evidence={clingenEvidence} loading={clingenEvidenceLoading} error={clingenEvidenceError} compact={selected.clingenErepo ?? []}/>}
-        {visibleInfo.has("clinvar") && <GeniaVariantEvidence evidence={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidence : null} loading={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidenceLoading : true} error={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidenceError : ""} compact={selected.genia ?? []}/>}
+          ["Significance", cleanLabel(selected.clinvar)], ["Conflicting submissions", cleanLabel(selected.clinvarConflictingEvidence)], ["Conflict includes P / LP", isClinvarConflictWithPathogenic(selected.clinvar, selected.clinvarConflictingEvidence) ? "Yes" : "No"], ["Review status", cleanLabel(selected.clinvarReviewStatus)], ["Condition", cleanLabel(selected.clinvarDisease)],
+        ]} /><ProteinMatchEvidenceBlock source="ClinVar" evidence={selected.clinvarProteinMatch ?? legacyClinVarProteinMatch(selected)} selectedTranscript={selected.transcript}/></EvidenceSection>}
+        {visibleInfo.has("clinvar") && <ClinGenVariantEvidence evidence={clingenEvidence} loading={clingenEvidenceLoading} error={clingenEvidenceError} compact={selected.clingenErepo ?? []} proteinMatch={selected.clingenProteinMatch} selectedTranscript={selected.transcript}/>}
+        {visibleInfo.has("clinvar") && <GeniaVariantEvidence evidence={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidence : null} loading={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidenceLoading : true} error={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidenceError : ""} compact={selected.genia ?? []} proteinMatch={selected.geniaProteinMatch} selectedTranscript={selected.transcript}/>}
         {visibleInfo.has("transcript") && <EvidenceSection eyebrow="Molecular consequence" title="Transcript"><EvidenceGrid items={[
           ["HGVSc", selected.hgvsC || "—"], ["HGVSp", selected.hgvsP || "—"], ["Transcript", selected.transcript || "—"], ["Gene ID", selected.geneId || "—"], ["Biotype", cleanLabel(selected.biotype)], ["Transcript warning", isReferenceDisruptedTranscript(selected) ? "Reference ORF disrupted; not a conventional pLoF baseline" : "None"], ["Exon", selected.exon || "—"], ["Consequence", cleanLabel(selected.consequence)], ["MANE", selected.mane ? "Yes" : "No"], ["VEP PICK", selected.picked ? "Yes" : "No"],
         ]} />{selected.transcriptDetailStatus === "loading" ? <p className="constraint-note">Loading the complete transcript table from the managed VCF…</p> : null}{selected.transcriptDetailStatus === "unavailable" ? <p className="constraint-note">{selected.transcriptDetailError}</p> : null}{selected.collapsedTranscriptRows?.length ? <div className="alt-transcripts"><h4>{selected.transcriptDetailStatus === "loading" ? "Clinical transcript annotations shown while the complete table loads" : "All transcript and gene annotations of this variant"}</h4><table><thead><tr><th>Gene</th><th>Transcript</th><th>Consequence</th><th>HGVSc</th><th>HGVSp</th><th>Designation</th></tr></thead><tbody>
@@ -2495,14 +2524,72 @@ function EvidenceSection({ eyebrow, title, children }: { eyebrow: string; title:
   return <section className="evidence-section"><p className="eyebrow">{eyebrow}</p><h2>{title}</h2>{children}</section>;
 }
 
-function ClinGenVariantEvidence({ evidence, loading, error, compact }: {
+function legacyClinVarProteinMatch(row: VariantRow): ProteinMatchEvidence {
+  const residueMatch = row.clinvarAaMatch === true;
+  const changeMatch = row.clinvarAaChangeMatch === true;
+  return {
+    // Older in-memory rows did not retain INFO-header presence. A positive
+    // flag remains usable; an all-false legacy pair cannot safely mean that
+    // ClinVar was evaluated, so present it as not evaluated.
+    evaluated: residueMatch || changeMatch,
+    residueEvaluated: residueMatch,
+    changeEvaluated: changeMatch,
+    residueMatch,
+    changeMatch,
+    details: [],
+  };
+}
+
+function stableTranscriptId(value: string) {
+  return value.trim().split(".", 1)[0];
+}
+
+function sourceProteinChange(detail: ProteinMatchDetail) {
+  if (!detail.proteinPosition) return "—";
+  return `p.${detail.referenceAminoAcid || "?"}${detail.proteinPosition}${detail.alternateAminoAcid || "?"}`;
+}
+
+function ProteinMatchEvidenceBlock({ source, evidence, selectedTranscript }: {
+  source: "ClinVar" | "ClinGen" | "GenIA";
+  evidence: ProteinMatchEvidence | undefined;
+  selectedTranscript: string | undefined;
+}) {
+  const details = evidence?.details ?? [];
+  const selectedStable = stableTranscriptId(selectedTranscript ?? "");
+  return <div className="protein-match-evidence">
+    <EvidenceGrid items={[
+      [<EvidenceHelpLabel key={`${source}-aa-change`} label={`${source} P/LP report with the same protein change`} help={CLINVAR_AA_MATCH_HELP}/>, proteinMatchDisplayStatus(evidence, "change", selectedTranscript)],
+      [<EvidenceHelpLabel key={`${source}-aa-residue`} label={`${source} P/LP missense report at the same residue`} help={CLINVAR_AA_MATCH_HELP}/>, proteinMatchDisplayStatus(evidence, "residue", selectedTranscript)],
+    ]}/>
+    {details.length > 0 && <details className="protein-match-details"><summary>{details.length} matched P/LP report{details.length === 1 ? "" : "s"}</summary><div>{details.map((item, index) => {
+      const sameTranscript = Boolean(selectedStable)
+        && stableTranscriptId(item.transcript) === selectedStable;
+      return <article key={`${item.kind}:${item.recordId}:${item.sourceAllele}:${item.transcript}:${index}`}>
+        <header><strong>{item.kind === "change" ? "Same protein change" : "Different missense change at the same residue"}</strong><span>{cleanLabel(item.classification) || "P/LP"}</span></header>
+        <dl>
+          <div><dt>Source record</dt><dd>{item.recordId || "—"}</dd></div>
+          <div><dt>Source variant</dt><dd className="mono">{item.sourceAllele || "—"}</dd></div>
+          <div><dt>Protein change</dt><dd className="mono">{sourceProteinChange(item)}</dd></div>
+          <div><dt>Transcript</dt><dd className="mono">{item.transcript || "—"}{sameTranscript ? " · selected" : ""}</dd></div>
+          <div><dt>Gene</dt><dd>{item.gene || "—"}</dd></div>
+          <div><dt>Condition</dt><dd>{item.disease || "Not supplied by this source"}</dd></div>
+        </dl>
+      </article>;
+    })}</div></details>}
+  </div>;
+}
+
+function ClinGenVariantEvidence({ evidence, loading, error, compact, proteinMatch, selectedTranscript }: {
   evidence: ClinGenErepoVariant | null;
   loading: boolean;
   error: string;
   compact: NonNullable<VariantRow["clingenErepo"]>;
+  proteinMatch: ProteinMatchEvidence | undefined;
+  selectedTranscript: string | undefined;
 }) {
   const assertions = evidence?.assertions ?? [];
   return <EvidenceSection eyebrow="Expert-panel evidence" title="ClinGen variant curations">
+    <ProteinMatchEvidenceBlock source="ClinGen" evidence={proteinMatch} selectedTranscript={selectedTranscript}/>
     {loading && <p className="clingen-empty">Checking the installed ClinGen Evidence Repository snapshot…</p>}
     {!loading && evidence?.available && assertions.length === 0 && <div className="clingen-empty"><strong>No ClinGen variant classification found.</strong></div>}
     {!loading && evidence?.available && assertions.length > 0 && <div className="clingen-assertions">{assertions.map((item) => <article key={item.uuid}>
@@ -2538,13 +2625,19 @@ function geniaRelevantSubjects(value: number | null) {
   return `${value.toLocaleString()} reported subject${value === 1 ? "" : "s"}`;
 }
 
-function GeniaVariantEvidence({ evidence, loading, error, compact }: {
+function GeniaVariantEvidence({ evidence, loading, error, compact, proteinMatch, selectedTranscript }: {
   evidence: GeniaVariant | null;
   loading: boolean;
   error: string;
   compact: NonNullable<VariantRow["genia"]>;
+  proteinMatch: ProteinMatchEvidence | undefined;
+  selectedTranscript: string | undefined;
 }) {
-  if (compact.length === 0 && (loading || !evidence?.available)) return null;
+  if (
+    compact.length === 0
+    && (loading || !evidence?.available)
+    && !proteinMatch?.evaluated
+  ) return null;
   const current = evidence?.records ?? [];
   const useCompact = current.length === 0 && compact.length > 0;
   const records = current.length ? current.map((item) => ({
@@ -2561,6 +2654,7 @@ function GeniaVariantEvidence({ evidence, loading, error, compact }: {
     relevantSubjects: item.relevantSubjects,
   }));
   return <EvidenceSection eyebrow="Curated variant evidence" title="GenIA">
+    <ProteinMatchEvidenceBlock source="GenIA" evidence={proteinMatch} selectedTranscript={selectedTranscript}/>
     {loading && <p className="clingen-empty">Checking the installed GenIA exact-allele index…</p>}
     {!loading && evidence?.available && current.length === 0 && compact.length === 0 && <div className="clingen-empty"><strong>No GenIA variant record found for this exact GRCh38 allele.</strong></div>}
     {!loading && useCompact && <div className="genia-evidence-note"><strong>{evidence?.available ? "No match in the currently installed GenIA export." : "Current GenIA variant index unavailable."}</strong><span>Showing the compact GenIA evidence embedded in this VCF.</span></div>}

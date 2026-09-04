@@ -488,6 +488,95 @@ def test_reducer_emits_the_transcript_column(tmp_path):
     assert red.reduce_tab(str(tab), str(out)) == 1
     assert out.read_text() == "STAT3\t100\tR\tH\tENST00000264657\n"
 
+
+def test_provenance_details_and_exact_allele_exclusion(tmp_path):
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(
+        "#gene\tprotein_position\tref_aa\talt_aa\ttranscript\trecord_id"
+        "\tsource_allele\tclassification\tdisease\n"
+        "BRCA1\t100\tR\tH\tENST0\tRCV 1\t1:999:C:T\tPathogenic\tDisease A\n"
+    )
+    loaded = aam.load_reference(str(catalog))
+    assert loaded.has_provenance
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 1 and stats["change_matched"] == 1
+    text = open(vout).read()
+    assert "##INFO=<ID=ClinVar_path_aa_details,Number=A,Type=String" in text
+    record = [line for line in text.splitlines() if not line.startswith("#")][0]
+    info = dict(item.split("=", 1) for item in record.split("\t")[7].split(";") if "=" in item)
+    assert info["ClinVar_path_aa_details"].startswith(
+        "change|RCV%201|1%3A999%3AC%3AT|Pathogenic|BRCA1|ENST0|100|R|H|Disease%20A"
+    )
+
+    # The same catalog record is exact-allele evidence for this query and is
+    # therefore not duplicated as PS1/PM5-style protein evidence.
+    catalog.write_text(
+        "BRCA1\t100\tR\tH\tENST0\tRCV1\t1:1001:C:A\tPathogenic\tDisease A\n"
+    )
+    loaded = aam.load_reference(str(catalog))
+    aam.annotate(vin, vout, loaded)
+    record = [line for line in open(vout) if not line.startswith("#")][0]
+    info = dict(item.split("=", 1) for item in record.split("\t")[7].split(";") if "=" in item)
+    assert info["ClinVar_path_aa_match"] == "0"
+    assert info["ClinVar_path_aa_change_match"] == "0"
+    assert info["ClinVar_path_aa_details"] == "."
+
+
+def test_provenance_residue_kind_is_disjoint_from_change(tmp_path):
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(
+        "BRCA1\t100\tR\tW\tENST0\tRCV2\t1:999:C:G\tLikely pathogenic\t\n"
+    )
+    loaded = aam.load_reference(str(catalog))
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([_csq("missense_variant", "BRCA1", "100")]))
+    aam.annotate(vin, vout, loaded, info_key="GenIA_path_aa_match", source_label="GenIA")
+    record = [line for line in open(vout) if not line.startswith("#")][0]
+    info = dict(item.split("=", 1) for item in record.split("\t")[7].split(";") if "=" in item)
+    assert info["GenIA_path_aa_match"] == "1"
+    assert info["GenIA_path_aa_change_match"] == "0"
+    assert info["GenIA_path_aa_details"].startswith("residue|")
+
+
+def test_provenance_catalog_requires_complete_amino_acid_change(tmp_path):
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(
+        "BRCA1\t100\tR\tH\tENST0\tRCV1\t1:999:C:T\tPathogenic\t\n"
+    )
+    loaded = aam.load_reference(str(catalog))
+    incomplete = _csq("missense_variant", "BRCA1", "100").replace("R/H", "R")
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, _vcf([incomplete]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 0 and stats["change_matched"] == 0
+
+    missing_transcript = _csq("missense_variant", "BRCA1", "100").replace(
+        "|ENST0|", "||"
+    )
+    _write(vin, _vcf([missing_transcript]))
+    stats = aam.annotate(vin, vout, loaded)
+    assert stats["matched"] == 0 and stats["change_matched"] == 0
+
+
+def test_multiallelic_without_allele_num_is_not_broadcast(tmp_path):
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(
+        "BRCA1\t100\tR\tH\tENST0\tRCV1\t1:999:C:T\tPathogenic\t\n"
+    )
+    vcf = _vcf([_csq("missense_variant", "BRCA1", "100")]).replace(
+        "\tC\tA\t", "\tC\tA,G\t"
+    )
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    _write(vin, vcf)
+    aam.annotate(vin, vout, aam.load_reference(str(catalog)))
+    record = [line for line in open(vout) if not line.startswith("#")][0]
+    info = dict(item.split("=", 1) for item in record.split("\t")[7].split(";") if "=" in item)
+    assert info["ClinVar_path_aa_match"] == "0,0"
+    assert info["ClinVar_path_aa_change_match"] == "0,0"
+    assert info["ClinVar_path_aa_details"] == ".,."
+
 if __name__ == "__main__":
     import tempfile, pathlib, inspect
     passed = 0

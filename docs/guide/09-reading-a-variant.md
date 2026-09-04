@@ -328,21 +328,7 @@ applies to whole-genome analysis only.
 
 - **ClinVar** entries are **reports**, not established facts: submitters
   differ in rigor, and classifications age. The annotation is refreshed at
-  every run. Two deliberately **separate** protein-level flags accompany
-  it, each computed per ALT allele so multiallelic records never share a
-  match:
-  - **ClinVar P/LP report with the same protein change**
-  - **ClinVar P/LP missense report at the same residue**
-
-  These are candidate PS1/PM5 evidence.
-
-  Both flags compare positions **within the same transcript**: the
-  catalog records which transcript numbered each residue, and a patient
-  annotation from a different isoform — where the same position number
-  denotes a different residue — is never matched. Both are matching aids
-  computed against the release named in the VCF header — as everywhere,
-  the applicable ACMG strength is the reviewer's judgment, not the
-  software's.
+  every run.
 - **ClinGen** contributes two expert-panel layers: allele-level assertions
   from the Evidence Repository, with disease- and inheritance-specific
   detail, and gene-level validity and dosage curation. One dosage caution
@@ -355,8 +341,29 @@ applies to whole-genome analysis only.
   classified**, not VUS; `RF` means **Risk factor**, not a pathogenic
   classification; and a count of 0 is not evidence that the allele is benign.
   These labels are not a new GUIDE-IEI or ACMG/AMP classification. The GenIA
-  variant export contains no gene or disease context, so none is inferred from
-  the transcript being viewed.
+  variant export contains no gene or disease context, so the exact-allele card
+  does not infer either from the transcript being viewed.
+
+For each available source, GUIDE-IEI also looks for a P/LP missense record
+with the **same protein change** or a **different substitution at the same
+residue**. The comparison requires the same gene, Ensembl transcript stable
+ID, protein position, and reference amino acid. Evidence found only on another
+transcript is not shown as a match for the selected MANE transcript. The
+expandable match lists retain the source record, classification, transcript,
+source allele, and disease when provided.
+
+For GenIA protein matching only, GUIDE-IEI annotates each source genomic allele
+locally with the same VEP cache used for the patient VCF. That derived
+gene/transcript/protein consequence supplies the comparison coordinates; it is
+not presented as gene–disease context from GenIA, and GenIA disease remains
+unavailable unless the source supplies it.
+
+An identical genomic allele is shown only as exact-allele evidence; it is not
+repeated as a same-change match. If a source says **Not evaluated**, its
+catalog was unavailable for that run. **No match** instead means the catalog
+was evaluated. These are candidate PS1/PM5-style matching aids, not automatic
+ACMG/AMP criteria, and overlapping records across databases may not be
+independent evidence.
 
 The **Clinical database** filters can retain only ClinVar P/LP, ClinGen P/LP,
 or exact-allele GenIA `P`/`LP` records. Multiple selected source filters are

@@ -106,9 +106,11 @@ Two details are deliberately explicit:
   currently emits only an aggregate overlap label and not the source interval
   coordinates. Their published observations are therefore allele-scoped. Use
   `interval` only when the observation retains `start` and `end`.
-- ClinVar amino-acid matching is computed from gene/residue evidence upstream,
-  but its postprocessor publishes a Boolean result for each ALT allele. Its
-  stored scope is therefore `allele`, not `gene_protein_residue`.
+- Clinical-source amino-acid matching is computed from transcript/residue
+  evidence upstream, while its compatibility flags are published per ALT
+  allele. The accompanying detail tokens retain the matched transcript and
+  source record, allowing the browser to bind evidence to the selected
+  transcript instead of treating an allele-wide positive as a MANE match.
 
 ## Current predictor mapping
 
@@ -132,7 +134,9 @@ annotator in schema version 1:
 | `genia` — registered-user GenIA variant records | `postprocessor` | `allele` |
 | `loftee_ptc_50bp` — frameshift PTC/50-bp recalculation | `postprocessor` | `transcript_consequence` |
 | `haplotype_consequences` — phased frame-restoration evidence | `postprocessor` | `sample_haplotype` |
-| `clinvar_aa_match` — ClinVar protein-change/residue match flags | `postprocessor` | `allele` |
+| `clinvar_aa_match` — ClinVar protein-change/residue flags and details | `postprocessor` | `allele` |
+| `clingen_aa_match` — ClinGen protein-change/residue flags and details | `postprocessor` | `allele` |
+| `genia_aa_match` — GenIA protein-change/residue flags and details | `postprocessor` | `allele` |
 
 The registry also inventories non-predictor resources such as liftover,
 ENCODE cCREs, SCREEN context and the VEP runtime. They participate in setup
@@ -140,10 +144,11 @@ and reproducibility but do not create a typed predictor observation merely by
 being listed.
 
 Postprocessor order is also part of the runtime contract. The main run writes
-the VEP result, applies PTC/haplotype and ClinVar amino-acid processing, then
-applies ClinGen exact-allele records followed by optional GenIA exact-allele
-records. QC and the run manifest are written last. This keeps each source's
-multi-record INFO evidence independent and ensures QC reads the final fields.
+the VEP result, applies PTC/haplotype and the shared clinical-source protein
+matcher, then applies ClinGen exact-allele records followed by optional GenIA
+exact-allele records. QC and the run manifest are written last. This keeps each
+source's multi-record INFO evidence independent and ensures QC reads the final
+fields.
 
 ## Runtime contracts
 

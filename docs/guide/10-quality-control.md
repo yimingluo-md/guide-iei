@@ -49,9 +49,11 @@ It annotates eight public GRCh38 control variants (known missense,
 frameshift, splice-donor, stop-gained, and promoter alleles in NCSTN,
 STAT3, IL2RG, TERT, and OR4F5) and asserts the expected values from every
 installed source — LOFTEE and the PTC-based 50-bp correction, AlphaMissense,
-CADD, SpliceAI, ClinVar and the amino-acid match. Optional sources report
-an explicit `SKIP` when not installed, never a silent pass. The input
-contains one synthetic sample and no patient data.
+CADD, SpliceAI, ClinVar and its protein match. Optional sources report an
+explicit `SKIP` when not installed, never a silent pass. The annotation QC
+report separately records whether ClinVar, ClinGen, and GenIA protein matching
+was evaluated, plus each source's same-change and same-residue hit counts. The
+input contains one synthetic sample and no patient data.
 
 Run it after first setup, after any dataset update, and whenever a result
 makes you doubt the installation.

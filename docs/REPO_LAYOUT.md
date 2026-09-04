@@ -22,7 +22,7 @@ scripts/prepare_dbnsfp.sh       verify + install a downloaded dbNSFP release
 scripts/fetch_clinvar.sh        download + version-stamp the latest ClinVar
 scripts/run_annotation.sh       main entry point: config -> VEP -> annotated VCF
 scripts/liftover_grch37_to_grch38.sh  controlled legacy-VCF intake into GRCh38
-scripts/build_clinvar_aa_reference.sh   build the aa-match catalog from ClinVar
+scripts/build_clinical_protein_catalog.sh  build a ClinVar/ClinGen/GenIA protein-match catalog
 scripts/update_workbench_references.sh  rebuild bundled gnomAD/IUIS UI resources
 scripts/update_gene_knowledge.sh  rebuild public HGNC/IUIS/ClinGen gene knowledge
 scripts/update_clingen_erepo.sh   install/update ClinGen expert variant assertions
@@ -33,11 +33,13 @@ pipeline/predictor_registry.py  validate and expose the immutable predictor cont
 pipeline/indexed_scores.py      validate shared indexed-predictor manifests
 pipeline/loftee_ptc_50bp.py     replace frameshift 50_BP_RULE using the resulting PTC
 pipeline/haplotype_consequences.py validate sample GT/phase for frame-restoring haplotypes
-pipeline/clinvar_aa_match.py    add INFO/ClinVar_path_aa_match to the VCF
+pipeline/clinical_protein_match.py  shared protein-match command (compatibility entry point)
+pipeline/clinvar_aa_match.py    implement per-source protein-change/residue evidence
+pipeline/prepare_clinical_protein_catalog.py  export and reduce source P/LP missense records
 pipeline/clingen_erepo_annotate.py  add exact allele-level ClinGen assertion IDs
 pipeline/genia_alleles.py       shared GRCh38 contig/allele normalization for GenIA
 pipeline/genia_annotate.py      add exact allele-level GenIA records from local SQLite
-pipeline/reduce_vep_to_aa_reference.py  VEP-tab -> aa-match catalog
+pipeline/reduce_vep_to_aa_reference.py  legacy ClinVar VEP-tab catalog reducer
 local_service/                  loopback API + persistent SQLite job queue
 local_service/genia.py          detect/import five private GenIA components atomically
 local_service/test_genia.py     synthetic-only GenIA installer and lookup tests

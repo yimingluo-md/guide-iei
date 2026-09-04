@@ -127,9 +127,9 @@ scripts/sync_to_onedrive.sh [DEST]
 ## Verify the installation (no container, no downloads)
 
 A self-contained smoke test exercises the whole wiring — config parsing, the
-VEP command builder, the container-command assembly (dry run), and the ClinVar
-amino-acid-match on a simulated VEP output — without needing Docker or any
-reference data:
+VEP command builder, the container-command assembly (dry run), and protein
+matching on a simulated VEP output — without needing Docker or any reference
+data:
 
 ```bash
 bash test/test_dry_run.sh
@@ -148,11 +148,12 @@ Expected tail:
 ALL DRY-RUN CHECKS PASSED
 ```
 
-Unit tests for the two Python components:
+Focused unit tests for protein matching and its source-catalog builder:
 
 ```bash
-python test/test_build_command.py   # config -> VEP command (7 tests)
-python test/test_aa_match.py         # ClinVar aa-match + reducer (8 tests)
+python3 test/test_build_command.py
+python3 test/test_aa_match.py
+python3 test/test_clinical_protein_catalog.py
 ```
 
 Once annotation datasets are installed, the small public regression panel

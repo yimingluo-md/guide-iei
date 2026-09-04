@@ -256,6 +256,24 @@ class TrackerTests(unittest.TestCase):
         snap = self.tracker.snapshot(self.job)
         self.assertEqual(snap["variants_total"], 12345)
 
+    def test_shared_protein_catalog_and_matching_stages_are_recognized(self):
+        self.log_write(
+            "[10:00:00] === fetching latest ClinVar ===\n"
+            "[10:00:01] === building ClinGen clinical protein-match catalog ===\n"
+        )
+        snap = self.tracker.snapshot(self.job)
+        self.assertEqual(snap["stage"], "protein_catalogs")
+        self.assertEqual(snap["stage_label"], "Preparing clinical protein evidence")
+
+        self.log_write(
+            "[10:05:00] === VEP invocation ===\n"
+            "[10:10:00] VEP finished -> /x/out.vep.vcf.gz\n"
+            "[10:10:01] === clinical protein residue/change post-processing ===\n"
+        )
+        snap = self.tracker.snapshot(self.job)
+        self.assertEqual(snap["stage"], "aa_match")
+        self.assertEqual(snap["stage_label"], "Clinical protein matching")
+
     def test_tracked_state_is_bounded(self):
         self.log_write("[10:00:00] preflight container checks passed\n")
         for index in range(40):

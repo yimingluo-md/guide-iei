@@ -42,13 +42,14 @@ The run will:
 2. retain all transcript consequences, flag the preferred consequence per ALT
    allele and gene, annotate MANE transcript status for the review UI, and
    download the latest ClinVar (version-stamped),
-3. (re)build the ClinVar amino-acid-match catalog if ClinVar changed,
+3. (re)build the ClinVar, ClinGen, and available GenIA P/LP protein-match
+   catalogs when their source data or the VEP cache changes,
 4. build the VEP command from your config and run it in the container,
 5. write `results/sample.vep.vcf.gz`,
 6. recompute the frameshift PTC 50-bp rule and run sample-specific Haplosaurus
    consequence post-processing,
-7. write `results/sample.vep.aamatch.vcf.gz` (+ tabix index) with the
-   `ClinVar_path_aa_match` flag added,
+7. write `results/sample.vep.aamatch.vcf.gz` (+ tabix index) with per-source
+   same-change, same-residue, and auditable match-detail fields,
 8. attach locally installed ClinGen exact-allele assertions,
 9. attach optional GenIA records when its independently installed GRCh38
    variant component is available, then
@@ -59,8 +60,9 @@ component-based SQLite database in Annotation datasets storage; no source
 export or patient variant is uploaded. Its postprocessor requires an exact
 normalized GRCh38 chromosome/position/reference/alternate match and writes
 allele-level `INFO/GenIA` and `INFO/GenIA_count` fields, not transcript CSQ
-fields. Gene–disease and phenotype GenIA components remain Gene Knowledge
-lookups and are not repeated in the VCF.
+fields. Only an installed GenIA variant component also enables its P/LP
+protein-change/residue catalog; gene–disease and phenotype components remain
+Gene Knowledge lookups and cannot enable protein matching.
 
 Useful flags: `--dry-run` (print the assembled container command and stop),
 `--no-clinvar` (skip the per-run ClinVar download), `--all-variants` (annotate

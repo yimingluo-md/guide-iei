@@ -360,6 +360,7 @@ clinvar:
   # NCBI weekly GRCh38 ClinVar VCF. {ASSEMBLY} is filled from reference.assembly.
   url: "https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_{ASSEMBLY}/clinvar.vcf.gz"
   dest_dir: "references/clinvar"
+  protein_match_catalog: "references/clinvar/clinvar_aa_reference.tsv"
   keep_dated_copy: true      # keep clinvar_<releasedate>.GRCh38.vcf.gz alongside latest
 
 # -----------------------------------------------------------------------------
@@ -377,6 +378,7 @@ clingen_erepo:
   database: "references/clingen_erepo/clingen_erepo.sqlite3"
   vcf: "references/clingen_erepo/clingen_erepo.GRCh38.vcf"
   manifest: "references/clingen_erepo/manifest.json"
+  protein_match_catalog: "references/clingen_erepo/clingen_aa_reference.tsv"
 
 # -----------------------------------------------------------------------------
 # GenIA registered-user exports
@@ -389,11 +391,22 @@ genia:
   enabled: true
   required: false
   database: "references/genia/genia.sqlite3"
+  protein_match_catalog: "references/genia/genia_aa_reference.tsv"
 
 # -----------------------------------------------------------------------------
 # Post-processing (after VEP)
 # -----------------------------------------------------------------------------
 post_processing:
+  # Source-independent PS1/PM5-style matching. Each installed clinical source
+  # supplies the same transcript-specific catalog contract and retains its own
+  # flags plus auditable source-record details. ClinVar's older option below is
+  # retained as a compatibility switch for existing job configurations.
+  clinical_protein_match:
+    enabled: true
+    clinvar: true
+    clingen: true
+    genia: true
+
   # LOFTEE evaluates 50_BP_RULE at the variant coordinate. For frameshifts the
   # relevant premature termination codon (PTC) is downstream in the shifted
   # reading frame. Recompute the rule at that PTC from the release-matched local
@@ -414,9 +427,8 @@ post_processing:
     enabled: true
     required: true
 
-  # Adds ClinVar_path_aa_match INFO flag: 1 if a variant's (SYMBOL, protein
-  # position) collides with a KNOWN PATHOGENIC missense ClinVar variant at the
-  # same residue. Reimplements the awk step from vep_hg38.sh for VCF output.
+  # Backward-compatible ClinVar switch/pathogenic-term policy. New profiles
+  # should use clinical_protein_match above; both are honored by the runner.
   clinvar_aa_match:
     enabled: true
     # Pathogenicity terms (in CLNSIG) that count as "pathogenic".

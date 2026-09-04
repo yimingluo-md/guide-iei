@@ -283,6 +283,10 @@ test("filters Variant Review by ClinGen and GenIA pathogenic assertions and GEI 
   const service = await readFile(new URL("app/local-service.ts", root), "utf8");
   assert.match(source, /ClinGen P \/ LP only/);
   assert.match(source, /GenIA P \/ LP only/);
+  assert.match(source, /P \/ LP same protein change · any clinical source/);
+  assert.match(source, /P \/ LP different missense at same residue · any clinical source/);
+  assert.match(source, /hasClinicalProteinMatch\(row, "change"\)/);
+  assert.match(source, /hasClinicalProteinMatch\(row, "residue"\)/);
   assert.match(source, /hasClinGenPathogenicEvidence\(row\.clingenErepo\)/);
   assert.match(source, /hasGeniaPathogenicEvidence\(row\.genia\)/);
   assert.match(source, /GenIA GEI gene/);
@@ -393,8 +397,12 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /loftee-detail-line"><span>LOFTEE<\/span>/);
   assert.doesNotMatch(source, /Classifies predicted loss-of-function consequences as high or low confidence/);
   assert.doesNotMatch(source, /Highlighted values cross a model-specific GUIDE review threshold/);
-  assert.match(source, /ClinVar P\/LP report with the same protein change/);
-  assert.match(source, /ClinVar P\/LP missense report at the same residue/);
+  assert.match(source, /label=\{`\$\{source\} P\/LP report with the same protein change`\}/);
+  assert.match(source, /label=\{`\$\{source\} P\/LP missense report at the same residue`\}/);
+  assert.match(source, /source="ClinGen" evidence=\{proteinMatch\}/);
+  assert.match(source, /source="GenIA" evidence=\{proteinMatch\}/);
+  assert.match(source, /proteinMatchDisplayStatus\(evidence, "change", selectedTranscript\)/);
+  assert.match(source, /proteinMatchDisplayStatus\(evidence, "residue", selectedTranscript\)/);
   assert.match(source, /Candidate PS1\/PM5 evidence only/);
   assert.match(source, /Not applicable · single-exon transcript/);
   assert.match(source, /no downstream exon–exon junction/);

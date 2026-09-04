@@ -1131,6 +1131,20 @@ tbody tr:last-child td { border-bottom: 0; }
 .genia-variant-records dl div + div { padding-left: 14px; border-left: 1px solid #edf1ef; }
 .genia-variant-records dt { color: #8b9692; font-size: 8px; text-transform: uppercase; letter-spacing: .04em; }
 .genia-variant-records dd { margin: 4px 0 0; overflow-wrap: anywhere; color: #3f514b; font-size: 9px; }
+.protein-match-evidence { margin-top: 14px; }
+.protein-match-evidence > .evidence-grid { margin-top: 0; }
+.protein-match-details { margin: 10px 0 0; padding: 10px 12px; border: 1px solid #dce7e3; border-radius: 8px; background: #f8fbfa; }
+.protein-match-details > summary { color: #2e6f63; cursor: pointer; font-size: 9px; font-weight: 700; }
+.protein-match-details > div { display: grid; gap: 8px; margin-top: 10px; }
+.protein-match-details article { overflow: hidden; border: 1px solid #e0e8e5; border-radius: 7px; background: white; }
+.protein-match-details article > header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; padding: 9px 11px; border-bottom: 1px solid #e7eeeb; background: #f6faf8; }
+.protein-match-details article > header strong { color: #2e4e45; font-size: 9px; }
+.protein-match-details article > header span { color: #8b3c34; font-size: 8px; font-weight: 700; }
+.protein-match-details article dl { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 0; padding: 3px 11px; }
+.protein-match-details article dl > div { min-width: 0; padding: 7px 0; border-bottom: 1px solid #edf1ef; }
+.protein-match-details article dl > div:nth-child(even) { padding-left: 11px; border-left: 1px solid #edf1ef; }
+.protein-match-details article dt { color: #899690; font-size: 7px; letter-spacing: .04em; text-transform: uppercase; }
+.protein-match-details article dd { margin: 3px 0 0; overflow-wrap: anywhere; color: #40534d; font-size: 8px; }
 .constraint-note { margin: 11px 0 0; padding: 10px 11px; border-radius: 5px; background: #f2f5f3; color: #6e7a76; font-size: 9px; line-height: 1.45; }
 .ccre-context { margin-top: 13px; padding: 20px 22px; border: 1px solid #cfded9; border-radius: 8px; background: white; }
 .ccre-context.compact { margin: 0 13px 13px; }
