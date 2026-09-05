@@ -10,12 +10,15 @@ from __future__ import annotations
 import csv
 import gzip
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import local_service.genia as genia_module
 

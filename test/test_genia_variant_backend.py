@@ -242,11 +242,20 @@ def test_qc_counts_evidence_tokens_not_untrusted_derived_count(tmp_path):
     )
     report = build_report(config, vcf)
     metric = next(
-        item for item in report["metrics"] if item["name"].startswith("GenIA")
+        item for item in report["metrics"]
+        if item["name"] == "GenIA exact allele annotation"
     )
     assert metric["status"] == "PASS"
     assert metric["annotated_records"] == 1
     assert metric["assertions"] == 3
+    # Exact-allele evidence and protein matching are independent QC metrics.
+    # This fixture has no protein-match schema, but its exact evidence is valid.
+    protein_metric = next(
+        item for item in report["metrics"]
+        if item["name"] == "GenIA P/LP protein-change and residue matching"
+    )
+    assert protein_metric["status"] == "SKIPPED_NOT_INSTALLED"
+    assert protein_metric["annotated_records"] == 0
 
 
 def test_registry_declares_independent_optional_exact_allele_contract():
