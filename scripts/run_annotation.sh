@@ -82,6 +82,12 @@ fi
 WORKDIR="$(dirname "$OUTPUT")"
 INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="${INPUT_BASE%.vcf}"
 
+# Shared with UI preflight, but scan every row and the gzip trailer here.
+# No compression, indexing, liftover, or filtering may run on unchecked input.
+log "validating input VCF structure (complete file)"
+python3 "${ROOT}/pipeline/validate_input_vcf.py" --vcf "$INPUT" \
+    || die "input VCF validation failed; no annotation was started"
+
 # --- runtime / image from config ---------------------------------------------
 RUNTIME="$(yaml_get "$CONFIG" container.runtime)"; RUNTIME="${RUNTIME:-docker}"
 IMAGE="$(yaml_get "$CONFIG" container.image)";     IMAGE="${IMAGE:-vep-annotate:latest}"
@@ -96,11 +102,14 @@ export RUNTIME IMAGE
 # cache — its creation is serialized by a lock below instead.
 RUN_TOKEN="run$$"
 POSTPROC_TMPS=()
+RUN_SCRATCH=""
 cleanup_postproc_tmps() {
     local tmp
     for tmp in ${POSTPROC_TMPS[@]+"${POSTPROC_TMPS[@]}"}; do
         rm -f "$tmp" "${tmp}.gz" "${tmp}.tbi" "${tmp}.csi"
     done
+    # This private directory is created by mktemp below, never user supplied.
+    [[ -z "$RUN_SCRATCH" ]] || rm -rf -- "$RUN_SCRATCH"
 }
 trap cleanup_postproc_tmps EXIT
 
@@ -120,6 +129,19 @@ RESOLVED_ASSEMBLY="$(python3 "${ROOT}/pipeline/vcf_assembly.py" \
     --vcf "$INPUT" --requested "$REQUESTED_ASSEMBLY")" \
     || die "input assembly validation failed"
 log "input assembly: requested=${REQUESTED_ASSEMBLY}, resolved=${RESOLVED_ASSEMBLY}"
+
+if [[ "$DRY" != "1" ]]; then
+    log "checking container access to input, references, and work folders"
+    ACCESS_ARGS=(--config "$CONFIG" --input "$INPUT" --output "$OUTPUT" --root "$ROOT" --assembly "$RESOLVED_ASSEMBLY")
+    [[ "$ALL_VARIANTS" == "1" ]] && ACCESS_ARGS+=(--all-variants)
+    python3 "${ROOT}/pipeline/container_access.py" "${ACCESS_ARGS[@]}" \
+        || die "container file access check failed; no annotation was started"
+    # Avoid macOS's unshared /var/folders scratch paths. Host-side temporary
+    # files that later enter a container live beside the verified output dir.
+    RUN_SCRATCH="$(mktemp -d "${WORKDIR}/.guide-iei-work.XXXXXX")" \
+        || die "cannot create annotation temporary directory"
+    export TMPDIR="$RUN_SCRATCH"
+fi
 
 if [[ "$RESOLVED_ASSEMBLY" == "GRCh37" ]]; then
     [[ "$(yaml_get "$CONFIG" liftover.enabled)" != "false" ]] \
@@ -586,7 +608,7 @@ done
 
 case "$RUNTIME" in
     docker|podman)
-        FULL=( "$RUNTIME" run --rm "${MOUNT_FLAGS[@]}" --entrypoint sh "$IMAGE" -c "$VEP_CMD_STR" ) ;;
+        FULL=( "$RUNTIME" run --rm --ulimit core=0:0 "${MOUNT_FLAGS[@]}" --entrypoint sh "$IMAGE" -c "$VEP_CMD_STR" ) ;;
     singularity|apptainer)
         FULL=( "$RUNTIME" exec "${MOUNT_FLAGS[@]}" "$IMAGE" sh -c "$VEP_CMD_STR" ) ;;
     *) die "unsupported runtime: $RUNTIME" ;;
@@ -714,7 +736,7 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
                 # its JSON mid-write and losing containers silently. Unbuffered
                 # IO avoids the crashing layer entirely; verified empirically
                 # (exit 139 + truncated output -> exit 0 + complete output).
-                "$RUNTIME" run --rm \
+                "$RUNTIME" run --rm --ulimit core=0:0 \
                     -e PERLIO=:unix \
                     -v "${CANDIDATE_DIR}:/work:rw" \
                     -v "${CACHE_DIR}:/cache:rw" \

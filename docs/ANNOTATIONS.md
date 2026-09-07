@@ -27,7 +27,7 @@ work whether or not you have the large/custom datasets on hand.
 | **auto** | VEP cache, reference FASTA, LOFTEE GRCh38 data, SpliceAI masked MANE SNVs, RepeatMasker, SegDup | `scripts/download_references.sh` (SpliceAI is fetched from Ensembl; RepeatMasker/SegDup are fetched from UCSC and cleaned for VEP automatically) |
 | **auto, per-run** | ClinVar | fetched fresh from NCBI on every run by `scripts/fetch_clinvar.sh` |
 | **local updateable snapshot** | ClinGen Evidence Repository variant curations | installed or updated from the annotation-dataset UI; prepared by `scripts/update_clingen_erepo.sh` |
-| **large local** | dbNSFP; CADD v1.7 whole genome (WGS only) | dbNSFP requires academic registration and one-time rebuilding (`scripts/prepare_dbnsfp.sh`). CADD's required score-only files are downloadable/resumable from the UI or `scripts/download_cadd_wgs.sh`. |
+| **large local** | dbNSFP; CADD v1.7 whole genome (WGS only) | dbNSFP requires academic registration; paste the GRCh38 link for direct download and validation without rebuilding. Legacy chromosome archives can be prepared with `scripts/prepare_dbnsfp.sh`. CADD's score-only files are downloadable/resumable from the UI or `scripts/download_cadd_wgs.sh`. |
 | **licensed** | PromoterAI; FuncVEP | obtain PromoterAI from Illumina; after acknowledgement, FuncVEP can be downloaded directly from official Zenodo and prepared locally (`scripts/download_funcvep.sh`), or an existing ZIP can be used (`scripts/prepare_funcvep.sh`); auto-skipped if absent |
 | **registered-user, supplied locally** | GenIA | obtain authorized exports from the [GenIA homepage](https://geniadb.org/) and select any one or subset in the User action needed card; GUIDE-IEI detects their roles and builds a private component-based SQLite index; no credentials, download URLs, or source data are bundled |
 | **optional public** | LoGoFunc | resumable direct download from Zenodo in the UI or `scripts/download_logofunc.sh`; an existing download can be validated and moved into managed storage with `scripts/prepare_logofunc.sh`; auto-skipped if absent |
@@ -378,9 +378,9 @@ schema. A completely absent annotation dataset is therefore not mistaken for
 an unscored indel.
 
 SCREEN cCREs are a native indexed BED resource, not a VEP plugin. The pinned
-public Registry V4 GRCh38 BED and index ship with the native software bundle;
-the dataset screen offers a repair download only if the bundled copy is
-missing. The command-line repair remains
+public Registry V4 GRCh38 BED and index are downloaded by dataset setup;
+they should not be assumed to ship in the application archive.
+The command-line setup/repair remains
 `scripts/download_references.sh config/annotation.config.yaml --only ccre`.
 The preparation retains cCRE accessions and overall classes for future display,
 normalizes primary contigs, and creates a BGZF/tabix BED. It also builds a

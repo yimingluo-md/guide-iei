@@ -20,27 +20,31 @@ The top of the dataset screen provides three primary actions:
 
 - **Recommended for exome** installs the pinned VEP cache/FASTA and LOFTEE
   data, SpliceAI MANE, RepeatMasker, SegDup, ClinVar, and ClinGen variant
-  curations. Allow up to approximately 90 GiB on a new installation.
-- **Recommended for WGS** installs the exome set plus CADD v1.7 whole-genome
-  SNV and indel score tables. Allow up to approximately 180 GiB on a new
-  installation.
+  curations, plus missing gene-model, cCRE/TSS, and liftover references.
+- **Recommended for WGS** installs the same set plus SCREEN tissue/immune
+  contexts. CADD whole-genome is a separate optional download, not part of
+  this action. The SpliceAI table is the same MANE SNV resource in both profiles.
 - **Update installed datasets** refreshes ClinVar and ClinGen variant
   curations. VEP, dbNSFP, CADD, SpliceAI, and SCREEN remain pinned until a
   validated software release changes them.
 
-Existing complete files are verified and skipped, and interrupted supported
+The free-space check includes a conservative preparation allowance, not just
+download bytes; do not interpret it as a measured installed size. See
+[disk-space planning](guide/03-datasets.md#plan-disk-space-first).
+
+Existing complete files are checked and skipped, and interrupted supported
 downloads remain resumable. The bulk actions cannot obtain dbNSFP or
 PromoterAI on the user's behalf because dbNSFP requires academic registration
 and PromoterAI requires a separate Illumina license. FuncVEP remains outside
 the recommended bulk profiles because it is optional and requires explicit
 acknowledgement; its own card can download the official archive directly after
 that acknowledgement. dbNSFP and PromoterAI remain prominent guided setups;
-FuncVEP and the registered-user GenIA importer appear with LoGoFunc and CADD
-under **Optional add-ons**.
+FuncVEP appears with LoGoFunc, CADD, and OMIM under **Optional add-ons**.
+GenIA appears under **User action needed** because its files must be supplied
+by the user, but remains optional.
 
-When GUIDE-IEI is launched from a clean source checkout rather than a packaged
-release, the same recommended action also downloads any release reference
-payload that is absent from the checkout: the Ensembl gene model used by the
+The recommended action also downloads any missing large reference payload:
+the Ensembl gene model used by the
 frameshift rule, the SCREEN cCRE/gene-TSS files, and the GRCh37 liftover bundle.
 An interrupted repair keeps completed files and can be retried from the same
 button.
@@ -129,14 +133,14 @@ before enabling it. The official indel table covers gnomAD genomes r4.0
 indels, so a novel indel may have no precomputed score. Missing scores remain
 missing; CADD is displayed after import and is not a WGS import criterion.
 
-## ENCODE SCREEN cCREs — included with the native release
+## ENCODE SCREEN cCREs — installed by dataset setup
 
 The whole-genome import screen uses the public GRCh38 SCREEN Registry V4 cCRE
 BED as its default noncoding-region route. This is a native region intersection,
 not a VEP plugin or CSQ annotation. The prepared Registry V4 BED, tabix index,
-and Ensembl 113 gene-TSS table ship with the native application bundle. If a
-bundled file is damaged or missing, the dataset card offers **Download bundled
-files**. The repair command-line equivalent is:
+and Ensembl 113 gene-TSS table are installed by reference setup; the current
+application archive should not be assumed to contain them. The dataset card
+offers download/repair controls when they are missing. The command-line equivalent is:
 
 ```bash
 bash scripts/download_references.sh config/annotation.config.yaml --only ccre
@@ -150,13 +154,13 @@ by the pipeline. No additional user annotation file is needed. Updating either
 release in a future software version will invalidate and rebuild the relevant
 local context.
 
-## hg19/GRCh37 input — included with the native release
+## hg19/GRCh37 input — installed by dataset setup
 
 The normalized UCSC hg19 primary FASTA, FASTA indexes, and pinned
-hg19-to-GRCh38 chain also ship with the native application bundle. This adds
-approximately 915 MB but avoids a fragile first-use download for legacy VCFs.
-The dataset screen validates these files automatically and offers **Repair
-bundled files** only when one is missing. Re-alignment and re-calling against
+hg19-to-GRCh38 chain are installed by reference setup. Allow for these files
+and their preparation space even when using a packaged application.
+The dataset screen checks availability and offers repair when necessary.
+Re-alignment and re-calling against
 GRCh38 remains preferable when source reads are available.
 
 When a variant is opened, the review screen always reports cCRE status,
@@ -221,15 +225,17 @@ bash scripts/update_clingen_erepo.sh config/annotation.config.yaml
 
 ## Components included with the validated software bundle
 
-No separate user setup is required for:
+These components are part of the validated stack. Their code may ship with
+the application/container, but large reference data are installed separately
+by the recommended setup:
 
 - **LOFTEE** — the GRCh38 plugin is included in the pinned VEP container,
-  together with its validated ancestor, conservation database, and GERP
-  resources. Project reference: [konradjk/loftee](https://github.com/konradjk/loftee).
-- **RepeatMasker** — the included UCSC hg38 track is cleaned and contig-normalized
+  while its validated ancestor, conservation database, and GERP resources
+  are downloaded during setup. Project reference: [konradjk/loftee](https://github.com/konradjk/loftee).
+- **RepeatMasker** — the downloaded UCSC hg38 track is cleaned and contig-normalized
   for the Ensembl VEP cache. Project reference:
   [RepeatMasker](https://www.repeatmasker.org/).
-- **Segmental duplications** — the included UCSC hg38 `genomicSuperDups` track
+- **Segmental duplications** — the downloaded UCSC hg38 `genomicSuperDups` track
   is cleaned and contig-normalized. Source reference:
   [UCSC Table Browser](https://genome.ucsc.edu/cgi-bin/hgTables?db=hg38&hgta_group=varRep&hgta_track=genomicSuperDups).
 - **ENCODE SCREEN cCREs** — the prepared Registry V4 GRCh38 BED, tabix index,
@@ -245,9 +251,11 @@ No separate user setup is required for:
 If a bundled component is reported missing, repair or reinstall the validated
 reference bundle rather than substituting an untested release.
 
-Release packaging validates exact byte sizes and SHA-256 checksums from
-`config/native_reference_bundle.json`. Maintainers build the approximately
-943 MiB native payload with `scripts/build_native_reference_bundle.sh`.
+A separate maintainer tool, `scripts/build_native_reference_bundle.sh`, can
+build an approximately 943 MiB payload with byte-size/SHA-256 checks from
+`config/native_reference_bundle.json`. It is not currently invoked by the
+standard application release workflow; its existence is not evidence that
+those payload files are inside a release ZIP.
 
 ## LoGoFunc — optional public download
 

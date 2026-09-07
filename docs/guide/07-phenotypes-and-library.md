@@ -19,7 +19,8 @@ silently overwriting clinical information.
 
 After any review intake, **Keep in Sample Library** is on by default (with
 **Include qualifying variants in Cohort Search** alongside it); choose
-**Review once** when no trace should remain. For each retained dataset,
+**Review once** to avoid a managed library copy or cohort entry. Annotation
+outputs, logs, and preparation caches can still remain. For each retained dataset,
 GUIDE-IEI records the source file, assay scope, import settings,
 annotation-resource versions, and other provenance needed to understand how
 the review set was produced. Technical identifiers, checksums, and
@@ -92,6 +93,10 @@ in the technical reference.
 Local storage does not remove the need for institutional safeguards. Users
 remain responsible for workstation encryption, access control, backup,
 retention, and any applicable privacy requirements.
+
+Before an update, migration, or removal, follow
+[Backup and restore](../SAMPLE_LIBRARY_AND_STORAGE.md#backup-and-restore).
+A TSV export saves selected results, not the complete library or its history.
 
 Technical reference:
 [Sample Library & storage](../SAMPLE_LIBRARY_AND_STORAGE.md) and

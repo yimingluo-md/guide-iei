@@ -32,7 +32,8 @@ VEP_CACHE_DIR="$(yaml_get "$CONFIG" reference.vep_cache_dir)"
 
 mkdir -p "$(dirname "$OUTPUT")"
 [[ -z "$MANIFEST" ]] || mkdir -p "$(dirname "$MANIFEST")"
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/clinical_protein_catalog.XXXXXX")"
+# Use the catalog's own shared filesystem even when called outside a run.
+WORK="$(mktemp -d "$(dirname "$OUTPUT")/.clinical_protein_catalog.XXXXXX")"
 trap 'rm -rf "$WORK"' EXIT
 SOURCE_VCF="${WORK}/source.vcf"
 METADATA="${WORK}/source-metadata.tsv"
@@ -51,7 +52,7 @@ VEP_INNER="vep -i /w/source.vcf -o /w/source.vep.tsv \
 
 case "$RUNTIME" in
   docker|podman)
-    "$RUNTIME" run --rm \
+    "$RUNTIME" run --rm --ulimit core=0:0 \
       -v "${WORK}:/w" -v "${VEP_CACHE_DIR}:/cache:ro" \
       --entrypoint sh "$IMAGE" -c "$VEP_INNER"
     ;;

@@ -15,7 +15,7 @@ scripts/setup_environment.sh    host setup check + no-admin bootstrap
 scripts/download_references.sh  fetch VEP cache / FASTA / LOFTEE / RepeatMasker / SegDup
 scripts/install_recommended_datasets.sh  one-click exome/WGS public dataset setup
 scripts/update_refreshable_datasets.sh  refresh ClinVar + ClinGen variant curations
-scripts/build_native_reference_bundle.sh  package shipped SCREEN + hg19 resources
+scripts/build_native_reference_bundle.sh  separate SCREEN + hg19 bundle builder (not wired into the app release)
 scripts/build_coding_bed.sh     build coding+splice BED (Ensembl GTF)
 scripts/download_dbnsfp.sh      resume + verify a user-authorized dbNSFP download
 scripts/prepare_dbnsfp.sh       verify + install a downloaded dbNSFP release

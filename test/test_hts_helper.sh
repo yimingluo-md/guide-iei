@@ -33,6 +33,8 @@ hts bcftools view -R "$WORK/bed dir/regions.bed.gz" -o "$WORK/output dir/out.vcf
 grep -Fx -- '--entrypoint' "$CAPTURE" >/dev/null
 grep -Fx -- 'bcftools' "$CAPTURE" >/dev/null
 grep -Fx -- '--pull=never' "$CAPTURE" >/dev/null
+grep -Fx -- 'core=0:0' "$CAPTURE" >/dev/null
+[[ "$(ulimit -c)" == "0" ]]
 grep -E '^/hts_[0-9]+/(regions.bed.gz|out.vcf.gz|in.vcf.gz)$' "$CAPTURE" >/dev/null
 if grep -F "$WORK/input dir/in.vcf.gz" "$CAPTURE" >/dev/null; then
     echo "FAIL: host path leaked into container args" >&2
@@ -62,5 +64,16 @@ if (RUNTIME=docker hts tabix -p vcf "$WORK/output dir/out.vcf.gz") \
 fi
 unset FAKE_RUN_RC
 [[ "$(wc -l < "$RUN_COUNT" | tr -d ' ')" == "1" ]]
+
+# A crashing executable stays failed with its original exit status and must
+# not be retried into an apparent success. No actual crash/core is needed.
+export FAKE_RUN_RC=139
+crash_rc=0
+(RUNTIME=docker hts tabix -p vcf "$WORK/output dir/out.vcf.gz") \
+    >"$WORK/crash.log" 2>&1 || crash_rc=$?
+unset FAKE_RUN_RC
+[[ "$crash_rc" == "139" ]]
+[[ "$(wc -l < "$RUN_COUNT" | tr -d ' ')" == "2" ]]
+grep -F 'terminated by a signal (exit 139); not retrying' "$WORK/crash.log" >/dev/null
 
 echo "PASS  HTS container path mapping and no-pull guard (docker + singularity)"

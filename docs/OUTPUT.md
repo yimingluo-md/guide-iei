@@ -8,6 +8,28 @@ nav_order: 5
 
 [Manual home](index.md)
 
+## Which files should I open and keep?
+
+Use **Open results** on the completed job, or the final filename printed in
+the log's `DONE. Annotated VCF:` line. Do not choose a sibling VCF by newest
+timestamp: a previous run may have left one behind. The small
+`<requested-output>.deliverable` text file names this run's final VCF in the
+same directory (often an `.aamatch.vcf.gz` file when protein matching runs).
+
+| Artifact | Purpose |
+|---|---|
+| Original input VCF and any supplied index | Preserved source calls; needed to change annotation scope |
+| Final `.vcf.gz` and `.tbi`/`.csi` index | Complete annotation deliverable; use this for review intake |
+| `<final.vcf.gz>.annotation_qc.html` and `.annotation_qc.json` | Human-readable coverage report and machine-readable counts |
+| `<final.vcf.gz>.run_manifest.json` | Run configuration, tools, and source identities; check the log if absent |
+| `.deliverable` sidecar and job log | Final-output selection and execution diagnostics |
+| GRCh37 conversion audits, when produced | Rejected/unsupported records and reference corrections; see [GRCh37 input](GRCH37_INPUT.md) |
+
+A successful VCF can still have coverage warnings; review them before using
+the result. A run-manifest write failure is logged separately and means the
+provenance artifact is incomplete. Export TSV is a selected review table,
+not a complete VCF or a backup of library identities and phenotypes.
+
 ## The annotated VCF
 
 The pipeline produces an annotated, bgzipped VCF. All VEP annotations live in
@@ -92,8 +114,8 @@ update can be distinguished without retaining the original exports.
 
 ## Notes on the container and annotation sources
 
-- The diagnostic profile uses **dbNSFP v5.4a**, the current academic release
-  when this profile was updated, distributed by the dbNSFP project as a
+- The diagnostic profile uses an authorized academic **dbNSFP** release,
+  supplied by the user and distributed by the dbNSFP project as a
   single GRCh38-sorted, tabix-indexed BGZF file ready for VEP. Recent dbNSFP
   releases are built on newer transcript sets than the pinned VEP 113
   image/cache. Coordinate-level dbNSFP lookup works by GRCh38 allele, but
@@ -105,8 +127,7 @@ update can be distinguished without retaining the original exports.
   rsID may not receive a gnomAD frequency even when the normalized allele is
   present in the Browser. Therefore, a blank gnomAD annotation means
   “unavailable from this VEP annotation,” not definitive absence from gnomAD.
-  This is expected to have limited practical impact because variants without
-  rsIDs are generally rare, but important candidates should be confirmed in
+  Important candidates should be checked in
   the gnomAD Browser by normalized chromosome, position, REF, and ALT.
 - **LOFTEE must be the `grch38` branch** for GRCh38 (GERP bigwig + GRCh38
   conservation SQL). This is baked into the image at `/opt/vep/src/loftee`

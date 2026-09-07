@@ -28,15 +28,15 @@ of where annotation was performed.
 
 No reviewer can, or should, examine a whole genome variant by variant. The
 default review profile (**Compact WGS**) therefore applies a
-candidate-selection step whose guiding principle is *preserved sensitivity
-for plausibly disease-relevant variation*: a variant is excluded only when
-there is affirmative evidence it is common or falls outside every category
-of interest — never because data are missing.
+candidate-selection step. It is a candidate set, not an exhaustive inventory
+of disease-relevant variation. Missing population frequency passes the frequency
+check; a missing predictor score does not satisfy that score's route. A variant
+must still meet another route or a defined indel exception below.
 
 Two conditions are required of every variant: a PASS or unfiltered (`.`)
 site FILTER with acceptable call quality, and a gnomAD popmax ≤ 0.01 **or no available
-popmax value** — an unscored variant is deliberately retained rather than
-discarded for lack of data. A variant meeting these conditions is kept if
+popmax value**. Passing the frequency check alone does not retain a variant.
+A variant meeting these conditions is kept if
 it satisfies **any** of four criteria:
 
 1. it lies within coding exons or canonical splice sites;
@@ -49,12 +49,17 @@ it satisfies **any** of four criteria:
 
 Because the precomputed SpliceAI and PromoterAI tables score
 single-nucleotide variants but not every indel, an intronic or promoter
-indel that *cannot* be scored is retained rather than silently lost, and is
+indel meeting the corresponding unscored-indel exception is retained and is
 flagged (`IEI_UNSCORED_INDEL`) so the reviewer knows the score is absent
 rather than reassuring. A variant whose score is present but sub-threshold
 does not use this exception. For these unscored indels, an on-demand
 SpliceAI score can be requested for the individual variant under review
 ([Reading a variant page](09-reading-a-variant.md)).
+
+The exception requires the relevant predictor field to be declared in the VCF;
+the promoter route also needs the installed transcript/TSS map. An entirely
+absent annotation source does not activate the exception. These routes still
+require frequency and quality checks.
 
 In one internal test genome, the Compact WGS profile reduced approximately
 4.3 million PASS variants to about 23,000 retained records. This is an
@@ -122,7 +127,8 @@ future development is planned for regulatory-region prediction, including
 assignment of regulatory elements to their target genes and variant-level
 impact scores.
 
-*[Screenshot: whole-genome variant detail with Regulatory evidence tab]*
+See the [regulatory-evidence reference](../SCREEN_TISSUE_IMMUNE_DATA.md#variant-review-interface-and-filtering)
+for display states and assay-availability labels.
 
 Three interpretive boundaries deserve emphasis, because non-coding
 evidence invites over-reading:
@@ -145,8 +151,10 @@ For IEI work specifically, the variant list can be restricted to variants
 whose overlapping element shows *positive* activity in immune-related
 tissues or curated immune-cell contexts, using the built-in Immune core
 and Immune all sets or user-defined selections. Consistent with the
-principle above, missing or negative context never excludes a variant
-automatically.
+principle above, context does not exclude variants unless you enable the
+positive-evidence filter. Once enabled, variants without qualifying positive
+context are hidden, including those with unavailable context. Display sets and
+variant-list filters are separate controls.
 
 ## Practical notes
 

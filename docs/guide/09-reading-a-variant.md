@@ -26,8 +26,20 @@ One caveat is specific to this annotation pathway: a blank gnomAD value means
 “unavailable from this VEP annotation,” not necessarily “absent from gnomAD.”
 Depending on the VEP cache's variant-matching process, a variant without an
 rsID may lack frequency data even when the allele is present in the gnomAD
-Browser. However, we expect most such unannotated variants, if present, to be
-ultra-rare in gnomAD.
+Browser. Verify important candidates by normalized allele in the source;
+do not infer rarity from a missing annotation alone.
+
+### Frequency controls
+
+Variant Review defaults to **≤0.01 (1%)**. Choose **≤0.0001**, **≤0.001**, or
+**≤0.01**, or enter a **Custom** value such as `0`, `0.00001`, or `1e-5` and
+select **Apply**. **No limit** explicitly disables this frequency filter.
+The display shows both decimal frequency and percent.
+
+At **0**, recorded zero and missing popmax values remain. This does **not** mean
+every retained variant has been confirmed absent from gnomAD. Missing values
+remain at every threshold. Cohort Search and intake retain their own adjustable
+frequency controls; a review filter cannot recover records excluded at intake.
 
 ## Consequence and transcripts
 
@@ -414,8 +426,11 @@ within ±500 kb with strand-aware distances — or verified non-overlap.
 Activity is then shown at two levels: organ- and tissue-level
 classifications for body-wide context, and a curated immune-cell layer of
 28 cell-type contexts spanning T- and B-cell subsets, NK cells,
-monocytes, dendritic cells, granulocytes, and hematopoietic progenitors,
+monocytes and hematopoietic progenitors,
 each backed by identified donors from baseline, untreated primary cells.
+The baseline lacks dendritic-cell, neutrophil/granulocyte, plasma-cell,
+mast-cell, and erythroid/megakaryocyte contexts. This is missing coverage, not
+evidence of inactivity; see [IEI coverage limits](../SCREEN_TISSUE_IMMUNE_DATA.md#iei-coverage-limits).
 
 Three display conventions keep this evidence honest:
 

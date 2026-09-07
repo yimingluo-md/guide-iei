@@ -20,16 +20,17 @@ route in the appendix.
 - A reasonably modern computer: **Mac running macOS 13 or newer** (Intel or
   Apple Silicon), **Windows 10/11** (via WSL2, which the launcher arranges),
   or **Linux**.
-- **Disk space**: approximately 110 GB for the exome reference datasets and
-  more for whole-genome work ([the next chapter](03-datasets.md) provides
+- **Disk space**: plan datasets, preparation workspace, and sample storage
+  separately ([the next chapter](03-datasets.md) provides
   the planning table). Datasets may reside on an external SSD when the
   internal drive is small.
-- **No administrator rights are required on a Mac**, and nothing is
-  installed system-wide: application files go under
+- **The managed Mac installation needs no administrator rights**: application files go under
   `~/Library/Application Support/GUIDE-IEI/`, while runtimes and workbench
   state live under `~/.iei-variant-review/`. On a clean Windows computer,
   installing WSL2/Ubuntu is a one-time administrator-approved Windows change.
-  Docker Desktop is an additional requirement only when running annotation.
+  Annotation also needs a working Linux container runtime. Docker Desktop with
+  WSL integration is the simplest Windows option. Optional native tools added
+  through an existing package manager are outside the managed folder.
 
 ## Get the software
 
@@ -44,6 +45,22 @@ use the green **Code** button → **Download ZIP**, then choose **Extract All**
 and place the extracted `guide-iei` folder somewhere ordinary. Do not run the
 launcher from inside the ZIP preview. Avoid cloud-synced locations
 (OneDrive, Dropbox, iCloud Drive): sync services interfere with working files.
+
+### Which file do I open?
+
+| Installation | Start here |
+|---|---|
+| Standalone Mac release ZIP | Double-click `GUIDE-IEI.app` |
+| Mac source ZIP or Git checkout | Open `desktop/macos/GUIDE-IEI-Workbench.command` inside the complete extracted repository |
+| Windows source ZIP | Open `desktop/windows/GUIDE-IEI.bat`, or use [Start directly in WSL](#windows-start-directly-in-wsl) |
+| Linux | Run `bash scripts/start_workbench.sh` after environment setup |
+
+The Mac `.command` launcher also performs first-use setup. Do not move it out
+of the repository. The source-tree `.app` is a development template, not the
+standalone release: macOS can isolate it from its sibling files. If it says it
+was separated from its repository, use the `.command` launcher or the standalone
+release. A downloaded `.command` can also receive a macOS security warning;
+neither entry point bypasses institutional security policy.
 
 ## Mac: double-click GUIDE-IEI
 
@@ -82,6 +99,12 @@ allow the app; there is no safe application-side bypass for that policy.
 
 ## Windows: double-click GUIDE-IEI and follow the one-time WSL2 prompt
 
+The Windows launcher is not yet signed with a trusted publisher certificate.
+Windows security may block it. If that happens, use the separately supported
+[direct WSL start](#windows-start-directly-in-wsl) below on a machine where
+running this software in WSL is permitted. Do not turn off Windows security
+or change an institution's execution policy to run GUIDE-IEI.
+
 GUIDE-IEI runs inside **WSL2** (a Linux environment Windows provides) with
 Ubuntu. The launcher checks this environment before copying or starting
 anything:
@@ -117,6 +140,87 @@ first-run setup. Keep the launcher window open while you work; closing it stops
 the workbench. If startup fails, the window remains open and prints the path to
 a diagnostic log under `%LOCALAPPDATA%\GUIDE-IEI\logs`.
 
+## Windows: start directly in WSL
+
+This starts the same workbench without the Windows `.bat` or PowerShell
+launcher. No GUIDE-IEI account or Microsoft-account sign-in is required by the
+workbench itself; WSL, Store, and organizational requirements are separate.
+
+### One-time Windows setup
+
+In **Administrator PowerShell**, install Ubuntu if it is missing:
+
+```powershell
+wsl --install -d Ubuntu
+```
+
+Restart if requested, open **Ubuntu** from Start, and create the Linux username
+and password. If the Store download is unavailable or stalls, Microsoft also
+documents `wsl --install --web-download -d Ubuntu`. See
+[Microsoft's WSL installation instructions](https://learn.microsoft.com/en-us/windows/wsl/install).
+
+In ordinary **PowerShell**, check the distribution and start it:
+
+```powershell
+wsl --list --verbose
+wsl -d Ubuntu
+```
+
+Use the exact distribution name listed if it is not `Ubuntu`. Its VERSION must
+be **2**; Docker Desktop's own distribution is not suitable. These are Windows
+commands, not commands to paste into Ubuntu. See
+[Microsoft's WSL command reference](https://learn.microsoft.com/en-us/windows/wsl/basic-commands).
+
+### First GUIDE-IEI start inside Ubuntu
+
+If the Windows launcher already installed `~/guide-iei`, use that folder and
+skip cloning. Otherwise, run these commands **in Ubuntu**, one line at a time:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git
+git clone https://github.com/yimingluo-md/guide-iei.git ~/guide-iei
+```
+
+Do not delete or overwrite an existing folder if Git reports that it exists.
+Then, in the same Ubuntu window:
+
+```bash
+cd ~/guide-iei
+bash scripts/setup_environment.sh --install
+bash scripts/start_workbench.sh
+```
+
+Ubuntu may request your **Linux password**; no characters appear while typing.
+For annotation, start Docker Desktop and enable WSL integration for this Ubuntu
+distribution before setup. Advanced Linux users may use their own working
+container engine instead. File preparation/indexing also needs native file tools
+or a container backend; setup reports what is missing.
+
+Open **http://127.0.0.1:3000** in your normal Windows browser. Direct terminal
+starts may not open the browser automatically. Keep Ubuntu open; **Ctrl+C** stops
+the workbench. Diagnostics appear in Ubuntu, not the Windows launcher's log folder.
+
+### Every later start
+
+Open **Ubuntu** from Start (or run `wsl -d Ubuntu` in PowerShell), then:
+
+```bash
+cd ~/guide-iei
+bash scripts/start_workbench.sh
+```
+
+Use the same distribution, Linux user, and repository each time to find the
+same library. Do not make a second installation merely because the browser
+failed to open; check the Ubuntu window first.
+
+**Windows security note.** SmartScreen reputation warnings and Smart App Control
+blocks differ; there is no universal “Run anyway” step. Trusted-publisher signing
+is planned, not implemented. Signing requires a trusted publisher certificate,
+not a user's Microsoft-account sign-in. If policy also prohibits WSL or this
+software, ask IT for approval. See
+[Microsoft's Smart App Control FAQ](https://support.microsoft.com/en-us/windows/security/threat-malware-protection/smart-app-control-frequently-asked-questions).
+
 ## What the first launch prepares
 
 The preparation step is a **setup check with an installer attached**. It
@@ -139,9 +243,10 @@ Ubuntu/WSL2 may request the Linux user's password for system packages:
 - **Native bcftools/tabix** (optional, recommended) — accelerates file
   operations severalfold; added automatically when a package manager is
   available.
-- **A smoke test** — the complete wiring is exercised end to end, with no
-  downloads and no patient data, so the installation is verified before
-  any time is invested in dataset downloads.
+- **A smoke test** — checks command construction and synthetic postprocessing
+  without annotation downloads. It does not execute the real VEP stack or
+  verify dataset completeness; run the control-variant regression after setup
+  ([QC checks](10-quality-control.md)).
 
 Its summary looks like this:
 
@@ -155,8 +260,8 @@ Its summary looks like this:
 [ OK ] node v26.7.0 (>= 22.13)
 [ OK ] webui/node_modules present
 [ OK ] native bcftools/tabix/bgzip found — htslib I/O runs without container overhead
-[WARN] disk: only 38 GiB free — the exome reference set alone needs ~40 GiB
-       (the Storage page can place datasets on another drive)
+[WARN] disk: insufficient space for the selected reference setup
+       (see the dataset planning table and Storage page)
 [ OK ] pipeline smoke test passed (test/test_dry_run.sh)
 
 == Summary: 7 ok, 1 warning(s), 0 to fix
@@ -174,31 +279,20 @@ move whenever the installation appears broken.
 WSL2 keeps its entire Linux filesystem in a single virtual-disk file that
 resides on the Windows system drive (`C:`) by default and **grows as data
 are added**. Once the annotation datasets are installed, this file reaches
-the sizes described in the [next chapter](03-datasets.md) — roughly
-**110 GB for exome work, 150–250 GB for the full whole-genome stack**. The
-practical rule: the drive hosting WSL must have that much free space.
+the sizes described in the [next chapter](03-datasets.md). The drive hosting
+WSL must accommodate datasets, preparation workspace, and sample data together.
 
 When `C:` is too small, there are two good options and one fallback:
 
-- **Relocate WSL to a larger internal drive** (preferred). In PowerShell:
+- **Place WSL on a larger internal drive** (preferred). Plan this before
+  downloading datasets. Recent WSL versions offer a `--location` option for a
+  new distribution; check `wsl --help` and Microsoft's command reference for
+  your installed version. Relocating an existing distribution is an advanced
+  backup-and-restore task; use the safeguards below.
 
-  ```
-  wsl --shutdown
-  wsl --export Ubuntu D:\wsl\ubuntu.tar
-  wsl --unregister Ubuntu
-  wsl --import Ubuntu D:\wsl\Ubuntu D:\wsl\ubuntu.tar
-  ```
-
-  This moves the entire Linux filesystem to `D:` (adjust the drive
-  letter). Performed **before** datasets are downloaded, there is almost
-  nothing to move. Export first; unregister only after the export has
-  succeeded.
-
-- **Relocate WSL to an external SSD.** The same export/import commands
-  accept an external destination, provided the drive is **NTFS-formatted**
-  and remains connected whenever GUIDE-IEI is used. Performance is
-  preserved, because the Linux filesystem still resides inside the virtual
-  disk.
+- **Use an external SSD for WSL.** Arrange relocation to a suitable NTFS
+  volume with the same backup safeguards. The drive must remain connected;
+  speed depends on the SSD, enclosure, and connection.
 
 - **Fallback: datasets on an external drive via `/mnt`.** The **Storage**
   page inside the application can place the annotation datasets at any
@@ -207,6 +301,12 @@ When `C:` is too small, there are two good options and one fallback:
   reference files (dbNSFP, SpliceAI) pay the largest penalty — annotation
   becomes noticeably slower. Prefer one of the relocation options when
   possible.
+
+For an existing WSL distribution, ask IT to help with relocation. **Do not run
+`wsl --unregister` as a troubleshooting shortcut:** it permanently deletes the
+distribution's data. Before any migration, stop jobs, make a verified backup,
+test restoration under a separate distribution name, and retain the original
+until the restored library, Linux user, permissions, and Docker integration work.
 
 ## Common first-run problems
 
@@ -221,6 +321,10 @@ When `C:` is too small, there are two good options and one fallback:
 | Windows: startup fails for another reason | Read the explanation kept open in the launcher window. Its timestamped diagnostic log is under `%LOCALAPPDATA%\GUIDE-IEI\logs`. |
 | The folder lives in OneDrive/Dropbox and behaves oddly | Cloud-synced folders may cause synchronization conflicts, poor performance, or incomplete working files. Use an ordinary local folder whenever possible. |
 | Uncertain what state the installation is in | Run the setup check from the appendix below (no options). It changes nothing and reports exactly what is present and missing. |
+
+For blocked Windows launchers use [Start directly in WSL](#windows-start-directly-in-wsl).
+For dataset, mount, import, and stale-interface errors, see
+[Troubleshooting](../TROUBLESHOOTING.md).
 
 ## Keeping GUIDE-IEI up to date
 
@@ -257,22 +361,27 @@ application. Open **About & updates** in the left navigation:
 Updating never runs while an annotation job, import, or storage
 migration is in progress — finish or cancel those first.
 
-On the terminal route, updating is `git pull` in the repository folder,
-with two caveats the in-app updater handles for you: git refuses to pull
-over a hand-edited `config/annotation.config.yaml` (stash or commit your
-edits first), and when `webui/package.json` changed you must run
-`npm ci` and `npm run build` inside `webui/` before restarting
-`start_workbench.sh`.
+On a clean Git checkout, stop jobs, back up the library, inspect `git status`,
+then use `git pull --ff-only`. If local edits or divergent history prevent it,
+stop and reconcile them; do not reset the repository or commit private
+configuration just to make the update succeed. If dependency manifests changed,
+run `npm ci` inside `webui/`; the launcher detects a changed Git commit and
+rebuilds the interface. See [Backup and restore](../SAMPLE_LIBRARY_AND_STORAGE.md#backup-and-restore).
 The two routes do not mix — after using the in-app updater, keep using
 it (the folder no longer matches git's records).
 
 ## Uninstalling
 
-Delete `GUIDE-IEI.app` and
+First follow [Backup and restore](../SAMPLE_LIBRARY_AND_STORAGE.md#backup-and-restore).
+Then remove `GUIDE-IEI.app` and
 `~/Library/Application Support/GUIDE-IEI/` to remove the installed Mac
 application. The separate `~/.iei-variant-review/` folder contains managed
-tools **and the sample library**, so export anything worth keeping before
-removing it. Nothing was installed system-wide.
+tools **and the sample library**; do not delete it merely to reinstall the app.
+Custom storage roots and the bootstrap registry also remain. Colima/Lima VMs,
+container images, and packages installed through Homebrew, conda, or apt are
+separate. Remove only resources dedicated to GUIDE-IEI, using their own
+management tools, after checking that other applications do not use them.
+A TSV export is not a complete library backup.
 
 ## Appendix: the terminal route
 

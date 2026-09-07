@@ -39,6 +39,15 @@ sys.path.insert(0, os.path.join(root, "pipeline"))
 from indexed_scores import ManifestError, load_manifest, validate_manifest_files
 from predictor_registry import Adapter, RegistryError, load_registry
 from vcf_assembly import resolve_input_assembly
+from validate_input_vcf import validate_input_vcf
+
+# The runner performs the complete streaming scan before any HTS command.
+# Keep the UI preflight fast without maintaining a separate validation rule.
+try:
+    validate_input_vcf(input_path, full=False)
+except ValueError as exc:
+    print(f"ERROR {exc}", file=sys.stderr)
+    raise SystemExit(2)
 
 def absolute(path):
     if not path or os.path.isabs(path):
@@ -431,7 +440,7 @@ case "$RUNTIME" in
         )"
         [[ "$ACTUAL_IMAGE_FINGERPRINT" = "$EXPECTED_IMAGE_FINGERPRINT" ]] || die \
             "container image is from an older GUIDE-IEI version: $IMAGE (rebuild it with: bash docker/build.sh)"
-        "$RUNTIME" run --rm --entrypoint sh "$IMAGE" -c "$CHECK" \
+        "$RUNTIME" run --rm --ulimit core=0:0 --entrypoint sh "$IMAGE" -c "$CHECK" \
             || die "container image cannot run or is missing a required executable: $IMAGE"
         ;;
     singularity|apptainer)
@@ -441,3 +450,8 @@ case "$RUNTIME" in
     *) die "unsupported runtime: $RUNTIME" ;;
 esac
 log "preflight container checks passed"
+RESOLVED_ASSEMBLY="$(python3 "${ROOT}/pipeline/vcf_assembly.py" --vcf "$INPUT" --requested "$INPUT_ASSEMBLY")"
+python3 "${ROOT}/pipeline/container_access.py" \
+    --config "$CONFIG" --input "$INPUT" --output "$OUTPUT" \
+    --root "$ROOT" --assembly "$RESOLVED_ASSEMBLY" \
+    || die "container file access check failed"

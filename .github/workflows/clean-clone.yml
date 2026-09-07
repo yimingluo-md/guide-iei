@@ -75,6 +75,13 @@ jobs:
             python3 "$test_file"
           done
 
+      - name: Documentation links, shell examples, and generated references
+        run: |
+          set -e
+          export PATH="$HOME/.iei-variant-review/tools/bin:$PATH"
+          python3 scripts/check_documentation.py
+          node webui/scripts/export-glossary.mjs --check
+
       - name: WebUI unit tests, type check, lint, production build
         run: |
           set -e

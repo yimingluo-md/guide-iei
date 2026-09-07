@@ -23,29 +23,33 @@ plain language what it contributes; this chapter is a tour of those cards.
 
 ## Plan disk space first
 
-| Dataset | Size | Contributes |
+| Dataset | Approximate payload or preparation requirement | Contributes |
 |---|---|---|
-| Core references (VEP cache, genome FASTA, LOFTEE data, region tracks) | ~30 GB | required for all analyses |
+| Core references (VEP cache, genome FASTA, LOFTEE data, region tracks) | Multiple large archives plus extracted files; see setup's free-space check | required for all analyses |
 | dbNSFP (registration required) | ~52 GB | protein-effect predictors |
 | SpliceAI MANE SNV scores | 27 GB | splice predictions |
 | ENCODE SCREEN + tissue/immune contexts | ~2 GB | WGS regulatory review |
 | PromoterAI (licensed; recommended for WGS) | <1 GB | promoter predictions |
-| CADD whole-genome (optional) | ~83 GB | non-coding CADD only |
+| CADD whole-genome (optional) | ~83 GiB | non-coding CADD only |
 | LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
 | FuncVEP (optional; licensed) | 4.24 GB source ZIP; 24 GiB free for automatic setup | missense functional-effect scores |
 | GenIA (optional; registration required) | source-release dependent; small derived SQLite index | gene–disease, phenotype, and exact-allele evidence |
 
-Dataset sizes are approximate and may change between releases. Allow about
-110 GB for the recommended exome resources and 150–250 GB for a more complete
-WGS installation. Download time varies substantially with internet connection
+These are not additive minimum-disk requirements: compressed downloads,
+installed files, and temporary preparation space are different quantities.
+GB is decimal; GiB is binary (1 GiB is about 1.07 GB). The setup action's
+free-space requirement is the practical check for the selected resources,
+not a prediction of their final installed size. Keep additional room for
+input VCFs, annotation outputs, and the Sample Library. Download time varies substantially with internet connection
 and storage speed; large installations may take several hours. The datasets
 need not reside on the internal drive: the **Storage** page can place them on
 an external SSD, and the application verifies free space before each large
 download rather than failing partway.
 
-Downloads are fetched from a checksum-verified fast mirror first, with the
-official sources as automatic fallback. Interrupted downloads resume rather
-than restart.
+Selected public reference downloads use a checksum-verified mirror with
+official-source fallback; other resources use their documented upstream
+source or a user-supplied file/link. Supported interrupted downloads resume.
+Schema validation and indexing may continue after downloading finishes.
 
 Before a large first-time transfer, GUIDE-IEI checks that the annotation and
 indexing tools are ready. On a clean machine it builds the configured local
@@ -56,18 +60,20 @@ tools is required.
 
 ## Step 1 — One click for the public datasets
 
-Two actions install everything that is freely downloadable:
+Two actions install the recommended public resources (not every optional dataset):
 
 - **Recommended for exome** — the core references plus the datasets used in
   exome review.
-- **Recommended for WGS** — the exome set plus what whole-genome review
-  adds (SpliceAI genome-wide context, the ENCODE SCREEN regulatory data
-  with tissue and immune contexts). PromoterAI is also recommended for
+- **Recommended for WGS** — the exome set plus ENCODE SCREEN tissue and
+  immune contexts. Both profiles use the same SpliceAI MANE SNV table;
+  the WGS action does not add genome-wide indel scores or optional CADD.
+  PromoterAI is also recommended for
   WGS, but because it is licensed it cannot be included in the one-click
   download — it is set up once in Step 3 below.
 
 Progress is reported per dataset. A third action, **Refresh changing
-sources**, checks for updated ClinVar and ClinGen resources. Annotation runs
+sources** (labelled **Update installed datasets** on the setup screen), checks
+for updated ClinVar and ClinGen resources. Annotation runs
 record the source versions used, allowing results from different dates to be
 compared explicitly.
 
@@ -128,7 +134,7 @@ lying outside the exome's coding scope.
 
 ## Step 4 — Optional datasets
 
-- **CADD whole-genome** (83 GB). Coding-region CADD scores are already
+- **CADD whole-genome** (~83 GiB). Coding-region CADD scores are already
   present in dbNSFP; this large download adds CADD for **non-coding**
   positions only, as a complement to SpliceAI, PromoterAI, and cCRE
   evidence in whole-genome review.
@@ -176,8 +182,10 @@ and a missing score is not evidence that a variant is neutral or benign.
   registered-user resource can add immune gene–disease knowledge, reported
   phenotypes, and exact GRCh38 variant records. GUIDE-IEI does not bundle a
   credential, download URL, or GenIA source file. After obtaining the exports,
-  open **Import & QC → Set up annotation datasets → Optional add-ons →
+  open **Import & QC → Set up annotation datasets → User action needed →
   GenIA**, select one or more files, and install them locally.
+  GenIA remains optional; this grouping means that the user supplies the
+  files, not that annotation requires them. dbNSFP is required separately.
 
   The five recognized components are **GEI gene–disease list**, **GenIA
   disease catalog**, **disease–phenotype associations**, **GenIA phenotype
@@ -218,12 +226,16 @@ and a missing score is not evidence that a variant is neutral or benign.
   locally derived VEP coordinates support the comparison only; they do not add
   GenIA gene–disease context.
 
-Already bundled with the software, requiring no download: the ENCODE SCREEN
-cCRE regions, the GRCh37→GRCh38 conversion data, and the gene-knowledge
-resources (gnomAD constraint, HGNC, the IUIS IEI classification, and
-ClinGen gene–disease validity and dosage). Licensed OMIM data and registered-
-user GenIA exports are never shipped. Both are set up under **Import & QC → Set
-up annotation datasets → Optional add-ons**. An authorized OMIM user can paste
+The software includes compact gene-knowledge resources (gnomAD constraint,
+HGNC, the IUIS IEI classification, and ClinGen gene–disease validity and
+dosage). Large annotation references are separate: the recommended setup
+downloads missing SCREEN cCRE/gene-TSS files and GRCh37 conversion data as
+well as the other required references. Do not assume that the application
+download alone contains these files.
+
+Licensed OMIM data and registered-user GenIA exports are never shipped.
+OMIM is under **Optional add-ons**, while GenIA is under **User action needed**
+on the same dataset screen. An authorized OMIM user can paste
 their four private links for local download and indexing, or select an
 institution's already-downloaded copy. GenIA instead accepts authorized local
 exports and retains only its derived component database.
@@ -231,9 +243,14 @@ exports and retains only its derived component database.
 ## Verifying the installation
 
 The dataset screen itself is the status display: each card reports
-installed-or-missing, with versions. For deeper verification, the
-regression panel annotates eight public control variants and asserts the
-expected value from every installed predictor
+installed-or-missing, with versions. Installed required/included resources
+remain on; installed optional predictors default to on where applicable and
+can be changed for that run. “User action needed” can contain both required
+dbNSFP and optional GenIA.
+
+For deeper verification, the regression panel annotates eight public control
+variants and asserts selected expected annotations—not every predictor or
+every source. Review optional `SKIP` results as well as failures
 ([Quality control](10-quality-control.md)):
 
 ```bash

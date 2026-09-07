@@ -10,8 +10,8 @@ nav_order: 1
 
 ## The setup check
 
-The standalone Mac app and Windows launcher run the setup check automatically.
-For source checkouts, run it yourself: it checks everything below, prints an
+The standalone Mac app, source-tree `.command`, and Windows launcher run the
+setup check automatically. For a direct terminal launch, run it yourself: it checks everything below, prints an
 exact fix for anything missing, and `--install` installs supported missing
 prerequisites. A Mac needs no administrator rights or Homebrew; Ubuntu/WSL2
 may request the Linux user's sudo password for system packages:
@@ -51,8 +51,10 @@ What it needs to find (or install):
 
 No Git, Xcode, system Python, VEP, LOFTEE, bgtools, or Perl installation is
 needed by the standalone Mac app — annotation software runs in the container.
-The setup script never edits your shell profile; remove
-`~/.iei-variant-review/tools/` to uninstall everything it added.
+The setup script never edits your shell profile. Its managed tools live under
+`~/.iei-variant-review/tools/`, but optional package-manager installations,
+container images, and the Colima/Lima VM may live elsewhere. Back up the
+library before uninstalling; see [backup and restore](SAMPLE_LIBRARY_AND_STORAGE.md#backup-and-restore).
 
 Optional but recommended: **native `bcftools`/`tabix`/`bgzip`** on the host.
 Without them every htslib operation runs through the container, which works
@@ -93,6 +95,11 @@ running VEP annotation. Docker is not needed merely to import and review an
 already annotated VCF. Terminal users may instead install WSL2/Ubuntu and a
 container runtime themselves, then run the Linux commands above inside Ubuntu.
 
+If Windows blocks the unsigned launcher, use the supported
+[direct WSL startup instructions](guide/02-install.md#windows-start-directly-in-wsl).
+They separate PowerShell installation commands from Ubuntu startup commands.
+Publisher signing is planned; do not disable Windows security to launch the app.
+
 > **Performance caveat.** Keep the clone **and** the large reference files on
 > the **WSL2 filesystem** (`~/...` inside the distro), *not* on a Windows drive
 > under `/mnt/c/...`. Cross-filesystem I/O to `/mnt/c` is very slow, which badly
@@ -100,11 +107,10 @@ container runtime themselves, then run the Linux commands above inside Ubuntu.
 
 > **Disk-space caveat.** The WSL2 filesystem is a virtual-disk file on `C:` by
 > default, growing with use — it must accommodate the reference datasets
-> (~90 GB exome / 150–250 GB full WGS). If `C:` is small, relocate the distro
-> to a larger internal drive or an NTFS external SSD with
-> `wsl --export` / `wsl --unregister` / `wsl --import` **before** downloading
-> datasets; the User Guide's
-> [installation chapter](guide/02-install.md) walks through the commands.
+> (see [dataset planning](guide/03-datasets.md#plan-disk-space-first)). If `C:`
+> is small, plan the Linux distribution's location before installing datasets.
+> Follow the [installation chapter](guide/02-install.md) and involve IT for
+> an existing distribution: `wsl --unregister` permanently deletes its data.
 > Datasets on a `/mnt/*` drive via the Storage page work but pay the
 > cross-filesystem penalty above.
 
@@ -163,12 +169,14 @@ exercises the installed data — not only the command wiring:
 bash scripts/run_annotation_regression.sh
 ```
 
-It annotates eight public GRCh38 controls (three known LoGoFunc OR4F5 missense
+It annotates eight public GRCh38 controls (three LoGoFunc OR4F5 missense
 alleles, NCSTN frameshift, STAT3 missense, IL2RG splice donor, IL2RG
 stop-gained, and a TERT promoter variant), then asserts the PTC-based LOFTEE
 50-bp correction, LOFTEE, AlphaMissense, CADD, SpliceAI, ClinVar, and ClinVar
-amino-acid matching. LoGoFunc and promoterAI are tested when their optional
-local tracks are installed and reported as explicit `SKIP`s otherwise. The
+amino-acid matching. LoGoFunc and PromoterAI checks can report `SKIP` when
+their fields are absent; a skip is not proof of successful installation.
+This is a selected regression panel, not comprehensive coverage of every
+predictor (in particular FuncVEP and GenIA). The
 input contains one synthetic sample named `REGRESSION`; it contains no patient
 data.
 

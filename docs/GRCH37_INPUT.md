@@ -121,10 +121,11 @@ are cached using input, reference, chain, tool, and policy identities.
 
 ## Setup
 
-The native application release includes the normalized hg19 primary FASTA,
-indexes, and hg19-to-GRCh38 chain. The workbench validates them under **Annotate VCF →
-Set up annotation datasets → Shipped with the software**. If a bundled
-file is missing, select **Download bundled files**. The command-line repair is:
+Dataset setup installs the normalized hg19 primary FASTA, indexes, and
+hg19-to-GRCh38 chain. Check availability under **Annotate VCF → Set up
+annotation datasets** and use its download/repair action if needed. The current
+application archive does not itself contain all these large files.
+The command-line setup/repair is:
 
 ```bash
 bash docker/build.sh

@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // Regenerate the user-manual screenshots from the synthetic demonstration
 // exome (scripts/make_demo_vcf.py). Drives a private headless Chrome against
-// a running workbench UI; imports use "Review once" so nothing is written to
-// the Sample Library. All visible data is synthetic (sample DEMO01).
+// a disposable workbench UI/service; imports use "Review once". All visible
+// data is synthetic (sample DEMO01). Start via capture_manual_screenshots.sh.
 //
 //   node scripts/make_manual_screenshots.mjs <ui-url> <demo-vcf> <out-dir>
 import { mkdir } from "node:fs/promises";
 import { createRequire } from "node:module";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 // puppeteer-core is a webui devDependency; resolve it from there so the
 // script runs from any working directory.
@@ -15,6 +16,9 @@ const require = createRequire(new URL("../webui/package.json", import.meta.url))
 const puppeteer = require("puppeteer-core");
 
 const [uiUrl = "http://127.0.0.1:3000", demoVcf, outDir = "docs/assets/img"] = process.argv.slice(2);
+if (process.env.IEI_MANUAL_ISOLATED !== "1") {
+  throw new Error("Use bash scripts/capture_manual_screenshots.sh: a disposable service and storage registry are required.");
+}
 if (!demoVcf) {
   console.error("usage: make_manual_screenshots.mjs <ui-url> <demo-vcf> <out-dir>");
   process.exit(2);
@@ -28,8 +32,21 @@ const browser = await puppeteer.launch({
   headless: "shell",
   args: ["--hide-scrollbars", "--force-color-profile=srgb"],
 });
+try {
 const page = await browser.newPage();
-await page.setViewport({ width: 1440, height: 900, deviceScaleFactor: 2 });
+await page.setRequestInterception(true);
+page.on("request", (request) => {
+  const url = new URL(request.url());
+  // A screenshot click must never start annotation, downloads, or library
+  // mutations. Staging the synthetic VCF in our disposable service is allowed.
+  if (!['GET', 'HEAD', 'OPTIONS'].includes(request.method()) && url.pathname.startsWith('/api/') && !url.pathname.startsWith('/api/uploads')) {
+    console.error("blocked unexpected mutation:", url.pathname);
+    void request.abort();
+  } else {
+    void request.continue();
+  }
+});
+await page.setViewport({ width: 1800, height: 1050, deviceScaleFactor: 1.5 });
 // The app asks reviewer-facing window.confirm questions; accept them, and
 // surface console errors so silent failures are visible in the run log.
 page.on("dialog", (dialog) => {
@@ -41,16 +58,13 @@ page.on("console", (message) => {
 });
 page.on("pageerror", (error) => console.log("pageerror:", String(error).slice(0, 200)));
 
-// Screenshots are published in the manual: hide this workstation's own
-// job history and recent-file lists, and refuse any capture whose visible
-// text contains a local path or a real cohort name.
+// Never publish host-specific paths. The service has empty disposable state;
+// this extra check is not a substitute for isolation.
 const FORBIDDEN = [
-  "/Users/", "/Volumes/", "COLUMBIA",
-  // Real cohort/sample naming from this workstation must never appear.
-  "B3-", "KGIC", "SXZJ", "JGJU", "RheumGenetics", "RG19", "OneDrive",
+  "/Users/", "/Volumes/", "/private/", "/var/folders/",
 ];
 const hideHistory = () => page.addStyleTag({
-  content: ".job-list, .recent-review-card, .configured-locations { display: none !important; }",
+  content: ".job-list, .recent-review-card, .configured-locations, nextjs-portal { display: none !important; }",
 });
 const shot = async (name, options = {}) => {
   const { skipHide, ...screenshotOptions } = options;
@@ -137,12 +151,14 @@ await page.evaluate(() => {
   row?.click();
 });
 await new Promise((resolve) => setTimeout(resolve, 1500));
+await page.waitForFunction(() => document.body.innerText.includes("0.76") && document.body.innerText.includes("Damaging"));
 await shot("review-workspace-selected");
 
 // 5. Scrolled evidence sections: predictors, call quality, ClinVar (chapter 9).
 await page.evaluate(() => {
   const heading = [...document.querySelectorAll("h2, h3")]
     .find((el) => /Predictors/i.test(el.textContent ?? ""));
+  if (heading) heading.style.scrollMarginTop = "140px";
   heading?.scrollIntoView({ block: "start" });
 });
 await shot("variant-evidence-sections");
@@ -193,8 +209,16 @@ await shot("annotation-settings");
 await page.goto(uiUrl, { waitUntil: "networkidle2" });
 await awaitServiceReady().catch(() => {});
 await clickText("button", "About");
-await new Promise((resolve) => setTimeout(resolve, 800));
+await page.waitForFunction(() => /Version\s+\d/.test(document.body.innerText));
 await shot("about-updates");
 
-await browser.close();
+// Coverage HTML is computed from the same synthetic VCF by the wrapper.
+if (process.env.IEI_MANUAL_QC_HTML) {
+  await page.goto(pathToFileURL(process.env.IEI_MANUAL_QC_HTML).href, { waitUntil: "load" });
+  await shot("qc-certificate");
+}
+
 console.log("done");
+} finally {
+  await browser.close();
+}

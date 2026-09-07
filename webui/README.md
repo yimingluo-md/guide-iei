@@ -9,9 +9,10 @@ hosted website.
 - The user interface is opened in a browser at `http://127.0.0.1:3000`.
 - The UI and annotation service bind to loopback only and are not exposed to
   the LAN.
-- Already annotated VCFs are parsed locally. A browser-selected file is copied
-  only to the loopback workstation service when the user keeps it in the
-  Sample Library or requests server-side WGS preparation.
+- Already annotated VCFs are parsed locally. A browser-selected file may be
+  staged in the loopback workstation service for intake, indexing, or library
+  retention. Review once avoids managed library/cohort entries, not all local
+  uploads, caches, logs, or annotation outputs.
 - Raw VCF annotation is executed by the existing local VEP container pipeline.
 - Browser-selected raw VCFs are streamed directly into workstation-local job
   storage; they are never sent to an external service.
@@ -37,7 +38,7 @@ default and two deliberately separate paths:
 - accepts GRCh38 directly or performs a controlled GRCh37/hg19-to-GRCh38
   conversion with rejected-record QC and provenance
 - accepts one or more annotated `.vcf` / `.vcf.gz` files for review
-- excludes non-PASS records during import
+- excludes records with failing FILTER values; retains `PASS` and unfiltered `.`
 - defaults to MANE Select and MANE Plus Clinical consequences, using VEP's
   allele-gene `PICK` consequence only when no MANE transcript exists; all
   transcripts remain available
@@ -122,7 +123,7 @@ available for existing collections.
 Open **Cohort search** in the workbench and enter one or more annotated VCF
 paths, or a directory containing them. Directories can be scanned recursively.
 The indexer accepts single- and multi-sample `.vcf` / `.vcf.gz` files, retains
-explicit `FILTER=PASS` records only, and stores non-reference calls in the
+`FILTER=PASS` and unfiltered `FILTER=.` records, and stores non-reference calls in the
 local cohort database. Re-adding an unchanged file is fast because it is
 recognized by resolved path, size, and modification time.
 
@@ -132,7 +133,7 @@ indexing. Chromosome labels are normalized
 (`chr1` → `1`, `chrM` → `MT`), but alleles are matched exactly, so source VCFs
 should use a consistent left-normalized representation.
 
-Two query modes are available:
+Four query modes are available:
 
 1. **Exact variant** accepts `4:1004329:C:T`, `4-1004329-C-T`, a locus such as
    `4:1004329`, or an exact rsID. It returns all indexed carriers without
@@ -140,6 +141,8 @@ Two query modes are available:
 2. **Qualifying variants in gene** returns carrier calls after the selected
    impact, gnomAD popmax, CADD, AlphaMissense, SpliceAI, ClinVar, genotype,
    MANE, RepeatMasker, and SegDup filters.
+3. **Gene list** searches qualifying variants across the selected genes.
+4. **Genomic region** searches a bounded interval (up to 5 Mb).
 
 Results can be exported as a carrier-level TSV. The cohort index is a discovery
 aid, not a substitute for confirming sample identity, relatedness, callability,
@@ -173,7 +176,7 @@ model and current limitations.
 The queue defaults match the diagnostic workflow:
 
 - coding exons plus splice padding only
-- explicit `FILTER=PASS` records only
+- `FILTER=PASS` or unfiltered `FILTER=.` records (failing filters excluded)
 - ClinVar refresh/use enabled
 
 Each setting can be changed per job. Reference availability, required-source
@@ -204,7 +207,7 @@ Run the complete application inside WSL2, then use the normal Windows browser:
 
 ```bash
 # in Ubuntu/WSL
-cd ~/diagnostic_pipeline/vep-annotate
+cd ~/guide-iei
 bash scripts/start_workbench.sh
 ```
 
@@ -213,6 +216,10 @@ Windows host. Keep the project, inputs, working outputs, and large VEP
 references in the WSL Linux filesystem (for example under `~/`) rather than
 `/mnt/c/`; annotation is heavily I/O-bound. Docker Desktop must have WSL
 integration enabled, or Docker Engine can run directly in the distribution.
+
+For a clean machine or a launcher blocked by Windows security, follow the
+[direct WSL startup guide](../docs/guide/02-install.md#windows-start-directly-in-wsl).
+Do not disable SmartScreen or Smart App Control.
 
 For a local production build:
 

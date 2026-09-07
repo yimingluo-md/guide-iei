@@ -107,6 +107,8 @@ confirm() { # confirm <question>  (respects --yes; non-interactive -> no)
     case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
 }
 
+source "${SCRIPT_DIR}/macos_container_dependencies.sh"
+
 sha256_file() {
     if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | awk '{print $1}'
     elif command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
@@ -531,7 +533,7 @@ else
         mkdir -p "$TOOLS_DIR/lima-${LIMA_VERSION}"
         tar -xzf "$lima_tar" -C "$TOOLS_DIR/lima-${LIMA_VERSION}" || return 1
         # symlink preserves the binary's relative ../share/lima lookup
-        ln -sfn "$TOOLS_DIR/lima-${LIMA_VERSION}/bin/limactl" "$TOOLS_DIR/bin/limactl"
+        ensure_macos_lima_launchers "$TOOLS_DIR" "$LIMA_VERSION" install || return 1
         # Colima (docker daemon convenience wrapper over Lima)
         local colima_bin="$TOOLS_DIR/downloads/colima-Darwin-${colima_arch}"
         download_verified "https://github.com/abiosoft/colima/releases/download/${COLIMA_VERSION}/colima-Darwin-${colima_arch}" \
@@ -597,6 +599,12 @@ else
                 fix "no container runtime found (docker/podman/singularity)" "$runtime_cmd   # $runtime_hint"
             fi
         fi
+    fi
+
+    # Repair older managed installs even when their Docker CLI already exists.
+    # Check mode remains read-only; do not overwrite unrelated user executables.
+    if [ "$OS" = "Darwin" ] && [ -x "$TOOLS_DIR/bin/colima" ]; then
+        ensure_macos_lima_launchers "$TOOLS_DIR" "$LIMA_VERSION" "$MODE" || true
     fi
 
     # ---- daemon / VM health

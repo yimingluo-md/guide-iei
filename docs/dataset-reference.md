@@ -6,9 +6,12 @@ nav_order: 7
 
 # Dataset reference — technical details
 
-Technical background moved out of the dataset-setup cards during the
-clinician-focused language pass (2026-08). This file seeds the future user
-webpage; each section holds the process detail the UI no longer shows.
+For the guided workflow, start with [Set up the annotation datasets](guide/03-datasets.md).
+This reference describes download, preparation, and matching behavior. Use
+[command-line setup](DATASET_SETUP.md) for script examples and
+[annotation sources](ANNOTATIONS.md) for field definitions. Large references
+are installed separately from the application; “bundled” configuration paths
+do not mean their payload is contained in the application archive.
 
 ## dbNSFP
 - The UI accepts any authorized dbNSFP release whose filename ends in

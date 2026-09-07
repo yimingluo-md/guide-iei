@@ -8,6 +8,7 @@ never be interpreted as real variant assertions. Regenerate with:
 
     python3 scripts/make_demo_vcf.py [output.vcf.gz]
 """
+import argparse
 import gzip
 import sys
 from pathlib import Path
@@ -20,7 +21,9 @@ CSQ_FIELDS = (
     "SpliceAI_pred_DS_AG|SpliceAI_pred_DS_AL|SpliceAI_pred_DS_DG|"
     "SpliceAI_pred_DS_DL|ClinVar_CLNSIG|ClinVar_CLNREVSTAT|LoF|LoF_filter|"
     "LoF_flags|LoF_50_BP_RULE_PTC|LoF_50_BP_RULE_original|"
-    "LoF_50_BP_RULE_changed|PTC_dist_from_last_exon|Repeat|SegDup"
+    "LoF_50_BP_RULE_changed|PTC_dist_from_last_exon|Repeat|SegDup|"
+    "FuncVEP_CTI|FuncVEP_CTE|FuncVEP_SP|FuncVEP_allele_available|"
+    "FuncVEP_match|FuncVEP_match_status|FuncVEP_source_gene"
 )
 N_FIELDS = len(CSQ_FIELDS.split("|"))
 
@@ -29,14 +32,18 @@ def csq(**kw):
     values = {name: "" for name in CSQ_FIELDS.split("|")}
     for key, value in kw.items():
         assert key in values, key
-        values[key] = str(value)
+        # A raw comma splits CSQ consequences, even inside a source label.
+        values[key] = str(value).replace(",", "%2C")
     joined = "|".join(values[name] for name in CSQ_FIELDS.split("|"))
     assert joined.count("|") == N_FIELDS - 1
     return joined
 
 
-def record(chrom, pos, ref, alt, qual, gt, dp, ad, gq, *annotations):
+def record(chrom, pos, ref, alt, qual, gt, dp, ad, gq, *annotations, genia=""):
     info = "CSQ=" + ",".join(annotations)
+    if genia:
+        # Invented illustration, not a copied GenIA source record.
+        info += f";GenIA={alt}|SYNTHETIC-DEMO|Synthetic_example|{genia}|0;GenIA_count=1"
     return (f"{chrom}\t{pos}\t.\t{ref}\t{alt}\t{qual}\tPASS\t{info}"
             f"\tGT:AD:DP:GQ\t{gt}:{ad}:{dp}:{gq}")
 
@@ -83,9 +90,12 @@ RECORDS = [
         AlphaMissense_pred="likely_pathogenic", REVEL_score=0.81,
         SIFT_score=0.01, SIFT_pred="deleterious", Polyphen2_HDIV_score=0.98,
         Polyphen2_HDIV_pred="probably_damaging",
+        FuncVEP_CTI=0.76, FuncVEP_CTE=0.64, FuncVEP_SP=0.52,
+        FuncVEP_allele_available=1, FuncVEP_match="allele_gene",
+        FuncVEP_match_status="exact", FuncVEP_source_gene="ENSG00000115415",
         ClinVar_CLNSIG="Likely_pathogenic",
         ClinVar_CLNREVSTAT="criteria_provided,_multiple_submitters",
-    )),
+    ), genia="LP"),
     # TCF3: MANE Select and MANE Plus Clinical consequences for one variant.
     record("19", 1_619_415, "G", "A", 705, "0/1", 38, "20,18", 99,
         csq(
@@ -192,7 +202,11 @@ RECORDS = [
 
 
 def main():
-    output = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("demo_exome.vep.vcf.gz")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("output", nargs="?", type=Path, default=Path("demo_exome.vep.vcf.gz"))
+    parser.add_argument("--qc-config", type=Path, help="Also generate a coverage-report illustration")
+    args = parser.parse_args()
+    output = args.output
     header = (
         "##fileformat=VCFv4.2\n"
         "##reference=GRCh38\n"
@@ -204,6 +218,8 @@ def main():
         + '##FILTER=<ID=PASS,Description="All filters passed">\n'
         + f'##INFO=<ID=CSQ,Number=.,Type=String,Description="Consequence annotations from Ensembl VEP. Format: {CSQ_FIELDS}">\n'
         + '##INFO=<ID=IEI_UNSCORED_INDEL,Number=.,Type=String,Description="Retained without a precomputed score">\n'
+        + '##INFO=<ID=GenIA,Number=A,Type=String,Description="INVENTED demo allele|id|name|classification|subjects; not real source evidence">\n'
+        + '##INFO=<ID=GenIA_count,Number=A,Type=Integer,Description="Synthetic demo count">\n'
         + '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
         + '##FORMAT=<ID=AD,Number=R,Type=Integer,Description="Allelic depths">\n'
         + '##FORMAT=<ID=DP,Number=1,Type=Integer,Description="Read depth">\n'
@@ -220,6 +236,15 @@ def main():
     with opener(output, "wt") as handle:
         handle.write(header + body)
     print(f"wrote {output} ({len(RECORDS)} records, sample DEMO01)")
+    if args.qc_config:
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+        from pipeline.annotation_qc import build_report, write_report
+        report = build_report(args.qc_config, output)
+        # Public synthetic illustration: show the demo filename, not the
+        # temporary build directory. Coverage/status calculations are unchanged.
+        report["input_vcf"] = output.name
+        report["run_notes"] = ["Synthetic demonstration only: invented variants and annotations, not an installed-resource validation run."]
+        write_report(report, Path(str(output) + ".annotation_qc.json"), Path(str(output) + ".annotation_qc.html"))
 
 
 if __name__ == "__main__":

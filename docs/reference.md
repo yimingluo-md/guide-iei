@@ -30,3 +30,9 @@ task-by-task, in plain language.
 - [Gene knowledge](GENE_KNOWLEDGE.md)
 - [Bundled workbench references](BUNDLED_WORKBENCH_REFERENCES.md)
 - [Repository layout](REPO_LAYOUT.md)
+- [Predictor architecture](PREDICTOR_ARCHITECTURE.md)
+- [Generated predictor reference](PREDICTOR_REFERENCE.md)
+- [Maintaining the documentation](MAINTAINING_DOCUMENTATION.md)
+
+For recovery steps, see [Troubleshooting](TROUBLESHOOTING.md) and
+[backup and restore](SAMPLE_LIBRARY_AND_STORAGE.md#backup-and-restore).

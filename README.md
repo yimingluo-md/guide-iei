@@ -111,8 +111,10 @@ installed first.
 **Windows one-click:** download and fully extract the repository ZIP, then
 double-click `desktop/windows/GUIDE-IEI.bat`. The launcher checks for a real
 WSL2 Linux environment and offers or explains the one-time Ubuntu installation
-when it is missing. Docker Desktop is optional for reviewing an already
-annotated VCF, but is required to run the VEP annotation engine. The
+when it is missing. Docker Desktop with WSL integration is the simplest
+annotation backend; advanced users can use a Linux container engine instead.
+If Windows security blocks the unsigned launcher, [start directly in Ubuntu/WSL](docs/guide/02-install.md#windows-start-directly-in-wsl)
+without disabling security controls. The
 [installation chapter](docs/guide/02-install.md) walks through both platforms.
 
 > **Mac, first open:** the current release is unsigned, so macOS blocks it —
@@ -122,8 +124,13 @@ annotated VCF, but is required to run the VEP annotation engine. The
 > *"GUIDE-IEI" was blocked*, click **Open Anyway**, authenticate, and confirm
 > **Open**. This is required once for each newly downloaded unsigned release.
 
-**Developer/terminal route:** three commands; nothing is installed outside
-managed user folders, and no administrator rights are required on macOS
+**Mac source ZIP/checkout:** open `desktop/macos/GUIDE-IEI-Workbench.command`
+inside the complete repository. It also prepares the environment automatically;
+the source-tree `.app` is not the standalone release.
+
+**Developer/terminal route:** three commands; the managed Mac runtime needs no
+administrator rights. Optional package-manager tools and Linux packages are
+installed separately
 (a factory-fresh Mac should use the graphical release because `git clone`
 itself requires Git):
 
@@ -133,7 +140,8 @@ bash scripts/setup_environment.sh --install   # setup check + user-space install
 bash scripts/start_workbench.sh               # launch the workbench
 ```
 
-The workbench then opens in the browser; annotation datasets are installed
+Open `http://127.0.0.1:3000` in your browser and keep the terminal open;
+annotation datasets are installed
 from **Annotate VCF → Set up annotation datasets**, with one-click
 recommended sets for exome or whole-genome analysis. The complete
 walkthrough, including the command-line route, is in the
@@ -159,6 +167,8 @@ The **[GUIDE-IEI manual](docs/index.md)** covers everything in detail:
 - [The review workbench](docs/REVIEW_WORKBENCH.md) (sample library, cohort
   search, WGS review, regulatory evidence, trio analysis)
 - [Understanding the output](docs/OUTPUT.md)
+- [Troubleshooting](docs/TROUBLESHOOTING.md)
+- [Backup and restore](docs/SAMPLE_LIBRARY_AND_STORAGE.md#backup-and-restore)
 
 ## Future plans
 

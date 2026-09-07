@@ -134,7 +134,7 @@ export const GLOSSARY: GlossaryEntry[] = [
   {
     id: "constraint", term: "pLI", aliases: ["LOEUF", "constraint"],
     category: "Predictors & scores",
-    definition: "Gene-level (not variant-level) intolerance to loss of function, from population data. pLI ≥ 0.9 or LOEUF < 0.6 ≈ genes where losing one copy matters — where dominant LoF disease is plausible.",
+    definition: "Gene-level (not variant-level) depletion of loss-of-function variation in population data. Higher pLI and lower LOEUF indicate greater constraint. Neither establishes haploinsufficiency, a disease mechanism, or the pathogenicity of a particular variant.",
   },
   {
     id: "promoterai", term: "PromoterAI",
@@ -145,6 +145,16 @@ export const GLOSSARY: GlossaryEntry[] = [
     id: "logofunc", term: "LoGoFunc",
     category: "Predictors & scores",
     definition: "Research predictor of missense mechanism: gain of function, loss of function, or neutral. A hypothesis generator, not a pathogenicity call.",
+  },
+  {
+    id: "funcvep", term: "FuncVEP",
+    category: "Predictors & scores",
+    definition: "Research predictor of functional damage for GRCh38 missense SNVs, requiring exact allele-and-Ensembl-gene matching. CTI is shown by default; CTE and SP are optional. Damaging/Neutral labels use the final publication's thresholds, not clinical pathogenicity classifications or ACMG PP3/BP4 evidence strengths.",
+  },
+  {
+    id: "genia", term: "GenIA",
+    category: "Predictors & scores",
+    definition: "Optional registered-user immune gene–disease, phenotype, and GRCh38 variant evidence. Any subset of five exports can be installed locally. Source labels remain distinct: NC means Not classified and RF means Risk factor, not VUS and pathogenic, respectively.",
   },
   // ----------------------------------------------------- Inheritance & family
   {

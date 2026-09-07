@@ -12,9 +12,9 @@ The easiest route is inside the application: **Annotate VCF → Set up
 annotation datasets**. One-click actions install the recommended automatic
 downloads for either exome or whole-genome analysis and refresh changing public
 sources such as ClinVar. dbNSFP registration and licensed PromoterAI setup are
-shown separately with direct source links and guided instructions. SCREEN
-Registry V4 cCRE regions and the hg19 input bundle ship with the native
-release; LoGoFunc remains an optional public research annotation, and FuncVEP
+shown separately with source links and guided instructions. Missing SCREEN
+Registry V4 cCRE regions and hg19 input references are downloaded by setup;
+LoGoFunc remains an optional public research annotation, and FuncVEP
 is an optional licensed archive that GUIDE-IEI can download after the user
 reviews and acknowledges the upstream terms. GenIA is a separate optional,
 registered-user source installed from exports the user already has. An
@@ -141,7 +141,7 @@ prepared or integrated.
 variant records; see the [published description](https://doi.org/10.1016/j.jaci.2023.11.022).
 GUIDE-IEI does not bundle GenIA credentials, download URLs, data, or source
 files. Register with GenIA and obtain the exports you need,
-then open **Import & QC → Set up annotation datasets → Optional add-ons →
+then open **Import & QC → Set up annotation datasets → User action needed →
 GenIA** and select one or more files. The installer identifies each role from
 its schema, so downloaded filenames do not need to match a fixed name.
 

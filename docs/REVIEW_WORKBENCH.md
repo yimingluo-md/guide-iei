@@ -281,7 +281,7 @@ Set up annotation datasets → Optional add-ons**. See
 [Gene knowledge](GENE_KNOWLEDGE.md).
 
 Registered users may also install any one or subset of five GenIA exports from
-the **GenIA** Optional add-on. The GEI list and IEI-marked disease-catalog rows
+the optional **GenIA** card under **User action needed**. The GEI list and IEI-marked disease-catalog rows
 can populate GenIA gene relationships; the **GenIA GEI gene** filter is
 deliberately limited to genes in the GEI list;
 disease–phenotype associations add their reported phenotype observations; and

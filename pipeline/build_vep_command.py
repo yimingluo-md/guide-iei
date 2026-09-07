@@ -65,6 +65,7 @@ class VepPlan:
     mounts: list[Mount] = field(default_factory=list)   # bind-mounts (ordered, de-duped)
     warnings: list[str] = field(default_factory=list)     # skipped/missing sources
     errors: list[str] = field(default_factory=list)       # required-but-missing
+    reference_paths: list[str] = field(default_factory=list)  # resolved paths used by the plan
 
     def command_string(self) -> str:
         parts = []
@@ -98,6 +99,7 @@ class PathMapper:
         self.refs_root = refs_root
         self._refs: dict[str, str] = {}    # host_dir -> container_dir (read-only ref mounts)
         self._counter = 0
+        self.paths: list[str] = []
 
     def absolutize(self, host_path: str) -> str:
         # Config-declared reference paths are relative to the PROJECT root
@@ -113,6 +115,8 @@ class PathMapper:
         # datasets may remain in a lab-managed data directory while a small,
         # ignored link under references/ supplies the configured path.
         ap = os.path.realpath(os.path.abspath(self.absolutize(host_path)))
+        if ap not in self.paths:
+            self.paths.append(ap)
         if not self.container:
             return ap
         host_dir = os.path.dirname(ap)
@@ -296,6 +300,7 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
             seen.add(key)
             combined.append(m)
     plan.mounts = combined
+    plan.reference_paths = mapper.paths
     return plan
 
 

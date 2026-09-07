@@ -39,5 +39,16 @@ for (const category of GLOSSARY_CATEGORIES) {
   }
 }
 
-await writeFile(new URL("../../docs/GLOSSARY.md", import.meta.url), out);
-console.log(`Exported ${GLOSSARY.length} terms to docs/GLOSSARY.md`);
+out = `${out.trimEnd()}\n`;
+const destination = new URL("../../docs/GLOSSARY.md", import.meta.url);
+if (process.argv.includes("--check")) {
+  if (await readFile(destination, "utf8") !== out) {
+    console.error("Glossary is stale: node webui/scripts/export-glossary.mjs");
+    process.exitCode = 1;
+  } else {
+    console.log(`Glossary is current (${GLOSSARY.length} terms).`);
+  }
+} else {
+  await writeFile(destination, out);
+  console.log(`Exported ${GLOSSARY.length} terms to docs/GLOSSARY.md`);
+}

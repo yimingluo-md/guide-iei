@@ -8,7 +8,9 @@ nav_order: 4
 
 This chapter follows a single exome from VCF to a reviewed list of
 candidate variants. The first pass takes 20–30 minutes at the screen; the
-annotation run itself usually completes in minutes for an exome.
+annotation time depends on the callset, machine, and installed resources.
+First-use reference and protein-catalog preparation can take much longer than
+subsequent runs; the walkthrough is not a runtime guarantee.
 
 ## Prerequisites
 
@@ -24,8 +26,9 @@ annotation run itself usually completes in minutes for an exome.
    ([GRCh37 input](../GRCH37_INPUT.md)).
 
 Without a patient VCF at hand, the walkthrough can be followed with the
-synthetic regression VCF in the repository's `test/` folder — public
-control variants and one artificial sample, no patient data.
+public-control VCF at `test/regression/annotation_regression.GRCh38.vcf` (sample `REGRESSION`, no
+patient data). The screenshots instead use invented demonstration annotations;
+they are not the regression panel.
 
 ## Step 1 — Import the VCF
 
@@ -68,20 +71,19 @@ Start the run.
 ## Step 3 — The run
 
 The run screen reports progress through each stage: input checks, the
-ClinVar download (refreshed and version-stamped at every run), region
-filtering, VEP annotation, and the post-processing that refines
-loss-of-function calls. During the VEP stage — much the longest — a
-progress bar counts annotated variants against the exact total the
-region filter established, with a running estimate of the time
-remaining; the counts are read from the output itself, so the bar
-reflects work actually done. An exome typically completes in minutes; a
-whole genome takes hours, and the bar makes that wait legible. The page
+ClinVar refresh (unless disabled), reference/protein-catalog preparation,
+region filtering, VEP annotation, and post-processing. During preparation,
+an activity indicator shows the current stage rather than a fabricated
+percentage. When VEP's input total and completed-record count are available,
+the bar measures that stage; any remaining-time estimate is approximate.
+VEP reaching its total does not mean downstream work is finished: the job
+remains active until post-processing and output checks complete. The page
 can be left and revisited, as jobs continue in the background.
 
-On completion, two artifacts are written beside the output VCF: the
-annotated VCF itself, and an **annotation coverage report** summarizing how
-completely each source annotated the data
-([Quality control](10-quality-control.md)).
+On completion, open the final VCF selected by the job. Keep its index,
+**annotation coverage report** (HTML/JSON), and run manifest with it; see
+[which outputs to keep](../OUTPUT.md#which-files-should-i-open-and-keep) and
+[Quality control](10-quality-control.md).
 
 
 ## Step 4 — Open the review
@@ -102,8 +104,9 @@ records but several hundred thousand transcript annotations. GUIDE-IEI keeps
 the complete VCF while showing a responsive MANE/PICK/per-gene list; opening a
 variant loads its complete transcript table from the indexed source record.
 
-Choose **Review once** instead when the analysis should leave no stored
-trace. After intake, each VCF sample may be linked to an individual — new
+Choose **Review once** to avoid a managed Sample Library copy or Cohort Search
+entry. It is not a no-trace mode: annotation outputs, logs, and preparation
+caches can remain. After retained intake, each VCF sample may be linked to an individual — new
 or existing — or left unlinked.
 
 ## Step 5 — The review workspace
@@ -123,8 +126,9 @@ The workspace has three areas:
 
 ## Step 6 — Filter to a shortlist
 
-The filter panel narrows the table without discarding anything — removing
-a filter restores the rows. A reasonable first pass for a suspected
+The filter panel narrows the rows already loaded — removing a review filter
+restores those rows, not variants removed earlier during annotation or intake.
+A reasonable first pass for a suspected
 monogenic condition:
 
 1. **Population frequency** — gnomAD popmax ≤ 0.01, or unavailable.
@@ -134,12 +138,24 @@ monogenic condition:
 4. **ClinVar** — optionally surface variants with existing pathogenic or
    conflicting reports first.
 
-An exome typically lands in the low hundreds of rows after steps 1–2 — a
-manageable review set. A markedly different figure — single digits, or
-tens of thousands — is grounds to stop and consult
-[Quality control](10-quality-control.md) before interpreting anything.
+Counts depend on the number of samples, transcript display, calling pipeline,
+and intake profile. A multi-sample exome can legitimately produce hundreds
+of thousands of transcript-level rows. Compare the record, allele, transcript,
+and carrier counts in [Quality control](10-quality-control.md), rather than
+treating a fixed shortlist size as a pass/fail test.
 
-![The prioritized variant list with the filter rail: gene sets, IMPACT tiers, the popmax slider, and clinical-evidence filters](../assets/img/review-variant-list.png)
+### Three different places where filtering happens
+
+| Stage | What changes | How to recover excluded variants |
+|---|---|---|
+| Annotation scope | Which input variants VEP processes (for example coding + splice only) | Rerun annotation from the original VCF with the needed scope |
+| Library/cohort intake | Which annotated variants the selected intake profile retains/indexes | Reprepare/reimport from the complete annotated source with revised settings; an identical-file reimport may reuse the existing library version |
+| Review filters | Which already loaded rows are visible | Clear or adjust the review filter; no VEP rerun needed |
+
+Keep original inputs and complete annotation outputs. A compact library copy
+or a TSV shortlist is not a replacement for them.
+
+![Synthetic demonstration: prioritized variants with gene, consequence, frequency, and clinical-evidence filters](../assets/img/review-variant-list.png)
 
 ## Step 7 — Read the evidence
 

@@ -132,13 +132,12 @@ Three properties matter at scale:
   the workstation usable; a genome's own prefilter dominates the time, so
   parallelism would buy little and cost stability.
 
-A batch of 1,000 genomes is therefore an overnight-to-weekend job that
-needs no supervision, and the collection it produces is queried — not
-browsed. The library page itself stays responsive at that size (datasets
-are listed 50 to a page; search and bulk actions cover the whole
-collection, not the visible page), and Cohort Search answers gene, panel,
-variant, and region questions against the full collection from its index
-in seconds.
+A 1,000-genome collection is a design target, not a validated performance
+specification. Benchmark a small representative batch on your workstation
+before scheduling the full collection, and check per-file outcomes afterward.
+The collection is queried rather than opened wholesale. The library lists
+25 callsets per page; search and bulk actions cover the collection, not only
+the visible page. Query time depends on database size, disk, and result count.
 
 ## Bounds worth knowing
 

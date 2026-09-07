@@ -7,6 +7,10 @@ log()  { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 warn() { printf '[%s] WARN: %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 die()  { printf '[%s] ERROR: %s\n' "$(date +%H:%M:%S)" "$*" >&2; exit 1; }
 
+# Native children inherit this limit. Docker/Podman also need an explicit
+# daemon-side limit below. A crash still returns its original failure code.
+ulimit -c 0 || die "cannot disable core dumps for this process"
+
 # --- repo root ----------------------------------------------------------------
 repo_root() { cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd; }
 
@@ -123,18 +127,21 @@ hts() {
                 || die "container image $img is not available locally; run bash docker/build.sh before preparing indexed resources"
             mount_flags=(-v "$PWD:/w")
             for i in "${!hosts[@]}"; do mount_flags+=(-v "${hosts[$i]}:${conts[$i]}:rw"); done
-            "$rt" run --pull=never --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+            "$rt" run --pull=never --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
             # A file written by the host or another container can be
             # incompletely visible to a container started moments later
             # (Docker Desktop VirtioFS bind caching; worse on FSKit-exFAT
             # drives), which fails tabix/bcftools/bgzip on perfectly valid
             # files. Settle and retry once; genuine failures (unsorted input,
             # non-BGZF, malformed records) fail identically on retry.
-            if [[ "$rc" -ne 0 && "$rc" -ne 125 ]]; then
+            if [[ "$rc" -gt 0 && "$rc" -lt 125 ]]; then
                 log "WARN  containerized $tool failed (rc=$rc); retrying once after write settling"
                 sleep 5
                 rc=0
-                "$rt" run --pull=never --rm "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+                "$rt" run --pull=never --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+            fi
+            if [[ "$rc" -ge 128 ]]; then
+                log "ERROR: containerized $tool terminated by a signal (exit $rc); not retrying"
             fi
             return "$rc"
             ;;

@@ -7,6 +7,48 @@ nav_order: 4
 
 [Manual home](index.md)
 
+## Why does annotation say the container cannot access a file that exists on my Mac?
+
+The Mac and the container's Linux virtual machine have separate filesystem
+views. An input or reference on an external drive may be readable on the Mac
+but absent inside Colima or Docker Desktop. GUIDE-IEI checks both views before
+annotation and names the folder that needs attention. These checks do not
+upload data or change VM sharing settings.
+
+- First confirm that the drive is connected and the file is readable. A **host
+  access** error indicates a local path, permission, or dataset-installation
+  problem, not necessarily a container sharing problem.
+- **Colima:** when no jobs are running, stop the active profile and use
+  `colima start --edit` to add the named folder to that profile's `mounts` list.
+  Mark output/work folders writable and preserve existing mount entries. If
+  using a named profile, select that same profile when stopping and starting it.
+  With the GUIDE-IEI-managed installation, its executables may not be on your
+  terminal's PATH. For the default profile and default tools directory:
+
+  ```bash
+  PATH="$HOME/.iei-variant-review/tools/bin:$PATH" colima stop
+  PATH="$HOME/.iei-variant-review/tools/bin:$PATH" colima start --edit
+  ```
+
+  Substitute the actual tools directory if customized. In the editor, mount
+  the specific required folders rather than granting broad disk access.
+- **Docker Desktop:** add the named folder in **Settings → Resources → File
+  sharing**, apply the change, then retry the job.
+- Alternatively, choose input/output/reference locations that are already
+  shared. You do not need to keep all data inside the GUIDE-IEI repository.
+
+Annotation scratch files are placed in a private temporary directory beside the
+output and cleaned on exit, avoiding macOS's commonly unshared `/var/folders`
+temporary location. Do not restart a container engine while another job uses it.
+
+## Setup says a managed Colima dependency (`lima` or `limactl`) is missing
+
+Run `bash scripts/setup_environment.sh --install` from the GUIDE-IEI folder.
+It repairs missing launcher links in the managed tools directory, including
+older partial installations where Docker is already present. The default
+`--check` mode only reports the problem and changes nothing. No Homebrew
+installation or administrator access is required for this link repair.
+
 ## Can GUIDE-IEI analyze somatic variants?
 
 Not in the current release. GUIDE-IEI is a germline analysis platform: its
@@ -61,8 +103,9 @@ only public reference data *to* the machine.
 Yes — directly. A file with 16 or more samples opens in **cohort review
 mode**: one row per variant, the usual filters, and a per-variant
 **Carriers** panel listing which individuals carry it with their genotype
-evidence. For a large fresh cohort file, import through the **Whole
-genome** analysis scope so the local service prefilters it first; a stored
+evidence. Keep an exome in **Exome** scope: large retained exome imports also
+use local preparation and a compact browser projection. Use **Whole genome**
+only for genome data and its regulatory retention routes. A stored
 cohort reopens from the Sample Library (Select all → Open combined
 review), which also supports opening one individual or a selected subset,
 and removing selected datasets in bulk.
@@ -74,6 +117,10 @@ population-frequency prefilter instead of freezing. See the
 [cohort analysis chapter](guide/08-cohort-search.md).
 
 ## Where do I ask a question that is not answered here?
+
+First check [Troubleshooting](TROUBLESHOOTING.md), including Windows direct-WSL
+startup, failed downloads, missing scores, and oversized imports. Share only
+redacted logs; do not post patient VCFs or private dataset access links.
 
 Open an issue on the
 [GitHub repository](https://github.com/yimingluo-md/guide-iei/issues).

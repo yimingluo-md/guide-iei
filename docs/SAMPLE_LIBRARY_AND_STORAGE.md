@@ -65,6 +65,8 @@ may use the same VCF sample name; its library UUID keeps it distinct.
 - **Review once** opens the VCF without creating library or cohort records. A
   file whose transcript expansion exceeds the browser limit must instead be
   retained or reduced before it can be opened safely.
+  This is not a no-trace mode: uploads, preparation caches, logs, and annotation
+  outputs can remain on disk.
 
 Routine review does not require index maintenance. Rebuild, removal from
 Cohort Search, and the advanced full-WGS index are under **More actions**; none
@@ -107,7 +109,7 @@ Compact WGS is the default. It retains the gentle diagnostic/research candidate
 union documented in the main README and typically produces tens of thousands
 of records per genome.
 
-Full WGS is an advanced action in the Sample Library. It indexes every PASS
+Full WGS is an advanced action in the Sample Library. It indexes every PASS/unfiltered
 carrier call from the accessible original VCF. A confirmation warning is shown
 because one genome can require approximately 10 GB in the initial SQLite
 representation. The operation is intended for users who specifically need
@@ -119,7 +121,7 @@ The **Storage** page separates three kinds of local storage:
 
 | Location | Contains | Typical placement |
 | --- | --- | --- |
-| **Annotation datasets** | VEP cache, FASTA, dbNSFP, CADD, SpliceAI, ClinVar, SCREEN, PromoterAI, and LoGoFunc | Fast internal or continuously attached external SSD |
+| **Annotation datasets** | VEP cache, FASTA, dbNSFP, CADD, SpliceAI, ClinVar, ClinGen, SCREEN, PromoterAI, LoGoFunc, FuncVEP, and private GenIA index | Fast internal or continuously attached external SSD |
 | **Sample Library & Cohort** | Managed review VCFs, SQLite cohort/phenotype records, import provenance, and logs | Internal or continuously attached external SSD |
 | **Temporary workspace** | Browser uploads, prepared VCFs, cohort staging, and rebuildable WGS-review caches | Fastest available disk; follows Sample Library by default |
 
@@ -226,6 +228,51 @@ per-subset activity: large collections are meant to be queried through
 Cohort Search, not opened wholesale in the browser.
 
 ## Storage management
+
+### Backup and restore
+
+There is not yet a one-click portable backup/restore package. **Export TSV
+is not a backup.** For a recoverable workstation copy:
+
+1. Record the application version and the three actual roots shown in
+   **Storage**, including any absolute per-dataset overrides. Do not assume
+   the defaults if an external location was selected.
+2. Finish or stop active jobs and bulk intake, then stop both the workbench
+   UI and local service. Closing the browser tab alone does not stop the
+   service. Copying a live SQLite database with an ordinary file copy can
+   produce an inconsistent backup.
+3. Back up the **entire Sample Library & Cohort root**, including hidden
+   identity markers, managed VCFs/indexes, databases, phenotype/individual
+   records, private OMIM data, and provenance. Keep any SQLite `-wal`/`-shm`
+   files with their database if present; do not delete them manually.
+4. Back up the bootstrap registry
+   `~/.iei-variant-review-bootstrap.json` and its `.backup` sibling. Also
+   preserve your configuration and the annotation root's private/user-supplied
+   resources (including GenIA), manifests, and any local overrides. A copy of
+   large public references avoids downloading again but is not a substitute
+   for the library backup. Follow each source's redistribution restrictions.
+5. Keep external original VCFs, complete annotation outputs, and their audit
+   files separately: a Storage migration does not copy these provenance paths.
+   Browser-local saved candidates, custom gene lists, and display preferences
+   are separate from the server folder; record/export what you need or include
+   the browser profile in an institution-approved backup. A library copy alone
+   will not restore them.
+
+Restore with the same GUIDE-IEI version first, while the service is stopped.
+Keep the original backup untouched. Restore the complete folder structure and
+markers to the same paths, or use **Storage → Change location → Use for future
+data** to select an existing managed copy when the old location is still
+accessible. If a missing external drive prevents startup, reconnect it first;
+do not delete the bootstrap registry to silence the error. For a new machine
+with different mount paths, have an administrator map the backed-up roots
+before startup; there is no automatic cross-machine path-repair wizard.
+
+Verify sample/callset counts, a reopened managed VCF, individual/phenotype
+links, and a known Cohort Search result. Check private dataset availability.
+Cohort Search can be rebuilt from retained library data, but a compact copy
+cannot recreate variants it never retained. Only after this check should you
+upgrade the restored installation or retire an old storage copy. Encrypt and
+restrict access to backups containing patient or licensed data.
 
 The Storage page reports:
 

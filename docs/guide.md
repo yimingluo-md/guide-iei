@@ -16,6 +16,12 @@ then the first analysis.
 The technical detail behind every step is documented in the
 [Reference](reference.md) section, linked from each chapter.
 
+Screenshots illustrate synthetic demonstration data and example workstation
+states. Their variants, scores, and classifications are not validation controls
+or evidence about real patients. Your installed resources and counts may differ.
+
+Stuck during setup or import? Start with [Troubleshooting](TROUBLESHOOTING.md).
+
 ## Chapters
 
 1. [What GUIDE-IEI does](guide/01-what-guide-iei-does.md)

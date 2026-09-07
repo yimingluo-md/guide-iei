@@ -8,9 +8,12 @@ nav_order: 17
 
 GUIDE-IEI separates a predictor's biological meaning from the code that reads
 its files. The canonical contract is
-[`config/predictor-registry.json`](../config/predictor-registry.json), validated
+[`config/predictor-registry.json`](https://github.com/yimingluo-md/guide-iei/blob/main/config/predictor-registry.json), validated
 and exposed as immutable Python objects by
-[`pipeline/predictor_registry.py`](../pipeline/predictor_registry.py).
+[`pipeline/predictor_registry.py`](https://github.com/yimingluo-md/guide-iei/blob/main/pipeline/predictor_registry.py).
+
+The [generated predictor reference](PREDICTOR_REFERENCE.md) mirrors its
+source IDs, emitted fields, and registered scopes; CI checks it for drift.
 
 This design has two goals:
 
@@ -155,14 +158,14 @@ fields.
 The same registry is consumed at several boundaries:
 
 1. **Startup and command construction.**
-   [`scripts/preflight.sh`](../scripts/preflight.sh) and
-   [`pipeline/build_vep_command.py`](../pipeline/build_vep_command.py) discover
+   [`scripts/preflight.sh`](https://github.com/yimingluo-md/guide-iei/blob/main/scripts/preflight.sh) and
+   [`pipeline/build_vep_command.py`](https://github.com/yimingluo-md/guide-iei/blob/main/pipeline/build_vep_command.py) discover
    enabled generic indexed annotators from the registry, validate their
    assets, and require the shared container plugin before starting VEP.
 2. **Annotation output.** Built-in VEP logic, source-specific adapters, the
    shared indexed adapter, custom tracks, and postprocessors emit the exact
    fields declared as predictor metrics.
-3. **Browser review.** [`webui/app/vcf.ts`](../webui/app/vcf.ts) converts VCF
+3. **Browser review.** [`webui/app/vcf.ts`](https://github.com/yimingluo-md/guide-iei/blob/main/webui/app/vcf.ts) converts VCF
    fields to normalized `PredictorObservation` objects. At parse time it
    rejects unknown predictors, wrong scopes, out-of-scope target dimensions,
    wrong value types or numeric ranges, and values placed on the wrong side
@@ -172,11 +175,11 @@ The same registry is consumed at several boundaries:
    Predictor-specific presentation remains explicit UI code.
 4. **Service and cohort storage.** The local service validates installed
    manifests before advertising supported managed datasets.
-   [`local_service/cohort_store.py`](../local_service/cohort_store.py) derives
+   [`local_service/cohort_store.py`](https://github.com/yimingluo-md/guide-iei/blob/main/local_service/cohort_store.py) derives
    canonical target keys from registry dimensions and stores observations,
    releases, typed filterable values, and compact provenance separately.
 5. **QC and reproducibility.** Annotation QC checks biologically applicable
-   outputs. [`pipeline/write_run_manifest.py`](../pipeline/write_run_manifest.py)
+   outputs. [`pipeline/write_run_manifest.py`](https://github.com/yimingluo-md/guide-iei/blob/main/pipeline/write_run_manifest.py)
    records the registry identity and configured resource assets beside each
    result.
 
@@ -196,8 +199,8 @@ transcript, or protein change. Its files are:
 - its tabix `.tbi` index; and
 - a `guide-iei.indexed-scores/v1` JSON manifest.
 
-[`pipeline/indexed_scores.py`](../pipeline/indexed_scores.py) is the canonical
-manifest validator and [`docker/IndexedScores.pm`](../docker/IndexedScores.pm)
+[`pipeline/indexed_scores.py`](https://github.com/yimingluo-md/guide-iei/blob/main/pipeline/indexed_scores.py) is the canonical
+manifest validator and [`docker/IndexedScores.pm`](https://github.com/yimingluo-md/guide-iei/blob/main/docker/IndexedScores.pm)
 is the VEP adapter. The manifest declares:
 
 - resource ID, name, release and GRCh38 assembly;

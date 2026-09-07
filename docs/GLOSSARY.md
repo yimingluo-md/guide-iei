@@ -87,7 +87,7 @@ see it in place.
 : How strongly evolution has preserved a position across species. High conservation implies change is poorly tolerated.
 
 **pLI** *(also: LOEUF, constraint)*
-: Gene-level (not variant-level) intolerance to loss of function, from population data. pLI ≥ 0.9 or LOEUF < 0.6 ≈ genes where losing one copy matters — where dominant LoF disease is plausible.
+: Gene-level (not variant-level) depletion of loss-of-function variation in population data. Higher pLI and lower LOEUF indicate greater constraint. Neither establishes haploinsufficiency, a disease mechanism, or the pathogenicity of a particular variant.
 
 **PromoterAI**
 : Predicts whether a variant near a gene's transcription start disrupts its expression; absolute scores ≥0.8 are treated as high-confidence.
@@ -96,10 +96,10 @@ see it in place.
 : Research predictor of missense mechanism: gain of function, loss of function, or neutral. A hypothesis generator, not a pathogenicity call.
 
 **FuncVEP**
-: Research predictor of damaging functional effects for GRCh38 missense SNVs. GUIDE-IEI reports CTI, CTE, and SP only after exact allele-and-Ensembl-gene matching and applies the final publication's binary thresholds to show **Damaging** or **Neutral**. These are functional-effect predictions, not clinical pathogenicity classifications or ACMG PP3/BP4 evidence strengths.
+: Research predictor of functional damage for GRCh38 missense SNVs, requiring exact allele-and-Ensembl-gene matching. CTI is shown by default; CTE and SP are optional. Damaging/Neutral labels use the final publication's thresholds, not clinical pathogenicity classifications or ACMG PP3/BP4 evidence strengths.
 
 **GenIA**
-: Optional registered-user immune gene–disease, phenotype, and GRCh38 variant evidence. GUIDE-IEI can install any subset of its five supported exports into a private local index. Variant labels are retained as source evidence; `NC` means **Not classified**, `RF` means **Risk factor**, and neither should be treated as a new GUIDE-IEI or ACMG/AMP classification.
+: Optional registered-user immune gene–disease, phenotype, and GRCh38 variant evidence. Any subset of five exports can be installed locally. Source labels remain distinct: NC means Not classified and RF means Risk factor, not VUS and pathogenic, respectively.
 
 ## Inheritance & family
 
