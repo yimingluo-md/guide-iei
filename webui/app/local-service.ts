@@ -1,5 +1,13 @@
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
 
+export function downloadFilename(disposition: string, fallbackName: string): string {
+  const extended = disposition.match(/filename\*=UTF-8''([^;\s]+)/i)?.[1];
+  if (extended) {
+    try { return decodeURIComponent(extended); } catch { /* use the legacy fallback */ }
+  }
+  return disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+}
+
 export type AnnotationJob = {
   id: string;
   created_at: string;
@@ -606,6 +614,7 @@ export type CohortQueryRow = {
   consequence: string;
   impact: string;
   gnomad_popmax: number | null;
+  gnomad_popmax_source?: "gnomad_popmax" | "max_af" | "gnomad_global" | "legacy_pooled" | "" | null;
   cadd: number | null;
   alpha_missense: number | null;
   spliceai: number | null;
@@ -721,13 +730,19 @@ export type CohortSampleReviewVcf = {
   imported_at: string;
   record_count: number;
   samples: CohortSampleReviewEntry[];
+  // Served by the service as a streamed file (vcf_url); getCohortSampleReview
+  // fetches it so callers still receive the text in `vcf`.
+  vcf_url: string;
+  vcf_bytes: number;
   vcf: string;
 };
 
 export type CohortSampleReview = {
+  export_id: string;
   sample_entries: number;
   carrier_observations: number;
   records: number;
+  bytes: number;
   analysis_scope: "exome" | "whole_genome";
   files: CohortSampleReviewVcf[];
   warnings: string[];
@@ -1265,7 +1280,7 @@ export async function openJobReviewFile(jobId: string, fallbackName: string) {
     throw new Error(payload.error ?? `Local service returned ${response.status}`);
   }
   const disposition = response.headers.get("Content-Disposition") ?? "";
-  const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+  const name = downloadFilename(disposition, fallbackName);
   return new File([await response.blob()], name, {
     type: response.headers.get("Content-Type") || "application/octet-stream",
   });
@@ -1365,7 +1380,7 @@ export async function openWgsReviewFile(reviewId: string, fallbackName: string) 
     throw new Error(payload.error ?? `Local service returned ${response.status}`);
   }
   const disposition = response.headers.get("Content-Disposition") ?? "";
-  const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+  const name = downloadFilename(disposition, fallbackName);
   return new File([await response.blob()], name, {
     type: response.headers.get("Content-Type") || "application/octet-stream",
   });
@@ -1447,10 +1462,26 @@ export async function getCohortReviewRecords(
 }
 
 export async function getCohortSampleReview(sampleIds: number[]) {
-  return request<CohortSampleReview>("/api/cohort/sample-review", {
+  const review = await request<CohortSampleReview>("/api/cohort/sample-review", {
     method: "POST",
     body: JSON.stringify({ sample_ids: sampleIds }),
   });
+  // The projected VCFs are written to disk by the service and streamed one
+  // file at a time (audit M32): the JSON above carries only their URLs.
+  const files: CohortSampleReviewVcf[] = [];
+  for (const file of review.files) {
+    const response = await fetch(`${SERVICE_URL}${file.vcf_url}`);
+    if (!response.ok) {
+      const payload: unknown = await response.json().catch(() => null);
+      const message =
+        payload && typeof payload === "object" && "error" in payload
+          ? String((payload as { error?: unknown }).error ?? "")
+          : "";
+      throw new Error(message || `Local service returned ${response.status} for ${file.name}`);
+    }
+    files.push({ ...file, vcf: await response.text() });
+  }
+  return { ...review, files };
 }
 
 // Default to the server's cap (5000): a smaller client limit truncated
@@ -1580,7 +1611,7 @@ export async function openSampleLibraryReviewSelection(
     throw new Error(payload.error ?? `Local service returned ${response.status}`);
   }
   const disposition = response.headers.get("Content-Disposition") ?? "";
-  const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+  const name = downloadFilename(disposition, fallbackName);
   return new File([await response.blob()], name, {
     type: response.headers.get("Content-Type") || "application/octet-stream",
   });
@@ -1608,7 +1639,7 @@ export async function openSampleLibraryFile(datasetId: string, fallbackName: str
     throw new Error(payload.error ?? `Local service returned ${response.status}`);
   }
   const disposition = response.headers.get("Content-Disposition") ?? "";
-  const name = disposition.match(/filename="([^"]+)"/i)?.[1] || fallbackName;
+  const name = downloadFilename(disposition, fallbackName);
   return new File([await response.blob()], name, {
     type: response.headers.get("Content-Type") || "application/octet-stream",
   });
@@ -1699,6 +1730,9 @@ export type SoftwareUpdateStatus = {
   rollback_version: string | null;
   incomplete_update: boolean;
   restart_pending: boolean;
+  /** An in-app restart cannot finish the installed update: the interface
+   * must be rebuilt or its dependencies reinstalled by a full relaunch. */
+  full_relaunch_required?: boolean;
 };
 
 export type SoftwareUpdateCheck = {
@@ -1722,6 +1756,8 @@ export type SoftwareUpdateResult = {
   restart_required: boolean;
   config_review_needed?: string[];
   dependencies_changed?: boolean;
+  /** webui/ files changed: only a full relaunch rebuilds the interface. */
+  web_build_required?: boolean;
   container_changed?: boolean;
   files_removed?: string[];
   repaired?: boolean;

@@ -536,18 +536,37 @@ def _sha256_file(path: Path, status: os.stat_result) -> str:
     )
 
 
+def _sha256_file_uncached(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def validate_manifest_files(
     payload: dict[str, Any],
     data_path: Path,
     index_path: Path,
+    *,
+    strict: bool = False,
 ) -> None:
     """Validate the installed data/index pair described by a manifest.
 
-    File names and sizes are always checked. ``mtime_ns`` is an optional fast
-    identity hint: manifests without it remain valid, while a copied file with
-    a different timestamp is accepted only after its SHA-256 still matches.
-    This avoids both false failures after a metadata-only copy and repeated
-    multi-gigabyte hashing during ordinary status polling.
+    Two distinct checks share this function (review M8):
+
+    * **Fast status check** (``strict=False``, the default): file names and
+      sizes are always compared; ``mtime_ns`` is an optional identity hint,
+      and the SHA-256 is computed only when the recorded timestamp differs
+      from the installed file's. Manifests without ``mtime_ns`` are accepted
+      on name and size alone. This is what the dataset screen polls, and it
+      must stay cheap for multi-gigabyte files.
+    * **Strict verification** (``strict=True``): the SHA-256 of both files is
+      always computed, uncached, and compared with the manifest, whatever
+      the timestamps say. A same-size, same-mtime content change — a partial
+      overwrite with the timestamp restored, a copy that preserved metadata
+      — is caught here. This is the check to run before an annotation job,
+      because the multi-hour VEP run is what the manifest protects.
     """
 
     validate_manifest(payload)
@@ -569,6 +588,13 @@ def validate_manifest_files(
             raise ManifestError(
                 f"files.{role}.size does not match installed file {path.name}"
             )
+        if strict:
+            if _sha256_file_uncached(path) != metadata["sha256"]:
+                raise ManifestError(
+                    f"files.{role}.sha256 does not match installed file "
+                    f"{path.name} (strict verification)"
+                )
+            continue
         recorded_mtime = metadata.get("mtime_ns")
         if recorded_mtime is not None and recorded_mtime != status.st_mtime_ns:
             if _sha256_file(path, status) != metadata["sha256"]:

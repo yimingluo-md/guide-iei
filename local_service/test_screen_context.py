@@ -124,6 +124,68 @@ class ScreenContextStoreTests(unittest.TestCase):
         })
         self.assertEqual(all_result["matching_keys"], [])
 
+    def _rebuild_with_skew(self, *, tissue_rows, matrix_rows, tissue_bytes):
+        """Rewrite the catalog's tissue table and the tissue matrix so the
+        catalog row count and the stored matrix width disagree."""
+        root = Path(self.temp.name)
+        connection = sqlite3.connect(root / "catalog.sqlite3")
+        connection.execute("DELETE FROM tissue")
+        connection.executemany(
+            "INSERT INTO tissue VALUES(?,?,?,?)",
+            [(index, name, f"{name}.bed", f"https://example/{name}") for index, name in tissue_rows],
+        )
+        connection.execute("DELETE FROM ccre")
+        for row_index in range(matrix_rows):
+            connection.execute(
+                "INSERT INTO ccre VALUES(?,?,?,?,?,?,?,?)",
+                (row_index, 1, "1", 99 + 100 * row_index, 120 + 100 * row_index,
+                 f"r{row_index}", f"EH38E{row_index}", "pELS"),
+            )
+        connection.commit(); connection.close()
+        (root / "tissues.u8").write_bytes(bytes(tissue_bytes))
+        (root / "immune.u8").write_bytes(bytes([1, 2, 7] * matrix_rows))
+        prepared = root / "prepared.json"
+        prepared.write_text(json.dumps({
+            "catalog": {"path": str(root / "catalog.sqlite3")},
+            "tissue_matrix": {"path": str(root / "tissues.u8"), "shape": [matrix_rows, 2]},
+            "immune_matrix": {"path": str(root / "immune.u8"), "shape": [matrix_rows, 3]},
+        }))
+        self.store = ScreenContextStore()
+
+    def test_filter_and_detail_read_the_same_matrix_bytes_on_catalog_skew(self):
+        """Audit M29: with a two-column tissue matrix and a one-entry tissue
+        catalog, the filter derived its row stride from the catalog (1) while
+        the detail reader used the stored shape (2), so for the second cCRE
+        row the detail view reported activity the filter excluded."""
+        # Two cCRE rows; tissue 0 is active only on the second row.
+        self._rebuild_with_skew(
+            tissue_rows=[(0, "blood")], matrix_rows=2, tissue_bytes=[0, 0, 2, 5],
+        )
+        second = {"key": "second", "chrom": "1", "pos": 200, "ref": "A", "alt": "G"}
+        evidence = self.store.evidence(self.manifest, second)
+        self.assertEqual(evidence["status"], "overlap")
+        self.assertTrue(evidence["overlaps"][0]["tissues"][0]["activity_detected"])
+        filtered = self.store.filter_variants(self.manifest, {
+            "variants": [second], "tissue_ids": ["tissue:0"], "mode": "any",
+        })
+        self.assertEqual(filtered["matching_keys"], ["second"])
+
+    def test_bundle_whose_catalog_exceeds_the_matrix_is_refused(self):
+        # Three tissues in the catalog, two columns in the matrix: index 2
+        # would read past every row. Refuse rather than misread.
+        self._rebuild_with_skew(
+            tissue_rows=[(0, "blood"), (1, "thymus"), (2, "spleen")],
+            matrix_rows=1, tissue_bytes=[2, 0],
+        )
+        with self.assertRaises(ValueError) as caught:
+            self.store.evidence(self.manifest, {"chrom": "1", "pos": 100, "ref": "A", "alt": "G"})
+        self.assertIn("exceed the tissue matrix width", str(caught.exception))
+        # A matrix whose file size disagrees with its declared shape is refused too.
+        self._rebuild_with_skew(tissue_rows=[(0, "blood")], matrix_rows=1, tissue_bytes=[2, 0, 9])
+        with self.assertRaises(ValueError) as caught:
+            self.store.evidence(self.manifest, {"chrom": "1", "pos": 100, "ref": "A", "alt": "G"})
+        self.assertIn("bytes but its manifest shape", str(caught.exception))
+
     def test_catalog_exposes_immune_core_immune_all_and_select_all_presets(self):
         catalog = self.store.catalog(self.manifest)
         presets = {item["id"]: item for item in catalog["presets"]}

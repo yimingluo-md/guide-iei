@@ -248,6 +248,36 @@ class TrackerTests(unittest.TestCase):
         snap = self.tracker.snapshot(self.job)
         self.assertEqual(snap["variants_done"], 1)
 
+    def test_counter_follows_the_announced_temporary_vep_output(self):
+        """The runner writes VEP output to a run-scoped temporary name and
+        promotes it only after validation (audit M16); the counter must
+        follow that file, even when the path contains spaces, while the
+        deliverable path still holds the previous run's complete output."""
+        self.output.write_bytes(
+            bgzf_block(HEADER)
+            + bgzf_block(b"".join(b"1\t%d\n" % i for i in range(400)))
+        )
+        temp_output = Path(self.temp.name) / "out.run123.vep-tmp dir" / "out.vep.vcf.gz"
+        temp_output.parent.mkdir()
+        self.log_write(
+            "[10:00:10] input pre-filter (x): 500 -> 200 variants\n"
+            "[10:00:11] === VEP invocation ===\n"
+            f"[10:00:12] VEP writing to {temp_output}\n"
+        )
+        snap = self.tracker.snapshot(self.job)
+        self.assertEqual(snap["stage"], "vep")
+        self.assertIsNone(snap["variants_done"])  # temp not written yet
+        temp_output.write_bytes(
+            bgzf_block(HEADER) + bgzf_block(b"".join(b"1\t%d\n" % i for i in range(50)))
+        )
+        snap = self.tracker.snapshot(self.job)
+        self.assertEqual(snap["variants_done"], 50)
+        self.assertEqual(snap["vep_percent"], 25.0)
+        self.log_write(f"[10:05:00] VEP finished -> {temp_output} (validating before promotion)\n")
+        snap = self.tracker.snapshot(self.job)
+        vep_stage = next(s for s in snap["stages"] if s["id"] == "vep")
+        self.assertEqual(vep_stage["state"], "done")
+
     def test_prefilter_off_denominator_is_parsed(self):
         self.log_write(
             "[10:00:10] input pre-filter OFF: 12345 variants to annotate (every record in the input VCF).\n"

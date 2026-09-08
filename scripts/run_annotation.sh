@@ -142,6 +142,12 @@ if [[ "$DRY" != "1" ]]; then
         || die "cannot create annotation temporary directory"
     export TMPDIR="$RUN_SCRATCH"
 fi
+# `bcftools sort` spills a whole-genome callset to its temp directory. TMPDIR
+# does not reach a containerized bcftools (whose /tmp is a small overlay), so
+# every sort names the scratch directory explicitly; hts() bind-mounts it
+# (audit M14). The trailing slash puts the temp files inside the directory.
+SORT_TMP_ARGS=()
+[[ -z "$RUN_SCRATCH" ]] || SORT_TMP_ARGS=(-T "${RUN_SCRATCH}/")
 
 if [[ "$RESOLVED_ASSEMBLY" == "GRCh37" ]]; then
     [[ "$(yaml_get "$CONFIG" liftover.enabled)" != "false" ]] \
@@ -151,22 +157,11 @@ if [[ "$RESOLVED_ASSEMBLY" == "GRCh37" ]]; then
         --input "$INPUT" --output "$LIFTED_INPUT" --config "$CONFIG"
     )
     [[ "$DRY" == "1" ]] && LIFTOVER_ARGS+=(--dry-run)
-    # The lifted output is a cross-run cache with a stable name, so two
-    # concurrent runs of the same input must not build it simultaneously.
-    # mkdir is the portable atomic lock (macOS ships no flock).
-    LIFTOVER_LOCK="${LIFTED_INPUT}.lock"
-    LOCK_WAITED=0
-    while ! mkdir "$LIFTOVER_LOCK" 2>/dev/null; do
-        (( LOCK_WAITED == 0 )) && log "another run is converting this input; waiting for its liftover..."
-        sleep 5
-        LOCK_WAITED=$(( LOCK_WAITED + 5 ))
-        (( LOCK_WAITED >= 3600 )) && die "gave up waiting for ${LIFTOVER_LOCK} — remove it if no other run is active"
-    done
-    trap 'rmdir "$LIFTOVER_LOCK" 2>/dev/null; cleanup_postproc_tmps' EXIT
-    bash "${HERE}/liftover_grch37_to_grch38.sh" "${LIFTOVER_ARGS[@]}" \
+    # The guard is held by the supervisor and the liftover child. It remains
+    # locked until the last process exits, including after a supervisor crash.
+    python3 "${ROOT}/pipeline/run_liftover_locked.py" --lock "${LIFTED_INPUT}.lock" -- \
+        bash "${HERE}/liftover_grch37_to_grch38.sh" "${LIFTOVER_ARGS[@]}" \
         || die "GRCh37->GRCh38 liftover failed"
-    rmdir "$LIFTOVER_LOCK" 2>/dev/null || true
-    trap cleanup_postproc_tmps EXIT
     if [[ "$DRY" != "1" ]]; then
         INPUT="$LIFTED_INPUT"
         log "annotation input converted to canonical GRCh38: $INPUT"
@@ -194,13 +189,37 @@ else
     if [[ -n "$CUSTOM_BED" ]]; then
         REGION_BED="$CUSTOM_BED"; [[ "$REGION_BED" = /* ]] || REGION_BED="${ROOT}/${REGION_BED}"
         [[ -s "$REGION_BED" ]] || die "region.custom_bed set but not found: $REGION_BED"
+        # A user panel legitimately covers only some contigs; it must still be
+        # a complete BGZF stream when compressed.
+        if [[ "$REGION_BED" == *.gz ]] && ! bgzf_complete "$REGION_BED"; then
+            die "region.custom_bed is an incomplete BGZF file (no EOF marker; variants after the truncation point would be silently dropped): $REGION_BED"
+        fi
         log "region restriction ON (custom BED: $REGION_BED)"
     else
         REGION_BED="$(yaml_get "$CONFIG" region.bed)"; REGION_BED="${REGION_BED:-references/regions/coding_splice.padded.bed.gz}"
         [[ "$REGION_BED" = /* ]] || REGION_BED="${ROOT}/${REGION_BED}"
-        if [[ ! -s "$REGION_BED" ]]; then
+        if [[ ! -s "$REGION_BED" ]] || ! bgzf_complete "$REGION_BED"; then
+            [[ -s "$REGION_BED" ]] && warn "coding BED is incomplete (missing BGZF EOF marker); rebuilding it: $REGION_BED"
             log "coding BED missing; building it (one-time)."
-            [[ "$DRY" == "1" ]] || bash "${HERE}/build_coding_bed.sh" "$CONFIG" || die "coding BED build failed"
+            [[ "$DRY" == "1" ]] || bash "${HERE}/build_coding_bed.sh" "$CONFIG" --force || die "coding BED build failed"
+        fi
+        if [[ "$DRY" != "1" ]]; then
+            # Refuse to start on a region file that cannot cover the genome:
+            # a truncated BGZF passes gzip -t and tabix, and bcftools -R then
+            # returns success while omitting every later contig (audit M12).
+            bgzf_complete "$REGION_BED" \
+                || die "coding BED is incomplete (no BGZF EOF marker): $REGION_BED — rebuild with: bash scripts/build_coding_bed.sh --force"
+            [[ -s "$REGION_BED.tbi" || -s "$REGION_BED.csi" ]] \
+                || die "coding BED has no tabix index: $REGION_BED — rebuild with: bash scripts/build_coding_bed.sh --force"
+            REQUIRED_REGION_CONTIGS="$(yaml_get "$CONFIG" region.required_contigs)"
+            REQUIRED_REGION_CONTIGS="${REQUIRED_REGION_CONTIGS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 X Y MT}"
+            REGION_CONTIGS="$(hts tabix -l "$REGION_BED" 2>/dev/null || true)"
+            MISSING_REGION_CONTIGS=""
+            for contig in $REQUIRED_REGION_CONTIGS; do
+                printf '%s\n' "$REGION_CONTIGS" | grep -qx -- "$contig" || MISSING_REGION_CONTIGS="${MISSING_REGION_CONTIGS} ${contig}"
+            done
+            [[ -z "$MISSING_REGION_CONTIGS" ]] \
+                || die "coding BED lacks contig(s):${MISSING_REGION_CONTIGS} — annotation would silently skip them; rebuild with: bash scripts/build_coding_bed.sh --force"
         fi
         log "region restriction ON (coding+splice BED: $REGION_BED)"
     fi
@@ -219,7 +238,7 @@ if [[ "$WGS_MODE" == "1" ]]; then
         WGS_INDEXED="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.wgs-indexed.vcf.gz"
         POSTPROC_TMPS+=("$WGS_INDEXED")
         log "whole-genome input is not queryable; creating sorted BGZF working copy"
-        hts bcftools sort -O z -o "$WGS_INDEXED" "$INPUT" \
+        hts bcftools sort ${SORT_TMP_ARGS[@]+"${SORT_TMP_ARGS[@]}"} -O z -o "$WGS_INDEXED" "$INPUT" \
             || die "whole-genome BGZF preparation failed"
         hts tabix -p vcf -f "$WGS_INDEXED" 2>/dev/null \
             || hts bcftools index -f -c "$WGS_INDEXED" \
@@ -286,7 +305,7 @@ if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
                 # fallback for long contigs.
                 COMPRESSED_INPUT="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.input.sorted.vcf.gz"
                 POSTPROC_TMPS+=("$COMPRESSED_INPUT")
-                hts bcftools sort -O z -o "$COMPRESSED_INPUT" "$INPUT" \
+                hts bcftools sort ${SORT_TMP_ARGS[@]+"${SORT_TMP_ARGS[@]}"} -O z -o "$COMPRESSED_INPUT" "$INPUT" \
                     || die "region pre-filter input sort/BGZF preparation failed"
                 INPUT="$COMPRESSED_INPUT"
                 hts tabix -p vcf -f "$INPUT" 2>/dev/null \
@@ -294,27 +313,41 @@ if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
                     || die "region pre-filter input indexing failed"
             }
         fi
-        NBEFORE="$(hts bcftools view -H "$INPUT" | wc -l | tr -d ' ')"
+        # Record counts come from the index when one exists (bcftools index
+        # -n reads the per-bin totals) and otherwise from a single pass; the
+        # FILTER census below is that pass for PASS-filtered runs, so a
+        # whole-genome input is no longer decompressed three times before
+        # VEP starts (audit M18).
+        count_vcf_records() {
+            local n=""
+            if [[ -f "$1.tbi" || -f "$1.csi" ]]; then
+                n="$(hts bcftools index -n "$1" 2>/dev/null | tr -dc '0-9' || true)"
+            fi
+            [[ -n "$n" ]] || n="$(hts bcftools view -H "$1" | wc -l | tr -d ' ')"
+            printf '%s' "$n"
+        }
         # FILTER census: identifies a never-hard-filtered callset (no PASS
         # labels at all) so the run can say so, and gives the zero-retained
         # error measured facts instead of a differential to work through.
-        NPASS=""; NUNFILTERED=""
+        NBEFORE=""; NPASS=""; NUNFILTERED=""
         if [[ "$PASS_FILTER_ON" == "1" ]]; then
             FILTER_CENSUS="$(hts bcftools query -f '%FILTER\n' "$INPUT" 2>/dev/null | awk '
+                { total++ }
                 $0 == "PASS" { pass++ }
                 $0 == "." { unfiltered++ }
-                END { printf "%d %d", pass+0, unfiltered+0 }' || true)"
-            NPASS="${FILTER_CENSUS%% *}"; NUNFILTERED="${FILTER_CENSUS##* }"
+                END { printf "%d %d %d", total+0, pass+0, unfiltered+0 }')" || FILTER_CENSUS=""
+            [[ -z "$FILTER_CENSUS" ]] || read -r NBEFORE NPASS NUNFILTERED <<<"$FILTER_CENSUS"
             if [[ "${NPASS:-0}" -eq 0 && "${NUNFILTERED:-0}" -gt 0 ]]; then
                 NEXCLUDED=$(( NBEFORE - NUNFILTERED ))
                 FILTER_POLICY_NOTE="No record in this VCF carries FILTER=PASS: upstream site filtering was not applied. ${NUNFILTERED} unfiltered ('.') records were retained; ${NEXCLUDED} records with explicit failure labels were excluded. Weigh per-variant call quality during review."
                 warn "$FILTER_POLICY_NOTE"
             fi
         fi
+        [[ -n "$NBEFORE" ]] || NBEFORE="$(count_vcf_records "$INPUT")"
         hts bcftools view "${VIEW_ARGS[@]}" -O z -o "$FILT" "$INPUT" \
             || die "input pre-filter failed"
         hts tabix -p vcf -f "$FILT" 2>/dev/null || true
-        NAFTER="$(hts bcftools view -H "$FILT" | wc -l | tr -d ' ')"
+        NAFTER="$(count_vcf_records "$FILT")"
         log "input pre-filter (${FILTER_LABELS[*]}): ${NBEFORE} -> ${NAFTER} variants"
         if [[ "$NAFTER" -eq 0 ]]; then
             if [[ "$PASS_FILTER_ON" == "1" && "${NPASS:-0}" -eq 0 && "${NUNFILTERED:-0}" -eq 0 ]]; then
@@ -369,6 +402,16 @@ fi
 # Rebuild when the source content or VEP cache changes.  ClinVar keeps its
 # historic variable/name for output compatibility; ClinGen and GenIA use the
 # same provenance-preserving catalog contract below.
+# Fingerprint of the configured P/LP label set (pathogenic_terms). Part of
+# every catalog stamp so a policy edit rebuilds the catalogs; "unknown" when
+# the configuration cannot be read, which always forces a rebuild.
+clinical_protein_labels_fingerprint() {
+    local line
+    line="$(python3 "${ROOT}/pipeline/prepare_clinical_protein_catalog.py" labels \
+        --config "$CONFIG" 2>/dev/null | cut -f1)"
+    echo "${line:-unknown}"
+}
+
 AA_REF=""
 CLINGEN_AA_REF=""
 GENIA_AA_REF=""
@@ -401,17 +444,20 @@ if [[ "$DRY" != "1" ]] \
     # Bind the stamp to the ClinVar CONTENT, not just its release string: a
     # replaced or damaged ClinVar VCF under an unchanged release name must
     # trigger a rebuild (the same rule the ClinGen updater applies).
-    CLINVAR_SHA="$(shasum -a 256 "$CLINVAR_VCF" 2>/dev/null | cut -d' ' -f1)"
-    CLINVAR_SHA="${CLINVAR_SHA:-unknown}"
+    CLINVAR_SHA="$(sha256_file "$CLINVAR_VCF")" || die "cannot hash the ClinVar VCF for the protein-match stamp: $CLINVAR_VCF"
     # ...and to the VEP cache the catalog's transcript column was picked
     # from: upgrading the cache without rebuilding the catalog would let
     # the transcript gate silently zero every match against retired
     # accessions. The versioned cache directory name identifies the cache.
     AA_VEP_CACHE_DIR="$(yaml_get "$CONFIG" reference.vep_cache_dir)"
     [[ "$AA_VEP_CACHE_DIR" = /* ]] || AA_VEP_CACHE_DIR="${ROOT}/${AA_VEP_CACHE_DIR}"
-    VEP_CACHE_TAG="$(ls "${AA_VEP_CACHE_DIR}/homo_sapiens" 2>/dev/null | sort | tail -1)"
-    VEP_CACHE_TAG="${VEP_CACHE_TAG:-unknown}"
-    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA $VEP_CACHE_TAG" ]]; then
+    VEP_CACHE_TAG="$(vep_cache_tag "$AA_VEP_CACHE_DIR")" \
+        || die "cannot identify the VEP cache for the ClinVar protein-match catalog"
+    # ...and to the configured pathogenic label set: editing pathogenic_terms
+    # changes which source records the catalog admits, so it must rebuild.
+    AA_LABELS_TAG="labels-$(clinical_protein_labels_fingerprint)"
+    AA_STAMP_LINE="$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA $VEP_CACHE_TAG $AA_LABELS_TAG"
+    if [[ -s "$AA_REF" && -f "$STAMP" && "$(cat "$STAMP" 2>/dev/null)" == "$AA_STAMP_LINE" ]]; then
         NEED_BUILD=0
         log "aa-match reference up to date (release $CLINVAR_RELEASE), skip rebuild."
     fi
@@ -420,7 +466,7 @@ if [[ "$DRY" != "1" ]] \
         log "=== building ClinVar clinical protein-match catalog ==="
         if bash "${HERE}/build_clinical_protein_catalog.sh" \
             "$CONFIG" clinvar "$CLINVAR_VCF" "$AA_REF"; then
-            echo "$CLINVAR_RELEASE $AA_REF_FORMAT $CLINVAR_SHA $VEP_CACHE_TAG" > "$STAMP"
+            echo "$AA_STAMP_LINE" > "$STAMP"
         else
             # The matcher will run against the previous catalog; its output
             # must be labeled with THAT release, not the current one.
@@ -443,13 +489,15 @@ ensure_clinical_protein_catalog() {
     local stamp_path="${catalog_path}.stamp" source_sha cache_dir cache_tag expected
     CATALOG_SOURCE_SHA=""
     [[ -s "$source_path" ]] || return 1
-    source_sha="$(shasum -a 256 "$source_path" 2>/dev/null | cut -d' ' -f1)"
-    source_sha="${source_sha:-unknown}"
+    source_sha="$(sha256_file "$source_path")" || die "cannot hash the $label source for the catalog stamp: $source_path"
     cache_dir="$(yaml_get "$CONFIG" reference.vep_cache_dir)"
     [[ "$cache_dir" = /* ]] || cache_dir="${ROOT}/${cache_dir}"
-    cache_tag="$(ls "${cache_dir}/homo_sapiens" 2>/dev/null | sort | tail -1)"
-    cache_tag="${cache_tag:-unknown}"
-    expected="${source_sha} aa9-provenance-v1-pick-allele-gene ${cache_tag}"
+    # The stamp binds the catalog to the versioned VEP cache directory. A
+    # cache without one is not a state to stamp as "unknown" and continue
+    # from: the annotation cannot run without it.
+    cache_tag="$(vep_cache_tag "$cache_dir")" \
+        || die "cannot identify the VEP cache for the $label protein-match catalog"
+    expected="${source_sha} aa9-provenance-v1-pick-allele-gene ${cache_tag} labels-$(clinical_protein_labels_fingerprint)"
     if [[ -s "$catalog_path" && -f "$stamp_path" ]] \
        && [[ "$(cat "$stamp_path" 2>/dev/null)" == "$expected" ]]; then
         CATALOG_SOURCE_SHA="$source_sha"
@@ -530,8 +578,24 @@ fi
 # 2. Build VEP argv + mounts (JSON) from the config
 # ============================================================================ #
 log "=== building VEP command from config ==="
+# VEP writes to a run-scoped temporary name beside the deliverable; the file
+# is promoted to $OUTPUT only after validate_vep_output.py accepts it. A run
+# that is killed or fails validation therefore never leaves a partial,
+# look-alike VCF under the deliverable's name (audit M16). VEP derives its
+# _summary.html/_warnings.txt sidecars from the output name, so they are
+# renamed alongside.
+case "$OUTPUT" in
+    *.vcf.gz) VEP_TMP="${OUTPUT%.vcf.gz}.${RUN_TOKEN}.vep-tmp.vcf.gz" ;;
+    *.vcf)    VEP_TMP="${OUTPUT%.vcf}.${RUN_TOKEN}.vep-tmp.vcf" ;;
+    *)        VEP_TMP="${OUTPUT}.${RUN_TOKEN}.vep-tmp" ;;
+esac
+POSTPROC_TMPS+=("$VEP_TMP" "${VEP_TMP}_summary.html" "${VEP_TMP}_warnings.txt")
+# --verify-integrity: hash every indexed-score dataset against its manifest
+# now, before the multi-hour VEP run, rather than trusting the fast
+# name/size/timestamp check the dataset screen polls with.
 PLAN_JSON="$(python3 "${ROOT}/pipeline/build_vep_command.py" \
-    --config "$CONFIG" --input "$INPUT" --output "$OUTPUT" --json)" \
+    --config "$CONFIG" --input "$INPUT" --output "$VEP_TMP" --json \
+    --verify-integrity)" \
     || die "some REQUIRED reference file is missing (see WARN/ERROR above)"
 
 # Parse the JSON with python into shell-friendly lines.
@@ -608,7 +672,7 @@ done
 
 case "$RUNTIME" in
     docker|podman)
-        FULL=( "$RUNTIME" run --rm --ulimit core=0:0 "${MOUNT_FLAGS[@]}" --entrypoint sh "$IMAGE" -c "$VEP_CMD_STR" ) ;;
+        FULL=( "$RUNTIME" run --rm --pull=never --network=none --ulimit core=0:0 "${MOUNT_FLAGS[@]}" --entrypoint sh "$IMAGE" -c "$VEP_CMD_STR" ) ;;
     singularity|apptainer)
         FULL=( "$RUNTIME" exec "${MOUNT_FLAGS[@]}" "$IMAGE" sh -c "$VEP_CMD_STR" ) ;;
     *) die "unsupported runtime: $RUNTIME" ;;
@@ -633,20 +697,27 @@ if [[ "$DRY" == "1" ]]; then
     exit 0
 fi
 
-# Point of no return: outputs are about to be (re)written, so a previous
-# run's deliverable sidecar is now stale. Deleting it any earlier let a
-# dry-run or an early validation failure erase the pointer to a still-valid
-# previous result.
-rm -f "$DELIVERABLE_SIDECAR"
-
-# VEP only creates this sidecar when warnings occur. Remove a sidecar from a
-# prior failed/forced run so it cannot be mistaken for the current run's state.
-rm -f "${OUTPUT}_warnings.txt"
+# VEP only creates the warnings sidecar when warnings occur. Remove sidecars
+# from a prior failed/forced run so they cannot be mistaken for this run's.
+rm -f "${OUTPUT}_warnings.txt" "${VEP_TMP}_warnings.txt" "${VEP_TMP}_summary.html"
+# The workbench progress tracker follows this line to count records as
+# they are written (job_progress.py); keep its wording.
+log "VEP writing to $VEP_TMP"
 "${FULL[@]}" || die "VEP run failed"
-log "VEP finished -> $OUTPUT"
+[[ -s "$VEP_TMP" ]] || die "VEP reported success but wrote no output: $VEP_TMP"
+log "VEP finished -> $VEP_TMP (validating before promotion)"
 python3 "${ROOT}/pipeline/validate_vep_output.py" \
-    --config "$CONFIG" --vcf "$OUTPUT" \
-    || die "required annotation validation failed"
+    --config "$CONFIG" --vcf "$VEP_TMP" \
+    || die "required annotation validation failed; the unvalidated VEP output was not promoted to $OUTPUT"
+# Point of no return: the deliverable is about to be (re)written, so a
+# previous run's deliverable sidecar is now stale. Until this moment a killed
+# run or a validation failure leaves the previous result and its pointer
+# intact.
+rm -f "$DELIVERABLE_SIDECAR"
+mv -f "$VEP_TMP" "$OUTPUT" || die "could not promote validated VEP output to $OUTPUT"
+[[ -e "${VEP_TMP}_summary.html" ]] && mv -f "${VEP_TMP}_summary.html" "${OUTPUT}_summary.html"
+[[ -e "${VEP_TMP}_warnings.txt" ]] && mv -f "${VEP_TMP}_warnings.txt" "${OUTPUT}_warnings.txt"
+log "validated VEP output -> $OUTPUT"
 
 # ============================================================================ #
 # 4. Recompute LOFTEE's frameshift 50-bp rule at the resulting PTC.
@@ -690,10 +761,20 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
     HAPLO_CANDIDATES="${HAPLO_STEM}.haplo.candidates.vcf.gz"
     HAPLO_JSON="${HAPLO_STEM}.haplo.raw.json"
     HAPLO_TMP="${HAPLO_STEM}.haplo.$$.tmp"
-    POSTPROC_TMPS+=("$HAPLO_TMP")
+    # The candidate/selection working files are removed explicitly on success
+    # below; registering them too means a failed or optional-skipped
+    # Haplosaurus pass cannot leave look-alike .haplo.*.vcf.gz files beside
+    # the deliverable (audit M13).
+    POSTPROC_TMPS+=("$HAPLO_TMP" "$HAPLO_SELECTED" "$HAPLO_CANDIDATES" "${HAPLO_CANDIDATES}.id.vcf.gz" "$HAPLO_JSON")
     HAPLO_AUDIT="${OUTPUT}.haplotype.audit.json"
     HAPLO_OK=1
 
+    # Record-wide pre-selection: keeps every record with a frameshift
+    # consequence on ANY allele, and the split below then hands each ALT —
+    # including in-frame or substitution siblings — to Haplosaurus. The
+    # postprocessor re-checks per allele (ALLELE_NUM) that at least two
+    # contributors are themselves frameshifting on the haplotype's transcript
+    # before any restoration status is written.
     hts bcftools view -i 'INFO/CSQ~"frameshift_variant"' -O z \
         -o "$HAPLO_SELECTED" "$OUTPUT" || HAPLO_OK=0
     if [[ "$HAPLO_OK" == "1" ]]; then
@@ -736,7 +817,7 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
                 # its JSON mid-write and losing containers silently. Unbuffered
                 # IO avoids the crashing layer entirely; verified empirically
                 # (exit 139 + truncated output -> exit 0 + complete output).
-                "$RUNTIME" run --rm --ulimit core=0:0 \
+                "$RUNTIME" run --rm --pull=never --network=none --ulimit core=0:0 \
                     -e PERLIO=:unix \
                     -v "${CANDIDATE_DIR}:/work:rw" \
                     -v "${CACHE_DIR}:/cache:rw" \
@@ -878,8 +959,13 @@ if [[ "$(yaml_get "$CONFIG" clingen_erepo.enabled)" == "true" ]]; then
     CLINGEN_REQUIRED="$(yaml_get "$CONFIG" clingen_erepo.required)"
     CLINGEN_TMP="${FINAL_OUTPUT%.gz}.clingen.$$.tmp"
     POSTPROC_TMPS+=("$CLINGEN_TMP")
-    if [[ -s "$CLINGEN_DB" ]] && python3 "${ROOT}/pipeline/clingen_erepo_annotate.py" \
-        --input "$FINAL_OUTPUT" --output "$CLINGEN_TMP" --database "$CLINGEN_DB"; then
+    CLINGEN_FASTA="$(yaml_get "$CONFIG" reference.fasta.path)"
+    [[ -z "$CLINGEN_FASTA" || "$CLINGEN_FASTA" = /* ]] || CLINGEN_FASTA="${ROOT}/${CLINGEN_FASTA}"
+    CLINGEN_ARGS=(--input "$FINAL_OUTPUT" --output "$CLINGEN_TMP" --database "$CLINGEN_DB")
+    # Left-align repeat indels against the same GRCh38 reference the catalog
+    # was normalised to, so a caller's representation cannot hide a match.
+    [[ -n "$CLINGEN_FASTA" && -s "$CLINGEN_FASTA" ]] && CLINGEN_ARGS+=(--reference "$CLINGEN_FASTA")
+    if [[ -s "$CLINGEN_DB" ]] && python3 "${ROOT}/pipeline/clingen_erepo_annotate.py" "${CLINGEN_ARGS[@]}"; then
         if [[ "$FINAL_OUTPUT" == *.gz ]]; then
             hts bgzip -f "$CLINGEN_TMP" || die "ClinGen annotation bgzip failed"
             mv "${CLINGEN_TMP}.gz" "$FINAL_OUTPUT"
@@ -940,6 +1026,45 @@ if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
     [[ -n "$FILTER_POLICY_NOTE" ]] && QC_ARGS+=( --note "$FILTER_POLICY_NOTE" )
     python3 "${ROOT}/pipeline/annotation_qc.py" "${QC_ARGS[@]}" \
         || die "annotation coverage report generation failed"
+fi
+
+# ============================================================================ #
+# 9b. Research-use notice inside the deliverable. The protein-match step
+#    writes it on every default run; when that step is disabled the header is
+#    added here with one bounded header rewrite so no annotated VCF leaves
+#    the workstation without it (audit H10).
+# ============================================================================ #
+NOTICE_HEADER_LINE="$(python3 "${ROOT}/pipeline/research_use_notice.py" --vcf-header)"
+if [[ "$FINAL_OUTPUT" == *.gz ]]; then
+    NOTICE_PRESENT="$( { hts bcftools view -h "$FINAL_OUTPUT" 2>/dev/null || true; } | grep -c '^##GUIDE_IEI_notice=' || true)"
+else
+    NOTICE_PRESENT="$(grep -c '^##GUIDE_IEI_notice=' "$FINAL_OUTPUT" || true)"
+fi
+if [[ "${NOTICE_PRESENT:-0}" -eq 0 ]]; then
+    NOTICE_HDR="${FINAL_OUTPUT%.gz}.notice.$$.hdr"
+    NOTICE_TMP="${FINAL_OUTPUT%.gz}.notice.$$.tmp.vcf.gz"
+    POSTPROC_TMPS+=("${FINAL_OUTPUT%.gz}.notice.$$.tmp")
+    printf '%s' "$NOTICE_HEADER_LINE" > "$NOTICE_HDR"
+    if [[ "$FINAL_OUTPUT" == *.gz ]]; then
+        if hts bcftools annotate -h "$NOTICE_HDR" -O z -o "$NOTICE_TMP" "$FINAL_OUTPUT" \
+            && mv "$NOTICE_TMP" "$FINAL_OUTPUT" && hts tabix -p vcf -f "$FINAL_OUTPUT"; then
+            log "research-use notice added to the VCF header"
+        else
+            warn "could not add the research-use notice header (the annotated VCF itself is complete)"
+        fi
+    else
+        NOTICE_PLAIN="${FINAL_OUTPUT}.notice.$$.tmp"
+        if awk -v notice="$(printf '%s' "$NOTICE_HEADER_LINE" | tr -d '\n')" '
+            BEGIN { done = 0 }
+            /^#CHROM/ && !done { print notice; done = 1 }
+            { print }' "$FINAL_OUTPUT" > "$NOTICE_PLAIN" && mv "$NOTICE_PLAIN" "$FINAL_OUTPUT"; then
+            log "research-use notice added to the VCF header"
+        else
+            rm -f "$NOTICE_PLAIN"
+            warn "could not add the research-use notice header (the annotated VCF itself is complete)"
+        fi
+    fi
+    rm -f "$NOTICE_HDR"
 fi
 
 # ============================================================================ #

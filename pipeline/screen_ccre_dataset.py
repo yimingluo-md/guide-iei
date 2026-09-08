@@ -25,6 +25,7 @@ import re
 import shutil
 import sqlite3
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -624,21 +625,175 @@ def build_manifest(args: argparse.Namespace) -> None:
     print(json.dumps(manifest["counts"], indent=2, sort_keys=True))
 
 
+UCSC_EXE_BASE = "https://hgdownload.soe.ucsc.edu/admin/exe"
+BIGBED_SHA256_PIN_ENV = "IEI_BIGBEDTOBED_SHA256"
+
+
+def ucsc_binary_directory() -> str:
+    system = platform.system().lower()
+    machine = platform.machine().lower()
+    if system == "darwin" and machine in {"arm64", "aarch64"}:
+        return "macOSX.arm64"
+    if system == "darwin" and machine in {"x86_64", "amd64"}:
+        return "macOSX.x86_64"
+    if system == "linux" and machine in {"x86_64", "amd64"}:
+        return "linux.x86_64"
+    if system == "linux" and machine in {"arm64", "aarch64"}:
+        return "linux.aarch64"
+    raise RuntimeError(f"no pinned UCSC binary directory for {system}/{machine}")
+
+
 def ucsc_binary_url(directory: str | None = None) -> str:
     if directory is None:
-        system = platform.system().lower()
-        machine = platform.machine().lower()
-        if system == "darwin" and machine in {"arm64", "aarch64"}:
-            directory = "macOSX.arm64"
-        elif system == "darwin" and machine in {"x86_64", "amd64"}:
-            directory = "macOSX.x86_64"
-        elif system == "linux" and machine in {"x86_64", "amd64"}:
-            directory = "linux.x86_64"
-        elif system == "linux" and machine in {"arm64", "aarch64"}:
-            directory = "linux.aarch64"
+        directory = ucsc_binary_directory()
+    return f"{UCSC_EXE_BASE}/{directory}/bigBedToBed"
+
+
+def ucsc_md5sum_url(directory: str) -> str:
+    return f"{UCSC_EXE_BASE}/{directory}/md5sum.txt"
+
+
+def md5_file(path: Path) -> str:
+    digest = hashlib.md5()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def parse_md5sum_listing(text: str, name: str) -> str | None:
+    """Return the md5 recorded for ``name`` in a `md5sum`-style listing."""
+    for line in text.splitlines():
+        fields = line.split()
+        if len(fields) >= 2 and fields[-1].lstrip("*").lstrip("./") == name:
+            candidate = fields[0].lower()
+            if len(candidate) == 32 and all(c in "0123456789abcdef" for c in candidate):
+                return candidate
+    return None
+
+
+def expected_ucsc_md5(directory: str, tools_dir: Path, name: str = "bigBedToBed") -> tuple[str, str]:
+    """Fetch UCSC's published md5 for ``name`` in ``directory``.
+
+    Returns (md5, listing_url). Raises RuntimeError when the listing cannot
+    be fetched or has no entry, so that a binary is never trusted by
+    default.
+    """
+    url = ucsc_md5sum_url(directory)
+    listing = tools_dir / f"md5sum.{directory}.txt"
+    try:
+        run_curl(url, listing)
+        text = listing.read_text(encoding="utf-8", errors="replace")
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise RuntimeError(
+            f"cannot fetch UCSC's checksum listing {url} ({exc}); the {name} download "
+            f"cannot be verified. Set {BIGBED_SHA256_PIN_ENV}=<sha256> to a digest you have "
+            "verified independently to proceed."
+        ) from exc
+    md5 = parse_md5sum_listing(text, name)
+    if md5 is None:
+        raise RuntimeError(
+            f"UCSC's checksum listing {url} has no entry for {name}; the download cannot be "
+            f"verified. Set {BIGBED_SHA256_PIN_ENV}=<sha256> to a digest you have verified "
+            "independently to proceed."
+        )
+    return md5, url
+
+
+def verify_ucsc_binary(binary: Path, directory: str, tools_dir: Path,
+                       pinned_sha256: str | None = None) -> dict[str, Any]:
+    """Check ``binary`` against a pin or UCSC's listing WITHOUT executing it.
+
+    A downloaded executable used to be run (usage probe) first and hashed
+    afterwards, so a tampered or corrupted transfer executed before any
+    check (audit M17). Returns the verification record for the manifest or
+    raises RuntimeError.
+    """
+    sha256 = sha256_file(binary)
+    md5 = md5_file(binary)
+    record: dict[str, Any] = {
+        "source_url": ucsc_binary_url(directory),
+        "sha256": sha256,
+        "md5": md5,
+        "size": binary.stat().st_size,
+    }
+    pin = (pinned_sha256 or os.environ.get(BIGBED_SHA256_PIN_ENV) or "").strip().lower()
+    if pin:
+        if sha256 != pin:
+            raise RuntimeError(
+                f"{binary.name} sha256 {sha256} does not match the pinned digest {pin}; "
+                "refusing to execute it"
+            )
+        record["verified_against"] = f"pinned sha256 ({BIGBED_SHA256_PIN_ENV})"
+        return record
+    expected, listing_url = expected_ucsc_md5(directory, tools_dir, binary.name.split(".")[0])
+    if md5 != expected:
+        raise RuntimeError(
+            f"{binary.name} md5 {md5} does not match UCSC's published {expected} "
+            f"({listing_url}); refusing to execute it"
+        )
+    record["verified_against"] = listing_url
+    return record
+
+
+def binary_manifest_path(binary: Path) -> Path:
+    return binary.with_name(binary.name + ".manifest.json")
+
+
+def ensure_verified_ucsc_binary(directory: str, binary: Path,
+                                pinned_sha256: str | None = None) -> dict[str, Any]:
+    """Download (if needed) and verify a UCSC binary before it is ever run.
+
+    An existing file is accepted only when its manifest records a
+    verification and the file still hashes to the recorded digest; a file
+    left by an older version (hashed but never verified) is verified in
+    place, and re-downloaded when it fails.
+    """
+    tools_dir = binary.parent
+    tools_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = binary_manifest_path(binary)
+    pin = (pinned_sha256 or os.environ.get(BIGBED_SHA256_PIN_ENV) or "").strip().lower()
+    if binary.exists() and binary.stat().st_size >= 1024:
+        record: dict[str, Any] | None = None
+        try:
+            record = json.loads(manifest_path.read_text())
+        except (OSError, ValueError):
+            record = None
+        current_sha256 = sha256_file(binary)
+        # A cached binary is accepted only when its manifest records a
+        # verification, the file still hashes to that record, and — when the
+        # operator pins a digest — the pin agrees. An explicit pin always
+        # takes precedence over an earlier listing-based verification.
+        if (
+            record and record.get("verified_against") and record.get("sha256") == current_sha256
+            and (not pin or current_sha256 == pin)
+        ):
+            if pin and "pinned sha256" not in str(record.get("verified_against")):
+                record["verified_against"] = f"pinned sha256 ({BIGBED_SHA256_PIN_ENV})"
+                atomic_json(manifest_path, record)
+            return record
+        try:
+            record = verify_ucsc_binary(binary, directory, tools_dir, pinned_sha256)
+        except RuntimeError as exc:
+            if "does not match" not in str(exc):
+                raise
+            print(f"  [screen] {exc}; re-downloading", file=sys.stderr)
+            binary.unlink(missing_ok=True)
+            manifest_path.unlink(missing_ok=True)
         else:
-            raise RuntimeError(f"no pinned UCSC binary directory for {system}/{machine}")
-    return f"https://hgdownload.soe.ucsc.edu/admin/exe/{directory}/bigBedToBed"
+            atomic_json(manifest_path, record)
+            return record
+    staged = binary.with_name(binary.name + ".unverified")
+    run_curl(ucsc_binary_url(directory), staged)
+    try:
+        record = verify_ucsc_binary(staged, directory, tools_dir, pinned_sha256)
+    except RuntimeError:
+        staged.unlink(missing_ok=True)
+        raise
+    staged.chmod(0o755)
+    staged.replace(binary)
+    atomic_json(manifest_path, record)
+    return record
 
 
 def bigbed_tool_usable(tool: Path | str) -> tuple[bool, str]:
@@ -672,17 +827,19 @@ def container_runtime() -> tuple[str, str] | None:
     return runtime, image
 
 
-def ensure_bigbed_tool(source_root: Path) -> Path:
+def ensure_bigbed_tool(source_root: Path, pinned_sha256: str | None = None) -> Path:
     existing = shutil.which("bigBedToBed")
     if existing:
+        pin = (pinned_sha256 or os.environ.get(BIGBED_SHA256_PIN_ENV) or "").strip().lower()
+        if pin and sha256_file(Path(existing)) != pin:
+            raise RuntimeError(f"{existing} does not match the pinned digest {pin}; refusing to execute it")
         usable, _ = bigbed_tool_usable(existing)
         if usable:
             return Path(existing)
     tools_dir = source_root / "tools"
     target = tools_dir / "bigBedToBed"
-    if not target.exists() or target.stat().st_size < 1024:
-        run_curl(ucsc_binary_url(), target)
-        target.chmod(0o755)
+    # Verified (pin or UCSC md5 listing) before the usage probe below runs it.
+    ensure_verified_ucsc_binary(ucsc_binary_directory(), target, pinned_sha256)
     usable, diagnostic = bigbed_tool_usable(target)
     if not usable:
         # The native binary cannot run (macOS builds need Homebrew xz/openssl
@@ -704,9 +861,7 @@ def ensure_bigbed_tool(source_root: Path) -> Path:
                 image = "debian:bookworm-slim"
                 platform_flag = "--platform linux/amd64"
             linux_binary = tools_dir / "bigBedToBed.linux"
-            if not linux_binary.exists() or linux_binary.stat().st_size < 1024:
-                run_curl(ucsc_binary_url("linux.x86_64"), linux_binary)
-                linux_binary.chmod(0o755)
+            linux_record = ensure_verified_ucsc_binary("linux.x86_64", linux_binary, pinned_sha256)
             wrapper = tools_dir / "bigBedToBed.container"
             wrapper.write_text(
                 "#!/bin/sh\n"
@@ -717,12 +872,12 @@ def ensure_bigbed_tool(source_root: Path) -> Path:
                 f'RUNTIME="{runtime}"\nIMAGE="{image}"\nTOOL_DIR="{tools_dir.resolve()}"\n'
                 f'PLATFORM_FLAG="{platform_flag}"\n'
                 'if [ "$#" -lt 2 ]; then\n'
-                '    exec "$RUNTIME" run --rm $PLATFORM_FLAG -v "$TOOL_DIR:/bbtool:ro" '
+                '    exec "$RUNTIME" run --rm --network=none $PLATFORM_FLAG -v "$TOOL_DIR:/bbtool:ro" '
                 '--entrypoint /bbtool/bigBedToBed.linux "$IMAGE"\n'
                 "fi\n"
                 'IN_DIR=$(cd "$(dirname "$1")" && pwd)\n'
                 'OUT_DIR=$(cd "$(dirname "$2")" && pwd)\n'
-                'exec "$RUNTIME" run --rm $PLATFORM_FLAG -v "$TOOL_DIR:/bbtool:ro" '
+                'exec "$RUNTIME" run --rm --network=none $PLATFORM_FLAG -v "$TOOL_DIR:/bbtool:ro" '
                 '-v "$IN_DIR:/bb_in:ro" -v "$OUT_DIR:/bb_out" '
                 '--entrypoint /bbtool/bigBedToBed.linux "$IMAGE" '
                 '"/bb_in/$(basename "$1")" "/bb_out/$(basename "$2")"\n',
@@ -731,10 +886,8 @@ def ensure_bigbed_tool(source_root: Path) -> Path:
             wrapper.chmod(0o755)
             wrapper_usable, wrapper_diag = bigbed_tool_usable(wrapper)
             if wrapper_usable:
-                atomic_json(target.with_suffix(".manifest.json"), {
-                    "source_url": ucsc_binary_url("linux.x86_64"),
-                    "sha256": sha256_file(linux_binary),
-                    "size": linux_binary.stat().st_size,
+                atomic_json(binary_manifest_path(wrapper), {
+                    **linux_record,
                     "execution": "container",
                     "native_diagnostic": diagnostic,
                 })
@@ -750,11 +903,6 @@ def ensure_bigbed_tool(source_root: Path) -> Path:
         raise RuntimeError(
             f"downloaded bigBedToBed cannot run: {diagnostic.strip()}.{extra}"
         )
-    atomic_json(target.with_suffix(".manifest.json"), {
-        "source_url": ucsc_binary_url(),
-        "sha256": sha256_file(target),
-        "size": target.stat().st_size,
-    })
     return target
 
 
@@ -822,7 +970,7 @@ def download_sources(args: argparse.Namespace) -> None:
     manifest = json.loads(args.manifest.read_text())
     expected_rows = manifest["source"]["ccre_count"]
     source_root = args.source_dir
-    tool = ensure_bigbed_tool(source_root)
+    tool = ensure_bigbed_tool(source_root, getattr(args, "bigbedtobed_sha256", None))
     tasks: list[tuple[str, dict[str, Any]]] = []
     for row in manifest["tissues"]:
         tasks.append(("tissue", row))
@@ -1093,7 +1241,7 @@ def prepare_dataset(args: argparse.Namespace) -> None:
     for path in (catalog, tissue_matrix, immune_matrix, final_manifest):
         if path.exists() and not args.force:
             raise RuntimeError(f"prepared output exists; use --force to replace: {path}")
-    bigbed_tool = ensure_bigbed_tool(source_root)
+    bigbed_tool = ensure_bigbed_tool(source_root, getattr(args, "bigbedtobed_sha256", None))
     accessions = build_catalog(args.ccre_bed, catalog, manifest)
     expected_count = manifest["source"]["ccre_count"]
     if len(accessions) != expected_count:
@@ -1349,6 +1497,11 @@ def parser() -> argparse.ArgumentParser:
     download.add_argument("--manifest", type=Path, required=True)
     download.add_argument("--source-dir", type=Path, required=True)
     download.add_argument("--workers", type=int, default=6)
+    download.add_argument(
+        "--bigbedtobed-sha256", default=None,
+        help=f"sha256 the downloaded UCSC bigBedToBed must have (default: {BIGBED_SHA256_PIN_ENV}, "
+             "else UCSC's published md5sum.txt); the binary is never run before it is verified",
+    )
     download.set_defaults(function=download_sources)
     prepare = commands.add_parser("prepare")
     prepare.add_argument("--manifest", type=Path, required=True)
@@ -1356,6 +1509,7 @@ def parser() -> argparse.ArgumentParser:
     prepare.add_argument("--source-dir", type=Path, required=True)
     prepare.add_argument("--output-dir", type=Path, required=True)
     prepare.add_argument("--force", action="store_true")
+    prepare.add_argument("--bigbedtobed-sha256", default=None, help="see `download --bigbedtobed-sha256`")
     prepare.set_defaults(function=prepare_dataset)
     validate = commands.add_parser(
         "validate-alignment",

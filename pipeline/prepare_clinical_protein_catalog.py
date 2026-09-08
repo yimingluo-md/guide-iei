@@ -24,7 +24,9 @@ import re
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterator, TextIO
+from typing import Iterable, Iterator, TextIO
+
+import yaml
 
 
 CATALOG_COLUMNS = (
@@ -35,10 +37,28 @@ METADATA_COLUMNS = (
     "synthetic_id", "record_id", "source_allele", "classification",
     "disease", "known_gene",
 )
+# Default classification labels that admit a source record into the P/LP
+# catalog. Matching is on the WHOLE label after normalisation (case, and
+# "_"/whitespace runs collapsed to one space), never on a substring: ClinVar
+# writes compound values such as "Pathogenic|risk_factor" or
+# "Likely_pathogenic,_low_penetrance", and whether those belong in a
+# pathogenic catalog is a classification-policy decision, not a parsing
+# accident. Add them explicitly through the configuration
+# (post_processing.clinical_protein_match.pathogenic_terms, or the legacy
+# post_processing.clinvar_aa_match.pathogenic_terms) if they should count.
+DEFAULT_PATHOGENIC_TERMS = (
+    "Pathogenic",
+    "Likely_pathogenic",
+    "Pathogenic/Likely_pathogenic",
+)
 PATHOGENIC_LABELS = {
     "pathogenic", "likely pathogenic", "pathogenic/likely pathogenic",
     "pathogenic likely pathogenic",
 }
+CONFIG_TERM_PATHS = (
+    ("post_processing", "clinical_protein_match", "pathogenic_terms"),
+    ("post_processing", "clinvar_aa_match", "pathogenic_terms"),
+)
 
 
 @dataclass(frozen=True)
@@ -71,8 +91,68 @@ def classification_key(value: str) -> str:
     return re.sub(r"[_\s]+", " ", clean(value).casefold()).strip()
 
 
-def is_pathogenic(value: str) -> bool:
-    return classification_key(value) in PATHOGENIC_LABELS
+def is_pathogenic(value: str, labels: Iterable[str] | None = None) -> bool:
+    """Exact (normalised) label membership; ``labels`` defaults to the
+    built-in set. A compound ClinVar value never matches by substring."""
+    active = PATHOGENIC_LABELS if labels is None else set(labels)
+    return classification_key(value) in active
+
+
+def normalize_labels(terms: Iterable[str]) -> frozenset[str]:
+    labels = set()
+    for term in terms:
+        if not isinstance(term, str):
+            raise ValueError(
+                f"pathogenic_terms must be a list of strings, got {term!r}"
+            )
+        key = classification_key(term)
+        if not key:
+            continue
+        if any(marker in key for marker in ("*", "?", "%")):
+            raise ValueError(
+                f"pathogenic_terms entries are whole labels, not patterns: {term!r}"
+            )
+        labels.add(key)
+        # ClinVar spells the combined assertion "Pathogenic/Likely_pathogenic";
+        # ClinGen and older exports write it without the slash. Treat the two
+        # spellings of that ONE label as the same entry.
+        if "/" in key:
+            labels.add(key.replace("/", " "))
+    if not labels:
+        raise ValueError("pathogenic_terms must name at least one label")
+    return frozenset(labels)
+
+
+def load_pathogenic_labels(config_path: Path | None) -> tuple[frozenset[str], str]:
+    """Return (normalised label set, where it came from).
+
+    Reads ``post_processing.clinical_protein_match.pathogenic_terms`` first,
+    then the legacy ``post_processing.clinvar_aa_match.pathogenic_terms``;
+    without either the built-in default applies. Both ClinVar CLNSIG values
+    and ClinGen assertion labels are judged against the same set.
+    """
+    if config_path is None:
+        return normalize_labels(DEFAULT_PATHOGENIC_TERMS), "default"
+    with Path(config_path).open("r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle) or {}
+    for path in CONFIG_TERM_PATHS:
+        node = document
+        for key in path:
+            node = node.get(key) if isinstance(node, dict) else None
+            if node is None:
+                break
+        if node is None:
+            continue
+        if not isinstance(node, list):
+            raise ValueError(f"{'.'.join(path)} must be a list of labels")
+        return normalize_labels(node), ".".join(path)
+    return normalize_labels(DEFAULT_PATHOGENIC_TERMS), "default"
+
+
+def labels_fingerprint(labels: Iterable[str]) -> str:
+    """Short stable digest of a label set, for catalog stamps/manifests."""
+    digest = hashlib.sha256("\n".join(sorted(labels)).encode("utf-8"))
+    return digest.hexdigest()[:12]
 
 
 def open_vcf(path: Path) -> TextIO:
@@ -90,7 +170,9 @@ def parse_info(raw: str) -> dict[str, str]:
     return result
 
 
-def iter_clinvar(path: Path) -> Iterator[SourceRecord]:
+def iter_clinvar(
+    path: Path, labels: Iterable[str] | None = None,
+) -> Iterator[SourceRecord]:
     with open_vcf(path) as handle:
         for line in handle:
             if line.startswith("#"):
@@ -102,7 +184,7 @@ def iter_clinvar(path: Path) -> Iterator[SourceRecord]:
             classification = info.get("CLNSIG", "")
             # MC is a cheap source-side reduction.  VEP remains authoritative
             # for the transcript/gene/protein match encoded in the catalog.
-            if not is_pathogenic(classification) or \
+            if not is_pathogenic(classification, labels) or \
                     "missense_variant" not in info.get("MC", ""):
                 continue
             try:
@@ -142,7 +224,9 @@ def _open_sqlite(path: Path) -> sqlite3.Connection:
     return connection
 
 
-def iter_clingen(path: Path) -> Iterator[SourceRecord]:
+def iter_clingen(
+    path: Path, labels: Iterable[str] | None = None,
+) -> Iterator[SourceRecord]:
     connection = _open_sqlite(path)
     try:
         query = """
@@ -153,7 +237,7 @@ def iter_clingen(path: Path) -> Iterator[SourceRecord]:
         """
         for chrom, pos, ref, alt, record_id, classification, disease, gene \
                 in connection.execute(query):
-            if is_pathogenic(str(classification or "")):
+            if is_pathogenic(str(classification or ""), labels):
                 yield SourceRecord(
                     str(chrom), int(pos), str(ref), str(alt), str(record_id),
                     str(classification), str(disease or ""), str(gene or ""),
@@ -188,18 +272,22 @@ def iter_genia(path: Path) -> Iterator[SourceRecord]:
         connection.close()
 
 
-def source_records(source_type: str, path: Path) -> Iterator[SourceRecord]:
+def source_records(
+    source_type: str, path: Path, labels: Iterable[str] | None = None,
+) -> Iterator[SourceRecord]:
     if source_type == "clinvar":
-        return iter_clinvar(path)
+        return iter_clinvar(path, labels)
     if source_type == "clingen":
-        return iter_clingen(path)
+        return iter_clingen(path, labels)
     if source_type == "genia":
+        # GenIA stores a class code (P/LP), not a free-text label; the
+        # configured label list does not apply.
         return iter_genia(path)
     raise ValueError(f"unsupported clinical protein source: {source_type}")
 
 
 def export_source(source_type: str, source: Path, output_vcf: Path,
-                  metadata: Path) -> int:
+                  metadata: Path, labels: Iterable[str] | None = None) -> int:
     output_vcf.parent.mkdir(parents=True, exist_ok=True)
     metadata.parent.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -210,7 +298,9 @@ def export_source(source_type: str, source: Path, output_vcf: Path,
         vcf.write("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n")
         writer = csv.DictWriter(meta, fieldnames=METADATA_COLUMNS, delimiter="\t")
         writer.writeheader()
-        for count, record in enumerate(source_records(source_type, source), start=1):
+        for count, record in enumerate(
+            source_records(source_type, source, labels), start=1
+        ):
             synthetic_id = f"CPM{count:09d}"
             vcf.write(
                 f"{normalize_chrom(record.chrom)}\t{record.pos}\t{synthetic_id}\t"
@@ -304,6 +394,14 @@ def main(argv: list[str] | None = None) -> int:
     export_parser.add_argument("--source", type=Path, required=True)
     export_parser.add_argument("--output-vcf", type=Path, required=True)
     export_parser.add_argument("--metadata", type=Path, required=True)
+    export_parser.add_argument(
+        "--config", type=Path,
+        help="annotation config whose pathogenic_terms define the P/LP labels",
+    )
+    labels_parser = subparsers.add_parser(
+        "labels", help="print the active pathogenic label set and its fingerprint",
+    )
+    labels_parser.add_argument("--config", type=Path)
     reduce_parser = subparsers.add_parser("reduce")
     reduce_parser.add_argument("--vep-tab", type=Path, required=True)
     reduce_parser.add_argument("--metadata", type=Path, required=True)
@@ -311,21 +409,38 @@ def main(argv: list[str] | None = None) -> int:
     reduce_parser.add_argument("--manifest", type=Path)
     reduce_parser.add_argument("--source", type=Path)
     reduce_parser.add_argument("--source-type", choices=("clinvar", "clingen", "genia"))
+    reduce_parser.add_argument("--config", type=Path)
     args = parser.parse_args(argv)
 
+    if args.command == "labels":
+        labels, origin = load_pathogenic_labels(args.config)
+        print(f"{labels_fingerprint(labels)}\t{origin}\t{'|'.join(sorted(labels))}")
+        return 0
+
     if args.command == "export":
-        count = export_source(args.source_type, args.source, args.output_vcf, args.metadata)
-        print(f"[clinical_protein_catalog] exported {count} {args.source_type} P/LP source record(s)")
+        labels, origin = load_pathogenic_labels(args.config)
+        count = export_source(
+            args.source_type, args.source, args.output_vcf, args.metadata, labels
+        )
+        print(
+            f"[clinical_protein_catalog] exported {count} {args.source_type} "
+            f"P/LP source record(s) (labels from {origin}: "
+            f"{', '.join(sorted(labels))})"
+        )
         return 0
 
     count = reduce_vep(args.vep_tab, args.metadata, args.output)
     if args.manifest:
+        labels, origin = load_pathogenic_labels(args.config)
         manifest = {
             "schema": "guide-iei-clinical-protein-catalog-v1",
             "source_type": args.source_type or "unknown",
             "source_sha256": sha256(args.source) if args.source else "",
             "catalog_rows": count,
             "catalog_sha256": sha256(args.output),
+            "pathogenic_labels": sorted(labels),
+            "pathogenic_labels_source": origin,
+            "pathogenic_labels_fingerprint": labels_fingerprint(labels),
         }
         args.manifest.write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"

@@ -340,6 +340,43 @@ def test_deliberate_ptc_skips_are_not_missing_coverage(tmp_path):
     assert "LOFTEE_PTC_50BP" not in report["details"]["missing_examples"]
 
 
+def test_selenoprotein_skip_is_deliberate_not_missing_coverage(tmp_path):
+    # Review M4: a selenoprotein transcript (annotated UGA-Sec) is refused on
+    # purpose with its own status; it is not a coverage gap.
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "result.vcf"
+    write_config(config)
+    seleno_row = csq(
+        "T", "frameshift_variant", "SELENON", "NM_020451.3",
+        "", "", "HC", "", "", "",
+        "0", "0", "0", "0", "", "", "",
+        "", "", "", "selenoprotein_transcript_unsupported",
+    )
+    broken_row = csq(
+        "T", "frameshift_variant", "BROKEN", "NM_999998.1",
+        "", "", "HC", "", "", "",
+        "0", "0", "0", "0", "", "", "",
+        "", "", "", "bad_transcript_model:cds_internal_stop",
+    )
+    vcf.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(FIELDS)
+        + '">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        f"1\t100\t.\tCA\tC\t100\tPASS\tCSQ={seleno_row}\tGT\t0/1\n"
+        f"1\t200\t.\tGA\tG\t100\tPASS\tCSQ={broken_row}\tGT\t0/1\n",
+        encoding="utf-8",
+    )
+    report = build_report(config, vcf)
+    ptc = report["details"]["loftee_ptc_50bp"]
+    assert ptc["not_applicable_records"] == 1
+    assert ptc["eligible_frameshift_records"] == 1
+    assert ptc["recomputed_records"] == 0
+    missing = report["details"]["missing_examples"]["LOFTEE_PTC_50BP"]
+    assert missing == ["1-200-GA-G"]
+
+
 def test_critical_field_outside_configured_columns_is_still_counted(tmp_path):
     # Audit repro (CORE-17): a critical dbNSFP field absent from
     # plugins.dbNSFP.columns reported 0% coverage forever.
@@ -558,6 +595,52 @@ def test_protein_match_qc_reports_each_source_and_evaluation_state(tmp_path):
     ]
 
 
+def test_clinvar_reference_release_is_read_from_the_generated_header(tmp_path):
+    # Review M7: clinvar_aa_match.py writes "(ClinVar snapshot <release>)"
+    # while the QC reader searched for "ClinVar release"; the report carried
+    # a null release for every current output. Generate the header with the
+    # matcher itself so the two cannot drift apart again.
+    import sys as _sys
+    _sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "pipeline"))
+    import clinvar_aa_match as aam
+
+    config = tmp_path / "config.yaml"
+    write_config(config)
+    reference = aam.Reference()
+    reference.add_residue("IL2RG", "100", "R")
+    source = tmp_path / "source.vcf"
+    source.write_text(
+        "##fileformat=VCFv4.2\n"
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(FIELDS)
+        + '">\n'
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+        f"X\t100\t.\tC\tA\t100\tPASS\tCSQ={csq(*([''] * len(FIELDS)))}\tGT\t0/1\n",
+        encoding="utf-8",
+    )
+    annotated = tmp_path / "annotated.vcf"
+    aam.annotate(str(source), str(annotated), reference, clinvar_release="2026-01-01")
+    header = [
+        line for line in annotated.read_text(encoding="utf-8").splitlines()
+        if line.startswith("##INFO=<ID=ClinVar_path_aa_match,")
+    ]
+    assert header and "ClinVar snapshot 2026-01-01" in header[0]
+
+    report = build_report(config, annotated)
+    assert report["annotation_profile"]["ClinVar_aa_reference_release"] == "2026-01-01"
+
+    # The older wording written by earlier catalogs is still understood.
+    legacy = tmp_path / "legacy-release.vcf"
+    legacy.write_text(
+        annotated.read_text(encoding="utf-8").replace(
+            "ClinVar snapshot 2026-01-01", "ClinVar release 20251201"
+        ),
+        encoding="utf-8",
+    )
+    report = build_report(config, legacy)
+    assert report["annotation_profile"]["ClinVar_aa_reference_release"] == "20251201"
+
+
 def test_legacy_residue_only_clinvar_schema_is_partially_evaluated(tmp_path):
     config = tmp_path / "config.yaml"
     vcf = tmp_path / "legacy.vcf"
@@ -606,6 +689,8 @@ if __name__ == "__main__":
         test_missing_critical_missense_annotation_warns_and_records_example,
         test_logofunc_class_comes_from_mane_entry_not_file_order,
         test_deliberate_ptc_skips_are_not_missing_coverage,
+        test_selenoprotein_skip_is_deliberate_not_missing_coverage,
+        test_clinvar_reference_release_is_read_from_the_generated_header,
         test_critical_field_outside_configured_columns_is_still_counted,
         test_disabled_plugin_is_skipped_not_failed,
         test_funcvep_exact_allele_gene_scores_are_covered,

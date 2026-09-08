@@ -11,7 +11,12 @@ phenotype, and exact-allele evidence. It presents the results in a local review
 workbench designed for clinicians and wet-lab scientists. All analysis is
 performed on the user's own computer. Network access occurs only when the
 user initiates a dataset download, an update check, or an optional
-per-variant SpliceAI lookup for indels ([FAQ](docs/FAQ.md)).
+per-variant SpliceAI lookup for indels ([FAQ](docs/FAQ.md)). GUIDE-IEI is a
+single-user workstation application — a local service on the loopback
+address with no login — not a server; the
+[security & privacy model](docs/SECURITY_AND_PRIVACY.md) spells out what that
+does and does not protect, and why its port must never be forwarded or
+shared.
 
 ## Motivation
 
@@ -76,13 +81,13 @@ Being clear about scope matters as much as listing features.
 - **Not a FASTQ-to-VCF pipeline.** Analysis starts from a called VCF (single-
   or multi-sample, GRCh38 natively or GRCh37 via controlled liftover).
   Alignment, variant calling, and joint genotyping must happen upstream.
-- **A cloud service.** GUIDE-IEI is intentionally designed for one reviewer
+- **Not a cloud service.** GUIDE-IEI is intentionally designed for one reviewer
   working on one workstation. Local operation keeps patient data under the
   user's control and avoids subscription fees, but it also means that
   performance depends on the workstation, reference datasets require
   substantial local storage, backups remain the user's responsibility, and
   simultaneous multi-user review is not supported.
-- **An automated classification or reporting system.** GUIDE-IEI does not
+- **Not an automated classification or reporting system.** GUIDE-IEI does not
   assign ACMG/AMP classifications, determine pathogenicity, or generate
   clinical reports. It organizes evidence for expert review. Any finding
   considered for patient care must be confirmed and interpreted through an
@@ -169,6 +174,7 @@ The **[GUIDE-IEI manual](docs/index.md)** covers everything in detail:
 - [Understanding the output](docs/OUTPUT.md)
 - [Troubleshooting](docs/TROUBLESHOOTING.md)
 - [Backup and restore](docs/SAMPLE_LIBRARY_AND_STORAGE.md#backup-and-restore)
+- [Security & privacy model](docs/SECURITY_AND_PRIVACY.md) — what the single-user workstation design assumes, what leaves the computer, where data lives, and what an update can run
 
 ## Future plans
 

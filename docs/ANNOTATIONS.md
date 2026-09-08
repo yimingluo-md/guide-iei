@@ -25,7 +25,7 @@ work whether or not you have the large/custom datasets on hand.
 | Tier | Sources | How you get them |
 |------|---------|------------------|
 | **auto** | VEP cache, reference FASTA, LOFTEE GRCh38 data, SpliceAI masked MANE SNVs, RepeatMasker, SegDup | `scripts/download_references.sh` (SpliceAI is fetched from Ensembl; RepeatMasker/SegDup are fetched from UCSC and cleaned for VEP automatically) |
-| **auto, per-run** | ClinVar | fetched fresh from NCBI on every run by `scripts/fetch_clinvar.sh` |
+| **auto, per-run** | ClinVar | checked against NCBI on every run by `scripts/fetch_clinvar.sh`; downloaded only when the release changed |
 | **local updateable snapshot** | ClinGen Evidence Repository variant curations | installed or updated from the annotation-dataset UI; prepared by `scripts/update_clingen_erepo.sh` |
 | **large local** | dbNSFP; CADD v1.7 whole genome (WGS only) | dbNSFP requires academic registration; paste the GRCh38 link for direct download and validation without rebuilding. Legacy chromosome archives can be prepared with `scripts/prepare_dbnsfp.sh`. CADD's score-only files are downloadable/resumable from the UI or `scripts/download_cadd_wgs.sh`. |
 | **licensed** | PromoterAI; FuncVEP | obtain PromoterAI from Illumina; after acknowledgement, FuncVEP can be downloaded directly from official Zenodo and prepared locally (`scripts/download_funcvep.sh`), or an existing ZIP can be used (`scripts/prepare_funcvep.sh`); auto-skipped if absent |
@@ -55,7 +55,13 @@ Set under `core:` — these need only the VEP cache + FASTA:
 - `--symbol` adds the gene symbol, `--hgvs` adds HGVS notations, followed by
   `--biotype`, `--sift p`, `--polyphen p` (prediction + score),
   `--af_gnomade` / `--af_gnomadg` (gnomAD exome/genome allele frequencies)
-  plus `--max_af` (`MAX_AF` / `MAX_AF_POPS`, used as UI popfreqmax).
+  plus `--max_af` (`MAX_AF` / `MAX_AF_POPS`). `MAX_AF` is VEP's highest
+  allele frequency across 1000 Genomes, ESP and gnomAD; the review UI, the
+  cohort index and the whole-genome intake use an explicit gnomAD popmax
+  field when an annotation carries one, `MAX_AF` when it does not, and the
+  gnomAD global AF as a last resort — never a maximum across those sources —
+  and each stored or displayed value names its source
+  (`gnomad_popmax_source`).
 
 The review default shows every MANE Select or MANE Plus Clinical consequence.
 When an allele-gene has no MANE transcript, its `PICK=1` consequence is used as
@@ -248,6 +254,20 @@ and transcript match mode. The review UI automatically detects the score,
 shows it among the default predictors, and offers the optional filter
 `|PromoterAI score| >= 0.8` when the annotation is present.
 
+One rule decides whether a PromoterAI score is *usable*, and every reader
+applies it — the review UI, Cohort Search, and the whole-genome prefilter
+(`pipeline/promoterai_evidence.py` on the service side, the same logic in
+the browser parser, both pinned to `test/contracts/promoterai_evidence_cases.json`).
+A score counts only when it arrives with the provenance the plugin writes
+beside it: `PromoterAI_match` of `exact_version` or `stable_id`, a
+`PromoterAI_source_transcript`, an unambiguous `PromoterAI_TSS`, and a
+`PromoterAI_strand`. A bare score — a legacy `promoterAI` custom annotation,
+or a record where any of those fields is missing or ambiguous — is treated as
+partial evidence: it is not displayed, not stored in the cohort score column,
+and does not retain a record on the prefilter's PromoterAI route. The signed
+score is read from the first present score field (`PromoterAI_score`, then
+the legacy aliases), never as a maximum across aliases.
+
 PromoterAI is deliberately unavailable under **Exome region only**, because
 that profile removes promoter variants before VEP. Use a whole-genome job to
 enable it. A missing local PromoterAI dataset is an explicit optional skip.
@@ -290,6 +310,18 @@ The manifest records source and derived-file checksums, GRCh38 scope, the row
 count and indexed contig list, license acknowledgement, excluded columns, and the exact
 allele-plus-stable-Ensembl-gene match contract. An absent or disabled FuncVEP
 resource is an explicit optional skip.
+
+Every indexed-score dataset with such a manifest (FuncVEP, LoGoFunc, and the
+other `IndexedScores` resources) is checked in two different ways. The
+dataset screen and preflight run a *fast status check*: file names and sizes
+must match, and the SHA-256 is recomputed only when the recorded timestamp
+differs from the installed file's — cheap enough to poll on multi-gigabyte
+files. When an annotation job starts, `run_annotation.sh` runs a *strict
+verification* (`build_vep_command.py --verify-integrity`) that hashes both
+the data file and its index against the manifest regardless of timestamps,
+so a same-size change that kept its modification time cannot reach the
+multi-hour VEP run. A failed strict check disables an optional dataset for
+that job with a warning naming the checksum, and stops a required one.
 
 ### GenIA
 
@@ -415,7 +447,15 @@ instead of a cluster (see the README *Scope* section).
    converted from GTF (1-based inclusive) to BED (0-based half-open), padded by
    `region.padding_bp` (default **8 bp**), and clamped at 0.
 3. Sorts and merges overlapping/adjacent intervals (pure awk — no bedtools),
-   then bgzips + tabix-indexes.
+   verifies that every contig in `region.required_contigs` (default `1`–`22`,
+   `X`, `Y`, `MT`) is represented, then bgzips + tabix-indexes and publishes
+   the result atomically. The final file name is only ever given to a BGZF
+   stream that carries its end-of-file marker: a stream cut at a block
+   boundary (an interrupted build) still passes `gzip -t` and tabix, yet
+   `bcftools view -R` on it silently drops every variant on the contigs after
+   the cut. The run script refuses to start on a region file that lacks the
+   marker, its index, or any required contig, and rebuilds the built BED when
+   it is incomplete.
 
 The run script then applies it with `bcftools view -R <bed>`. **Padding
 rationale:** 8 bp captures the essential/consensus splice sites — it matches
@@ -445,10 +485,15 @@ SegDup's is the duplication `fracMatch`.
 
 ## ClinVar (automatic, per run)
 
-`clinvar.auto_fetch: true` (default) makes every run download the current
-`clinvar.vcf.gz` for the configured assembly from
-`https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/`. The release date is
-read from the `##fileDate=` header and stamped into the filename
+`clinvar.auto_fetch: true` (default) makes every run check the current
+`clinvar.vcf.gz` for the configured assembly at
+`https://ftp.ncbi.nlm.nih.gov/pub/clinvar/vcf_GRCh38/`. NCBI's published MD5
+is compared with the one recorded for the installed copy
+(`clinvar_latest.GRCh38.vcf.gz.provenance.json`): an unchanged release is
+reused without a download, a new release is downloaded and published, and
+when NCBI cannot be reached (or the download fails) the installed release is
+reused with a warning rather than failing the run. The release date is read
+from the `##fileDate=` header and stamped into the filename
 (`clinvar_<YYYYMMDD>.GRCh38.vcf.gz`) and into the amino-acid-match INFO
 description, so every annotated VCF records exactly which ClinVar it used.
 
@@ -468,6 +513,18 @@ ClinVar includes `Pathogenic`, `Likely pathogenic`, and combined P/LP source
 terms. ClinGen includes active `Pathogenic` and `Likely Pathogenic`
 expert-panel assertions. GenIA includes only source codes `P` and `LP`;
 `VUS`, `LB`, `B`, `NC`, and `RF` do not enter its protein-match catalog.
+
+Which ClinVar and ClinGen labels count is set by `pathogenic_terms` in
+`config/annotation.config.yaml` (under `post_processing.clinical_protein_match`,
+or the legacy `post_processing.clinvar_aa_match`; default `Pathogenic`,
+`Likely_pathogenic`, `Pathogenic/Likely_pathogenic`). Each entry is matched as
+a whole label after normalising case and `_`/whitespace — never as a
+substring — so ClinVar's compound values such as `Pathogenic|risk_factor`,
+`Pathogenic|drug_response` or `Likely_pathogenic,_low_penetrance` are excluded
+unless listed verbatim. Whether they belong in a pathogenic catalog is a
+classification-policy choice made explicitly in the configuration. The active
+label set and its fingerprint are recorded in every catalog manifest, and
+changing the list rebuilds the catalogs on the next run.
 Only the optional GenIA **variant VCF** component can enable GenIA protein
 matching. Its gene, disease, and phenotype components cannot.
 
@@ -542,6 +599,20 @@ rather than assigned a confident verdict. Their original `LoF_info` remains
 unchanged. The postprocessor does not rewrite `LoF=HC/LC`, because that value
 also summarizes other LOFTEE filters.
 
+Selenoprotein transcripts (SELENON, GPX4, TXNRD1/2, SEPHS2, and the other
+genes whose CDS reads through a UGA codon as selenocysteine) are refused
+with `PTC_calc_status=selenoprotein_transcript_unsupported`. The transcript
+model itself is validated normally: an in-frame UGA is accepted as sense only
+where the Ensembl GTF annotates a `Selenocysteine` feature at exactly that
+codon, so no other internal stop is ever reinterpreted. The recomputation is
+still withheld because a frameshift simulated past a SECIS-dependent codon has
+no settled reading — whether a UGA reached in the shifted frame is recoded is
+not something a transcript model can decide. LOFTEE's original verdict stands,
+and the coverage report counts the status as a deliberate skip rather than a
+gap. (Without the GTF annotation, such a CDS still fails validation as
+`bad_transcript_model:cds_internal_stop`, which is reported as missing
+coverage; use the release-matched Ensembl GTF, which carries the feature.)
+
 Transcripts whose biotype is not exactly `protein_coding` are also refused
 before CDS simulation, matching LOFTEE's applicability rule. In particular,
 `protein_coding_LoF` describes a transcript whose ORF is disrupted on the
@@ -588,6 +659,29 @@ Explicitly phased trans variants are not called restoring. Haplosaurus
 haplotypes retaining a frameshift or changing a stop are also not treated as
 restoration. The original VEP/LOFTEE consequence is never deleted, and a
 compact `<vep.vcf.gz>.haplotype.audit.json` records all decisions.
+
+Two further rules decide what counts as evidence:
+
+- **Contributors must be frameshifting themselves.** Candidate selection is
+  record-wide (any record with a `frameshift_variant` consequence, then split
+  into one record per ALT), so an in-frame or substitution sibling allele of a
+  frameshift reaches Haplosaurus. A haplotype is only considered when at least
+  two of its contributing alleles are annotated `frameshift_variant` on the
+  haplotype's transcript — attributed per allele via `ALLELE_NUM`, never by
+  association with a sibling ALT — and the length changes of those alleles sum
+  to a multiple of three. Haplotypes failing either rule are counted in the
+  audit (`insufficient_frameshift_contributors`,
+  `frame_arithmetic_mismatch_haplotypes`) and receive no status.
+- **A homozygous partner is in cis with anything.** A homozygous-alternate
+  call occupies both copies, so a single heterozygous variant alongside it is
+  `FRAME_RESTORATION_PARTIAL_CONFIRMED` whatever its phase state — unphased,
+  phased without a phase set, or phased in a different block. Phase evidence is
+  only demanded *between* heterozygous calls: two or more must share the same
+  non-empty `PS` (or `PID`). A bare `|` without `PS` is what statistical
+  phasers (Beagle, Eagle, SHAPEIT) write — VCF declares it an implicit
+  contig-wide phase set — but the postprocessor treats that implicit block as
+  unverified and reports `FRAME_RESTORING_POSSIBLE_UNPHASED` rather than
+  confirming cis or trans from it.
 
 ---
 

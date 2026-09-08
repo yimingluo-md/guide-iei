@@ -184,6 +184,82 @@ class ClinGenErepoTests(unittest.TestCase):
             self.assertNotIn("ClinGen_ERepo", stale_info)
             self.assertIn("DP=12", stale_info)
 
+    def _annotate(self, database: Path, source: Path, target: Path, *extra: str) -> str:
+        argv = sys.argv
+        sys.argv = [
+            "clingen_erepo_annotate",
+            "--input", str(source), "--output", str(target),
+            "--database", str(database), *extra,
+        ]
+        try:
+            self.assertEqual(annotate_main(), 0)
+        finally:
+            sys.argv = argv
+        return next(
+            line for line in target.read_text(encoding="utf-8").splitlines()
+            if not line.startswith("#")
+        ).split("\t")[7]
+
+    def test_exact_allele_lookup_is_representation_insensitive(self):
+        """Audit repro (H5): the database holds minimal, left-aligned alleles
+        but the lookup used the raw VCF columns, so a padded multi-allelic
+        representation of the same allele (REF=AT ALT=A,ATT ~ A>AT), a
+        lowercase allele, or chrM found nothing."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "assertions.sqlite3"
+            write_sqlite(database, [], {}, {"generated_utc": "now"})
+            connection = sqlite3.connect(database)
+            connection.executemany(
+                """
+                INSERT INTO assertions(
+                    chrom,pos,ref,alt,uuid,caid,assertion,disease,mondo_id,
+                    mode_of_inheritance,expert_panel,approval_date,active
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                [
+                    ("1", 100, "A", "AT", "u-ins", "CA-INS", "Pathogenic", "Disease",
+                     "MONDO:1", "Autosomal dominant inheritance", "VCEP", "2026-01-01", 1),
+                    ("1", 300, "G", "C", "u-snv", "CA-SNV", "Pathogenic", "Disease",
+                     "MONDO:1", "Autosomal dominant inheritance", "VCEP", "2026-01-01", 1),
+                    ("MT", 8993, "T", "G", "u-mt", "CA-MT", "Pathogenic", "Disease",
+                     "MONDO:1", "Mitochondrial inheritance", "VCEP", "2026-01-01", 1),
+                ],
+            )
+            connection.commit()
+            connection.close()
+            header = "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+
+            # Padded multi-allelic: ALT 2 (ATT) is the insertion A>AT at 100.
+            padded = root / "padded.vcf"
+            padded.write_text(header + "1\t100\t.\tAT\tA,ATT\t.\tPASS\tDP=30\n")
+            info = self._annotate(database, padded, root / "padded-out.vcf")
+            parsed = dict(item.split("=", 1) for item in info.split(";") if "=" in item)
+            self.assertEqual(parsed["ClinGen_ERepo_count"], "0,1")
+            slots = parsed["ClinGen_ERepo"].split(",")
+            self.assertEqual(slots[0], ".")
+            # The token names the VCF's own ALT so it stays attached to it.
+            self.assertTrue(slots[1].startswith("ATT|u-ins|"), slots[1])
+
+            # Padded SNV (REF=ATG ALT=ATC at 298 is G>C at 300) and lowercase.
+            padded_snv = root / "padded-snv.vcf"
+            padded_snv.write_text(header + "1\t298\t.\tatg\tatc\t.\tPASS\t.\n")
+            info = self._annotate(database, padded_snv, root / "padded-snv-out.vcf")
+            self.assertIn("ClinGen_ERepo=atc|u-snv|", info)
+
+            # chrM vs MT.
+            mito = root / "mito.vcf"
+            mito.write_text(header + "chrM\t8993\t.\tT\tG\t.\tPASS\t.\n")
+            info = self._annotate(database, mito, root / "mito-out.vcf")
+            self.assertIn("ClinGen_ERepo=G|u-mt|", info)
+
+            # Symbolic alleles are ignored without breaking the record.
+            symbolic = root / "symbolic.vcf"
+            symbolic.write_text(header + "1\t100\t.\tA\t<DEL>,AT\t.\tPASS\t.\n")
+            info = self._annotate(database, symbolic, root / "symbolic-out.vcf")
+            parsed = dict(item.split("=", 1) for item in info.split(";") if "=" in item)
+            self.assertEqual(parsed["ClinGen_ERepo_count"], "0,1")
+
 
 if __name__ == "__main__":
     unittest.main()

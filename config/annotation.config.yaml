@@ -67,6 +67,13 @@ liftover:
   # symbolic, breakend, spanning-deletion, decoy, and alt-contig records are
   # retained in a separate unsupported VCF rather than silently discarded.
   max_allele_length: 50
+  # Mitochondrial sequence of the SOURCE callset. UCSC hg19 chrM is
+  # NC_001807 (16,571 bp) and goes through the chain; Ensembl GRCh37, Broad
+  # b37/humanG1Kv37 and hs37d5 use rCRS (16,569 bp), which is identical to
+  # GRCh38 MT, so those records are carried over unchanged after every REF
+  # base is verified against GRCh38 MT. `auto` reads the ##contig length
+  # (then the ##reference name; rCRS otherwise); override with rcrs | hg19.
+  mt_convention: auto
 
 # -----------------------------------------------------------------------------
 # Region restriction  (the main PC-vs-HPC lever)
@@ -90,8 +97,15 @@ region:
   # Sequence Ontology splice_region definition (3 exonic / 8 intronic). The
   # essential GT-AG dinucleotides (+/-1..2) are a subset of this window.
   padding_bp: 8
-  # Built/cached BED (bgzipped + tabix). Auto-generated if missing.
+  # Built/cached BED (bgzipped + tabix). Auto-generated if missing. It is
+  # published atomically and must carry the BGZF end-of-file marker and cover
+  # every contig listed below before a run may use it: a BGZF file cut at a
+  # block boundary still passes gzip -t and tabix, yet bcftools -R then
+  # silently drops every variant on the contigs after the cut.
   bed: "references/regions/coding_splice.padded.bed.gz"
+  # Contigs the built BED must contain (space separated). Leave empty for the
+  # default primary set: 1..22 X Y MT.
+  required_contigs: ""
   # OPTIONAL user BED override (e.g. a gene-panel / exome-capture BED). If set
   # and non-empty, this is used verbatim instead of building from the GTF.
   custom_bed: ""
@@ -431,5 +445,14 @@ post_processing:
   # should use clinical_protein_match above; both are honored by the runner.
   clinvar_aa_match:
     enabled: true
-    # Pathogenicity terms (in CLNSIG) that count as "pathogenic".
+    # Classification labels that admit a source record into the P/LP
+    # protein-match catalogs (ClinVar CLNSIG and ClinGen assertion labels
+    # alike; GenIA carries P/LP codes and is unaffected). Each entry is a
+    # WHOLE label, compared after normalising case and "_"/whitespace — never
+    # a substring. ClinVar's compound values ("Pathogenic|risk_factor",
+    # "Likely_pathogenic,_low_penetrance", "Pathogenic|drug_response", ...)
+    # are therefore excluded unless listed here verbatim; whether they belong
+    # in a pathogenic catalog is a classification-policy decision. Editing
+    # this list rebuilds the catalogs on the next run. The same key may be
+    # given under clinical_protein_match instead, which takes precedence.
     pathogenic_terms: ["Pathogenic", "Likely_pathogenic", "Pathogenic/Likely_pathogenic"]

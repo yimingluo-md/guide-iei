@@ -173,6 +173,10 @@ _DENOMINATOR = re.compile(
     r"|input pre-filter OFF: (\d+) variants"
 )
 _VEP_FINISHED = re.compile(r"VEP finished")
+# The runner writes VEP output to a run-scoped temporary name and promotes it
+# to the deliverable only after validation (audit M16); it announces that
+# name so the progress counter can follow the file actually being written.
+_VEP_WRITING = re.compile(r"VEP writing to (.+?)\s*$")
 _RESOLVED_ASSEMBLY = re.compile(
     r"input assembly:\s*requested=[^,\s]+,\s*resolved=(GRCh37|GRCh38)"
 )
@@ -188,6 +192,7 @@ class _JobState:
         self.counter: BgzfRecordCounter | None = None
         self.baseline: tuple[float, int] | None = None
         self.vep_seen_wall: float | None = None
+        self.vep_output_path: str | None = None
         self.liftover_seen = False
         self.resolved_assembly: str | None = None
         self.last_access = 0.0
@@ -241,14 +246,17 @@ class JobProgressTracker:
             percent = None
             eta = None
             if state.variants_total and stage_id == "vep" and not state.vep_finished:
-                if state.counter is None and job.get("output_path"):
+                counted_path = state.vep_output_path or job.get("output_path")
+                if state.counter is None and counted_path:
                     # A rerun to the same output path leaves the PREVIOUS
                     # run's completed file in place until VEP truncates it
                     # (seconds after the invocation marker). Counting that
                     # stale file flashed finished-looking numbers, so the
                     # counter only attaches once the output was written at
-                    # or after the moment this run's VEP stage began.
-                    output = Path(job["output_path"])
+                    # or after the moment this run's VEP stage began. (The
+                    # run-scoped temporary name the runner announces is
+                    # never stale, but the same rule is harmless there.)
+                    output = Path(counted_path)
                     try:
                         fresh = output.stat().st_mtime >= (state.vep_seen_wall or 0) - 1
                     except OSError:
@@ -322,6 +330,10 @@ class JobProgressTracker:
                 match = _DENOMINATOR.search(line)
                 if match:
                     state.variants_total = int(match.group(1) or match.group(2))
+            if state.vep_output_path is None:
+                writing = _VEP_WRITING.search(line)
+                if writing:
+                    state.vep_output_path = writing.group(1)
             if not state.vep_finished and _VEP_FINISHED.search(line):
                 state.vep_finished = True
             if state.resolved_assembly is None:

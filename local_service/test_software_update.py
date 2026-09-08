@@ -3,6 +3,7 @@ import io
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 import unittest.mock
 import zipfile
 from pathlib import Path
@@ -148,6 +149,138 @@ class SoftwareUpdateTests(unittest.TestCase):
         )
         # First install has no prior manifest: nothing is deleted.
         self.assertEqual(summary["files_removed"], [])
+
+    def test_status_reports_when_only_a_full_relaunch_finishes_the_update(self):
+        """Audit repro (M21): the in-app restart restarts the Python service
+        only; a release that changed webui/ (or its dependencies) needs the
+        launcher's rebuild / npm ci, i.e. a complete close-and-relaunch. The
+        status must say so, so the UI never offers a restart that would keep
+        serving the previous interface."""
+        updater = self.updater(FakeGitHub("0.6.0", self.release_files()))
+        self.assertFalse(updater.status()["full_relaunch_required"])
+        # A release whose only interface change is source (no dependency
+        # change) — the case the Restart button used to accept.
+        github = FakeGitHub(
+            "0.6.0", self.release_files(**{"webui/app/page.tsx": b"new ui\n"})
+        )
+        summary = self.updater(github).install()
+        self.assertTrue(summary["web_build_required"])
+        self.assertFalse(summary["dependencies_changed"])
+        status = self.updater(github).status()
+        self.assertTrue(status["restart_pending"])
+        self.assertTrue(status["full_relaunch_required"])
+        relaunch = self.updater(github).full_relaunch_required()
+        self.assertEqual(
+            relaunch,
+            {"required": True, "web_build_required": True, "dependencies_updated": False},
+        )
+        # The launcher consumes the flag on a full start; once it is gone an
+        # in-app restart is acceptable again.
+        (self.repo / "webui" / ".build-required").unlink()
+        self.assertFalse(self.updater(github).status()["full_relaunch_required"])
+
+    def test_rollback_reports_web_build_required_like_install(self):
+        github = FakeGitHub(
+            "0.6.0", self.release_files(**{"webui/app/page.tsx": b"new ui\n"})
+        )
+        updater = self.updater(github)
+        updater.install()
+        (self.repo / "webui" / ".build-required").unlink(missing_ok=True)
+        result = updater.rollback()
+        self.assertEqual(result["restored_version"], "0.5.0")
+        self.assertTrue(result["web_build_required"])
+        self.assertTrue((self.repo / "webui" / ".build-required").is_file())
+
+    def test_extraction_is_bounded_and_streamed(self):
+        """Audit repro (M20): the 500 MB download cap bounded compressed
+        bytes only, and each member was read whole into memory. Oversized
+        members, a total beyond the extraction limit, and a member whose
+        header under-declares its size are refused before/while writing."""
+        import zlib
+        from local_service import software_update as module
+
+        # 1. A member that declares more than the per-file limit is refused
+        #    before anything is written.
+        oversized = {"scripts/big.bin": b"x" * 10}
+        archive = build_archive(oversized)
+        with patch.object(module, "MAX_MEMBER_BYTES", 5):
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(ValueError, "per-file limit"):
+                    SoftwareUpdater._extract_archive(archive, Path(directory))
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+        # 2. Declared sizes that sum past the extraction limit are refused
+        #    up front.
+        many = {f"scripts/f{i}.txt": b"0123456789" for i in range(10)}
+        archive = build_archive(many)
+        with patch.object(module, "MAX_EXTRACTED_BYTES", 50):
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(ValueError, "extracted bytes"):
+                    SoftwareUpdater._extract_archive(archive, Path(directory))
+                self.assertEqual(list(Path(directory).iterdir()), [])
+
+        # 3. A header that LIES about the uncompressed size is never trusted:
+        #    zipfile stops at the declared size and fails its CRC, and the
+        #    streamed byte count bounds the other direction (an entry whose
+        #    declared size is honest but large is case 1). Either way the
+        #    archive is refused, never silently extracted.
+        payload = b"A" * 4096
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            info = zipfile.ZipInfo("scripts/liar.txt")
+            info.external_attr = 0o644 << 16
+            bundle.writestr(info, payload)
+        raw = bytearray(buffer.getvalue())
+        # Rewrite the central-directory and local-header uncompressed sizes
+        # to a small value so the declared total looks harmless.
+        with zipfile.ZipFile(io.BytesIO(bytes(raw))) as check:
+            self.assertEqual(check.infolist()[0].file_size, 4096)
+        lying = self._with_declared_size(bytes(raw), 16)
+        with zipfile.ZipFile(io.BytesIO(lying)) as check:
+            self.assertEqual(check.infolist()[0].file_size, 16)
+        with patch.object(module, "MAX_MEMBER_BYTES", 1024), \
+                patch.object(module, "_EXTRACT_CHUNK", 256):
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaises((ValueError, zipfile.BadZipFile)):
+                    SoftwareUpdater._extract_archive(lying, Path(directory))
+        # The streamed guard itself: a reader that keeps producing bytes past
+        # the declared size (simulated) trips the per-member limit mid-copy.
+        class EndlessMember(io.RawIOBase):
+            def read(self, size=-1):
+                return b"Z" * (size if size and size > 0 else 4096)
+
+        archive = build_archive({"scripts/ok.txt": b"fine"})
+        with patch.object(module, "MAX_MEMBER_BYTES", 1000), \
+                patch.object(module, "_EXTRACT_CHUNK", 256), \
+                patch.object(zipfile.ZipFile, "open", return_value=EndlessMember()):
+            with tempfile.TemporaryDirectory() as directory:
+                with self.assertRaisesRegex(ValueError, "while extracting"):
+                    SoftwareUpdater._extract_archive(archive, Path(directory))
+                # At most the limit plus one chunk reached the disk.
+                target = Path(directory) / "scripts" / "ok.txt"
+                self.assertLessEqual(target.stat().st_size, 1000)
+
+        # 4. A well-formed archive still extracts, chunked, with modes kept.
+        archive = build_archive({"scripts/run.sh": b"#!/bin/sh\n" * 300}, {"scripts/run.sh"})
+        with patch.object(module, "_EXTRACT_CHUNK", 64):
+            with tempfile.TemporaryDirectory() as directory:
+                SoftwareUpdater._extract_archive(archive, Path(directory))
+                target = Path(directory) / "scripts" / "run.sh"
+                self.assertEqual(target.read_bytes(), b"#!/bin/sh\n" * 300)
+                self.assertTrue(target.stat().st_mode & 0o100)
+
+    @staticmethod
+    def _with_declared_size(archive: bytes, declared: int) -> bytes:
+        """Patch every uncompressed-size field of a one-member zip."""
+        import struct
+        data = bytearray(archive)
+        # Local file header: signature PK\x03\x04, uncompressed size at +22.
+        local = data.find(b"PK\x03\x04")
+        struct.pack_into("<I", data, local + 22, declared)
+        # Central directory header: PK\x01\x02, uncompressed size at +24.
+        central = data.find(b"PK\x01\x02")
+        struct.pack_into("<I", data, central + 24, declared)
+        return bytes(data)
 
     def test_user_config_is_never_overwritten(self):
         github = FakeGitHub("0.6.0", self.release_files())
@@ -369,6 +502,32 @@ class SoftwareUpdateTests(unittest.TestCase):
         self.assertTrue(summary["repaired"])
         self.assertEqual((self.repo / "scripts" / "run.sh").read_text(), "new script\n")
         self.assertFalse(updater.status()["incomplete_update"])
+
+    def test_repair_preserves_the_original_rollback_snapshot(self):
+        updater = self.updater(FakeGitHub("0.6.0", self.release_files()))
+        real = updater._replace_file
+        def interrupted(content, destination, mode=None):
+            if destination == self.repo.resolve() / "scripts/added.sh":
+                raise OSError("synthetic interrupted update")
+            return real(content, destination, mode)
+        with unittest.mock.patch.object(updater, "_replace_file", side_effect=interrupted):
+            with self.assertRaisesRegex(OSError, "synthetic"):
+                updater.install()
+        self.assertEqual((self.repo / "scripts/run.sh").read_text(), "new script\n")
+        updater.install()
+        updater.rollback()
+        self.assertEqual((self.repo / "VERSION").read_text(), "0.5.0\n")
+        self.assertEqual((self.repo / "scripts/run.sh").read_text(), "old script\n")
+        self.assertFalse((self.repo / "scripts/added.sh").exists())
+
+    def test_incomplete_rollback_is_rejected_before_any_files_are_restored(self):
+        updater = self.updater(FakeGitHub("0.6.0", self.release_files()))
+        updater.install()
+        (updater.rollback_dir / "files/scripts/run.sh").unlink()
+        with self.assertRaisesRegex(ValueError, "snapshot.*incomplete"):
+            updater.rollback()
+        self.assertEqual((self.repo / "VERSION").read_text(), "0.6.0\n")
+        self.assertEqual((self.repo / "scripts/run.sh").read_text(), "new script\n")
 
     def test_version_file_is_applied_last(self):
         """A crash before completion must leave the OLD version on disk so

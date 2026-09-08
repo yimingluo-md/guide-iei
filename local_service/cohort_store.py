@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Iterator
 from urllib.parse import unquote, urlsplit
 
+from local_service.errors import CohortMergeBusyError
 from pipeline.predictor_registry import (
     MatchDimension,
     MatchScope,
@@ -38,6 +39,7 @@ from pipeline.predictor_registry import (
     TranscriptVersionPolicy,
     load_registry,
 )
+from pipeline.promoterai_evidence import promoterai_observation
 from pipeline.vcf_assembly import detect_vcf_assembly
 
 
@@ -49,6 +51,69 @@ DEFAULT_STAGE_BATCH_RECORDS = 2_000
 MAX_STAGE_PREDICTION_OBSERVATIONS = 25_000
 MAX_STAGE_PREDICTION_VALUES = 75_000
 MAX_BROWSER_SAMPLE_REVIEW_CARRIERS = 200_000
+# The final merge of a staged import used to run as ONE transaction holding
+# the cohort database's write lock for its whole duration — minutes for a
+# whole-genome file — while every other writer sharing the file (Sample
+# Library edits, phenotype links) waited out its 60 s busy timeout and failed
+# (audit M27). The merge now commits in bounded chunks of staged variants;
+# the new file's sample rows are inserted only in the final short "publish"
+# transaction. Evidence reads additionally require a snapshot without a
+# pending merge: shared annotations are updated before publication.
+MERGE_CHUNK_VARIANTS = 5_000
+MERGE_DELETE_CHUNK_ROWS = 50_000
+# SQLite's busy handler polls at up to 100 ms intervals, so a waiter cannot
+# take a lock the merge releases and re-takes within microseconds. Between
+# chunks the merge therefore pauses: briefly always, and for a full poll
+# interval whenever another request in this process has declared that it is
+# about to write (WriteCoordinator; the service does so for every mutating
+# request). Other-process writers get the short gap plus their busy timeout.
+MERGE_GAP_SECONDS = 0.01
+MERGE_YIELD_SECONDS = 0.15
+
+
+class WriteCoordinator:
+    """In-process record of threads that intend to write to the database."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._active: dict[int, int] = {}
+
+    def enter(self) -> None:
+        ident = threading.get_ident()
+        with self._lock:
+            self._active[ident] = self._active.get(ident, 0) + 1
+
+    def leave(self) -> None:
+        ident = threading.get_ident()
+        with self._lock:
+            remaining = self._active.get(ident, 0) - 1
+            if remaining > 0:
+                self._active[ident] = remaining
+            else:
+                self._active.pop(ident, None)
+
+    @contextmanager
+    def intent(self):
+        self.enter()
+        try:
+            yield
+        finally:
+            self.leave()
+
+    def others_active(self) -> bool:
+        ident = threading.get_ident()
+        with self._lock:
+            return any(other != ident for other in self._active)
+
+
+WRITE_COORDINATOR = WriteCoordinator()
+# A stored review set is projected to a file on disk and streamed to the
+# browser, never assembled as one in-memory string per source file inside a
+# JSON body (audit M32). The record cap above bounds count; this bounds bytes
+# — heavily annotated records run to several KB each. Override with
+# IEI_REVIEW_EXPORT_MAX_BYTES.
+DEFAULT_MAX_BROWSER_SAMPLE_REVIEW_BYTES = 256 * 1024 * 1024
+MAX_BROWSER_SAMPLE_REVIEW_EXPORTS = 8
 # Stay below SQLite's historical 999-host-parameter default. Query APIs may
 # return 10,000 observations, so hydrate typed values in portable chunks.
 SQLITE_VARIABLE_CHUNK = 900
@@ -204,7 +269,8 @@ class HtsBackend:
                 mapped /= candidate.name
             mapped_arguments[index] = str(mapped)
 
-        command = [self.runtime, "run", "--rm"]
+        # Offline tools only: no container started here may reach the network.
+        command = [self.runtime, "run", "--rm", "--pull=never", "--network=none"]
         for index, host in enumerate(hosts):
             command.extend(["-v", f"{host}:/hts_{index + 1}:rw"])
         command.extend(["--entrypoint", tool, self.image, *mapped_arguments])
@@ -505,15 +571,64 @@ def normalize_chromosome(value: str) -> str:
     return "MT" if chrom.upper() in {"M", "MT"} else chrom.upper()
 
 
+# Bump when variant_key() changes shape; _migrate_variant_keys re-keys older
+# databases (merging rows that collapse onto one canonical allele).
+VARIANT_KEY_FORMAT = "minimal-v2"
+# Bump when the meaning of a legacy annotation column changes such that rows
+# indexed under the old meaning must be reconciled on open
+# (_reconcile_legacy_columns). "withheld-v1": the promoterai column holds a
+# score only where an exact, provenance-complete observation exists, and a
+# pre-upgrade frequency value without a recorded source is labelled as such.
+LEGACY_COLUMN_FORMAT = "withheld-v1"
+# Stamped in cohort_meta once the one-time picked backfill ran (audit M30).
+PICKED_BACKFILL_VERSION = "pick-fallback-v1"
+# gnomad_popmax_source value for rows indexed before sources were recorded:
+# the stored number may be a maximum pooled across gnomAD popmax, MAX_AF and
+# global AF fields (the pre-fix behaviour). Re-importing the file refreshes it.
+LEGACY_POOLED_FREQUENCY_SOURCE = "legacy_pooled"
+
+
+def minimal_representation(pos: int, ref: str, alt: str) -> tuple[int, str, str]:
+    """Trim shared suffix/prefix bases down to the anchored minimal allele.
+
+    Mirrors the trimming rules of pipeline/genia_alleles.normalize_allele
+    (without reference-backed left-alignment): a padded multi-allelic
+    representation (REF=AT ALT=ATT, or REF=ATG ALT=ATC) and its minimal form
+    (A>AT at the same position, G>C two bases downstream) are the same
+    allele and must produce the same key. Symbolic, breakend, spanning and
+    otherwise non-sequence alleles are returned unchanged.
+    """
+    ref, alt = ref.upper(), alt.upper()
+    if (
+        not ref or not alt or ref == alt
+        or any(base not in "ACGTN" for base in ref)
+        or any(base not in "ACGTN" for base in alt)
+    ):
+        return pos, ref, alt
+    while len(ref) > 1 and len(alt) > 1 and ref[-1] == alt[-1]:
+        ref, alt = ref[:-1], alt[:-1]
+    while len(ref) > 1 and len(alt) > 1 and ref[0] == alt[0]:
+        ref, alt, pos = ref[1:], alt[1:], pos + 1
+    return pos, ref, alt
+
+
 def variant_key(chrom: str, pos: int, ref: str, alt: str) -> str:
-    return f"{normalize_chromosome(chrom)}:{pos}:{ref.upper()}:{alt.upper()}"
+    """Canonical carrier-index key: chromosome-normalised, minimal allele."""
+    pos, ref, alt = minimal_representation(int(pos), ref, alt)
+    return f"{normalize_chromosome(chrom)}:{pos}:{ref}:{alt}"
 
 
 def decode(value: str | None) -> str:
     # VEP percent-encodes CSQ special characters but a literal "+" is data —
     # splice HGVS like c.300+1G>C. Form-decoding "+" to a space corrupted
     # every intronic coordinate stored in the cohort database.
-    return unquote(value or "")
+    if not value:
+        return ""
+    # Most CSQ values carry no escape at all; unquote() is only needed when
+    # one is present (identical result, a fraction of the cost: audit M31).
+    if "%" not in value:
+        return value
+    return unquote(value)
 
 
 def _prediction_dimension_missing(
@@ -738,6 +853,67 @@ def preferred_maximum(
 def truthy(value: str) -> bool:
     return value not in EMPTY and value != "0"
 
+
+# GRCh38 pseudoautosomal bounds: outside them X and Y are single-copy in a
+# male, so a diploid-encoded homozygous call and a haploid hemizygous call
+# describe the same state. Mirrors pipeline/haplotype_consequences.py.
+GRCH38_X_PAR1_END = 2_781_479
+GRCH38_X_PAR2_START = 155_701_383
+GRCH38_Y_PAR1_END = 2_781_479
+GRCH38_Y_PAR2_START = 56_887_903
+SINGLE_COPY_LOCUS_SQL = (
+    f"((v.chrom = 'X' AND v.pos > {GRCH38_X_PAR1_END} "
+    f"AND v.pos < {GRCH38_X_PAR2_START}) "
+    f"OR (v.chrom = 'Y' AND v.pos > {GRCH38_Y_PAR1_END} "
+    f"AND v.pos < {GRCH38_Y_PAR2_START}))"
+)
+
+
+def single_copy_locus(chrom: str, pos: int) -> bool:
+    normalized = normalize_chromosome(str(chrom))
+    if normalized == "X":
+        return GRCH38_X_PAR1_END < int(pos) < GRCH38_X_PAR2_START
+    if normalized == "Y":
+        return GRCH38_Y_PAR1_END < int(pos) < GRCH38_Y_PAR2_START
+    return False
+
+
+# Population-frequency sources, in preference order (review M9). The value the
+# rarity filter uses is taken from the FIRST group that carries a value; the
+# groups are never combined by maximum, so an explicit gnomAD popmax is not
+# overridden by VEP's MAX_AF (the maximum across 1000 Genomes, ESP and gnomAD,
+# which includes small non-gnomAD populations) or by a global AF.
+GNOMAD_POPMAX_FIELDS = (
+    "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax",
+    "gnomAD_popmax_AF",
+)
+MAX_AF_FIELDS = ("MAX_AF",)
+GNOMAD_GLOBAL_AF_FIELDS = ("gnomADg_AF", "gnomADe_AF", "gnomAD_AF")
+POPULATION_FREQUENCY_GROUPS = (
+    ("gnomad_popmax", GNOMAD_POPMAX_FIELDS),
+    ("max_af", MAX_AF_FIELDS),
+    ("gnomad_global", GNOMAD_GLOBAL_AF_FIELDS),
+)
+POPULATION_FREQUENCY_SOURCE_LABELS = {
+    "gnomad_popmax": "gnomAD popmax",
+    "max_af": "VEP MAX_AF (highest AF across 1000 Genomes, ESP and gnomAD)",
+    "gnomad_global": "gnomAD global AF",
+}
+
+
+def population_frequency(record: dict[str, str]) -> tuple[float | None, str]:
+    """(value, source) of the frequency used for rarity filtering.
+
+    ``source`` is one of ``gnomad_popmax``, ``max_af``, ``gnomad_global`` or
+    ``""`` when no field carries a value. Within a group the maximum is taken
+    (gnomAD exomes vs genomes popmax are both gnomAD popmax).
+    """
+    for source, keys in POPULATION_FREQUENCY_GROUPS:
+        value = maximum(record, keys)
+        if value is not None:
+            return value, source
+    return None, ""
+
 def haplotype_frame_evidence(
     raw: str, current_variant: str, sample: str
 ) -> dict[str, str]:
@@ -826,12 +1002,12 @@ def parse_csq_entries(raw: str, fields: list[str]) -> list[dict[str, str]]:
     if not raw or not fields:
         return [{}]
     entries = []
+    width = len(fields)
     for item in raw.split(","):
         values = item.split("|")
-        entries.append({
-            field: decode(values[index]) if index < len(values) else ""
-            for index, field in enumerate(fields)
-        })
+        if len(values) < width:
+            values.extend([""] * (width - len(values)))
+        entries.append(dict(zip(fields, map(decode, values))))
     return entries
 
 
@@ -910,6 +1086,22 @@ def _promoterai_strand(record: dict[str, str]) -> str:
             return strands.pop()
         invalid = invalid or raw
     return invalid
+
+
+def _promoterai_metric_value(observation, metric) -> object | None:
+    """Registry metric values for PromoterAI, read from the shared
+    observation instead of the raw record."""
+    mapping = {
+        "score": observation.score,
+        "tss": observation.tss,
+        "strand": observation.strand or None,
+        "distance": observation.distance,
+        "source_transcript": observation.source_transcript or None,
+        "match": observation.match or None,
+    }
+    if metric.id in mapping:
+        return mapping[metric.id]
+    return None
 
 
 def _registry_metric_value(record: dict[str, str], metric) -> object | None:
@@ -1156,6 +1348,7 @@ def _active_predictors(fields: Iterable[str]) -> tuple:
 
 def _normalized_predictions(
     record: dict[str, str], annotation: dict, predictors: Iterable | None = None,
+    shared_promoter_observation=None,
 ) -> list[dict]:
     predictions: list[dict] = []
     selected_predictors = (
@@ -1170,8 +1363,25 @@ def _normalized_predictions(
         values: dict[str, object] = {}
         provenance: dict[str, object] = {}
         invalid_metrics: list[str] = []
+        promoter_observation = None
+        if predictor.id == "promoterai":
+            # One reader for every consumer (pipeline/promoterai_evidence.py):
+            # legacy score aliases with full provenance count, VEP's "-"
+            # missing sentinel does not read as a minus strand, and the
+            # normalised observation cannot disagree with the legacy column,
+            # the browser or the prefilter about the same record.
+            promoter_observation = (
+                shared_promoter_observation
+                if shared_promoter_observation is not None
+                else promoterai_observation(record, decode=decode)
+            )
+            if promoter_observation.match_status == "unmatched":
+                continue
         for metric in predictor.metrics:
-            value = _registry_metric_value(record, metric)
+            if promoter_observation is not None:
+                value = _promoterai_metric_value(promoter_observation, metric)
+            else:
+                value = _registry_metric_value(record, metric)
             if value is None:
                 continue
             try:
@@ -1236,9 +1446,7 @@ def _normalized_predictions(
             )
         elif predictor.id == "promoterai":
             source_annotation = dict(annotation)
-            source_annotation["transcript"] = first(
-                record, ("PromoterAI_source_transcript",)
-            )
+            source_annotation["transcript"] = promoter_observation.source_transcript
         elif predictor.id == "logofunc":
             source_annotation = dict(annotation)
             source_annotation["transcript"] = first(
@@ -1289,6 +1497,22 @@ def _normalized_predictions(
             if withheld:
                 provenance["withheld_metrics"] = withheld
             provenance["missing_dimensions"] = missing_dimensions
+        if (
+            promoter_observation is not None
+            and match_status == "exact"
+            and promoter_observation.match_status != "exact"
+        ):
+            # The raw target check above keeps its diagnostics (invalid /
+            # missing dimensions); the shared reader has the final word so
+            # that, e.g., VEP's "-" missing sentinel in PromoterAI_strand is
+            # never accepted here as a minus strand while every other
+            # consumer withholds the score.
+            match_status = "partial"
+            withheld = sorted(values)
+            values.clear()
+            if withheld:
+                provenance["withheld_metrics"] = withheld
+            provenance["shared_rule"] = "promoterai_evidence"
         matched_dimensions = (
             []
             if match_status == "unmatched"
@@ -1465,6 +1689,10 @@ def annotation_from(
     impact = (first(record, ("IMPACT",)) or "UNKNOWN").upper()
     if impact not in ALLOWED_IMPACTS:
         impact = "UNKNOWN"
+    frequency_value, frequency_source = population_frequency(record)
+    # Read once here and reused by the normalised observation below (it was
+    # evaluated twice per annotation row: audit M31).
+    promoter_observation = promoterai_observation(record, decode=decode)
     annotation = {
         "gene": (first(record, ("SYMBOL", "HGNC")) or "—").upper(),
         "gene_id": first(record, ("Gene",)),
@@ -1473,10 +1701,8 @@ def annotation_from(
         "hgvsp": first(record, ("HGVSp",)),
         "consequence": first(record, ("Consequence",)) or "unannotated",
         "impact": impact,
-        "gnomad_popmax": maximum(record, (
-            "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax",
-            "gnomAD_popmax_AF", "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
-        )),
+        "gnomad_popmax": frequency_value,
+        "gnomad_popmax_source": frequency_source,
         # When both sources exist on a coding SNV, the explicitly selected
         # genome-wide v1.7 plugin is authoritative. dbNSFP is the fallback for
         # exome jobs or records without a plugin value; do not combine sources
@@ -1491,9 +1717,10 @@ def annotation_from(
             "SpliceAI_pred_DS_DG", "SpliceAI_pred_DS_DL",
             "DS_AG", "DS_AL", "DS_DG", "DS_DL",
         )),
-        "promoterai": parse_number(first(record, (
-            "PromoterAI_score", "promoterAI_score", "promoterAI", "PROMOTERAI", "promoterAI_promoterAI",
-        ))),
+        # Shared rule (pipeline/promoterai_evidence.py): the legacy column
+        # only ever holds a score whose transcript/TSS provenance is complete,
+        # exactly like the normalised observation and the browser parser.
+        "promoterai": promoter_observation.usable_score,
         "logofunc_prediction": first(record, ("LoGoFunc_prediction",)),
         "logofunc_neutral": parse_number(first(record, ("LoGoFunc_neutral",))),
         "logofunc_gof": parse_number(first(record, ("LoGoFunc_GOF",))),
@@ -1518,7 +1745,8 @@ def annotation_from(
         "segdup": int(truthy(first(record, ("SegDup", "SEGDUP")))),
     }
     annotation["_predictions"] = _normalized_predictions(
-        record, annotation, predictors
+        record, annotation, predictors,
+        shared_promoter_observation=promoter_observation,
     )
     return annotation
 
@@ -1530,7 +1758,8 @@ STAGE_VARIANT_COLUMNS = (
 )
 STAGE_ANNOTATION_COLUMNS = (
     "variant_key", "gene", "gene_id", "transcript", "hgvsc", "hgvsp",
-    "consequence", "impact", "gnomad_popmax", "cadd", "alpha_missense",
+    "consequence", "impact", "gnomad_popmax", "gnomad_popmax_source", "cadd",
+    "alpha_missense",
     "spliceai", "promoterai", "logofunc_prediction", "logofunc_neutral",
     "logofunc_gof", "logofunc_lof", "logofunc_allele_available",
     "logofunc_source_transcript", "logofunc_source_hgvsp", "logofunc_match",
@@ -1592,6 +1821,7 @@ CREATE TABLE stage_annotations (
   consequence TEXT NOT NULL,
   impact TEXT NOT NULL,
   gnomad_popmax REAL,
+  gnomad_popmax_source TEXT,
   cadd REAL,
   alpha_missense REAL,
   spliceai REAL,
@@ -1718,6 +1948,36 @@ STAGE_PREDICTION_VALUE_INSERT = _stage_insert_sql(
     "stage_prediction_values", STAGE_PREDICTION_VALUE_COLUMNS
 )
 
+# Merge journal (audit M27 follow-up): journal table -> (cohort table,
+# pre-image columns). The pre-image columns are exactly those the merge's
+# upserts and the PromoterAI reconciliation may change on a row that existed
+# before the merge; ids of rows the merge inserted are recorded with
+# inserted=1 and no pre-image.
+MERGE_JOURNALS: dict[str, tuple[str, tuple[str, ...]]] = {
+    "merge_journal_variants": ("cohort_variants", (
+        "rsid", "original_assembly", "original_chrom", "original_pos",
+        "original_ref", "original_alt", "unscored_indel_reasons",
+    )),
+    "merge_journal_annotations": ("cohort_annotations", (
+        "gene_id", "impact", "gnomad_popmax", "gnomad_popmax_source", "cadd",
+        "alpha_missense", "spliceai", "promoterai", "logofunc_prediction",
+        "logofunc_neutral", "logofunc_gof", "logofunc_lof",
+        "logofunc_allele_available", "logofunc_source_transcript",
+        "logofunc_source_hgvsp", "logofunc_match", "clinvar",
+        "clinvar_conflicting", "loftee", "loftee_50bp", "loftee_50bp_original",
+        "loftee_50bp_changed", "ptc_distance", "ptc_calc_status", "mane",
+        "picked", "repeat_masker", "segdup",
+    )),
+    "merge_journal_observations": ("prediction_observations", (
+        "annotation_id", "sample_id", "gene_id", "gene_symbol", "transcript_id",
+        "protein_change", "match_status", "matcher", "provenance_json",
+        "updated_at",
+    )),
+    "merge_journal_values": ("prediction_values", (
+        "value_type", "numeric_value", "text_value", "boolean_value", "unit",
+    )),
+}
+
 COHORT_SECONDARY_INDEXES = {
     "cohort_variants_locus_idx": (
         "CREATE INDEX cohort_variants_locus_idx "
@@ -1821,8 +2081,20 @@ def _stage_vcf_records(
     progress: Callable[[dict], None] | None = None,
     processed_bytes: Callable[[], int] | None = None,
     batch_records: int = DEFAULT_STAGE_BATCH_RECORDS,
+    sample_indices: tuple[int, ...] | None = None,
 ) -> dict:
-    """Parse VCF records into one disposable, natural-keyed SQLite stage."""
+    """Parse VCF records into one disposable, natural-keyed SQLite stage.
+
+    ``sample_indices`` restricts carrier extraction to those header columns
+    (positions into ``header.samples``); every column is indexed when None.
+    """
+    selected_samples = tuple(
+        (index, header.samples[index])
+        for index in (
+            sample_indices if sample_indices is not None
+            else range(len(header.samples))
+        )
+    )
     connection = sqlite3.connect(stage_path)
     connection.executescript(STAGE_SCHEMA)
     variant_rows: dict[str, tuple] = {}
@@ -1837,6 +2109,7 @@ def _stage_vcf_records(
     active_predictors = _active_predictors(
         (*header.csq_fields, *header.info_fields)
     )
+    csq_field_list = list(header.csq_fields)
 
     def flush() -> None:
         if variant_rows:
@@ -1965,9 +2238,11 @@ def _stage_vcf_records(
             except ValueError:
                 continue
             info = info_map(raw_info)
-            consequences = parse_csq_entries(
-                info.get("CSQ", ""), list(header.csq_fields)
-            )
+            # CSQ is decoded only once a selected sample is known to carry
+            # an alternate allele (audit M31): a restricted re-index of one
+            # sample in a joint-called file used to decode every record's
+            # annotations and discard most of them.
+            consequences: list[dict[str, str]] | None = None
             sample_values = columns[9:]
             if len(sample_values) < len(header.samples):
                 # A record with fewer sample columns than the header declares
@@ -1985,7 +2260,7 @@ def _stage_vcf_records(
             alts = tuple(alt_raw.split(","))
             for alt_index, alt in enumerate(alts):
                 carriers: list[tuple[str, dict]] = []
-                for sample_index, sample_name in enumerate(header.samples):
+                for sample_index, sample_name in selected_samples:
                     genotype = parse_genotype(
                         format_value,
                         sample_values[sample_index],
@@ -1995,8 +2270,16 @@ def _stage_vcf_records(
                         carriers.append((sample_name, genotype))
                 if not carriers:
                     continue
+                if consequences is None:
+                    consequences = parse_csq_entries(info.get("CSQ", ""), csq_field_list)
 
                 key = variant_key(chrom, pos, ref, alt)
+                # Store the canonical representation the key was built from:
+                # a lookup that compared the caller's padded columns against
+                # a record from another file missed it (audit H5, P2).
+                canonical_pos, canonical_ref, canonical_alt = minimal_representation(
+                    pos, ref, alt
+                )
                 original_alts = info.get("IEI_ORIGINAL_ALT", "").split(",")
                 original_pos = (
                     int(info["IEI_ORIGINAL_POS"])
@@ -2004,7 +2287,7 @@ def _stage_vcf_records(
                     else None
                 )
                 variant_rows[key] = (
-                    key, chrom, pos, ref.upper(), alt.upper(),
+                    key, chrom, canonical_pos, canonical_ref, canonical_alt,
                     None if rsid == "." else rsid,
                     first(info, ("IEI_ORIGINAL_ASSEMBLY",)) or None,
                     first(info, ("IEI_ORIGINAL_CHROM",)) or None,
@@ -2149,6 +2432,7 @@ def _tabix_stage_worker(
     header: VcfHeader,
     stage_path: Path,
     batch_records: int,
+    sample_indices: tuple[int, ...] | None = None,
 ) -> dict:
     """Process-safe indexed reader; each worker owns its staging database."""
     return _stage_vcf_records(
@@ -2156,6 +2440,7 @@ def _tabix_stage_worker(
         header,
         stage_path,
         batch_records=batch_records,
+        sample_indices=sample_indices,
     )
 
 
@@ -2178,8 +2463,26 @@ class CohortStore:
         self.workspace_dir.mkdir(parents=True, exist_ok=True)
         self.prepared_dir = self.workspace_dir / "cohort-vcf-cache"
         self.staging_dir = self.workspace_dir / "cohort-staging"
+        self.review_export_dir = self.workspace_dir / "cohort-review-exports"
         self.prepared_dir.mkdir(parents=True, exist_ok=True)
         self.staging_dir.mkdir(parents=True, exist_ok=True)
+        self.review_export_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            self.max_review_export_bytes = max(
+                1_000_000,
+                int(os.environ.get("IEI_REVIEW_EXPORT_MAX_BYTES", DEFAULT_MAX_BROWSER_SAMPLE_REVIEW_BYTES)),
+            )
+        except ValueError:
+            self.max_review_export_bytes = DEFAULT_MAX_BROWSER_SAMPLE_REVIEW_BYTES
+        self._review_exports: dict[str, list[Path]] = {}
+        self._review_exports_lock = threading.Lock()
+        # Exports from a previous service lifetime have no registry entry and
+        # can never be served again.
+        for stale in self.review_export_dir.glob("*.vcf"):
+            try:
+                stale.unlink()
+            except OSError:
+                pass
         self.enable_auto_index = enable_auto_index
         self.hts_backend = (
             hts_backend
@@ -2208,6 +2511,10 @@ class CohortStore:
         self._import_jobs: dict[str, dict] = {}
         self._import_jobs_lock = threading.Lock()
         self._maintenance_lock = threading.Lock()
+        # One chunked merge at a time per process: the merge journal and the
+        # merge_cleanup_pending marker describe a single merge.
+        self._merge_lock = threading.Lock()
+        self._read_context = threading.local()
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
@@ -2226,6 +2533,34 @@ class CohortStore:
             with connection:
                 yield connection
         finally:
+            connection.close()
+
+    @contextmanager
+    def _read_session(self):
+        """Guard evidence reads and their data in ONE SQLite snapshot.
+
+        Existing readers can finish against their pre-merge WAL snapshot;
+        new readers must retry until publication/cleanup or rollback finishes.
+        Nested reads (variant_detail -> query) reuse the same snapshot.
+        """
+        existing = getattr(self._read_context, "connection", None)
+        if existing is not None:
+            yield existing
+            return
+        connection = self._connect()
+        try:
+            connection.execute("BEGIN")
+            if self._pending_merge_state(connection)[0] or connection.execute(
+                "SELECT 1 FROM cohort_files WHERE import_state = 'merging' LIMIT 1"
+            ).fetchone():
+                raise CohortMergeBusyError()
+            self._read_context.connection = connection
+            try:
+                yield connection
+            finally:
+                del self._read_context.connection
+        finally:
+            connection.rollback()
             connection.close()
 
     def _initialize(self) -> None:
@@ -2259,6 +2594,14 @@ class CohortStore:
                     ,profile_label TEXT NOT NULL DEFAULT ''
                     ,profile_hash TEXT NOT NULL DEFAULT ''
                     ,profile_json TEXT NOT NULL DEFAULT '{}'
+                );
+
+                -- Survives _reset_cohort_tables and row deletion: cohort_files
+                -- ids are allocated from next_file_id so an id is never reused
+                -- once handed to the sample library as a linkage key.
+                CREATE TABLE IF NOT EXISTS cohort_meta (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS cohort_samples (
@@ -2295,6 +2638,7 @@ class CohortStore:
                     consequence TEXT NOT NULL,
                     impact TEXT NOT NULL,
                     gnomad_popmax REAL,
+                    gnomad_popmax_source TEXT,
                     cadd REAL,
                     alpha_missense REAL,
                     spliceai REAL,
@@ -2420,6 +2764,44 @@ class CohortStore:
                     )
                 );
 
+                -- Merge journal (audit M27 follow-up): the pre-image of every
+                -- shared row a chunked merge updates and the id of every row
+                -- it inserts, so a merge that fails or is interrupted before
+                -- publication is undone exactly. Pre-image columns are
+                -- declared without a type so values round-trip unchanged.
+                -- Empty outside a merge.
+                CREATE TABLE IF NOT EXISTS merge_journal_variants (
+                    id INTEGER PRIMARY KEY,
+                    inserted INTEGER NOT NULL DEFAULT 0,
+                    rsid, original_assembly, original_chrom, original_pos,
+                    original_ref, original_alt, unscored_indel_reasons
+                );
+                CREATE TABLE IF NOT EXISTS merge_journal_annotations (
+                    id INTEGER PRIMARY KEY,
+                    inserted INTEGER NOT NULL DEFAULT 0,
+                    gene_id, impact, gnomad_popmax, gnomad_popmax_source,
+                    cadd, alpha_missense, spliceai, promoterai,
+                    logofunc_prediction, logofunc_neutral, logofunc_gof,
+                    logofunc_lof, logofunc_allele_available,
+                    logofunc_source_transcript, logofunc_source_hgvsp,
+                    logofunc_match, clinvar, clinvar_conflicting, loftee,
+                    loftee_50bp, loftee_50bp_original, loftee_50bp_changed,
+                    ptc_distance, ptc_calc_status, mane, picked,
+                    repeat_masker, segdup
+                );
+                CREATE TABLE IF NOT EXISTS merge_journal_observations (
+                    id INTEGER PRIMARY KEY,
+                    inserted INTEGER NOT NULL DEFAULT 0,
+                    annotation_id, sample_id, gene_id, gene_symbol,
+                    transcript_id, protein_change, match_status, matcher,
+                    provenance_json, updated_at
+                );
+                CREATE TABLE IF NOT EXISTS merge_journal_values (
+                    id INTEGER PRIMARY KEY,
+                    inserted INTEGER NOT NULL DEFAULT 0,
+                    value_type, numeric_value, text_value, boolean_value, unit
+                );
+
                 CREATE INDEX IF NOT EXISTS cohort_variants_locus_idx
                     ON cohort_variants(chrom, pos, ref, alt);
                 CREATE INDEX IF NOT EXISTS cohort_variants_rsid_idx
@@ -2486,13 +2868,13 @@ class CohortStore:
                     "PRAGMA table_info(cohort_annotations)"
                 ).fetchall()
             }
-            picked_column_added = "picked" not in annotation_columns
-            if picked_column_added:
+            if "picked" not in annotation_columns:
                 connection.execute(
                     "ALTER TABLE cohort_annotations "
                     "ADD COLUMN picked INTEGER NOT NULL DEFAULT 0"
                 )
             for column, declaration in (
+                ("gnomad_popmax_source", "TEXT"),
                 ("clinvar_conflicting", "TEXT"),
                 ("loftee_50bp", "TEXT"),
                 ("loftee_50bp_original", "TEXT"),
@@ -2560,6 +2942,9 @@ class CohortStore:
                 ("profile_json", "TEXT NOT NULL DEFAULT '{}'"),
                 ("content_probe", "TEXT NOT NULL DEFAULT ''"),
                 ("content_sha256", "TEXT NOT NULL DEFAULT ''"),
+                # 'merging' while a chunked merge is writing the file's rows;
+                # 'ready' once its samples were published (audit M27).
+                ("import_state", "TEXT NOT NULL DEFAULT 'ready'"),
             ):
                 if column not in file_columns:
                     connection.execute(
@@ -2592,37 +2977,300 @@ class CohortStore:
                     connection.execute(
                         f"ALTER TABLE cohort_variants ADD COLUMN {column} {declaration}"
                     )
-            if picked_column_added:
-                # Legacy pipeline output used --pick and therefore had one CSQ
-                # consequence but no PICK field. Recover that unambiguous
-                # fallback once, as part of the PICK column migration. Running
-                # this correlated update on every startup scans the complete
-                # annotation table and is prohibitive for WGS databases.
-                connection.execute(
-                    """
-                    UPDATE cohort_annotations AS candidate
-                    SET picked = 1
-                    WHERE candidate.picked = 0
-                      AND candidate.mane = 0
-                      AND NOT EXISTS (
-                        SELECT 1 FROM cohort_annotations AS mane_row
-                        WHERE mane_row.variant_id = candidate.variant_id
-                          AND mane_row.gene = candidate.gene
-                          AND mane_row.mane = 1
-                      )
-                      AND 1 = (
-                        SELECT COUNT(*) FROM cohort_annotations AS sibling
-                        WHERE sibling.variant_id = candidate.variant_id
-                          AND sibling.gene = candidate.gene
-                      )
-                    """
-                )
+            self._migrate_picked_backfill(connection)
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS cohort_annotations_preferred_idx
                 ON cohort_annotations(gene, mane, picked, impact)
                 """
             )
+            # Seed (or advance) the file-id allocator so databases created
+            # before cohort_meta existed continue above every id ever issued.
+            self._advance_file_id_allocator(connection)
+            self._migrate_variant_keys(connection)
+            self._reconcile_legacy_columns(connection)
+        self._recover_interrupted_merges()
+
+    def _phenotype_sex_available(self) -> bool:
+        """True when the phenotype store's tables share this database (the
+        service opens both on cohort.sqlite3; a bare CohortStore may not)."""
+        with self._session() as connection:
+            count = connection.execute(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
+                "AND name IN ('phenotype_sample_links', 'phenotype_individuals')"
+            ).fetchone()[0]
+        return int(count) == 2
+
+    @staticmethod
+    def _migrate_picked_backfill(connection: sqlite3.Connection) -> bool:
+        """One-time ``picked`` backfill for databases indexed before PICK was
+        retained, stamped in ``cohort_meta`` in the same transaction.
+
+        Legacy pipeline output used ``--pick`` and therefore had one CSQ
+        consequence but no PICK field; the unambiguous fallback (a gene's
+        only annotation row, with no MANE row) is recovered once. The stamp,
+        not the column's presence, records that the backfill ran: adding the
+        column and backfilling it are separate statements, and a database
+        interrupted between them used to reopen with the column present and
+        every eligible row left at 0, never to be revisited (review
+        follow-up of M30). Without a stamp, the backfill runs only while no
+        row is picked at all — a table with picks was either backfilled by
+        an earlier build or indexed with PICK, and its zeros are deliberate.
+        Running the correlated update on every startup would scan the whole
+        annotation table, prohibitive for WGS databases; the stamp makes it
+        run exactly once. Returns True when rows were backfilled."""
+        stamped = connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'picked_backfill'"
+        ).fetchone()
+        if stamped and stamped[0] == PICKED_BACKFILL_VERSION:
+            return False
+        needs_backfill = connection.execute(
+            "SELECT NOT EXISTS (SELECT 1 FROM cohort_annotations WHERE picked = 1)"
+            " AND EXISTS (SELECT 1 FROM cohort_annotations)"
+        ).fetchone()[0]
+        backfilled = 0
+        if needs_backfill:
+            backfilled = connection.execute(
+                """
+                UPDATE cohort_annotations AS candidate
+                SET picked = 1
+                WHERE candidate.picked = 0
+                  AND candidate.mane = 0
+                  AND NOT EXISTS (
+                    SELECT 1 FROM cohort_annotations AS mane_row
+                    WHERE mane_row.variant_id = candidate.variant_id
+                      AND mane_row.gene = candidate.gene
+                      AND mane_row.mane = 1
+                  )
+                  AND 1 = (
+                    SELECT COUNT(*) FROM cohort_annotations AS sibling
+                    WHERE sibling.variant_id = candidate.variant_id
+                      AND sibling.gene = candidate.gene
+                  )
+                """
+            ).rowcount
+        # Same (implicit) transaction as the UPDATE above: the stamp cannot
+        # land without the backfill, nor the backfill without the stamp.
+        connection.execute(
+            "INSERT OR REPLACE INTO cohort_meta(key, value) VALUES ('picked_backfill', ?)",
+            (PICKED_BACKFILL_VERSION,),
+        )
+        return bool(backfilled)
+
+    @staticmethod
+    def _reconcile_withheld_promoterai(
+        connection: sqlite3.Connection, alias: str | None = None,
+        key_range: tuple[str, str] | None = None,
+        *, annotation_id_range: tuple[int, int] | None = None,
+    ) -> int:
+        """Derive the legacy ``promoterai`` column from the observations.
+
+        The column is a convenience copy of the normalised PromoterAI
+        observation, and the shared rule (pipeline/promoterai_evidence.py)
+        withholds a score whose transcript/TSS provenance is incomplete. A
+        withheld score is a deliberate NULL, not a missing value, so the
+        merge's ``COALESCE`` — which exists so one file's absent predictor
+        does not erase another file's value — must not preserve it (review
+        follow-up: a forced re-import kept a stale 0.9). Rule: the column may
+        hold a value only where some source still contributes an *exact*
+        observation with a score for that annotation row. ``alias`` scopes
+        the pass to the annotation rows a staged import touched; ``None``
+        reconciles the whole table (the one-time upgrade). Crash recovery
+        uses annotation_id_range because the original staging tables are gone.
+        """
+        scope = ""
+        parameters: tuple = ()
+        if annotation_id_range is not None:
+            scope = " AND cohort_annotations.id > ? AND cohort_annotations.id <= ?"
+            parameters = annotation_id_range
+        elif alias is not None:
+            range_clause = ""
+            if key_range is not None:
+                range_clause = " WHERE s.variant_key > ? AND s.variant_key <= ?"
+                parameters = tuple(key_range)
+            scope = f"""
+              AND cohort_annotations.id IN (
+                SELECT a.id
+                FROM {alias}.stage_annotations AS s
+                JOIN cohort_variants AS v ON v.variant_key = s.variant_key
+                JOIN cohort_annotations AS a
+                  ON a.variant_id = v.id AND a.gene = s.gene
+                 AND a.transcript = s.transcript AND a.hgvsc = s.hgvsc
+                 AND a.hgvsp = s.hgvsp AND a.consequence = s.consequence
+                {range_clause}
+              )"""
+        cursor = connection.execute(f"""
+            UPDATE cohort_annotations SET promoterai = NULL
+            WHERE promoterai IS NOT NULL{scope}
+              AND NOT EXISTS (
+                SELECT 1
+                FROM prediction_observations AS observation
+                JOIN prediction_values AS value
+                  ON value.observation_id = observation.id
+                 AND value.metric = 'score'
+                 AND value.numeric_value IS NOT NULL
+                WHERE observation.annotation_id = cohort_annotations.id
+                  AND observation.predictor_id = 'promoterai'
+                  AND observation.match_status = 'exact'
+              )
+        """, parameters)
+        return int(cursor.rowcount or 0)
+
+    def _reconcile_legacy_columns(self, connection: sqlite3.Connection) -> None:
+        """One-time upgrade of rows indexed under older column semantics.
+
+        * ``promoterai``: cleared wherever no exact observation backs it
+          (rows older than the observation tables lose the value; a forced
+          re-import restores it together with its provenance).
+        * ``gnomad_popmax_source``: rows with a frequency but no recorded
+          source were computed as a pooled maximum; they are labelled
+          ``legacy_pooled`` so the UI does not present them as gnomAD popmax,
+          and a re-import replaces both value and label.
+        """
+        stored = connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'legacy_column_format'"
+        ).fetchone()
+        if stored and stored[0] == LEGACY_COLUMN_FORMAT:
+            return
+        self._reconcile_withheld_promoterai(connection)
+        connection.execute(
+            """
+            UPDATE cohort_annotations SET gnomad_popmax_source = ?
+            WHERE gnomad_popmax IS NOT NULL
+              AND (gnomad_popmax_source IS NULL OR gnomad_popmax_source = '')
+            """,
+            (LEGACY_POOLED_FREQUENCY_SOURCE,),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO cohort_meta(key, value) "
+            "VALUES ('legacy_column_format', ?)",
+            (LEGACY_COLUMN_FORMAT,),
+        )
+
+    @staticmethod
+    def _migrate_variant_keys(connection: sqlite3.Connection) -> None:
+        """Re-key rows indexed before variant_key() became representation-
+        insensitive; rows that collapse onto one canonical allele are merged
+        (carrier and annotation rows move to the surviving variant)."""
+        stored = connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'variant_key_format'"
+        ).fetchone()
+        if stored and stored[0] == VARIANT_KEY_FORMAT:
+            return
+        rows = connection.execute(
+            "SELECT id, variant_key, chrom, pos, ref, alt FROM cohort_variants"
+        ).fetchall()
+        id_by_key: dict[str, int] = {row["variant_key"]: int(row["id"]) for row in rows}
+        rekeyed: list[tuple[str, int]] = []
+        recolumned: list[tuple[int, str, str, int]] = []  # (pos, ref, alt, id)
+        merges: list[tuple[int, int]] = []  # (duplicate id, surviving id)
+        for row in rows:
+            canonical = variant_key(row["chrom"], int(row["pos"]), row["ref"], row["alt"])
+            canonical_pos, canonical_ref, canonical_alt = minimal_representation(
+                int(row["pos"]), row["ref"], row["alt"]
+            )
+            if canonical != row["variant_key"]:
+                survivor = id_by_key.get(canonical)
+                if survivor is not None and survivor != int(row["id"]):
+                    merges.append((int(row["id"]), survivor))
+                    continue
+                id_by_key[canonical] = int(row["id"])
+                rekeyed.append((canonical, int(row["id"])))
+            # The displayed/looked-up representation must be the canonical
+            # one too (a v1-migrated database kept the caller's padding).
+            if (canonical_pos, canonical_ref, canonical_alt) != (
+                int(row["pos"]), row["ref"], row["alt"]
+            ):
+                recolumned.append((canonical_pos, canonical_ref, canonical_alt, int(row["id"])))
+        if not rekeyed and not merges and not recolumned:
+            connection.execute(
+                "INSERT OR REPLACE INTO cohort_meta(key, value) VALUES ('variant_key_format', ?)",
+                (VARIANT_KEY_FORMAT,),
+            )
+            return
+        connection.execute("PRAGMA defer_foreign_keys=ON")
+        # Two-phase rename avoids transient UNIQUE collisions between a row
+        # giving up a key and another row taking it.
+        connection.executemany(
+            "UPDATE cohort_variants SET variant_key = ? WHERE id = ?",
+            ((f"\x00migrating:{identifier}", identifier) for _, identifier in rekeyed),
+        )
+        for duplicate, survivor in merges:
+            for table in ("cohort_genotypes", "cohort_annotations", "prediction_observations"):
+                connection.execute(
+                    f"UPDATE OR IGNORE {table} SET variant_id = ? WHERE variant_id = ?",
+                    (survivor, duplicate),
+                )
+                connection.execute(
+                    f"DELETE FROM {table} WHERE variant_id = ?", (duplicate,)
+                )
+            connection.execute("DELETE FROM cohort_variants WHERE id = ?", (duplicate,))
+        connection.executemany(
+            "UPDATE cohort_variants SET variant_key = ? WHERE id = ?", rekeyed
+        )
+        merged_away = {duplicate for duplicate, _ in merges}
+        connection.executemany(
+            "UPDATE cohort_variants SET pos = ?, ref = ?, alt = ? WHERE id = ?",
+            [entry for entry in recolumned if entry[3] not in merged_away],
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO cohort_meta(key, value) VALUES ('variant_key_format', ?)",
+            (VARIANT_KEY_FORMAT,),
+        )
+
+    @staticmethod
+    def _advance_file_id_allocator(connection: sqlite3.Connection) -> None:
+        # Every table that can hold a cohort file id counts as "already
+        # issued" — including the sample library's linkage column, which
+        # lives in the same database file and may still name a file that was
+        # deleted before the allocator existed. Seeding from cohort_files
+        # alone re-issued such a dangling id on upgrade (audit H1, P1).
+        highest = 0
+        for statement in (
+            "SELECT COALESCE(MAX(id), 0) FROM cohort_files",
+            "SELECT COALESCE(MAX(file_id), 0) FROM cohort_samples",
+            "SELECT COALESCE(MAX(file_id), 0) FROM prediction_observations",
+            "SELECT COALESCE(MAX(cohort_file_id), 0) FROM library_datasets",
+        ):
+            try:
+                value = connection.execute(statement).fetchone()[0]
+            except sqlite3.OperationalError:
+                continue  # table or column absent in this database
+            try:
+                highest = max(highest, int(value or 0))
+            except (TypeError, ValueError):
+                continue
+        stored = connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'next_file_id'"
+        ).fetchone()
+        try:
+            current = int(stored[0]) if stored else 0
+        except (TypeError, ValueError):
+            current = 0
+        connection.execute(
+            "INSERT OR REPLACE INTO cohort_meta(key, value) VALUES ('next_file_id', ?)",
+            (str(max(current, int(highest) + 1)),),
+        )
+
+    @classmethod
+    def _allocate_file_id(cls, connection: sqlite3.Connection) -> int:
+        """Hand out a cohort_files id that no earlier row ever carried.
+
+        SQLite reuses the highest rowid after the last row is deleted, and a
+        DROP/recreate resets AUTOINCREMENT's sqlite_sequence as well. Library
+        datasets store the file id as their linkage key, so a reused id would
+        silently re-bind a removed dataset to whatever file received the id
+        next. cohort_meta is never dropped and the counter only moves up.
+        """
+        cls._advance_file_id_allocator(connection)
+        allocated = int(connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'next_file_id'"
+        ).fetchone()[0])
+        connection.execute(
+            "UPDATE cohort_meta SET value = ? WHERE key = 'next_file_id'",
+            (str(allocated + 1),),
+        )
+        return allocated
 
     @staticmethod
     def _prediction_json(value: dict | None, label: str) -> str:
@@ -3408,7 +4056,7 @@ class CohortStore:
                 conditions.append(f"{column} = ?")
                 parameters.append(value)
         where = " WHERE " + " AND ".join(conditions) if conditions else ""
-        with self._session() as connection:
+        with self._read_session() as connection:
             rows = connection.execute(
                 self._prediction_select()
                 + where
@@ -3503,7 +4151,7 @@ class CohortStore:
             JOIN prediction_values AS typed_value
               ON typed_value.observation_id = observation.id
         """
-        with self._session() as connection:
+        with self._read_session() as connection:
             rows = connection.execute(
                 select
                 + " WHERE " + " AND ".join(conditions)
@@ -3517,15 +4165,17 @@ class CohortStore:
             row = connection.execute(
                 """
                 SELECT
-                  (SELECT COUNT(*) FROM cohort_files) AS files,
+                  (SELECT COUNT(*) FROM cohort_files WHERE import_state = 'ready') AS files,
                   (SELECT COUNT(*) FROM cohort_samples) AS sample_entries,
                   (SELECT COUNT(DISTINCT name) FROM cohort_samples) AS individuals,
                   (SELECT COUNT(*) FROM cohort_variants) AS variants,
                   (SELECT COUNT(*) FROM cohort_genotypes) AS carrier_observations,
                   (SELECT COUNT(*) FROM cohort_files
-                   WHERE import_profile = 'full') AS full_files,
+                   WHERE import_profile = 'full' AND import_state = 'ready') AS full_files,
                   (SELECT COUNT(*) FROM cohort_files
-                   WHERE import_profile = 'prefiltered') AS prefiltered_files
+                   WHERE import_profile = 'prefiltered' AND import_state = 'ready') AS prefiltered_files,
+                  (SELECT COUNT(*) FROM cohort_files
+                   WHERE import_state = 'merging') AS merging_files
                 """
             ).fetchone()
         return dict(row)
@@ -3551,6 +4201,7 @@ class CohortStore:
                        analysis_scope,import_profile,profile_json,
                        COUNT(*) AS files, SUM(sample_count) AS sample_entries
                 FROM cohort_files
+                WHERE import_state = 'ready'
                 GROUP BY 1,2,3,4,5
                 ORDER BY sample_entries DESC,profile_label
                 """
@@ -3571,7 +4222,7 @@ class CohortStore:
         cleaned = query.strip()
         where = "WHERE s.name LIKE ? COLLATE NOCASE" if cleaned else ""
         parameters: tuple = (f"%{cleaned}%", limit) if cleaned else (limit,)
-        with self._session() as connection:
+        with self._read_session() as connection:
             rows = connection.execute(
                 f"""
                 SELECT s.id, s.name, s.file_id, f.path AS source_path,
@@ -4188,16 +4839,18 @@ class CohortStore:
             connection.execute("BEGIN IMMEDIATE")
             if existing:
                 connection.execute("DELETE FROM cohort_files WHERE id = ?", (existing["id"],))
-            file_id = connection.execute(
+            file_id = self._allocate_file_id(connection)
+            connection.execute(
                 """
                 INSERT INTO cohort_files(
-                  path, size_bytes, mtime_ns, imported_at, assembly,
+                  id, path, size_bytes, mtime_ns, imported_at, assembly,
                   lifted_from_assembly, import_profile, analysis_scope,
                   content_probe, content_sha256
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
+                    file_id,
                     str(path), stat.st_size, stat.st_mtime_ns, utc_now(),
                     "GRCh38",
                     "GRCh37" if assembly["lifted_from_grch37"] else None,
@@ -4205,7 +4858,7 @@ class CohortStore:
                     analysis_scope,
                     content_probe, content_sha,
                 ),
-            ).lastrowid
+            )
 
             samples: list[str] = []
             sample_ids: list[int] = []
@@ -4381,7 +5034,7 @@ class CohortStore:
                                       )
                                     """,
                                     (
-                                        key, chrom, pos, ref.upper(), alt.upper(),
+                                        key, chrom, *minimal_representation(pos, ref, alt),
                                         None if rsid == "." else rsid,
                                         original["assembly"] or None,
                                         original["chrom"] or None,
@@ -4456,7 +5109,8 @@ class CohortStore:
                                     """
                                     INSERT INTO cohort_annotations(
                                       variant_id, gene, gene_id, transcript, hgvsc, hgvsp,
-                                      consequence, impact, gnomad_popmax, cadd, alpha_missense,
+                                      consequence, impact, gnomad_popmax, gnomad_popmax_source,
+                                      cadd, alpha_missense,
                                       spliceai, promoterai, logofunc_prediction,
                                       logofunc_neutral, logofunc_gof, logofunc_lof,
                                       logofunc_allele_available, logofunc_source_transcript,
@@ -4468,7 +5122,8 @@ class CohortStore:
                                       repeat_masker, segdup
                                     ) VALUES (
                                       :variant_id, :gene, :gene_id, :transcript, :hgvsc, :hgvsp,
-                                      :consequence, :impact, :gnomad_popmax, :cadd, :alpha_missense,
+                                      :consequence, :impact, :gnomad_popmax, :gnomad_popmax_source,
+                                      :cadd, :alpha_missense,
                                       :spliceai, :promoterai, :logofunc_prediction,
                                       :logofunc_neutral, :logofunc_gof, :logofunc_lof,
                                       :logofunc_allele_available, :logofunc_source_transcript,
@@ -4484,6 +5139,9 @@ class CohortStore:
                                     ) DO UPDATE SET
                                       impact=excluded.impact,
                                       gnomad_popmax=COALESCE(excluded.gnomad_popmax, cohort_annotations.gnomad_popmax),
+                                      gnomad_popmax_source=CASE WHEN excluded.gnomad_popmax IS NOT NULL
+                                        THEN excluded.gnomad_popmax_source
+                                        ELSE cohort_annotations.gnomad_popmax_source END,
                                       cadd=COALESCE(excluded.cadd, cohort_annotations.cadd),
                                       alpha_missense=COALESCE(excluded.alpha_missense, cohort_annotations.alpha_missense),
                                       spliceai=COALESCE(excluded.spliceai, cohort_annotations.spliceai),
@@ -4624,6 +5282,9 @@ class CohortStore:
                     raise ValueError("file does not begin with a VCF fileformat header")
                 if not csq_fields:
                     raise ValueError("VEP CSQ Format header was not found")
+                # Same rule as the staged merge: a withheld PromoterAI score
+                # must not survive behind the annotation upsert's COALESCE.
+                self._reconcile_withheld_promoterai(connection)
 
                 variant_count = connection.execute(
                     """
@@ -4987,6 +5648,7 @@ class CohortStore:
         header: VcfHeader,
         stage_path: Path,
         progress: Callable[[dict], None] | None,
+        sample_indices: tuple[int, ...] | None = None,
     ) -> dict:
         opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
         with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
@@ -5000,6 +5662,7 @@ class CohortStore:
                 ),
                 processed_bytes=lambda: self._compressed_position(handle, path),
                 batch_records=self.stage_batch_records,
+                sample_indices=sample_indices,
             )
 
     def _parallel_stages(
@@ -5008,13 +5671,16 @@ class CohortStore:
         header: VcfHeader,
         stage_root: Path,
         progress: Callable[[dict], None] | None,
+        sample_indices: tuple[int, ...] | None = None,
     ) -> tuple[list[dict], int]:
         assert self.hts_backend is not None
         contigs = self.hts_backend.list_contigs(path)
         reader_count = min(self.index_readers, len(contigs))
         if reader_count < 2:
             stage = stage_root / "reader-0.sqlite3"
-            return [self._serial_stage(path, header, stage, progress)], 1
+            return [self._serial_stage(
+                path, header, stage, progress, sample_indices=sample_indices
+            )], 1
         groups = [contigs[index::reader_count] for index in range(reader_count)]
         file_size = path.stat().st_size
         results: list[dict] = []
@@ -5029,6 +5695,7 @@ class CohortStore:
                     header,
                     stage_root / f"reader-{index}.sqlite3",
                     self.stage_batch_records,
+                    sample_indices,
                 )
                 for index in range(reader_count)
             ]
@@ -5073,21 +5740,13 @@ class CohortStore:
         *,
         content_sha256: str = "",
         content_probe: str = "",
+        key_range: tuple[str, str] | None = None,
     ) -> None:
-        resource_ids = [
-            row[0] for row in connection.execute(
-                f"SELECT DISTINCT resource_id FROM {alias}.stage_prediction_observations"
-            )
-        ]
-        if not resource_ids:
-            return
-        self._ensure_embedded_predictor_releases(
-            connection,
-            resource_ids,
-            source_file_id=file_id,
-            content_sha256=content_sha256,
-            content_probe=content_probe,
-        )
+        """Merge one stage's staged observations/values for the variants in
+        ``key_range`` ((low, high]; the whole stage when None). Predictor
+        releases must already exist (``_ensure_embedded_predictor_releases``)
+        and the stage's samples must be mapped in TEMP merge_samples."""
+        low, high = key_range if key_range is not None else ("", "\uffff")
         release_version, checksum_algorithm, checksum = (
             _embedded_vcf_release_identity(
                 file_id, content_sha256, content_probe
@@ -5130,9 +5789,10 @@ class CohortStore:
              AND COALESCE(annotation.hgvsc, '') = staged.annotation_hgvsc
              AND COALESCE(annotation.hgvsp, '') = staged.annotation_hgvsp
              AND annotation.consequence = staged.annotation_consequence
-            LEFT JOIN cohort_samples AS sample
-              ON sample.file_id = ? AND sample.name = staged.sample_name
-            WHERE (staged.bind_annotation = 0 OR annotation.id IS NOT NULL)
+            LEFT JOIN merge_samples AS sample
+              ON sample.name = staged.sample_name
+            WHERE staged.variant_key > ? AND staged.variant_key <= ?
+              AND (staged.bind_annotation = 0 OR annotation.id IS NOT NULL)
               AND (staged.sample_name = '' OR sample.id IS NOT NULL)
             ON CONFLICT(
                 release_id, predictor_id, variant_id,
@@ -5166,7 +5826,7 @@ class CohortStore:
             (
                 int(file_id), source_identity, now, now,
                 EMBEDDED_VCF_PROVIDER, release_version,
-                checksum_algorithm, checksum, int(file_id),
+                checksum_algorithm, checksum, low, high,
             ),
         )
         connection.execute(
@@ -5194,7 +5854,7 @@ class CohortStore:
              AND observation.target_scope = staged.target_scope
              AND observation.target_key = staged.target_key
              AND observation.source_identity = ?
-            WHERE 1
+            WHERE staged.variant_key > ? AND staged.variant_key <= ?
             ON CONFLICT(observation_id, metric) DO UPDATE SET
                 value_type=excluded.value_type,
                 numeric_value=excluded.numeric_value,
@@ -5204,7 +5864,7 @@ class CohortStore:
             """,
             (
                 EMBEDDED_VCF_PROVIDER, release_version,
-                checksum_algorithm, checksum, source_identity,
+                checksum_algorithm, checksum, source_identity, low, high,
             ),
         )
 
@@ -5363,6 +6023,330 @@ class CohortStore:
                 typed_rows,
             )
 
+    # --- chunked merge (audit M27) ------------------------------------------
+    @staticmethod
+    @contextmanager
+    def _write_transaction(connection: sqlite3.Connection):
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            yield
+            connection.execute("COMMIT")
+        except BaseException:
+            try:
+                connection.execute("ROLLBACK")
+            except sqlite3.Error:
+                pass
+            raise
+
+    @staticmethod
+    def _stage_key_ranges(
+        connection: sqlite3.Connection, alias: str, chunk: int | None = None
+    ) -> list[tuple[str, str]]:
+        """Split a stage's variant keys into (low exclusive, high inclusive]
+        ranges of at most ``chunk`` variants, in primary-key order. Every
+        stage table is keyed by variant_key first, so one range addresses the
+        same variants in all of them."""
+        chunk = int(chunk or MERGE_CHUNK_VARIANTS)
+        ranges: list[tuple[str, str]] = []
+        low = ""
+        while True:
+            boundary = connection.execute(
+                f"SELECT variant_key FROM {alias}.stage_variants WHERE variant_key > ? "
+                "ORDER BY variant_key LIMIT 1 OFFSET ?",
+                (low, max(0, chunk - 1)),
+            ).fetchone()
+            if boundary is None:
+                tail = connection.execute(
+                    f"SELECT MAX(variant_key) FROM {alias}.stage_variants WHERE variant_key > ?",
+                    (low,),
+                ).fetchone()[0]
+                if tail is not None:
+                    ranges.append((low, tail))
+                break
+            ranges.append((low, boundary[0]))
+            low = boundary[0]
+        return ranges
+
+    @staticmethod
+    def _yield_to_waiting_writers() -> None:
+        """Called between bounded transactions: give a waiting writer a
+        window it can actually take (see MERGE_GAP_SECONDS)."""
+        if WRITE_COORDINATOR.others_active():
+            time.sleep(MERGE_YIELD_SECONDS)
+        else:
+            time.sleep(MERGE_GAP_SECONDS)
+
+    def _delete_in_chunks(
+        self, connection: sqlite3.Connection, table: str, condition: str,
+        parameters: tuple = (), chunk: int = MERGE_DELETE_CHUNK_ROWS,
+    ) -> int:
+        """DELETE rows matching ``condition`` in bounded transactions so a
+        large removal never holds the write lock for its full duration."""
+        removed = 0
+        while True:
+            with self._write_transaction(connection):
+                cursor = connection.execute(
+                    f"DELETE FROM {table} WHERE rowid IN ("
+                    f"SELECT rowid FROM {table} WHERE {condition} LIMIT {int(chunk)})",
+                    parameters,
+                )
+                count = int(cursor.rowcount or 0)
+            removed += count
+            if count < chunk:
+                return removed
+            self._yield_to_waiting_writers()
+
+    @staticmethod
+    def _advance_sample_id_allocator(connection: sqlite3.Connection) -> None:
+        highest = 0
+        for statement in (
+            "SELECT COALESCE(MAX(id), 0) FROM cohort_samples",
+            "SELECT COALESCE(MAX(sample_id), 0) FROM cohort_genotypes",
+            "SELECT COALESCE(MAX(sample_id), 0) FROM prediction_observations",
+        ):
+            try:
+                value = connection.execute(statement).fetchone()[0]
+            except sqlite3.OperationalError:
+                continue
+            try:
+                highest = max(highest, int(value or 0))
+            except (TypeError, ValueError):
+                continue
+        stored = connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'next_sample_id'"
+        ).fetchone()
+        try:
+            current = int(stored[0]) if stored else 0
+        except (TypeError, ValueError):
+            current = 0
+        connection.execute(
+            "INSERT OR REPLACE INTO cohort_meta(key, value) VALUES ('next_sample_id', ?)",
+            (str(max(current, highest + 1)),),
+        )
+
+    @classmethod
+    def _allocate_sample_ids(cls, connection: sqlite3.Connection, count: int) -> list[int]:
+        """Reserve ``count`` cohort_samples ids inside the caller's write
+        transaction. The rows themselves are inserted only when the file is
+        published, so genotypes can be written in earlier chunks against ids
+        no reader can join yet."""
+        cls._advance_sample_id_allocator(connection)
+        first = int(connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'next_sample_id'"
+        ).fetchone()[0])
+        connection.execute(
+            "UPDATE cohort_meta SET value = ? WHERE key = 'next_sample_id'",
+            (str(first + count),),
+        )
+        return list(range(first, first + count))
+
+    # --- merge journal (audit M27 follow-up) --------------------------------
+    @staticmethod
+    def _journal_pre_images(
+        connection: sqlite3.Connection, journal: str, query: str,
+        parameters: tuple = (),
+    ) -> None:
+        """Record the current values of the journal's table rows selected by
+        ``query`` (a FROM ... WHERE ... clause in which that table is
+        aliased ``target``) unless the journal already holds them: the first
+        pre-image of a row is the one that predates the merge."""
+        columns = MERGE_JOURNALS[journal][1]
+        column_list = ", ".join(columns)
+        selected = ", ".join(f"target.{column}" for column in columns)
+        connection.execute(
+            f"INSERT OR IGNORE INTO {journal}(id, inserted, {column_list}) "
+            f"SELECT target.id, 0, {selected} {query}",
+            parameters,
+        )
+
+    @staticmethod
+    def _journal_floor(connection: sqlite3.Connection, journal: str) -> int:
+        """Highest id in the journal's table right now; rows above it after
+        an upsert in the same transaction are the ones it inserted (rowids
+        are assigned above the current maximum)."""
+        table = MERGE_JOURNALS[journal][0]
+        return int(connection.execute(
+            f"SELECT COALESCE(MAX(id), 0) FROM {table}"
+        ).fetchone()[0])
+
+    @staticmethod
+    def _journal_inserted(connection: sqlite3.Connection, journal: str, floor: int) -> None:
+        table = MERGE_JOURNALS[journal][0]
+        connection.execute(
+            f"INSERT OR IGNORE INTO {journal}(id, inserted) "
+            f"SELECT id, 1 FROM {table} WHERE id > ?",
+            (floor,),
+        )
+
+    @staticmethod
+    def _clear_merge_journal(connection: sqlite3.Connection) -> None:
+        for journal in MERGE_JOURNALS:
+            connection.execute(f"DELETE FROM {journal}")
+
+    def _rollback_merge_journal(self, connection: sqlite3.Connection) -> dict:
+        """Put every shared row a failed merge touched back the way it was:
+        pre-images are restored and inserted rows removed, in bounded
+        transactions, children first so cascades never outrun a restore.
+        Rows the merge wrote against its reserved sample ids and its
+        unpublished file row are left to ``_finish_merge_cleanup``."""
+        restored: dict[str, int] = {}
+        removed: dict[str, int] = {}
+        connection.execute("PRAGMA foreign_keys=OFF")
+        for journal in (
+            "merge_journal_values", "merge_journal_observations",
+            "merge_journal_annotations", "merge_journal_variants",
+        ):
+            table, columns = MERGE_JOURNALS[journal]
+            assignments = ", ".join(
+                f"{column} = (SELECT journal.{column} FROM {journal} AS journal "
+                f"WHERE journal.id = {table}.id)"
+                for column in columns
+            )
+            restored[table] = 0
+            low = 0
+            while True:
+                boundary = connection.execute(
+                    f"SELECT id FROM {journal} WHERE inserted = 0 AND id > ? "
+                    "ORDER BY id LIMIT 1 OFFSET ?",
+                    (low, MERGE_DELETE_CHUNK_ROWS - 1),
+                ).fetchone()
+                high = int(boundary[0]) if boundary else None
+                with self._write_transaction(connection):
+                    cursor = connection.execute(
+                        f"UPDATE {table} SET {assignments} WHERE id IN ("
+                        f"SELECT id FROM {journal} WHERE inserted = 0 AND id > ?"
+                        + (" AND id <= ?" if high is not None else "") + ")",
+                        (low, high) if high is not None else (low,),
+                    )
+                    restored[table] += int(cursor.rowcount or 0)
+                if high is None:
+                    break
+                low = high
+                self._yield_to_waiting_writers()
+        # Inserted rows go with cascades on, so an inserted variant takes its
+        # annotations, genotypes and observations along.
+        connection.execute("PRAGMA foreign_keys=ON")
+        for journal in (
+            "merge_journal_values", "merge_journal_observations",
+            "merge_journal_annotations", "merge_journal_variants",
+        ):
+            table = MERGE_JOURNALS[journal][0]
+            removed[table] = self._delete_in_chunks(
+                connection, table,
+                f"id IN (SELECT id FROM {journal} WHERE inserted = 1)",
+            )
+        with self._write_transaction(connection):
+            self._clear_merge_journal(connection)
+        return {"restored": restored, "removed": removed}
+
+    @staticmethod
+    def _pending_merge_state(connection: sqlite3.Connection) -> tuple[str, int]:
+        """('', 0) when no merge is pending; otherwise ('merging' | 'published',
+        file_id). A marker written by the earlier build carried the bare
+        file id; it is read as 'published' unless a merging file row shows
+        the merge never got that far."""
+        pending = connection.execute(
+            "SELECT value FROM cohort_meta WHERE key = 'merge_cleanup_pending'"
+        ).fetchone()
+        if not pending:
+            return "", 0
+        value = str(pending[0])
+        state, _, file_id = value.partition(":")
+        if not file_id:
+            state, file_id = "published", value
+        try:
+            return (state if state in ("merging", "published") else "published"), int(file_id)
+        except ValueError:
+            return "published", 0
+
+    def _recover_interrupted_merges(self) -> dict:
+        """Undo a chunked merge that did not reach publication — the shared
+        rows it updated go back to their pre-images, the rows it inserted
+        are removed, the previous cohort state stands — and finish the
+        deferred cleanup of a published one (crash, kill, power loss)."""
+        connection = self._connect()
+        connection.isolation_level = None
+        try:
+            merging = [
+                int(row[0]) for row in connection.execute(
+                    "SELECT id FROM cohort_files WHERE import_state = 'merging'"
+                )
+            ]
+            state, _file_id = self._pending_merge_state(connection)
+            if not merging and not state:
+                return {"merging_files_removed": 0, "cleanup_run": False, "rolled_back": False}
+            unpublished = bool(merging) or state == "merging"
+            connection.execute("PRAGMA foreign_keys=ON")
+            with self._write_transaction(connection):
+                # Preserve the read guard even for older interrupted imports
+                # that had a merging file but no durable cleanup marker.
+                if not state:
+                    connection.execute(
+                        "INSERT OR REPLACE INTO cohort_meta(key, value) VALUES "
+                        "('merge_cleanup_pending', 'merging:0')"
+                    )
+                # Cascades remove the file's predictor releases/observations;
+                # a merging file never had sample rows.
+                connection.execute("DELETE FROM cohort_files WHERE import_state = 'merging'")
+            if unpublished:
+                self._rollback_merge_journal(connection)
+            self._finish_merge_cleanup(connection)
+            if not unpublished:
+                # Publication may have succeeded just before a crash, leaving
+                # post-replacement evidence reconciliation unfinished. Keep
+                # the marker until that work is done, in bounded transactions.
+                low = 0
+                while True:
+                    ids = connection.execute(
+                        "SELECT id FROM cohort_annotations WHERE id > ? "
+                        "ORDER BY id LIMIT ?", (low, MERGE_CHUNK_VARIANTS),
+                    ).fetchall()
+                    if not ids:
+                        break
+                    high = int(ids[-1][0])
+                    with self._write_transaction(connection):
+                        self._reconcile_withheld_promoterai(
+                            connection, annotation_id_range=(low, high)
+                        )
+                    low = high
+                    self._yield_to_waiting_writers()
+            with self._write_transaction(connection):
+                connection.execute("DELETE FROM cohort_meta WHERE key = 'merge_cleanup_pending'")
+                self._clear_merge_journal(connection)
+            return {
+                "merging_files_removed": len(merging), "cleanup_run": True,
+                "rolled_back": unpublished,
+            }
+        finally:
+            connection.close()
+
+    def _finish_merge_cleanup(self, connection: sqlite3.Connection) -> None:
+        """Remove rows that only ever referenced samples/files that are gone:
+        genotypes and observations written for an unpublished merge, and
+        those of a file replaced at publication. Then drop variants no
+        carrier references. Bounded transactions throughout."""
+        connection.execute("PRAGMA foreign_keys=OFF")
+        self._delete_in_chunks(
+            connection, "cohort_genotypes",
+            "sample_id NOT IN (SELECT id FROM cohort_samples)",
+        )
+        self._delete_in_chunks(
+            connection, "prediction_observations",
+            "(source_file_id IS NOT NULL AND source_file_id NOT IN (SELECT id FROM cohort_files))"
+            " OR (sample_id IS NOT NULL AND sample_id NOT IN (SELECT id FROM cohort_samples))",
+        )
+        self._delete_in_chunks(
+            connection, "prediction_values",
+            "observation_id NOT IN (SELECT id FROM prediction_observations)",
+        )
+        connection.execute("PRAGMA foreign_keys=ON")
+        # Cascades take each orphan variant's annotations with it.
+        self._delete_in_chunks(
+            connection, "cohort_variants",
+            "NOT EXISTS (SELECT 1 FROM cohort_genotypes AS g WHERE g.variant_id = cohort_variants.id)",
+            chunk=10_000,
+        )
+
     def _merge_stages(
         self,
         *,
@@ -5380,235 +6364,261 @@ class CohortStore:
         prefilter_metadata: dict,
         content_probe: str = "",
         content_sha256: str = "",
+        sample_names: tuple[str, ...] | None = None,
     ) -> tuple[int, int]:
         stat = source_path.stat()
         aliases = [f"stage_{index}" for index in range(len(stages))]
+        indexed_samples = tuple(sample_names) if sample_names else header.samples
+        # A sample-restricted import of a file that is ALREADY indexed under
+        # the same profile and identical bytes appends/replaces only the
+        # addressed samples. Replacing the whole file row here is what made a
+        # sibling's full-WGS reindex drop every co-resident sample.
+        append_to_existing = bool(
+            sample_names and existing is not None
+            and existing["import_profile"] == import_profile
+            and existing["analysis_scope"] == analysis_scope
+            and existing["prefilter_options"] == prefilter_options_json
+            and existing["size_bytes"] == stat.st_size
+            and existing["mtime_ns"] == stat.st_mtime_ns
+            and (
+                (content_sha256 and existing["content_sha256"] == content_sha256)
+                or (
+                    not content_sha256 and content_probe
+                    and existing["content_probe"] == content_probe
+                )
+            )
+        )
         connection = self._connect()
+        connection.isolation_level = None  # explicit, bounded transactions
+        published = False
+        file_id = 0
+        rebuild_secondary_indexes = False
         try:
             for alias, stage in zip(aliases, stages):
                 connection.execute(
                     f"ATTACH DATABASE ? AS {alias}", (stage["stage_path"],)
                 )
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute("PRAGMA defer_foreign_keys=ON")
-            other_file_count = connection.execute(
-                "SELECT COUNT(*) FROM cohort_files WHERE path != ?",
-                (str(source_path),),
-            ).fetchone()[0]
-            rebuild_secondary_indexes = other_file_count == 0
-            if rebuild_secondary_indexes:
-                for index_name in COHORT_SECONDARY_INDEXES:
-                    connection.execute(f"DROP INDEX IF EXISTS {index_name}")
-            if existing:
-                connection.execute(
-                    "DELETE FROM cohort_files WHERE id = ?", (existing["id"],)
-                )
-            file_id = connection.execute(
-                """
-                INSERT INTO cohort_files(
-                  path, size_bytes, mtime_ns, imported_at, assembly,
-                  lifted_from_assembly, prepared_path, index_path,
-                  import_mode, reader_count, preparation_warning,
-                  import_profile, analysis_scope, prefilter_options,
-                  prefilter_records_scanned, prefilter_records_retained,
-                  content_probe, content_sha256
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(source_path), stat.st_size, stat.st_mtime_ns, utc_now(),
-                    "GRCh38",
-                    "GRCh37" if assembly["lifted_from_grch37"] else None,
-                    str(prepared.path),
-                    str(prepared.index_path) if prepared.index_path else None,
-                    import_mode, reader_count, prepared.warning,
-                    import_profile, analysis_scope, prefilter_options_json,
-                    int(prefilter_metadata.get("records_scanned", 0) or 0),
-                    int(prefilter_metadata.get("records_retained", 0) or 0),
-                    content_probe, content_sha256,
-                ),
-            ).lastrowid
-            connection.executemany(
-                "INSERT INTO cohort_samples(file_id, name) VALUES (?, ?)",
-                ((file_id, sample) for sample in header.samples),
+            connection.execute(
+                "CREATE TEMP TABLE merge_samples(name TEXT PRIMARY KEY, id INTEGER NOT NULL)"
             )
 
-            for alias in aliases:
-                connection.execute(f"""
-                    INSERT INTO cohort_variants(
-                      variant_key, chrom, pos, ref, alt, rsid,
-                      original_assembly, original_chrom, original_pos,
-                      original_ref, original_alt, unscored_indel_reasons
+            # ---- phase 0: bookkeeping (short transaction, cascades on) ----
+            connection.execute("PRAGMA foreign_keys=ON")
+            old_sample_ids: list[int] = []
+            with self._write_transaction(connection):
+                other_file_count = connection.execute(
+                    "SELECT COUNT(*) FROM cohort_files WHERE path != ? AND import_state = 'ready'",
+                    (str(source_path),),
+                ).fetchone()[0]
+                rebuild_secondary_indexes = other_file_count == 0 and not append_to_existing
+                if rebuild_secondary_indexes:
+                    for index_name in COHORT_SECONDARY_INDEXES:
+                        connection.execute(f"DROP INDEX IF EXISTS {index_name}")
+                if append_to_existing:
+                    file_id = int(existing["id"])
+                    placeholders = ",".join("?" for _ in indexed_samples)
+                    old_sample_ids = [
+                        int(row[0]) for row in connection.execute(
+                            f"SELECT id FROM cohort_samples WHERE file_id = ? AND name IN ({placeholders})",
+                            (file_id, *indexed_samples),
+                        )
+                    ]
+                else:
+                    file_id = self._allocate_file_id(connection)
+                    connection.execute(
+                        """
+                        INSERT INTO cohort_files(
+                          id, path, size_bytes, mtime_ns, imported_at, assembly,
+                          lifted_from_assembly, prepared_path, index_path,
+                          import_mode, reader_count, preparation_warning,
+                          import_profile, analysis_scope, prefilter_options,
+                          prefilter_records_scanned, prefilter_records_retained,
+                          content_probe, content_sha256, import_state
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'merging')
+                        """,
+                        (
+                            file_id,
+                            # The unique path column still belongs to the file
+                            # being replaced until publication; the real path
+                            # is set in the publish transaction.
+                            self._merging_path_marker(source_path, file_id),
+                            stat.st_size, stat.st_mtime_ns, utc_now(),
+                            "GRCh38",
+                            "GRCh37" if assembly["lifted_from_grch37"] else None,
+                            str(prepared.path),
+                            str(prepared.index_path) if prepared.index_path else None,
+                            import_mode, reader_count, prepared.warning,
+                            import_profile, analysis_scope, prefilter_options_json,
+                            int(prefilter_metadata.get("records_scanned", 0) or 0),
+                            int(prefilter_metadata.get("records_retained", 0) or 0),
+                            content_probe, content_sha256,
+                        ),
                     )
-                    SELECT variant_key, chrom, pos, ref, alt, rsid,
-                           original_assembly, original_chrom, original_pos,
-                           original_ref, original_alt, unscored_indel_reasons
-                    FROM {alias}.stage_variants WHERE 1
-                    ON CONFLICT(variant_key) DO UPDATE SET
-                      rsid=CASE
-                        WHEN excluded.rsid IS NOT NULL AND excluded.rsid != '.'
-                        THEN excluded.rsid ELSE cohort_variants.rsid END,
-                      original_assembly=COALESCE(
-                        cohort_variants.original_assembly, excluded.original_assembly),
-                      original_chrom=COALESCE(
-                        cohort_variants.original_chrom, excluded.original_chrom),
-                      original_pos=COALESCE(
-                        cohort_variants.original_pos, excluded.original_pos),
-                      original_ref=COALESCE(
-                        cohort_variants.original_ref, excluded.original_ref),
-                      original_alt=COALESCE(
-                        cohort_variants.original_alt, excluded.original_alt),
-                      unscored_indel_reasons=COALESCE(
-                        NULLIF(excluded.unscored_indel_reasons, ''),
-                        cohort_variants.unscored_indel_reasons)
-                """)
-                connection.execute(f"""
-                    INSERT INTO cohort_annotations(
-                      variant_id, gene, gene_id, transcript, hgvsc, hgvsp,
-                      consequence, impact, gnomad_popmax, cadd, alpha_missense,
-                      spliceai, promoterai, logofunc_prediction, logofunc_neutral,
-                      logofunc_gof, logofunc_lof, logofunc_allele_available,
-                      logofunc_source_transcript, logofunc_source_hgvsp,
-                      logofunc_match, clinvar, clinvar_conflicting, loftee, loftee_50bp,
-                      loftee_50bp_original, loftee_50bp_changed, ptc_distance,
-                      ptc_calc_status, mane, picked, repeat_masker, segdup
-                    )
-                    SELECT variant.id, annotation.gene, annotation.gene_id,
-                           annotation.transcript, annotation.hgvsc, annotation.hgvsp,
-                           annotation.consequence, annotation.impact,
-                           annotation.gnomad_popmax, annotation.cadd,
-                           annotation.alpha_missense, annotation.spliceai,
-                           annotation.promoterai, annotation.logofunc_prediction,
-                           annotation.logofunc_neutral, annotation.logofunc_gof,
-                           annotation.logofunc_lof, annotation.logofunc_allele_available,
-                           annotation.logofunc_source_transcript,
-                           annotation.logofunc_source_hgvsp, annotation.logofunc_match,
-                           annotation.clinvar, annotation.clinvar_conflicting,
-                           annotation.loftee, annotation.loftee_50bp,
-                           annotation.loftee_50bp_original,
-                           annotation.loftee_50bp_changed, annotation.ptc_distance,
-                           annotation.ptc_calc_status, annotation.mane,
-                           annotation.picked, annotation.repeat_masker,
-                           annotation.segdup
-                    FROM {alias}.stage_annotations AS annotation
-                    JOIN cohort_variants AS variant
-                      ON variant.variant_key = annotation.variant_key
-                    WHERE 1
-                    ON CONFLICT(
-                      variant_id, gene, transcript, hgvsc, hgvsp, consequence
-                    ) DO UPDATE SET
-                      impact=excluded.impact,
-                      gnomad_popmax=COALESCE(excluded.gnomad_popmax, cohort_annotations.gnomad_popmax),
-                      cadd=COALESCE(excluded.cadd, cohort_annotations.cadd),
-                      alpha_missense=COALESCE(excluded.alpha_missense, cohort_annotations.alpha_missense),
-                      spliceai=COALESCE(excluded.spliceai, cohort_annotations.spliceai),
-                      promoterai=COALESCE(excluded.promoterai, cohort_annotations.promoterai),
-                      logofunc_prediction=COALESCE(NULLIF(excluded.logofunc_prediction, ''), cohort_annotations.logofunc_prediction),
-                      logofunc_neutral=COALESCE(excluded.logofunc_neutral, cohort_annotations.logofunc_neutral),
-                      logofunc_gof=COALESCE(excluded.logofunc_gof, cohort_annotations.logofunc_gof),
-                      logofunc_lof=COALESCE(excluded.logofunc_lof, cohort_annotations.logofunc_lof),
-                      logofunc_allele_available=MAX(excluded.logofunc_allele_available, cohort_annotations.logofunc_allele_available),
-                      logofunc_source_transcript=COALESCE(NULLIF(excluded.logofunc_source_transcript, ''), cohort_annotations.logofunc_source_transcript),
-                      logofunc_source_hgvsp=COALESCE(NULLIF(excluded.logofunc_source_hgvsp, ''), cohort_annotations.logofunc_source_hgvsp),
-                      logofunc_match=COALESCE(NULLIF(excluded.logofunc_match, ''), cohort_annotations.logofunc_match),
-                      clinvar=COALESCE(NULLIF(excluded.clinvar, ''), cohort_annotations.clinvar),
-                      clinvar_conflicting=COALESCE(NULLIF(excluded.clinvar_conflicting, ''), cohort_annotations.clinvar_conflicting),
-                      loftee=COALESCE(NULLIF(excluded.loftee, ''), cohort_annotations.loftee),
-                      loftee_50bp=COALESCE(NULLIF(excluded.loftee_50bp, ''), cohort_annotations.loftee_50bp),
-                      loftee_50bp_original=COALESCE(NULLIF(excluded.loftee_50bp_original, ''), cohort_annotations.loftee_50bp_original),
-                      loftee_50bp_changed=MAX(excluded.loftee_50bp_changed, cohort_annotations.loftee_50bp_changed),
-                      ptc_distance=COALESCE(excluded.ptc_distance, cohort_annotations.ptc_distance),
-                      ptc_calc_status=COALESCE(NULLIF(excluded.ptc_calc_status, ''), cohort_annotations.ptc_calc_status),
-                      -- latest import wins (see the reannotation note above)
-                      mane=excluded.mane,
-                      picked=excluded.picked,
-                      repeat_masker=MAX(excluded.repeat_masker, cohort_annotations.repeat_masker),
-                      segdup=MAX(excluded.segdup, cohort_annotations.segdup)
-                """)
-                self._merge_stage_predictions(
-                    connection,
-                    alias,
-                    file_id,
-                    content_sha256=content_sha256,
-                    content_probe=content_probe,
+                sample_ids = self._allocate_sample_ids(connection, len(indexed_samples))
+                connection.executemany(
+                    "INSERT INTO merge_samples(name, id) VALUES (?, ?)",
+                    zip(indexed_samples, sample_ids),
                 )
-                connection.execute(f"""
-                    INSERT INTO cohort_genotypes(
-                      variant_id, sample_id, genotype, zygosity, phased,
-                      dp, gq, allele_balance, qual, haplotype_frame_status,
-                      haplotype_frame_partners, haplotype_protein_change,
-                      haplotype_transcript
-                    )
-                    SELECT variant.id, sample.id, genotype.genotype,
-                           genotype.zygosity, genotype.phased, genotype.dp,
-                           genotype.gq, genotype.allele_balance, genotype.qual,
-                           genotype.haplotype_frame_status,
-                           genotype.haplotype_frame_partners,
-                           genotype.haplotype_protein_change,
-                           genotype.haplotype_transcript
-                    FROM {alias}.stage_genotypes AS genotype
-                    JOIN cohort_variants AS variant
-                      ON variant.variant_key = genotype.variant_key
-                    JOIN cohort_samples AS sample
-                      ON sample.file_id = {int(file_id)}
-                     AND sample.name = genotype.sample_name
-                    WHERE 1
-                    ON CONFLICT(variant_id, sample_id) DO UPDATE SET
-                      genotype=excluded.genotype,
-                      zygosity=excluded.zygosity,
-                      phased=excluded.phased,
-                      dp=excluded.dp,
-                      gq=excluded.gq,
-                      allele_balance=excluded.allele_balance,
-                      qual=excluded.qual,
-                      haplotype_frame_status=excluded.haplotype_frame_status,
-                      haplotype_frame_partners=excluded.haplotype_frame_partners,
-                      haplotype_protein_change=excluded.haplotype_protein_change,
-                      haplotype_transcript=excluded.haplotype_transcript
-                """)
+                # 'merging:<id>' until publication, 'published:<id>' until
+                # the reclamation finished; a database opened with it still
+                # set is recovered first — rolled back or cleaned up.
+                connection.execute(
+                    "INSERT OR REPLACE INTO cohort_meta(key, value) "
+                    "VALUES ('merge_cleanup_pending', ?)", (f"merging:{file_id}",)
+                )
+                self._clear_merge_journal(connection)
+            # Nothing that existed before this merge is removed before
+            # publication: the addressed samples of an append keep their rows
+            # (they are retired in the publish transaction), and every shared
+            # row the chunks update is journaled first, so a failure at any
+            # point leaves the previous cohort state intact (review
+            # follow-up of M27).
 
+            # ---- phase 1: bulk rows, one bounded transaction per chunk ----
+            # Genotypes and observations reference the reserved sample ids
+            # before their rows exist: foreign keys are off on this
+            # connection; publication restores the referential picture.
+            connection.execute("PRAGMA foreign_keys=OFF")
+            for alias in aliases:
+                resource_ids = [
+                    row[0] for row in connection.execute(
+                        f"SELECT DISTINCT resource_id FROM {alias}.stage_prediction_observations"
+                    )
+                ]
+                if resource_ids:
+                    with self._write_transaction(connection):
+                        self._ensure_embedded_predictor_releases(
+                            connection, resource_ids, source_file_id=file_id,
+                            content_sha256=content_sha256, content_probe=content_probe,
+                        )
+                for low, high in self._stage_key_ranges(connection, alias):
+                    with self._write_transaction(connection):
+                        self._merge_stage_chunk(
+                            connection, alias, file_id, low, high,
+                            content_sha256=content_sha256, content_probe=content_probe,
+                            merge_predictions=bool(resource_ids),
+                            # Only an append writes under a file id that
+                            # already owns observations; a new file's
+                            # observations cannot conflict with anything.
+                            journal_predictions=append_to_existing,
+                        )
+                        # A withheld PromoterAI score is a deliberate NULL: the
+                        # COALESCE in the upsert must not carry a stale value.
+                        self._reconcile_withheld_promoterai(connection, alias, (low, high))
+                    self._yield_to_waiting_writers()
+
+            # ---- phase 2: publish (short transaction) ----
             pass_records = sum(stage["pass_records"] for stage in stages)
             excluded_records = sum(stage["excluded_records"] for stage in stages)
             carrier_count = sum(stage["carrier_count"] for stage in stages)
-            variant_count = connection.execute(
-                """
-                SELECT COUNT(DISTINCT genotype.variant_id)
-                FROM cohort_genotypes AS genotype
-                JOIN cohort_samples AS sample ON sample.id = genotype.sample_id
-                WHERE sample.file_id = ?
-                """,
-                (file_id,),
-            ).fetchone()[0]
-            connection.execute(
-                """
-                UPDATE cohort_files SET
-                  sample_count=?, pass_records=?, excluded_records=?,
-                  variant_count=?, carrier_count=?
-                WHERE id=?
-                """,
-                (
-                    len(header.samples), pass_records, excluded_records,
-                    variant_count, carrier_count, file_id,
-                ),
-            )
-            if existing:
+            with self._write_transaction(connection):
+                if append_to_existing and old_sample_ids:
+                    # The addressed samples' previous rows are retired in the
+                    # same transaction their replacements appear in (foreign
+                    # keys are off: their genotypes and observations are
+                    # reclaimed below, after publication).
+                    placeholders = ",".join("?" for _ in old_sample_ids)
+                    connection.execute(
+                        f"DELETE FROM cohort_samples WHERE id IN ({placeholders})",
+                        tuple(old_sample_ids),
+                    )
+                connection.execute(
+                    "INSERT INTO cohort_samples(id, file_id, name) "
+                    "SELECT id, ?, name FROM merge_samples",
+                    (file_id,),
+                )
+                connection.execute(
+                    "UPDATE cohort_meta SET value = ? WHERE key = 'merge_cleanup_pending'",
+                    (f"published:{file_id}",),
+                )
+                if existing is not None and not append_to_existing:
+                    # The replaced file disappears in the same transaction the
+                    # new one appears in; its bulk rows are reclaimed below.
+                    connection.execute(
+                        "DELETE FROM cohort_samples WHERE file_id = ?", (existing["id"],)
+                    )
+                    connection.execute(
+                        "DELETE FROM cohort_files WHERE id = ?", (existing["id"],)
+                    )
+                variant_count = connection.execute(
+                    """
+                    SELECT COUNT(DISTINCT genotype.variant_id)
+                    FROM cohort_genotypes AS genotype
+                    JOIN cohort_samples AS sample ON sample.id = genotype.sample_id
+                    WHERE sample.file_id = ?
+                    """,
+                    (file_id,),
+                ).fetchone()[0]
+                sample_count = connection.execute(
+                    "SELECT COUNT(*) FROM cohort_samples WHERE file_id = ?", (file_id,)
+                ).fetchone()[0]
                 connection.execute(
                     """
-                    DELETE FROM cohort_variants
-                    WHERE id NOT IN (SELECT DISTINCT variant_id FROM cohort_genotypes)
-                    """
+                    UPDATE cohort_files SET
+                      path=?, imported_at=?, import_state='ready',
+                      sample_count=?, pass_records=?, excluded_records=?,
+                      variant_count=?, carrier_count=?
+                    WHERE id=?
+                    """,
+                    (
+                        str(source_path), utc_now(), sample_count,
+                        pass_records, excluded_records,
+                        variant_count, carrier_count, file_id,
+                    ),
                 )
+            published = True
+
+            # ---- phase 3: indexes and deferred reclamation (bounded) ----
+            connection.execute("PRAGMA foreign_keys=ON")
             if rebuild_secondary_indexes:
-                for statement in COHORT_SECONDARY_INDEXES.values():
-                    connection.execute(
-                        statement.replace(
-                            "CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1
+                # Before the reclamation: its cascades (a reclaimed variant's
+                # observations, an annotation's) look rows up through these
+                # indexes, and without them each cascade is a table scan.
+                self._rebuild_secondary_indexes(connection)
+            if existing is not None or append_to_existing:
+                self._finish_merge_cleanup(connection)
+                # The replaced file's observations were still present while
+                # the chunks were reconciled; now that they are gone, a score
+                # they alone backed must be withheld.
+                for alias in aliases:
+                    for low, high in self._stage_key_ranges(connection, alias):
+                        with self._write_transaction(connection):
+                            self._reconcile_withheld_promoterai(connection, alias, (low, high))
+                        self._yield_to_waiting_writers()
+            with self._write_transaction(connection):
+                connection.execute("DELETE FROM cohort_meta WHERE key = 'merge_cleanup_pending'")
+                self._clear_merge_journal(connection)
+        except BaseException:
+            if not published and file_id:
+                # Best effort: restore the previous cohort state — pre-images
+                # back, inserted rows out, the unpublished file gone. What
+                # this cannot finish, _recover_interrupted_merges does on
+                # the next open from the same journal.
+                try:
+                    connection.execute("PRAGMA foreign_keys=ON")
+                    if rebuild_secondary_indexes:
+                        # Dropped in phase 0 for the only file's replacement:
+                        # the rollback's cascades need them, and the
+                        # surviving rows must not stay unindexed.
+                        self._rebuild_secondary_indexes(connection)
+                    with self._write_transaction(connection):
+                        connection.execute(
+                            "DELETE FROM cohort_files WHERE id = ? AND import_state = 'merging'",
+                            (file_id,),
                         )
-                    )
-            connection.commit()
-        except Exception:
-            connection.rollback()
+                    self._rollback_merge_journal(connection)
+                    self._finish_merge_cleanup(connection)
+                    with self._write_transaction(connection):
+                        connection.execute("DELETE FROM cohort_meta WHERE key = 'merge_cleanup_pending'")
+                        self._clear_merge_journal(connection)
+                except sqlite3.Error:
+                    pass
             raise
         finally:
+            try:
+                connection.execute("DROP TABLE IF EXISTS merge_samples")
+            except sqlite3.Error:
+                pass
             for alias in aliases:
                 try:
                     connection.execute(f"DETACH DATABASE {alias}")
@@ -5619,6 +6629,240 @@ class CohortStore:
             checkpoint_connection.execute("PRAGMA wal_checkpoint(PASSIVE)")
         return file_id, variant_count
 
+    def _rebuild_secondary_indexes(self, connection: sqlite3.Connection) -> None:
+        """One index per transaction: each build holds the lock for a
+        fraction of a second on a first file, not all of them."""
+        for statement in COHORT_SECONDARY_INDEXES.values():
+            with self._write_transaction(connection):
+                connection.execute(
+                    statement.replace("CREATE INDEX ", "CREATE INDEX IF NOT EXISTS ", 1)
+                )
+            self._yield_to_waiting_writers()
+
+    @staticmethod
+    def _merging_path_marker(source_path: Path, file_id: int) -> str:
+        # NUL cannot occur in a filesystem path, so the marker never collides
+        # with a real path and a merging row is never matched by path lookups.
+        return f"{source_path}\x00merging:{file_id}"
+
+    def _merge_stage_chunk(
+        self,
+        connection: sqlite3.Connection,
+        alias: str,
+        file_id: int,
+        low: str,
+        high: str,
+        *,
+        content_sha256: str,
+        content_probe: str,
+        merge_predictions: bool,
+        journal_predictions: bool = False,
+    ) -> None:
+        """Upsert one key range of a stage into the cohort tables, journaling
+        the pre-image of every existing row the upserts may change and the
+        id of every row they insert (all inside the caller's transaction)."""
+        key_range = (low, high)
+        # Every journaling query is driven from the chunk's key range of the
+        # stage (CROSS JOIN fixes that order): the work per chunk is
+        # proportional to the chunk, never to the whole cohort table.
+        self._journal_pre_images(
+            connection, "merge_journal_variants",
+            f"FROM {alias}.stage_variants AS staged "
+            "CROSS JOIN cohort_variants AS target ON target.variant_key = staged.variant_key "
+            "WHERE staged.variant_key > ? AND staged.variant_key <= ?",
+            key_range,
+        )
+        # The annotation rows an upsert can update are those matching a
+        # staged row on the conflict key (a NULL there never conflicts, but
+        # journaling such a row too is harmless), plus — same set — the ones
+        # the PromoterAI reconciliation may clear.
+        self._journal_pre_images(
+            connection, "merge_journal_annotations",
+            f"FROM {alias}.stage_annotations AS staged "
+            "CROSS JOIN cohort_variants AS variant ON variant.variant_key = staged.variant_key "
+            "CROSS JOIN cohort_annotations AS target "
+            "  ON target.variant_id = variant.id "
+            " AND target.gene = staged.gene "
+            " AND target.consequence = staged.consequence "
+            " AND COALESCE(target.transcript, '') = COALESCE(staged.transcript, '') "
+            " AND COALESCE(target.hgvsc, '') = COALESCE(staged.hgvsc, '') "
+            " AND COALESCE(target.hgvsp, '') = COALESCE(staged.hgvsp, '') "
+            "WHERE staged.variant_key > ? AND staged.variant_key <= ?",
+            key_range,
+        )
+        if merge_predictions and journal_predictions:
+            # An append writes under a file id that already owns
+            # observations: those of the chunk's variants (and their
+            # values) may be updated in place.
+            self._journal_pre_images(
+                connection, "merge_journal_observations",
+                f"FROM {alias}.stage_variants AS staged "
+                "CROSS JOIN cohort_variants AS variant ON variant.variant_key = staged.variant_key "
+                "CROSS JOIN prediction_observations AS target "
+                # The unary + keeps the planner on the variant index; the
+                # file index would rescan every observation of the file.
+                "  ON target.variant_id = variant.id AND +target.source_file_id = ? "
+                "WHERE staged.variant_key > ? AND staged.variant_key <= ?",
+                (int(file_id), low, high),
+            )
+            self._journal_pre_images(
+                connection, "merge_journal_values",
+                f"FROM {alias}.stage_variants AS staged "
+                "CROSS JOIN cohort_variants AS variant ON variant.variant_key = staged.variant_key "
+                "CROSS JOIN prediction_observations AS observation "
+                "  ON observation.variant_id = variant.id AND +observation.source_file_id = ? "
+                "CROSS JOIN prediction_values AS target ON target.observation_id = observation.id "
+                "WHERE staged.variant_key > ? AND staged.variant_key <= ?",
+                (int(file_id), low, high),
+            )
+        floors = {
+            journal: self._journal_floor(connection, journal)
+            for journal in MERGE_JOURNALS
+        }
+        connection.execute(f"""
+            INSERT INTO cohort_variants(
+              variant_key, chrom, pos, ref, alt, rsid,
+              original_assembly, original_chrom, original_pos,
+              original_ref, original_alt, unscored_indel_reasons
+            )
+            SELECT variant_key, chrom, pos, ref, alt, rsid,
+                   original_assembly, original_chrom, original_pos,
+                   original_ref, original_alt, unscored_indel_reasons
+            FROM {alias}.stage_variants
+            WHERE variant_key > ? AND variant_key <= ?
+            ON CONFLICT(variant_key) DO UPDATE SET
+              rsid=CASE
+                WHEN excluded.rsid IS NOT NULL AND excluded.rsid != '.'
+                THEN excluded.rsid ELSE cohort_variants.rsid END,
+              original_assembly=COALESCE(
+                cohort_variants.original_assembly, excluded.original_assembly),
+              original_chrom=COALESCE(
+                cohort_variants.original_chrom, excluded.original_chrom),
+              original_pos=COALESCE(
+                cohort_variants.original_pos, excluded.original_pos),
+              original_ref=COALESCE(
+                cohort_variants.original_ref, excluded.original_ref),
+              original_alt=COALESCE(
+                cohort_variants.original_alt, excluded.original_alt),
+              unscored_indel_reasons=COALESCE(
+                NULLIF(excluded.unscored_indel_reasons, ''),
+                cohort_variants.unscored_indel_reasons)
+        """, key_range)
+        connection.execute(f"""
+            INSERT INTO cohort_annotations(
+              variant_id, gene, gene_id, transcript, hgvsc, hgvsp,
+              consequence, impact, gnomad_popmax, gnomad_popmax_source,
+              cadd, alpha_missense,
+              spliceai, promoterai, logofunc_prediction, logofunc_neutral,
+              logofunc_gof, logofunc_lof, logofunc_allele_available,
+              logofunc_source_transcript, logofunc_source_hgvsp,
+              logofunc_match, clinvar, clinvar_conflicting, loftee, loftee_50bp,
+              loftee_50bp_original, loftee_50bp_changed, ptc_distance,
+              ptc_calc_status, mane, picked, repeat_masker, segdup
+            )
+            SELECT variant.id, annotation.gene, annotation.gene_id,
+                   annotation.transcript, annotation.hgvsc, annotation.hgvsp,
+                   annotation.consequence, annotation.impact,
+                   annotation.gnomad_popmax, annotation.gnomad_popmax_source,
+                   annotation.cadd,
+                   annotation.alpha_missense, annotation.spliceai,
+                   annotation.promoterai, annotation.logofunc_prediction,
+                   annotation.logofunc_neutral, annotation.logofunc_gof,
+                   annotation.logofunc_lof, annotation.logofunc_allele_available,
+                   annotation.logofunc_source_transcript,
+                   annotation.logofunc_source_hgvsp, annotation.logofunc_match,
+                   annotation.clinvar, annotation.clinvar_conflicting,
+                   annotation.loftee, annotation.loftee_50bp,
+                   annotation.loftee_50bp_original,
+                   annotation.loftee_50bp_changed, annotation.ptc_distance,
+                   annotation.ptc_calc_status, annotation.mane,
+                   annotation.picked, annotation.repeat_masker,
+                   annotation.segdup
+            FROM {alias}.stage_annotations AS annotation
+            JOIN cohort_variants AS variant
+              ON variant.variant_key = annotation.variant_key
+            WHERE annotation.variant_key > ? AND annotation.variant_key <= ?
+            ON CONFLICT(
+              variant_id, gene, transcript, hgvsc, hgvsp, consequence
+            ) DO UPDATE SET
+              impact=excluded.impact,
+              gnomad_popmax=COALESCE(excluded.gnomad_popmax, cohort_annotations.gnomad_popmax),
+              gnomad_popmax_source=CASE WHEN excluded.gnomad_popmax IS NOT NULL
+                THEN excluded.gnomad_popmax_source
+                ELSE cohort_annotations.gnomad_popmax_source END,
+              cadd=COALESCE(excluded.cadd, cohort_annotations.cadd),
+              alpha_missense=COALESCE(excluded.alpha_missense, cohort_annotations.alpha_missense),
+              spliceai=COALESCE(excluded.spliceai, cohort_annotations.spliceai),
+              promoterai=COALESCE(excluded.promoterai, cohort_annotations.promoterai),
+              logofunc_prediction=COALESCE(NULLIF(excluded.logofunc_prediction, ''), cohort_annotations.logofunc_prediction),
+              logofunc_neutral=COALESCE(excluded.logofunc_neutral, cohort_annotations.logofunc_neutral),
+              logofunc_gof=COALESCE(excluded.logofunc_gof, cohort_annotations.logofunc_gof),
+              logofunc_lof=COALESCE(excluded.logofunc_lof, cohort_annotations.logofunc_lof),
+              logofunc_allele_available=MAX(excluded.logofunc_allele_available, cohort_annotations.logofunc_allele_available),
+              logofunc_source_transcript=COALESCE(NULLIF(excluded.logofunc_source_transcript, ''), cohort_annotations.logofunc_source_transcript),
+              logofunc_source_hgvsp=COALESCE(NULLIF(excluded.logofunc_source_hgvsp, ''), cohort_annotations.logofunc_source_hgvsp),
+              logofunc_match=COALESCE(NULLIF(excluded.logofunc_match, ''), cohort_annotations.logofunc_match),
+              clinvar=COALESCE(NULLIF(excluded.clinvar, ''), cohort_annotations.clinvar),
+              clinvar_conflicting=COALESCE(NULLIF(excluded.clinvar_conflicting, ''), cohort_annotations.clinvar_conflicting),
+              loftee=COALESCE(NULLIF(excluded.loftee, ''), cohort_annotations.loftee),
+              loftee_50bp=COALESCE(NULLIF(excluded.loftee_50bp, ''), cohort_annotations.loftee_50bp),
+              loftee_50bp_original=COALESCE(NULLIF(excluded.loftee_50bp_original, ''), cohort_annotations.loftee_50bp_original),
+              loftee_50bp_changed=MAX(excluded.loftee_50bp_changed, cohort_annotations.loftee_50bp_changed),
+              ptc_distance=COALESCE(excluded.ptc_distance, cohort_annotations.ptc_distance),
+              ptc_calc_status=COALESCE(NULLIF(excluded.ptc_calc_status, ''), cohort_annotations.ptc_calc_status),
+              -- latest import wins (see the reannotation note above)
+              mane=excluded.mane,
+              picked=excluded.picked,
+              repeat_masker=MAX(excluded.repeat_masker, cohort_annotations.repeat_masker),
+              segdup=MAX(excluded.segdup, cohort_annotations.segdup)
+        """, key_range)
+        if merge_predictions:
+            self._merge_stage_predictions(
+                connection, alias, file_id,
+                content_sha256=content_sha256, content_probe=content_probe,
+                key_range=key_range,
+            )
+        connection.execute(f"""
+            INSERT INTO cohort_genotypes(
+              variant_id, sample_id, genotype, zygosity, phased,
+              dp, gq, allele_balance, qual, haplotype_frame_status,
+              haplotype_frame_partners, haplotype_protein_change,
+              haplotype_transcript
+            )
+            SELECT variant.id, sample.id, genotype.genotype,
+                   genotype.zygosity, genotype.phased, genotype.dp,
+                   genotype.gq, genotype.allele_balance, genotype.qual,
+                   genotype.haplotype_frame_status,
+                   genotype.haplotype_frame_partners,
+                   genotype.haplotype_protein_change,
+                   genotype.haplotype_transcript
+            FROM {alias}.stage_genotypes AS genotype
+            JOIN cohort_variants AS variant
+              ON variant.variant_key = genotype.variant_key
+            JOIN merge_samples AS sample
+              ON sample.name = genotype.sample_name
+            WHERE genotype.variant_key > ? AND genotype.variant_key <= ?
+            ON CONFLICT(variant_id, sample_id) DO UPDATE SET
+              genotype=excluded.genotype,
+              zygosity=excluded.zygosity,
+              phased=excluded.phased,
+              dp=excluded.dp,
+              gq=excluded.gq,
+              allele_balance=excluded.allele_balance,
+              qual=excluded.qual,
+              haplotype_frame_status=excluded.haplotype_frame_status,
+              haplotype_frame_partners=excluded.haplotype_frame_partners,
+              haplotype_protein_change=excluded.haplotype_protein_change,
+              haplotype_transcript=excluded.haplotype_transcript
+        """, key_range)
+        # Genotypes need no journal: they are keyed by the reserved sample
+        # ids, which _finish_merge_cleanup reclaims when the file is not
+        # published.
+        for journal, floor in floors.items():
+            if journal in ("merge_journal_observations", "merge_journal_values") and not merge_predictions:
+                continue
+            self._journal_inserted(connection, journal, floor)
+
     def import_vcf(
         self, path: Path, force: bool = False, allow_unknown_assembly: bool = False,
         progress: Callable[[dict], None] | None = None,
@@ -5627,13 +6871,28 @@ class CohortStore:
         analysis_scope: str = "exome",
         prefilter_options: dict | None = None,
         prefilter_metadata: dict | None = None,
+        restrict_samples: Iterable[str] | None = None,
     ) -> dict:
+        """Index a VCF into the cohort store.
+
+        ``restrict_samples`` indexes only the named sample columns. When the
+        file is already indexed under the same profile with identical bytes,
+        those samples are (re)placed inside the existing cohort file; every
+        other sample keeps its rows. The sample library uses this for a
+        full-WGS reindex of one dataset whose original VCF also carries
+        siblings that must stay indexed exactly once.
+        """
         if import_profile not in {"full", "prefiltered"}:
             raise ValueError("import_profile must be 'full' or 'prefiltered'")
         if analysis_scope not in {"exome", "whole_genome"}:
             raise ValueError("analysis_scope must be 'exome' or 'whole_genome'")
         if import_profile == "prefiltered":
             analysis_scope = "whole_genome"
+        restricted = tuple(dict.fromkeys(str(name) for name in restrict_samples)) if restrict_samples else None
+        if restricted is not None and not restricted:
+            raise ValueError("restrict_samples must name at least one sample")
+        if restricted and os.environ.get("IEI_COHORT_LEGACY_IMPORT") == "1":
+            raise ValueError("sample-restricted imports need the staged importer")
         if os.environ.get("IEI_COHORT_LEGACY_IMPORT") == "1" and source_path is None:
             return self._import_vcf_rowwise(
                 path, force=force,
@@ -5674,8 +6933,17 @@ class CohortStore:
                 (existing["content_sha256"] if "content_sha256" in existing.keys() else "")
                 if existing else ""
             )
+            already_indexed = True
+            if existing and restricted:
+                present = {
+                    row["name"] for row in connection.execute(
+                        "SELECT name FROM cohort_samples WHERE file_id = ?",
+                        (existing["id"],),
+                    ).fetchall()
+                }
+                already_indexed = all(name in present for name in restricted)
             if (
-                existing and not force
+                existing and not force and already_indexed
                 # A row with NO content identity at all cannot honestly be
                 # called "unchanged": size+mtime alone is forgeable, and
                 # certifying current bytes onto rows indexed from unknown
@@ -5739,6 +7007,14 @@ class CohortStore:
 
         prepared = self._prepare_indexed_vcf(path, progress, full_sha=content_sha)
         header = read_vcf_header(prepared.path)
+        sample_indices: tuple[int, ...] | None = None
+        if restricted:
+            missing = [name for name in restricted if name not in header.samples]
+            if missing:
+                raise ValueError(
+                    f"{path.name}: sample(s) absent from the VCF header: {', '.join(missing)}"
+                )
+            sample_indices = tuple(header.samples.index(name) for name in restricted)
         if progress:
             progress({
                 "phase": "indexing",
@@ -5755,12 +7031,14 @@ class CohortStore:
                 and self.index_readers > 1
             ):
                 stages, reader_count = self._parallel_stages(
-                    prepared.path, header, stage_root, progress
+                    prepared.path, header, stage_root, progress,
+                    sample_indices=sample_indices,
                 )
             else:
                 reader_count = 1
                 stages = [self._serial_stage(
-                    prepared.path, header, stage_root / "reader-0.sqlite3", progress
+                    prepared.path, header, stage_root / "reader-0.sqlite3", progress,
+                    sample_indices=sample_indices,
                 )]
             import_mode = (
                 "parallel_tabix_staged" if reader_count > 1 else "serial_staged"
@@ -5776,22 +7054,24 @@ class CohortStore:
                     "carrier_count": sum(stage["carrier_count"] for stage in stages),
                     "reader_count": reader_count,
                 })
-            file_id, variant_count = self._merge_stages(
-                source_path=source_path,
-                prepared=prepared,
-                assembly=assembly,
-                header=header,
-                stages=stages,
-                existing=existing,
-                import_mode=import_mode,
-                reader_count=reader_count,
-                import_profile=import_profile,
-                analysis_scope=analysis_scope,
-                prefilter_options_json=prefilter_options_json,
-                prefilter_metadata=prefilter_metadata,
-                content_probe=content_probe,
-                content_sha256=content_sha,
-            )
+            with self._merge_lock:
+                file_id, variant_count = self._merge_stages(
+                    source_path=source_path,
+                    prepared=prepared,
+                    assembly=assembly,
+                    header=header,
+                    stages=stages,
+                    existing=existing,
+                    import_mode=import_mode,
+                    reader_count=reader_count,
+                    import_profile=import_profile,
+                    analysis_scope=analysis_scope,
+                    prefilter_options_json=prefilter_options_json,
+                    prefilter_metadata=prefilter_metadata,
+                    content_probe=content_probe,
+                    content_sha256=content_sha,
+                    sample_names=restricted,
+                )
 
         pass_records = sum(stage["pass_records"] for stage in stages)
         excluded_records = sum(stage["excluded_records"] for stage in stages)
@@ -5801,7 +7081,8 @@ class CohortStore:
             "id": file_id,
             "path": str(source_path),
             "status": "imported",
-            "sample_count": len(header.samples),
+            "sample_count": len(restricted) if restricted else len(header.samples),
+            "indexed_samples": list(restricted) if restricted else list(header.samples),
             "pass_records": pass_records,
             "excluded_records": excluded_records,
             "variant_count": variant_count,
@@ -5850,7 +7131,10 @@ class CohortStore:
             return "v.chrom = ? AND v.pos = ?", [normalize_chromosome(chrom), int(pos)]
         return None
 
-    def query(self, payload: dict) -> dict:
+    def query(self, payload: dict, *, explain_plan: bool = False) -> dict:
+        """Run a Cohort Search. With ``explain_plan`` the assembled statement
+        is not executed; its EXPLAIN QUERY PLAN lines are returned instead so
+        tests can guard the REAL query against table scans."""
         mode = str(payload.get("mode") or "variant")
         if mode not in {"variant", "gene", "gene_list", "region"}:
             raise ValueError("mode must be 'variant', 'gene', 'gene_list', or 'region'")
@@ -6004,8 +7288,43 @@ class CohortStore:
         if zygosity != "all":
             if zygosity not in {"heterozygous", "homozygous", "hemizygous"}:
                 raise ValueError("unsupported zygosity filter")
-            genotype_conditions.append("g.zygosity = ?")
-            genotype_parameters.append(zygosity)
+            if zygosity in {"homozygous", "hemizygous"}:
+                # Review M9: on non-PAR X and Y a male's single copy is
+                # written either haploid ("1" -> hemizygous) or diploid-style
+                # ("1/1" -> homozygous) depending on the caller, and the
+                # stored class follows the encoding. The two searches are
+                # therefore widened to each other AT SINGLE-COPY LOCI ONLY;
+                # stored genotypes are never rewritten from sex_at_birth.
+                # Each row still reports its own zygosity and genotype.
+                #
+                # Recorded sex narrows the widening where it is known: a
+                # diploid-encoded 1/1 on non-PAR X in an individual recorded
+                # as female is a genuine two-copy call and is NOT pulled into
+                # a hemizygous search; male, other, unknown and unlinked
+                # samples keep the widening. A haploid call is single-copy
+                # whatever the recorded sex, so the homozygous search always
+                # includes it.
+                counterpart = (
+                    "hemizygous" if zygosity == "homozygous" else "homozygous"
+                )
+                female_guard = ""
+                if zygosity == "hemizygous" and self._phenotype_sex_available():
+                    female_guard = (
+                        " AND NOT EXISTS ("
+                        "SELECT 1 FROM phenotype_sample_links AS link "
+                        "JOIN phenotype_individuals AS individual "
+                        "ON individual.individual_id = link.individual_id "
+                        "WHERE link.sample_id = s.name "
+                        "AND individual.sex_at_birth = 'female')"
+                    )
+                genotype_conditions.append(
+                    "(g.zygosity = ? OR (g.zygosity = ? AND "
+                    + SINGLE_COPY_LOCUS_SQL + female_guard + "))"
+                )
+                genotype_parameters.extend([zygosity, counterpart])
+            else:
+                genotype_conditions.append("g.zygosity = ?")
+                genotype_parameters.append(zygosity)
 
         analysis_scopes = [
             str(value) for value in payload.get("analysis_scopes", [])
@@ -6059,6 +7378,10 @@ class CohortStore:
             WHERE {annotation_where}
           ),
           logofunc AS (
+            -- Scoped to the matched variants: unscoped, this window ran over
+            -- the ENTIRE annotation table on every query and was
+            -- materialised twice (results + totals) — a full scan at cohort
+            -- scale that the plan test could not see (audit H8).
             SELECT source.*,
               ROW_NUMBER() OVER (
                 PARTITION BY source.variant_id, source.gene
@@ -6066,13 +7389,14 @@ class CohortStore:
               ) AS logofunc_rank
             FROM cohort_annotations source
             WHERE source.logofunc_match = 'allele_transcript_protein'
+              AND source.variant_id IN (SELECT ranked.variant_id FROM ranked)
           )
           SELECT
             v.variant_key, v.chrom, v.pos, v.ref, v.alt, v.rsid,
             v.original_assembly, v.original_chrom, v.original_pos,
             v.original_ref, v.original_alt, v.unscored_indel_reasons,
             a.gene, a.gene_id, a.transcript, a.hgvsc, a.hgvsp,
-            a.consequence, a.impact, a.gnomad_popmax, a.cadd,
+            a.consequence, a.impact, a.gnomad_popmax, a.gnomad_popmax_source, a.cadd,
             a.alpha_missense, a.spliceai, a.promoterai,
             COALESCE(NULLIF(a.logofunc_prediction, ''), lf.logofunc_prediction) AS logofunc_prediction,
             COALESCE(a.logofunc_neutral, lf.logofunc_neutral) AS logofunc_neutral,
@@ -6119,20 +7443,34 @@ class CohortStore:
             COALESCE(a.gnomad_popmax, -1), v.chrom, v.pos, s.name
           LIMIT ?
         """
-        with self._session() as connection:
+        totals_statement = f"""
+            SELECT COUNT(*) AS n,
+                   COUNT(DISTINCT sample) AS individuals,
+                   COUNT(DISTINCT variant_key) AS variants
+            FROM ({base})
+        """
+        if explain_plan:
+            with self._read_session() as connection:
+                return {
+                    "mode": mode,
+                    "sql": ordered,
+                    "plan": [
+                        str(row[-1]) for row in connection.execute(
+                            "EXPLAIN QUERY PLAN " + ordered, (*parameters, limit)
+                        )
+                    ],
+                    "totals_plan": [
+                        str(row[-1]) for row in connection.execute(
+                            "EXPLAIN QUERY PLAN " + totals_statement, parameters
+                        )
+                    ],
+                }
+        with self._read_session() as connection:
             rows = [
                 self._serialize_query_row(row)
                 for row in connection.execute(ordered, (*parameters, limit)).fetchall()
             ]
-            totals = connection.execute(
-                f"""
-                SELECT COUNT(*) AS n,
-                       COUNT(DISTINCT sample) AS individuals,
-                       COUNT(DISTINCT variant_key) AS variants
-                FROM ({base})
-                """,
-                parameters,
-            ).fetchone()
+            totals = connection.execute(totals_statement, parameters).fetchone()
         represented_profiles = sorted({
             row.get("profile_hash") or f"{row.get('import_profile')}:{row.get('analysis_scope')}"
             for row in rows
@@ -6156,6 +7494,10 @@ class CohortStore:
 
     def variant_detail(self, variant_key_value: str) -> dict:
         """Return all stored transcripts and carriers for one exact allele."""
+        with self._read_session():
+            return self._variant_detail(variant_key_value)
+
+    def _variant_detail(self, variant_key_value: str) -> dict:
         cleaned = str(variant_key_value or "").strip()
         parsed = self._parse_variant_query(cleaned)
         if not parsed or parsed[0] != "v.variant_key = ?":
@@ -6166,11 +7508,12 @@ class CohortStore:
         })
         if not result["rows"]:
             raise ValueError("variant is not present in the cohort index")
-        with self._session() as connection:
+        with self._read_session() as connection:
             annotations = connection.execute(
                 """
                 SELECT a.gene, a.gene_id, a.transcript, a.hgvsc, a.hgvsp,
-                       a.consequence, a.impact, a.gnomad_popmax, a.cadd,
+                       a.consequence, a.impact, a.gnomad_popmax,
+                       a.gnomad_popmax_source, a.cadd,
                        a.alpha_missense, a.spliceai, a.promoterai,
                        a.logofunc_prediction, a.logofunc_neutral,
                        a.logofunc_gof, a.logofunc_lof,
@@ -6234,7 +7577,7 @@ class CohortStore:
 
         rows: list[sqlite3.Row] = []
         requested_pairs = sorted(requested)
-        with self._session() as connection:
+        with self._read_session() as connection:
             for offset in range(0, len(requested_pairs), 300):
                 batch = requested_pairs[offset:offset + 300]
                 requested_values = ",".join("(?, ?)" for _ in batch)
@@ -6331,15 +7674,18 @@ class CohortStore:
                         normalize_chromosome(contig): contig
                         for contig in available_contigs
                     }
-                    targets: dict[str, tuple[str, int, str, str]] = {}
+                    # Keyed by the canonical variant key; a source record is
+                    # matched by canonicalising ITS alleles, so a file that
+                    # carries a padded representation of the indexed allele
+                    # still resolves (audit H5, P2). The canonical position
+                    # lies inside every padded representation's REF span, so
+                    # a point region still returns the record.
+                    targets: dict[str, tuple[str, int]] = {}
                     for row in group:
-                        targets[row["variant_key"]] = (
-                            row["chrom"], row["pos"], row["ref"].upper(),
-                            row["alt"].upper(),
-                        )
+                        targets[row["variant_key"]] = (row["chrom"], int(row["pos"]))
                     regions = sorted({
                         f"{contig_by_normalized.get(chrom, chrom)}:{pos}-{pos}"
-                        for chrom, pos, _, _ in targets.values()
+                        for chrom, pos in targets.values()
                     })
                     records: list[str] = []
                     found_variants: set[str] = set()
@@ -6358,14 +7704,11 @@ class CohortStore:
                             record_pos = int(columns[1])
                         except ValueError:
                             continue
-                        record_chrom = normalize_chromosome(columns[0])
-                        record_ref = columns[3].upper()
-                        record_alts = {alt.upper() for alt in columns[4].split(",")}
-                        matching_keys = {
-                            key for key, (chrom, pos, ref, alt) in targets.items()
-                            if record_chrom == chrom and record_pos == pos
-                            and record_ref == ref and alt in record_alts
+                        record_keys = {
+                            variant_key(columns[0], record_pos, columns[3], record_alt)
+                            for record_alt in columns[4].split(",")
                         }
+                        matching_keys = record_keys & set(targets)
                         if not matching_keys:
                             continue
                         found_variants.update(matching_keys)
@@ -6425,6 +7768,33 @@ class CohortStore:
             "warnings": warnings,
         }
 
+    def _register_review_export(self, token: str, paths: list[Path]) -> None:
+        with self._review_exports_lock:
+            self._review_exports[token] = list(paths)
+            for stale_token in list(self._review_exports)[:-MAX_BROWSER_SAMPLE_REVIEW_EXPORTS]:
+                for stale in self._review_exports.pop(stale_token, []):
+                    try:
+                        stale.unlink(missing_ok=True)
+                    except OSError:
+                        pass
+
+    def review_export_file(self, token: str, index: int | str) -> Path:
+        """The projected review VCF registered by sample_review_files."""
+        try:
+            position = int(index)
+        except (TypeError, ValueError) as error:
+            raise ValueError("review export index must be an integer") from error
+        with self._review_exports_lock:
+            paths = self._review_exports.get(str(token))
+        if not paths or not 0 <= position < len(paths):
+            raise KeyError("review export not found")
+        path = paths[position]
+        if self.review_export_dir.resolve() not in path.resolve().parents:
+            raise ValueError("review export path is invalid")
+        if not path.is_file():
+            raise FileNotFoundError("the projected review VCF is no longer available; load the individuals again")
+        return path
+
     def sample_review_files(self, sample_ids: list[int]) -> dict:
         """Return complete stored review sets for selected cohort samples.
 
@@ -6445,7 +7815,7 @@ class CohortStore:
             raise ValueError("a single browser review is limited to 50 sample entries")
 
         placeholders = ",".join("?" for _ in selected)
-        with self._session() as connection:
+        with self._read_session() as connection:
             rows = connection.execute(
                 f"""
                 SELECT s.id AS sample_entry_id, s.name AS sample,
@@ -6486,7 +7856,18 @@ class CohortStore:
         files: list[dict] = []
         warnings: list[str] = []
         total_records = 0
-        for source_file_id, group in grouped.items():
+        total_bytes = 0
+        export_token = uuid.uuid4().hex
+        export_paths: list[Path] = []
+
+        def abandon_export() -> None:
+            for partial in export_paths:
+                try:
+                    partial.unlink(missing_ok=True)
+                except OSError:
+                    pass
+
+        for file_index, (source_file_id, group) in enumerate(grouped.items()):
             source_path = Path(group[0]["source_path"])
             prepared_value = group[0]["prepared_path"]
             prepared_path = Path(prepared_value) if prepared_value else source_path
@@ -6513,46 +7894,69 @@ class CohortStore:
                     f"VCF header: {', '.join(missing_samples)}"
                 )
 
-            records: list[str] = []
+            projected_header = [*header_lines[:-1], "\t".join(
+                header_columns[:9] + selected_samples
+            )]
+            export_path = self.review_export_dir / f"{export_token}.{file_index}.vcf"
+            export_paths.append(export_path)
+            record_count = 0
             opener = gzip.open if prepared_path.name.lower().endswith((".gz", ".bgz")) else open
-            with opener(prepared_path, "rt", encoding="utf-8", errors="replace") as handle:
-                for line in handle:
-                    if line.startswith("#") or not line.strip():
-                        continue
-                    columns = line.rstrip("\r\n").split("\t")
-                    if 10 <= len(columns) < 9 + len(header.samples):
-                        # The stored review VCF is corrupt (interrupted copy,
-                        # or an artifact of the pre-fix silent-skip import):
-                        # omitting the row would hide a carrier variant from
-                        # the clinician's review set.
-                        raise ValueError(
-                            f"stored review VCF looks truncated at "
-                            f"{':'.join(columns[:2])} — re-import this dataset"
-                        )
-                    if len(columns) < 10 or columns[6] not in ("PASS", "."):
-                        continue
-                    alternate_count = len(columns[4].split(","))
-                    carries = False
-                    for sample in selected_samples:
-                        sample_value = columns[sample_column[sample]]
-                        if any(
-                            parse_genotype(columns[8], sample_value, alt_index)["carrier"]
-                            for alt_index in range(alternate_count)
-                        ):
-                            carries = True
-                            break
-                    if not carries:
-                        continue
-                    records.append("\t".join(
-                        columns[:9] + [columns[sample_column[sample]] for sample in selected_samples]
-                    ))
-                    if total_records + len(records) > MAX_BROWSER_SAMPLE_REVIEW_CARRIERS:
-                        raise ValueError(
-                            "the projected review exceeds the browser record limit; "
-                            "review the matched findings instead"
-                        )
+            try:
+                # Binary writes: the budget is a byte budget, and a text-mode
+                # write() reports characters, which undercounts every
+                # multi-byte sample name or annotation (review follow-up).
+                with opener(prepared_path, "rt", encoding="utf-8", errors="replace") as handle, \
+                        export_path.open("wb") as output:
+                    for line in projected_header:
+                        total_bytes += output.write((line + "\n").encode("utf-8"))
+                    for line in handle:
+                        if line.startswith("#") or not line.strip():
+                            continue
+                        columns = line.rstrip("\r\n").split("\t")
+                        if 10 <= len(columns) < 9 + len(header.samples):
+                            # The stored review VCF is corrupt (interrupted copy,
+                            # or an artifact of the pre-fix silent-skip import):
+                            # omitting the row would hide a carrier variant from
+                            # the clinician's review set.
+                            raise ValueError(
+                                f"stored review VCF looks truncated at "
+                                f"{':'.join(columns[:2])} — re-import this dataset"
+                            )
+                        if len(columns) < 10 or columns[6] not in ("PASS", "."):
+                            continue
+                        alternate_count = len(columns[4].split(","))
+                        carries = False
+                        for sample in selected_samples:
+                            sample_value = columns[sample_column[sample]]
+                            if any(
+                                parse_genotype(columns[8], sample_value, alt_index)["carrier"]
+                                for alt_index in range(alternate_count)
+                            ):
+                                carries = True
+                                break
+                        if not carries:
+                            continue
+                        record_count += 1
+                        if total_records + record_count > MAX_BROWSER_SAMPLE_REVIEW_CARRIERS:
+                            raise ValueError(
+                                "the projected review exceeds the browser record limit; "
+                                "review the matched findings instead"
+                            )
+                        total_bytes += output.write(("\t".join(
+                            columns[:9] + [columns[sample_column[sample]] for sample in selected_samples]
+                        ) + "\n").encode("utf-8"))
+                        if total_bytes > self.max_review_export_bytes:
+                            raise ValueError(
+                                "the projected review exceeds the browser size limit of "
+                                f"{self.max_review_export_bytes // (1024 * 1024)} MB; select fewer "
+                                "individuals, review the matched findings instead, or index the "
+                                "WGS using the compact candidate profile"
+                            )
+            except BaseException:
+                abandon_export()
+                raise
 
-            total_records += len(records)
+            total_records += record_count
             try:
                 prefilter_options = json.loads(group[0]["prefilter_options"] or "{}")
             except json.JSONDecodeError:
@@ -6560,9 +7964,6 @@ class CohortStore:
                 warnings.append(
                     f"{source_path.name}: stored prefilter settings could not be decoded"
                 )
-            projected_header = [*header_lines[:-1], "\t".join(
-                header_columns[:9] + selected_samples
-            )]
             review_name = f"cohort-samples-{source_file_id}-{source_path.name}"
             for suffix in (".vcf.gz", ".vcf.bgz", ".vcf", ".gz", ".bgz"):
                 if review_name.lower().endswith(suffix):
@@ -6577,7 +7978,7 @@ class CohortStore:
                 "analysis_scope": group[0]["analysis_scope"],
                 "prefilter_options": prefilter_options,
                 "imported_at": group[0]["imported_at"],
-                "record_count": len(records),
+                "record_count": record_count,
                 "samples": [
                     {
                         "sample_entry_id": row["sample_entry_id"],
@@ -6586,13 +7987,19 @@ class CohortStore:
                     }
                     for row in group
                 ],
-                "vcf": "\n".join([*projected_header, *records, ""]),
+                # Streamed by GET /api/cohort/sample-review/<token>/<index>;
+                # the text is never embedded in this JSON body.
+                "vcf_url": f"/api/cohort/sample-review/{export_token}/{file_index}",
+                "vcf_bytes": export_path.stat().st_size,
             })
 
+        self._register_review_export(export_token, export_paths)
         return {
+            "export_id": export_token,
             "sample_entries": len(rows),
             "carrier_observations": total_carriers,
             "records": total_records,
+            "bytes": total_bytes,
             "analysis_scope": (
                 "whole_genome"
                 if any(

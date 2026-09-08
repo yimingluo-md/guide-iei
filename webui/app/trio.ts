@@ -149,6 +149,10 @@ export function parsePedigree(
       parentalRelationshipsConfirmed: false,
     } satisfies TrioDefinition))
     .filter((trio) => {
+      if (new Set([trio.proband, trio.mother, trio.father]).size !== 3) {
+        warnings.push(`Family ${trio.familyId}: the child, mother, and father must be different samples.`);
+        return false;
+      }
       const missing = [trio.proband, trio.mother, trio.father]
         .filter((sample) => !knownSamples.has(sample));
       if (missing.length) {
@@ -293,6 +297,7 @@ export function assessDeNovo(
     !hemiContext
     && alleles(child).length === 2
     && alleles(child).every((value) => value > 0)
+    && alleles(child)[0] === alleles(child)[1]
   ) {
     // Autosomes only: a hemizygous male X/Y call is routinely written as
     // 1/1 by diploid-model callers and is the expected de novo shape, not
@@ -344,7 +349,8 @@ export function assessDeNovo(
     .filter(([, evidence]) => !adequate(evidence, thresholds.parentMinDp, thresholds.minGq))
     .map(([label]) => label);
   const missingAlleleDepth = relevantParents
-    .filter(([, evidence]) => evidence?.adAlt === null)
+    .filter(([, evidence]) => evidence?.adAlt == null
+      || evidence.adRef == null || evidence.alleleBalance == null)
     .map(([label]) => label);
   if (lowQualityParents.length || missingAlleleDepth.length) {
     const reasons = [];
@@ -367,7 +373,7 @@ export function assessDeNovo(
 }
 
 function variantIdentity(row: VariantRow) {
-  return `${row.chrom}:${row.pos}:${row.ref}:${row.alt}`;
+  return `${normalizedTrioContig(row.chrom)}:${row.pos}:${row.ref}:${row.alt}`;
 }
 
 function originFor(
@@ -423,6 +429,7 @@ export function compoundHetPairs(
 ): CompoundHetPair[] {
   const groups = new Map<string, VariantRow[]>();
   representativeRows(rows, trio).forEach((row) => {
+    if (!row.gene || ["—", ".", "-"].includes(row.gene)) return;
     groups.set(row.gene, [...(groups.get(row.gene) ?? []), row]);
   });
   const pairs: CompoundHetPair[] = [];
@@ -432,6 +439,7 @@ export function compoundHetPairs(
       for (let secondIndex = firstIndex + 1; secondIndex < variants.length; secondIndex += 1) {
         const first = variants[firstIndex];
         const second = variants[secondIndex];
+        if (normalizedTrioContig(first.chrom) !== normalizedTrioContig(second.chrom)) continue;
         const firstOrigin = originFor(first, trio, thresholds);
         const secondOrigin = originFor(second, trio, thresholds);
         let phase: CompoundPhase = "phase_unknown";
@@ -453,7 +461,9 @@ export function compoundHetPairs(
 
         if (
           firstChild?.phased && secondChild?.phased
-          && firstChild.phaseSet && firstChild.phaseSet === secondChild.phaseSet
+          && first.source === second.source
+          && firstChild.phaseSet && firstChild.phaseSet !== "."
+          && firstChild.phaseSet === secondChild.phaseSet
           && firstChild.phaseHaplotype !== null && secondChild.phaseHaplotype !== null
         ) {
           if (firstChild.phaseHaplotype !== secondChild.phaseHaplotype) {

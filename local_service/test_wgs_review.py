@@ -25,7 +25,9 @@ from local_service.wgs_review import (
 
 FIELDS = (
     "Allele", "ALLELE_NUM", "SYMBOL", "MAX_AF",
-    "SpliceAI_pred_DS_AG", "promoterAI_promoterAI", "CADD_phred",
+    "SpliceAI_pred_DS_AG", "PromoterAI_score", "CADD_phred",
+    "PromoterAI_TSS", "PromoterAI_strand", "PromoterAI_source_transcript",
+    "PromoterAI_match",
 )
 HEADER = VcfHeader(("CASE",), FIELDS, ("1",))
 
@@ -33,7 +35,14 @@ HEADER = VcfHeader(("CASE",), FIELDS, ("1",))
 def variant(
     *, pos=100, af="0.001", splice="0.1", promoter="0.2", cadd="10"
 ):
-    csq = "|".join(("G", "1", "NFKB1", af, splice, promoter, cadd))
+    # A PromoterAI score travels with the transcript/TSS provenance the plugin
+    # writes beside it; a bare score is withheld everywhere (review M5) and
+    # would not exercise the retention route.
+    provenance = (
+        ("1200", "1", "ENST00000000001.1", "exact_version")
+        if promoter != "." else (".", ".", ".", ".")
+    )
+    csq = "|".join(("G", "1", "NFKB1", af, splice, promoter, cadd, *provenance))
     return (
         f"1\t{pos}\t.\tA\tG\t99\tPASS\tCSQ={csq}"
         "\tGT\t0/1\n"
@@ -420,6 +429,29 @@ class WgsPrefilterTests(unittest.TestCase):
             self.assertEqual(result["records_retained"], 4)
             self.assertTrue(Path(result["path"]).is_file())
             self.assertTrue(Path(result["index_path"]).is_file())
+
+
+class HeaderFlagCacheTests(unittest.TestCase):
+    """Audit M31: dataset availability is derived once per header, and the
+    cache is keyed by header identity so two headers never share flags."""
+
+    def test_flags_follow_the_header_and_are_cached_per_object(self):
+        from local_service.cohort_store import VcfHeader
+        from local_service.wgs_review import _header_dataset_flags
+        with_spliceai = VcfHeader(
+            samples=("S",), csq_fields=("Allele", "SpliceAI_pred_DS_AG"), contigs=("1",),
+        )
+        without = VcfHeader(samples=("S",), csq_fields=("Allele",), contigs=("1",),
+                            info_fields=("PromoterAI_score",))
+        fields, spliceai, promoter = _header_dataset_flags(with_spliceai)
+        self.assertEqual(fields, ["Allele", "SpliceAI_pred_DS_AG"])
+        self.assertTrue(spliceai)
+        self.assertFalse(promoter)
+        self.assertIs(_header_dataset_flags(with_spliceai)[0], fields)  # cached
+        fields2, spliceai2, promoter2 = _header_dataset_flags(without)
+        self.assertEqual(fields2, ["Allele"])
+        self.assertFalse(spliceai2)
+        self.assertTrue(promoter2)
 
 
 if __name__ == "__main__":

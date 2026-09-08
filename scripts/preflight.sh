@@ -440,7 +440,7 @@ case "$RUNTIME" in
         )"
         [[ "$ACTUAL_IMAGE_FINGERPRINT" = "$EXPECTED_IMAGE_FINGERPRINT" ]] || die \
             "container image is from an older GUIDE-IEI version: $IMAGE (rebuild it with: bash docker/build.sh)"
-        "$RUNTIME" run --rm --ulimit core=0:0 --entrypoint sh "$IMAGE" -c "$CHECK" \
+        "$RUNTIME" run --rm --pull=never --network=none --ulimit core=0:0 --entrypoint sh "$IMAGE" -c "$CHECK" \
             || die "container image cannot run or is missing a required executable: $IMAGE"
         ;;
     singularity|apptainer)

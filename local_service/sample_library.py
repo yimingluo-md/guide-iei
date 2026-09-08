@@ -19,11 +19,13 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from local_service.errors import NotFoundError
 from local_service.cohort_store import (
     CohortStore,
     normalize_chromosome,
     read_vcf_header,
     read_vcf_header_lines,
+    variant_key as canonical_variant_key,
 )
 
 
@@ -228,162 +230,265 @@ class SampleLibrary:
                 );
                 """
             )
-            dataset_columns = {
-                row["name"]
-                for row in connection.execute(
-                    "PRAGMA table_info(library_datasets)"
-                ).fetchall()
-            }
-            migrations = {
-                "callset_id": "TEXT NOT NULL DEFAULT ''",
-                "callset_fingerprint": "TEXT NOT NULL DEFAULT ''",
-                "version_id": "TEXT NOT NULL DEFAULT ''",
-                "version_number": "INTEGER NOT NULL DEFAULT 1",
-                "is_current": "INTEGER NOT NULL DEFAULT 1",
-                "cohort_preferred": "INTEGER NOT NULL DEFAULT 0",
-                "supersedes_version_id": "TEXT",
-            }
-            added = set()
-            for column, declaration in migrations.items():
-                if column not in dataset_columns:
+        self._run_migrations()
+
+    # --- versioned, transactional schema migrations (audit M30) -------------
+    # Each step runs inside ONE explicit transaction together with the marker
+    # that records it in sample_library_meta, so an interruption (crash,
+    # kill, power loss) rolls the whole step back and the next open runs it
+    # again from the start. The previous column-presence logic ran ALTER TABLE
+    # in autocommit and the backfill in a later transaction: a kill in between
+    # left the new columns without their backfill, and the next open — seeing
+    # the columns — never backfilled them (include_in_cohort=1 rows kept
+    # cohort_preferred=0; version ids were assigned by the wrong rule).
+    LIBRARY_MIGRATIONS: tuple[tuple[str, str], ...] = (
+        ("library_versions_v1", "_migrate_library_versions"),
+        ("library_current_uniqueness_v1", "_migrate_current_uniqueness"),
+        ("portable_paths_v2", "_migrate_portable_paths"),
+    )
+
+    def _run_migrations(self) -> None:
+        connection = sqlite3.connect(self.database_path, timeout=60, isolation_level=None)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA foreign_keys=ON")
+        connection.execute("PRAGMA busy_timeout=60000")
+        try:
+            for key, method_name in self.LIBRARY_MIGRATIONS:
+                done = connection.execute(
+                    "SELECT value FROM sample_library_meta WHERE key=?", (key,)
+                ).fetchone()
+                # A recorded step is trusted unless the schema visibly
+                # contradicts it (columns or indexes missing, rows never
+                # backfilled): then it is re-applied, so a database restored
+                # from a partial copy or an older tool still converges.
+                if done and not self._migration_needed(key, connection):
+                    continue
+                connection.execute("BEGIN IMMEDIATE")
+                try:
+                    getattr(self, method_name)(connection)
                     connection.execute(
-                        f"ALTER TABLE library_datasets ADD COLUMN {column} {declaration}"
+                        "INSERT OR REPLACE INTO sample_library_meta(key,value) VALUES(?,?)",
+                        (key, utc_now()),
                     )
-                    added.add(column)
-            # Existing rows each represent the first known version of their
-            # content-addressed callset. Fingerprints are backfilled lazily
-            # only when an overlapping import is inspected; opening a large
-            # existing library must never scan every VCF at startup.
+                    connection.execute("COMMIT")
+                except BaseException:
+                    connection.execute("ROLLBACK")
+                    raise
             connection.execute(
-                "UPDATE library_datasets SET callset_id=managed_checksum "
-                "WHERE callset_id=''"
+                "INSERT OR REPLACE INTO sample_library_meta(key,value) VALUES('library_schema_version',?)",
+                (self.LIBRARY_MIGRATIONS[-1][0],),
             )
-            if "cohort_preferred" in added:
-                # Capture the user's former include choice before historical
-                # versions have their live cohort linkage cleared below.
-                connection.execute(
-                    "UPDATE library_datasets SET cohort_preferred=include_in_cohort"
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _migration_needed(key: str, connection: sqlite3.Connection) -> bool:
+        if key == "library_versions_v1":
+            columns = {
+                row["name"] for row in connection.execute("PRAGMA table_info(library_datasets)")
+            }
+            required = {
+                "callset_id", "callset_fingerprint", "version_id", "version_number",
+                "is_current", "cohort_preferred", "supersedes_version_id",
+            }
+            if not required <= columns:
+                return True
+            return bool(connection.execute(
+                "SELECT 1 FROM library_datasets WHERE version_id='' LIMIT 1"
+            ).fetchone())
+        if key == "library_current_uniqueness_v1":
+            indexes = {
+                row["name"] for row in connection.execute("PRAGMA index_list(library_datasets)")
+            }
+            return not {
+                "library_datasets_current_content_idx",
+                "library_datasets_current_callset_idx",
+                "library_datasets_callset_idx",
+            } <= indexes
+        return False
+
+    def migration_status(self) -> dict:
+        with self._session() as connection:
+            applied = {
+                row["key"]: row["value"] for row in connection.execute(
+                    "SELECT key,value FROM sample_library_meta"
                 )
-            if "version_id" in added:
-                # A legacy library may contain the same managed VCF more than
-                # once under different import settings. Treat each old import
-                # batch as a preserved version, rather than assigning every
-                # row the same version ID and mixing historical samples into
-                # the active UI group. Rows written by one old import share
-                # checksum and timestamp; settings are intentionally excluded
-                # because a later per-sample metadata edit can change only one
-                # sibling's profile hash.
-                legacy_groups = connection.execute(
-                    """SELECT DISTINCT callset_id,managed_checksum,imported_at
-                       FROM library_datasets
-                       ORDER BY callset_id,imported_at"""
-                ).fetchall()
-                by_callset: dict[str, list[sqlite3.Row]] = {}
-                for row in legacy_groups:
-                    by_callset.setdefault(row["callset_id"], []).append(row)
-                for callset_id, groups in by_callset.items():
-                    previous_version_id = None
-                    for number, group in enumerate(groups, start=1):
-                        version_id = hashlib.sha256(
-                            (
-                                "legacy-library-version\0"
-                                f"{callset_id}\0{group['managed_checksum']}\0"
-                                f"{group['imported_at']}"
-                            ).encode("utf-8")
-                        ).hexdigest()
-                        is_current = number == len(groups)
-                        connection.execute(
-                            """UPDATE library_datasets
-                               SET version_id=?,version_number=?,is_current=?,
-                                   include_in_cohort=CASE WHEN ? THEN include_in_cohort ELSE 0 END,
-                                   cohort_file_id=CASE WHEN ? THEN cohort_file_id ELSE NULL END,
-                                   supersedes_version_id=?
-                               WHERE callset_id=? AND managed_checksum=?
-                                 AND imported_at=?""",
-                            (
-                                version_id, number, int(is_current), int(is_current),
-                                int(is_current), previous_version_id, callset_id,
-                                group["managed_checksum"], group["imported_at"],
-                            ),
-                        )
-                        previous_version_id = version_id
-            else:
+            }
+        return {
+            "schema_version": applied.get("library_schema_version"),
+            "migrations": [
+                {"id": key, "applied_at": applied.get(key)} for key, _method in self.LIBRARY_MIGRATIONS
+            ],
+        }
+
+    def _migrate_library_versions(self, connection: sqlite3.Connection) -> None:
+        dataset_columns = {
+            row["name"]
+            for row in connection.execute("PRAGMA table_info(library_datasets)").fetchall()
+        }
+        migrations = {
+            "callset_id": "TEXT NOT NULL DEFAULT ''",
+            "callset_fingerprint": "TEXT NOT NULL DEFAULT ''",
+            "version_id": "TEXT NOT NULL DEFAULT ''",
+            "version_number": "INTEGER NOT NULL DEFAULT 1",
+            "is_current": "INTEGER NOT NULL DEFAULT 1",
+            "cohort_preferred": "INTEGER NOT NULL DEFAULT 0",
+            "supersedes_version_id": "TEXT",
+        }
+        added = set()
+        for column, declaration in migrations.items():
+            if column not in dataset_columns:
                 connection.execute(
-                    "UPDATE library_datasets SET version_id=managed_checksum "
-                    "WHERE version_id=''"
+                    f"ALTER TABLE library_datasets ADD COLUMN {column} {declaration}"
                 )
-            # The old UNIQUE constraint included the freshly generated
-            # sample_id and therefore could not stop two concurrent imports
-            # from creating the same logical row. Preserve any legacy rows,
-            # but mark all except the newest exact copy as historical before
-            # installing effective partial uniqueness guards.
-            duplicate_groups = connection.execute(
-                """SELECT managed_checksum,vcf_sample_name
-                   FROM library_datasets WHERE is_current=1
-                   GROUP BY managed_checksum,vcf_sample_name HAVING COUNT(*)>1"""
+                added.add(column)
+        # Existing rows each represent the first known version of their
+        # content-addressed callset. Fingerprints are backfilled lazily
+        # only when an overlapping import is inspected; opening a large
+        # existing library must never scan every VCF at startup.
+        connection.execute(
+            "UPDATE library_datasets SET callset_id=managed_checksum "
+            "WHERE callset_id=''"
+        )
+        # Rows still carrying version_id='' were never backfilled: either the
+        # columns were added just now, or an earlier unversioned run added
+        # them and died before its backfill committed. Both cases get the
+        # same backfill, restricted to those rows.
+        unversioned = connection.execute(
+            "SELECT COUNT(*) FROM library_datasets WHERE version_id=''"
+        ).fetchone()[0]
+        if unversioned:
+            # Capture the user's former include choice before historical
+            # versions have their live cohort linkage cleared below.
+            connection.execute(
+                "UPDATE library_datasets SET cohort_preferred=include_in_cohort "
+                "WHERE version_id=''"
+            )
+            # A legacy library may contain the same managed VCF more than
+            # once under different import settings. Treat each old import
+            # batch as a preserved version, rather than assigning every
+            # row the same version ID and mixing historical samples into
+            # the active UI group. Rows written by one old import share
+            # checksum and timestamp; settings are intentionally excluded
+            # because a later per-sample metadata edit can change only one
+            # sibling's profile hash.
+            legacy_groups = connection.execute(
+                """SELECT DISTINCT callset_id,managed_checksum,imported_at
+                   FROM library_datasets WHERE version_id=''
+                   ORDER BY callset_id,imported_at"""
             ).fetchall()
-            for group in duplicate_groups:
-                copies = connection.execute(
-                    """SELECT id FROM library_datasets
-                       WHERE managed_checksum=? AND vcf_sample_name=? AND is_current=1
-                       ORDER BY imported_at DESC,id DESC""",
-                    (group["managed_checksum"], group["vcf_sample_name"]),
-                ).fetchall()
-                connection.executemany(
-                    "UPDATE library_datasets SET is_current=0,include_in_cohort=0,cohort_file_id=NULL WHERE id=?",
-                    [(row["id"],) for row in copies[1:]],
-                )
-            connection.execute(
-                """CREATE UNIQUE INDEX IF NOT EXISTS library_datasets_current_content_idx
-                   ON library_datasets(managed_checksum,vcf_sample_name)
-                   WHERE is_current=1"""
+            by_callset: dict[str, list[sqlite3.Row]] = {}
+            for row in legacy_groups:
+                by_callset.setdefault(row["callset_id"], []).append(row)
+            for callset_id, groups in by_callset.items():
+                versioned = connection.execute(
+                    """SELECT version_id,version_number FROM library_datasets
+                       WHERE callset_id=? AND version_id!=''
+                       ORDER BY version_number DESC LIMIT 1""",
+                    (callset_id,),
+                ).fetchone()
+                previous_version_id = versioned["version_id"] if versioned else None
+                base_number = int(versioned["version_number"]) if versioned else 0
+                if versioned:
+                    connection.execute(
+                        "UPDATE library_datasets SET is_current=0,include_in_cohort=0,cohort_file_id=NULL "
+                        "WHERE callset_id=? AND version_id!=''",
+                        (callset_id,),
+                    )
+                for offset, group in enumerate(groups, start=1):
+                    number = base_number + offset
+                    version_id = hashlib.sha256(
+                        (
+                            "legacy-library-version\0"
+                            f"{callset_id}\0{group['managed_checksum']}\0"
+                            f"{group['imported_at']}"
+                        ).encode("utf-8")
+                    ).hexdigest()
+                    is_current = offset == len(groups)
+                    connection.execute(
+                        """UPDATE library_datasets
+                           SET version_id=?,version_number=?,is_current=?,
+                               include_in_cohort=CASE WHEN ? THEN include_in_cohort ELSE 0 END,
+                               cohort_file_id=CASE WHEN ? THEN cohort_file_id ELSE NULL END,
+                               supersedes_version_id=?
+                           WHERE callset_id=? AND managed_checksum=?
+                             AND imported_at=? AND version_id=''""",
+                        (
+                            version_id, number, int(is_current), int(is_current),
+                            int(is_current), previous_version_id, callset_id,
+                            group["managed_checksum"], group["imported_at"],
+                        ),
+                    )
+                    previous_version_id = version_id
+
+    def _migrate_current_uniqueness(self, connection: sqlite3.Connection) -> None:
+        # The old UNIQUE constraint included the freshly generated
+        # sample_id and therefore could not stop two concurrent imports
+        # from creating the same logical row. Preserve any legacy rows,
+        # but mark all except the newest exact copy as historical before
+        # installing effective partial uniqueness guards.
+        duplicate_groups = connection.execute(
+            """SELECT managed_checksum,vcf_sample_name
+               FROM library_datasets WHERE is_current=1
+               GROUP BY managed_checksum,vcf_sample_name HAVING COUNT(*)>1"""
+        ).fetchall()
+        for group in duplicate_groups:
+            copies = connection.execute(
+                """SELECT id FROM library_datasets
+                   WHERE managed_checksum=? AND vcf_sample_name=? AND is_current=1
+                   ORDER BY imported_at DESC,id DESC""",
+                (group["managed_checksum"], group["vcf_sample_name"]),
+            ).fetchall()
+            connection.executemany(
+                "UPDATE library_datasets SET is_current=0,include_in_cohort=0,cohort_file_id=NULL WHERE id=?",
+                [(row["id"],) for row in copies[1:]],
             )
-            connection.execute(
-                """CREATE UNIQUE INDEX IF NOT EXISTS library_datasets_current_callset_idx
-                   ON library_datasets(callset_id,vcf_sample_name)
-                   WHERE is_current=1"""
-            )
-            connection.execute(
-                "CREATE INDEX IF NOT EXISTS library_datasets_callset_idx "
-                "ON library_datasets(callset_id,is_current,version_number)"
-            )
-            converted = connection.execute(
-                "SELECT value FROM sample_library_meta WHERE key='portable_paths_v2'"
-            ).fetchone()
-            if not converted:
-                # Pre-storage-registry installs recorded absolute managed paths.
-                # Perform lexical containment in Python: SQL LIKE treats '_' and
-                # '%' as wildcards and can select an unrelated sibling path.
-                rows = connection.execute(
-                    "SELECT id,managed_path,managed_index_path,original_path FROM library_datasets"
-                ).fetchall()
-                for row in rows:
-                    for column in ("managed_path", "managed_index_path"):
-                        value = row[column]
-                        if not value or not Path(value).is_absolute():
-                            continue
-                        candidate = Path(os.path.abspath(os.path.expanduser(value)))
-                        try:
-                            relative = candidate.relative_to(self.state_dir).as_posix()
-                        except ValueError:
-                            continue
-                        connection.execute(
-                            f"UPDATE library_datasets SET {column}=? WHERE id=?",
-                            (relative, row["id"]),
-                        )
-                    original = row["original_path"]
-                    if original and not Path(original).is_absolute() and not original.startswith("@workspace/"):
-                        # Prefer the configured temporary workspace when a
-                        # previous migration already copied the upload there.
-                        workspace_candidate = (self.workspace_dir / original).resolve()
-                        state_candidate = (self.state_dir / original).resolve()
-                        absolute = workspace_candidate if workspace_candidate.exists() else state_candidate
-                        connection.execute(
-                            "UPDATE library_datasets SET original_path=? WHERE id=?",
-                            (self._stored_original_path(absolute), row["id"]),
-                        )
+        connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS library_datasets_current_content_idx
+               ON library_datasets(managed_checksum,vcf_sample_name)
+               WHERE is_current=1"""
+        )
+        connection.execute(
+            """CREATE UNIQUE INDEX IF NOT EXISTS library_datasets_current_callset_idx
+               ON library_datasets(callset_id,vcf_sample_name)
+               WHERE is_current=1"""
+        )
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS library_datasets_callset_idx "
+            "ON library_datasets(callset_id,is_current,version_number)"
+        )
+
+    def _migrate_portable_paths(self, connection: sqlite3.Connection) -> None:
+        # Pre-storage-registry installs recorded absolute managed paths.
+        # Perform lexical containment in Python: SQL LIKE treats '_' and
+        # '%' as wildcards and can select an unrelated sibling path.
+        rows = connection.execute(
+            "SELECT id,managed_path,managed_index_path,original_path FROM library_datasets"
+        ).fetchall()
+        for row in rows:
+            for column in ("managed_path", "managed_index_path"):
+                value = row[column]
+                if not value or not Path(value).is_absolute():
+                    continue
+                candidate = Path(os.path.abspath(os.path.expanduser(value)))
+                try:
+                    relative = candidate.relative_to(self.state_dir).as_posix()
+                except ValueError:
+                    continue
                 connection.execute(
-                    "INSERT OR REPLACE INTO sample_library_meta(key,value) VALUES('portable_paths_v2','1')"
+                    f"UPDATE library_datasets SET {column}=? WHERE id=?",
+                    (relative, row["id"]),
+                )
+            original = row["original_path"]
+            if original and not Path(original).is_absolute() and not original.startswith("@workspace/"):
+                # Prefer the configured temporary workspace when a
+                # previous migration already copied the upload there.
+                workspace_candidate = (self.workspace_dir / original).resolve()
+                state_candidate = (self.state_dir / original).resolve()
+                absolute = workspace_candidate if workspace_candidate.exists() else state_candidate
+                connection.execute(
+                    "UPDATE library_datasets SET original_path=? WHERE id=?",
+                    (self._stored_original_path(absolute), row["id"]),
                 )
 
     @staticmethod
@@ -1155,7 +1260,7 @@ class SampleLibrary:
     def file(self, dataset_id: str) -> Path:
         record = self.get(dataset_id)
         if not record:
-            raise KeyError(dataset_id)
+            raise NotFoundError(f"library dataset not found: {dataset_id}")
         path = self._managed_path(record["managed_path"])
         if not path.is_file():
             raise FileNotFoundError(f"managed review VCF is missing: {path}")
@@ -1225,7 +1330,7 @@ class SampleLibrary:
         """
         record = self.get(dataset_id)
         if not record:
-            raise KeyError(dataset_id)
+            raise NotFoundError(f"library dataset not found: {dataset_id}")
         source = self._managed_path(record["managed_path"])
         if not source.is_file():
             raise FileNotFoundError(f"managed review VCF is missing: {source}")
@@ -1310,7 +1415,7 @@ class SampleLibrary:
         """
         record = self.get(dataset_id)
         if not record:
-            raise KeyError(dataset_id)
+            raise NotFoundError(f"library dataset not found: {dataset_id}")
         parsed = self.cohort._parse_variant_query(str(variant_key or "").strip())
         if not parsed or parsed[0] != "v.variant_key = ?":
             raise ValueError("variant_key must be CHROM:POS:REF:ALT")
@@ -1378,11 +1483,11 @@ class SampleLibrary:
                     record_pos = int(columns[1])
                 except (IndexError, ValueError):
                     continue
-                if (
-                    normalize_chromosome(columns[0]) == chrom
-                    and record_pos == pos
-                    and columns[3].upper() == ref.upper()
-                    and alt.upper() in {value.upper() for value in columns[4].split(",")}
+                # Compare canonical alleles: the stored key is the minimal
+                # representation, the original record may be padded.
+                if normalize_chromosome(columns[0]) == chrom and any(
+                    canonical_variant_key(columns[0], record_pos, columns[3], record_alt) == canonical_key
+                    for record_alt in columns[4].split(",")
                 ):
                     selected_line = "\t".join([*columns[:9], columns[sample_index]])
                     break
@@ -1423,7 +1528,7 @@ class SampleLibrary:
         for dataset_id in ids:
             record = self.get(dataset_id)
             if not record:
-                raise KeyError(dataset_id)
+                raise NotFoundError(f"library dataset not found: {dataset_id}")
             records.append(record)
         checksums = {str(r.get("managed_checksum") or "") for r in records}
         if len(checksums) != 1:
@@ -1652,6 +1757,11 @@ class SampleLibrary:
         result = self.cohort.import_vcf(
             path, force=True, import_profile=import_profile,
             analysis_scope=record["analysis_scope"], prefilter_options=options,
+            # Full-WGS indexing reads the ORIGINAL multi-sample VCF. Index
+            # only this dataset's own column: siblings stay in their existing
+            # cohort file, so no sample is ever counted twice (audit H2). A
+            # sibling's later full reindex appends to the same full file.
+            restrict_samples=(record["vcf_sample_name"],) if full_wgs else None,
         )
         if full_wgs and record.get("cohort_file_id") != result.get("id"):
             with self._session() as connection:
@@ -1830,6 +1940,54 @@ class SampleLibrary:
                 "already_current": False,
             }
 
+    def cohort_entry_identities(self, sample_ids: list[int]) -> list[tuple[int, str]]:
+        """Return (cohort_file_id, vcf_sample_name) for cohort sample entries.
+
+        Callers that remove cohort entries directly (the Cohort Search
+        manager) capture these BEFORE the removal so the library linkage that
+        pointed at them can be cleared afterwards. Without that step the
+        dataset keeps a dangling cohort_file_id, and a later file that
+        happened to receive the same id would be resolved as this dataset.
+        """
+        try:
+            selected = sorted({int(value) for value in sample_ids})
+        except (TypeError, ValueError):
+            return []
+        identities: list[tuple[int, str]] = []
+        with self._session() as connection:
+            for start in range(0, len(selected), 900):
+                chunk = selected[start:start + 900]
+                placeholders = ",".join("?" for _ in chunk)
+                identities.extend(
+                    (int(row["file_id"]), str(row["name"]))
+                    for row in connection.execute(
+                        f"SELECT file_id, name FROM cohort_samples WHERE id IN ({placeholders})",
+                        chunk,
+                    ).fetchall()
+                )
+        return identities
+
+    def detach_cohort_entries(self, identities: list[tuple[int, str]]) -> int:
+        """Clear library linkage to cohort entries that no longer exist.
+
+        The dataset stays in the library with include_in_cohort unchanged, so
+        it surfaces as needs_repair with a working repair action instead of
+        silently re-binding to whichever cohort file next carries that id.
+        """
+        detached = 0
+        if not identities:
+            return 0
+        with self._session() as connection:
+            for file_id, name in identities:
+                cursor = connection.execute(
+                    """UPDATE library_datasets
+                       SET cohort_preferred=0,cohort_file_id=NULL,updated_at=?
+                       WHERE cohort_file_id=? AND vcf_sample_name=?""",
+                    (utc_now(), int(file_id), str(name)),
+                )
+                detached += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
+        return detached
+
     def exclude_from_cohort(self, dataset_id: str) -> dict:
         """Remove the derived carrier entry while retaining the library dataset."""
         record = self.get(dataset_id)
@@ -1880,7 +2038,7 @@ class SampleLibrary:
             try:
                 record = self.get(dataset_id)
                 if not record:
-                    raise KeyError("library dataset not found")
+                    raise NotFoundError("library dataset not found")
                 if action == "cohort_add":
                     if record.get("cohort_index_status") == "ready":
                         skipped.append(dataset_id)
@@ -1932,7 +2090,55 @@ class SampleLibrary:
                     if path.is_file():
                         path.unlink()
                         removed_files.append(str(path))
+        # Per-sample review projections (audit M28): these hold the removed
+        # individual's genotypes and were left behind forever — outside every
+        # cleanup category. Remove this sample's projection always, and every
+        # projection of the managed file once no dataset references it.
+        removed_files.extend(
+            self._remove_projections(record, all_samples=remaining == 0)
+        )
         return {"removed_dataset": dataset_id, "removed_files": removed_files}
+
+    def _remove_projections(self, record: dict, *, all_samples: bool) -> list[str]:
+        managed = record.get("managed_path") or ""
+        if not managed:
+            return []
+        try:
+            source = self._managed_path(managed)
+        except (ValueError, OSError):
+            return []
+        checksum = str(record.get("managed_checksum") or source.stem)
+        if not checksum or any(ch in checksum for ch in "*?[/\\"):
+            return []
+        if all_samples:
+            patterns = [f"{checksum}.*.review.vcf.gz", f"{checksum}.*.review.vcf.gz.*"]
+        else:
+            sample = str(record.get("vcf_sample_name") or "")
+            if not sample:
+                return []
+            digest = hashlib.sha256(sample.encode("utf-8")).hexdigest()[:12]
+            patterns = [
+                f"{checksum}.*.{digest}.review.vcf.gz",
+                f"{checksum}.*.{digest}.review.vcf.gz.*",
+                # A combined projection of several samples of this file is
+                # named by the selection, not by its members: any of them
+                # may include the removed sample, so all of them go (review
+                # follow-up of M28). They are rebuilt on demand.
+                f"{checksum}.subset-*.review.vcf.gz",
+                f"{checksum}.subset-*.review.vcf.gz.*",
+            ]
+        removed: list[str] = []
+        if not self.files_dir.exists():
+            return removed
+        for pattern in patterns:
+            for path in sorted(self.files_dir.glob(pattern)):
+                if path.is_file():
+                    try:
+                        path.unlink()
+                        removed.append(str(path))
+                    except OSError:
+                        pass
+        return removed
 
     def phenotype(self, dataset_id: str) -> dict | None:
         record = self.get(dataset_id)
@@ -2000,6 +2206,10 @@ class SampleLibrary:
         locations = {
             "database": self.database_path.stat().st_size if self.database_path.exists() else 0,
             "managed_library": _directory_size(self.root),
+            # Per-sample review projections (rebuilt on demand) — counted
+            # inside managed_library, reported separately so the Storage page
+            # shows what the "projections" cleanup category reclaims.
+            "projections": sum(path.stat().st_size for path in self._projection_files()),
             "uploads": _directory_size(self.workspace_dir / "uploads"),
             "cohort_cache": _directory_size(self.cohort.prepared_dir),
             "wgs_review_cache": _directory_size(self.workspace_dir / "wgs-review-cache"),
@@ -2022,8 +2232,75 @@ class SampleLibrary:
             "database_reclaimable_bytes": page_size * freelist,
         }
 
+    def _projection_files(self) -> list[Path]:
+        """Every cached per-sample review projection (and its index files)."""
+        if not self.files_dir.exists():
+            return []
+        found: list[Path] = []
+        for pattern in ("*.review.vcf.gz", "*.review.vcf.gz.*"):
+            found.extend(path for path in self.files_dir.glob(pattern) if path.is_file())
+        return sorted(set(found))
+
+    def cleanup_projections(self, *, orphaned_only: bool = False) -> list[str]:
+        """Remove cached review projections (audit M28).
+
+        Projections are derived from the managed VCFs and rebuilt on the next
+        review, so the whole cache is reclaimable; ``orphaned_only`` limits
+        the sweep to projections whose managed file no longer has a dataset.
+        """
+        referenced: dict[str, set[str]] = {}
+        with self._session() as connection:
+            for checksum, sample in connection.execute(
+                "SELECT managed_checksum, vcf_sample_name FROM library_datasets"
+            ):
+                if checksum:
+                    referenced.setdefault(str(checksum), set()).add(str(sample or ""))
+        removed: list[str] = []
+        orphaned: dict[str, bool] = {}
+        for path in self._projection_files():
+            if not path.name.endswith(".review.vcf.gz"):
+                continue  # index files follow their data file below
+            checksum = path.name.split(".", 1)[0]
+            orphaned[path.name] = (
+                not orphaned_only
+                or checksum not in referenced
+                # A projection carrying a sample this file no longer has a
+                # dataset for is stale whatever its name says (review
+                # follow-up of M28): the combined projections are named by
+                # their selection, so their members are read from the header.
+                or not self._projection_samples(path) <= referenced[checksum]
+            )
+        for path in self._projection_files():
+            data_name = path.name if path.name.endswith(".review.vcf.gz") else (
+                path.name.rsplit(".review.vcf.gz", 1)[0] + ".review.vcf.gz"
+            )
+            if not orphaned.get(data_name, True):
+                continue
+            try:
+                path.unlink()
+                removed.append(str(path))
+            except OSError:
+                pass
+        return removed
+
+    @staticmethod
+    def _projection_samples(path: Path) -> set[str]:
+        """Sample columns of a cached projection's header (bgzip is gzip).
+        An unreadable header yields the empty set: nothing is known to be
+        stale about it, and the projections category still reclaims it."""
+        try:
+            with gzip.open(path, "rt", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if line.startswith("#CHROM"):
+                        return set(line.rstrip("\r\n").split("\t")[9:])
+                    if not line.startswith("#"):
+                        break
+        except (OSError, EOFError, ValueError, zlib.error):
+            pass
+        return set()
+
     def cleanup(self, categories: list[str]) -> dict:
-        allowed = {"uploads", "cohort_cache", "wgs_review_cache", "partials", "configs"}
+        allowed = {"uploads", "cohort_cache", "wgs_review_cache", "partials", "configs", "projections"}
         requested = set(categories)
         if not requested or not requested <= allowed:
             raise ValueError("unsupported cleanup category")
@@ -2041,7 +2318,7 @@ class SampleLibrary:
             "wgs_review_cache": self.workspace_dir / "wgs-review-cache",
             "configs": self.state_dir / "job-configs",
         }
-        selected_roots = [(category, roots[category]) for category in requested - {"partials"}]
+        selected_roots = [(category, roots[category]) for category in requested - {"partials", "projections"}]
         if "configs" in requested:
             selected_roots.append(("configs", self.state_dir / "resource-configs"))
         for _category, root in selected_roots:
@@ -2057,6 +2334,12 @@ class SampleLibrary:
                             pass
         if "partials" in requested:
             removed.extend(self.cleanup_partials())
+        if "projections" in requested:
+            removed.extend(self.cleanup_projections())
+        elif requested:
+            # Any cleanup also reaps projections whose managed file no longer
+            # has a dataset (left by removals before this category existed).
+            removed.extend(self.cleanup_projections(orphaned_only=True))
         after = self.storage_stats()
         return {"removed_files": len(removed), "freed_bytes": before["total_bytes"] - after["total_bytes"], "storage": after}
 

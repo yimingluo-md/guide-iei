@@ -175,8 +175,14 @@ def _resolve_indexed(plan: VepPlan, mapper: PathMapper, host_path: str,
 def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
                       container: bool = True,
                       check_exists: bool = True,
-                      base_dir: str | None = None) -> VepPlan:
-    """Build the VEP argument list + bind-mounts from a parsed config dict."""
+                      base_dir: str | None = None,
+                      verify_integrity: bool = False) -> VepPlan:
+    """Build the VEP argument list + bind-mounts from a parsed config dict.
+
+    ``verify_integrity`` runs the strict (always-hash) manifest check on every
+    indexed-score dataset instead of the fast status check; the runner sets
+    it at job start.
+    """
     plan = VepPlan()
     mapper = PathMapper(container=container, base_dir=base_dir)
 
@@ -285,7 +291,8 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
         argv += [str(extra)]
 
     # --- plugins -------------------------------------------------------------
-    _add_plugins(cfg.get("plugins", {}), plan, mapper, argv, check_exists)
+    _add_plugins(cfg.get("plugins", {}), plan, mapper, argv, check_exists,
+                 verify_integrity=verify_integrity)
 
     # --- custom tracks -------------------------------------------------------
     _add_custom(cfg.get("custom_tracks", {}), plan, mapper, argv, check_exists)
@@ -305,7 +312,8 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
 
 
 def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
-                 argv: list[str], check_exists: bool) -> None:
+                 argv: list[str], check_exists: bool,
+                 verify_integrity: bool = False) -> None:
     registry = load_registry()
 
     # dbNSFP — consolidates CADD/REVEL/AlphaMissense/SIFT/PolyPhen/PrimateAI/etc.
@@ -555,7 +563,9 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
                 )
                 host_score = Path(mapper.absolutize(raw_score_path))
                 host_index = Path(str(host_score) + ".tbi")
-                validate_manifest_files(manifest, host_score, host_index)
+                validate_manifest_files(
+                    manifest, host_score, host_index, strict=verify_integrity
+                )
             except (OSError, ManifestError) as exc:
                 message = f"plugin.{config_parts[1]}.{manifest_key}: {exc}"
                 if required:
@@ -606,6 +616,10 @@ def main(argv: list[str] | None = None) -> int:
                     help="emit native (host-path) command instead of container paths")
     ap.add_argument("--no-check", action="store_true",
                     help="do not check file existence (emit all enabled sources)")
+    ap.add_argument("--verify-integrity", action="store_true",
+                    help="hash every indexed-score dataset against its manifest "
+                         "(strict check for job start; the default is the fast "
+                         "name/size/timestamp status check)")
     ap.add_argument("--print", dest="do_print", action="store_true",
                     help="print the command string (default prints argv one-per-line)")
     ap.add_argument("--json", dest="do_json", action="store_true",
@@ -619,7 +633,8 @@ def main(argv: list[str] | None = None) -> int:
     plan = build_vep_command(cfg, args.input, args.output,
                              base_dir=config_base,
                              container=not args.no_container,
-                             check_exists=not args.no_check)
+                             check_exists=not args.no_check,
+                             verify_integrity=args.verify_integrity)
 
     for w in plan.warnings:
         print(f"WARN  {w}", file=sys.stderr)

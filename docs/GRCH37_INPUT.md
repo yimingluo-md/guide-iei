@@ -104,6 +104,28 @@ Every converted record retains:
 These fields survive VEP annotation. The UI and cohort results display the
 original representation and label the call **Lifted from GRCh37**.
 
+### Mitochondrial records
+
+"GRCh37" callsets disagree about the mitochondrial sequence. UCSC hg19 `chrM`
+is the older NC_001807 sequence (16,571 bp); Ensembl GRCh37, Broad
+b37/humanG1Kv37 and hs37d5 use the revised Cambridge Reference Sequence
+(rCRS, 16,569 bp), which is identical to GRCh38 `MT`. Only NC_001807
+coordinates may go through the hg19 chain — running rCRS records through it
+shifts positions and changes reference bases.
+
+GUIDE-IEI therefore reads the input's mitochondrial convention before
+conversion (`liftover.mt_convention`, default `auto`): a `##contig` line with
+`length=16569` means rCRS, `length=16571` means hg19; without a length the
+`##reference` name is consulted, and rCRS is assumed otherwise. rCRS records
+bypass the chain and are carried over with their coordinates unchanged, but
+only after every REF base has been verified against the GRCh38 `MT` sequence
+(`bcftools norm --check-ref e`) — a callset that was really NC_001807 fails
+that check loudly instead of being silently mis-positioned. Such records
+carry the `IEI_MT_PASSTHROUGH` flag, and the liftover QC reports
+`mt_convention`, the evidence it was based on, and the number of passthrough
+records. Set `liftover.mt_convention: rcrs` or `hg19` in the configuration to
+override the header evidence.
+
 ## QC and provenance
 
 The derived GRCh38 VCF has two JSON sidecars:
@@ -118,6 +140,11 @@ rejected, and unsupported artifacts or conversion fails. QC tracks stable
 source-allele identities because introducing a new GRCh38 reference can turn
 one source allele into two normalized destination rows. Identical conversions
 are cached using input, reference, chain, tool, and policy identities.
+
+A small `*.vcf.gz.lock.guard` file coordinates concurrent conversions. It stays
+beside the cached VCF after a run; its presence does not mean a conversion is
+active. The operating system releases the lock when the last holding process
+exits. Leave this file in place while annotation jobs may be running.
 
 ## Setup
 

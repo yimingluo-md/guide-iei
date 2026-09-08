@@ -168,6 +168,39 @@ class ScreenContextStore:
                     "members": members,
                 })
             context_db.close()
+            # One row stride per matrix, taken from the stored shape and
+            # checked against the files and the catalogs here, so every
+            # reader (detail evidence and the filter) addresses the same
+            # bytes. The filter used to derive the tissue stride from the
+            # catalog row count: on a bundle/catalog skew it excluded
+            # variants the detail view reported as active (audit M29).
+            tissue_columns, tissue_rows = self._matrix_geometry(
+                prepared, "tissue_matrix", tissue_matrix
+            )
+            immune_columns, immune_rows = self._matrix_geometry(
+                prepared, "immune_matrix", immune_matrix
+            )
+            if tissue_rows != immune_rows:
+                raise ValueError(
+                    "prepared SCREEN bundle is inconsistent: tissue matrix has "
+                    f"{tissue_rows} rows but immune matrix has {immune_rows}"
+                )
+            bad_tissue = [t["index"] for t in tissues if not 0 <= int(t["index"]) < tissue_columns]
+            if bad_tissue:
+                raise ValueError(
+                    "prepared SCREEN bundle is inconsistent: tissue catalog index(es) "
+                    f"{bad_tissue} exceed the tissue matrix width {tissue_columns}"
+                )
+            bad_profiles = sorted({
+                member["profile_index"]
+                for context in immune_contexts for member in context["members"]
+                if not 0 <= int(member["profile_index"]) < immune_columns
+            })
+            if bad_profiles:
+                raise ValueError(
+                    "prepared SCREEN bundle is inconsistent: profile index(es) "
+                    f"{bad_profiles} exceed the immune matrix width {immune_columns}"
+                )
             self._manifest_path = resolved
             self._configuration = {
                 "context_manifest": context_manifest,
@@ -175,10 +208,32 @@ class ScreenContextStore:
                 "catalog_path": catalog_path,
                 "tissue_matrix": tissue_matrix,
                 "immune_matrix": immune_matrix,
+                "tissue_columns": tissue_columns,
+                "immune_columns": immune_columns,
+                "matrix_rows": tissue_rows,
                 "tissues": tissues,
                 "immune_contexts": immune_contexts,
             }
             return self._configuration
+
+    @staticmethod
+    def _matrix_geometry(prepared: dict[str, Any], key: str, path: Path) -> tuple[int, int]:
+        """(columns, rows) of a u8 matrix from the prepared manifest, verified
+        against the file's actual size."""
+        shape = (prepared.get(key) or {}).get("shape")
+        if (
+            not isinstance(shape, (list, tuple)) or len(shape) != 2
+            or not all(isinstance(value, int) and value >= 0 for value in shape)
+        ):
+            raise ValueError(f"prepared SCREEN manifest has no valid shape for {key}")
+        rows, columns = int(shape[0]), int(shape[1])
+        actual = path.stat().st_size
+        if actual != rows * columns:
+            raise ValueError(
+                f"prepared SCREEN {key} is {actual} bytes but its manifest shape "
+                f"{rows}x{columns} implies {rows * columns}"
+            )
+        return columns, rows
 
     @staticmethod
     def _catalog_connection(path: Path) -> sqlite3.Connection:
@@ -309,11 +364,9 @@ class ScreenContextStore:
 
     def _tissue_evidence(self, configured: dict[str, Any], row_index: int) -> list[dict[str, Any]]:
         tissues = configured["tissues"]
-        # Row stride must come from the stored matrix shape, not the
-        # catalog row count: on a bundle/catalog skew every row after the
-        # first would be read at the wrong offset (silent misalignment).
-        tissue_columns = configured["prepared"]["tissue_matrix"]["shape"][1]
-        codes = self._read_matrix_row(configured["tissue_matrix"], tissue_columns, row_index)
+        codes = self._read_matrix_row(
+            configured["tissue_matrix"], configured["tissue_columns"], row_index
+        )
         result = []
         for tissue in tissues:
             code = codes[tissue["index"]]
@@ -329,8 +382,9 @@ class ScreenContextStore:
         return result
 
     def _immune_evidence(self, configured: dict[str, Any], row_index: int) -> list[dict[str, Any]]:
-        columns = configured["prepared"]["immune_matrix"]["shape"][1]
-        codes = self._read_matrix_row(configured["immune_matrix"], columns, row_index)
+        codes = self._read_matrix_row(
+            configured["immune_matrix"], configured["immune_columns"], row_index
+        )
         result = []
         for context in configured["immune_contexts"]:
             calls = []
@@ -424,8 +478,8 @@ class ScreenContextStore:
         expected = len(tissue_indices) + len(selected_contexts)
         if expected == 0:
             return {"available": True, "matching_keys": [], "tested": len(variants)}
-        tissue_columns = len(configured["tissues"])
-        immune_columns = configured["prepared"]["immune_matrix"]["shape"][1]
+        tissue_columns = configured["tissue_columns"]
+        immune_columns = configured["immune_columns"]
         matching: list[str] = []
         connection = self._catalog_connection(configured["catalog_path"])
         tissue_handle = configured["tissue_matrix"].open("rb") if tissue_indices else None

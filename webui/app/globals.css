@@ -27,6 +27,8 @@ button { color: inherit; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; }
 
 .app-shell { min-width: 1120px; min-height: 100vh; }
+.workbench-recovery { max-width: 760px; margin: 48px auto; padding: 28px; background: var(--white); border: 1px solid var(--line); border-radius: 8px; font-size: 14px; line-height: 1.6; }
+.workbench-recovery h1 { font-size: 24px; }
 .topbar { position: sticky; top: 0; z-index: 60; height: 58px; background: #12383d; color: white; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid #2d5559; }
 .brand, .top-actions { display: flex; align-items: center; gap: 11px; }
 .brand { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
@@ -114,6 +116,8 @@ h1 { font-family: Georgia, "Times New Roman", serif; font-size: 25px; line-heigh
 .table-frame { background: white; border: 1px solid var(--line); border-radius: 7px; overflow: hidden; display: grid; grid-template-columns: minmax(0, 1fr); min-height: 430px; }
 .qc-strip + .table-frame { border-radius: 0 0 7px 7px; border-top: 0; }
 .table-frame.with-detail { grid-template-columns: minmax(0, 1fr) 285px; }
+.table-render-more { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 10px 14px; border-top: 1px solid var(--line); background: #f8fbfa; font-size: 12px; color: #42514c; }
+.table-render-more span { flex: 1 1 260px; }
 .table-scroll { overflow: auto; min-width: 0; }
 table { width: 100%; border-collapse: collapse; min-width: 1120px; table-layout: fixed; }
 th { position: sticky; top: 0; z-index: 2; height: 41px; background: #fbfcfb; border-bottom: 1px solid var(--line); color: #717d79; text-align: left; font-size: 9px; font-weight: 650; text-transform: uppercase; letter-spacing: .045em; padding: 0 9px; }
@@ -1003,6 +1007,7 @@ tbody tr:last-child td { border-bottom: 0; }
 
 .review-workspace { height: 100%; min-width: 0; min-height: 0; overflow: hidden; display: grid; grid-template-columns: 270px minmax(0, 1fr); background: #f1f3f1; }
 .review-list { min-width: 0; min-height: 0; overflow: hidden; display: flex; flex-direction: column; background: #f7f9f8; border-right: 1px solid #d8dfdc; }
+.review-list-note { margin: 0; padding: 10px 13px; font-size: 11px; line-height: 1.4; color: #5b6a65; border-top: 1px solid #dde3e0; background: #f8fbfa; }
 .review-list-head { min-height: 52px; padding: 0 13px; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-bottom: 1px solid #dde3e0; background: white; }
 .review-list-head button { border: 0; background: none; padding: 4px 0; color: #285f5d; font-weight: 650; cursor: pointer; }
 .review-list-head span { color: #88938f; font: 9px var(--font-geist-mono); }

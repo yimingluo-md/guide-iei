@@ -15,12 +15,42 @@ GUIDE-IEI does not combine them into a classification. The reviewer must weigh
 each item in the context of the patient, inheritance pattern, transcript, and
 established disease mechanism.
 
+### Reference warnings and session recovery
+
+If a bundled reference cannot load, a warning names the file and offers
+**Retry references**. Other references remain available. Its dependent filters
+are unavailable, and results pause if one of those filters was already selected;
+retry or uncheck it before interpreting results. Missing reference data must
+not be interpreted as absence of a gene association or constraint.
+
+**Saved candidates are session-only**, including for Sample Library reviews.
+Export the Saved view as TSV before loading another dataset, refreshing, or
+closing the tab. Earlier browser-persisted candidate lists are removed when
+the updated workbench opens; they are not migrated into a new store.
+
+If a rendering error occurs, **Reopen interface** resets the view and filters
+while retaining imported rows, their import summary, and stars in memory.
+This also protects **Review once** imports from that interface reset. It does
+not protect against tab closure, page refresh, browser failure, or power loss;
+retain important source files in the Sample Library.
+
 ![Evidence sections of a variant page: predictors, call quality, ClinVar, ClinGen, and the transcript block](../assets/img/variant-evidence-sections.png)
 
 ## Population frequency
 
 [gnomAD](https://gnomad.broadinstitute.org) frequencies, with **popmax** — the highest frequency observed in any
 major population — as the headline value.
+
+Which field supplies that headline value depends on what the annotation
+carries, and the variant page names it. An explicit gnomAD popmax field is
+used when present. The standard GUIDE-IEI annotation does not write one: VEP
+is run with `--max_af`, so the value shown is VEP's **MAX_AF** — the highest
+allele frequency across 1000 Genomes, ESP, and gnomAD exomes and genomes, with
+**Popmax population** naming where it was observed (`gnomADe_NFE`, `AFR`,
+`EA`, …). Only when neither exists does the gnomAD global AF stand in. The
+sources are never mixed: a supplied popmax is not replaced by a larger MAX_AF
+from a small non-gnomAD population. The frequency filter, Cohort Search, and
+the whole-genome intake all apply the same preference.
 
 One caveat is specific to this annotation pathway: a blank gnomAD value means
 “unavailable from this VEP annotation,” not necessarily “absent from gnomAD.”
@@ -133,7 +163,11 @@ single opaque score would not offer.
 Prediction scores are computational estimates, not functional evidence.
 Different tools often share training data, component scores, or
 population-frequency features, so agreement among them should not be counted
-as multiple independent lines of evidence. Use the scores to prioritize
+as multiple independent lines of evidence. A blank score means the predictor
+did not score this variant — outside its variant class, outside the installed
+dataset's coverage, or not matched to this transcript — never that the variant
+is benign. Bear in mind that a score threshold in the filter panel excludes
+such unscored variants while it is set (the frequency filter retains them). Use the scores to prioritize
 variants and define testable hypotheses, while considering transcript
 relevance, gene mechanism, clinical evidence, and the patient's phenotype.
 What follows is the complete catalog — what each score measures and how it was

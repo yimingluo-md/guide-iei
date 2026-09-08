@@ -446,6 +446,75 @@ def test_generic_manifest_mtime_is_optional_and_checksum_resolves_mismatch(tmp_p
     assert not any(value.startswith("IndexedScores,") for value in damaged.argv)
 
 
+def test_strict_integrity_check_catches_a_same_size_same_mtime_change(tmp_path):
+    # Review M8: the fast status check trusts name+size when the recorded
+    # mtime matches (or is absent), so a content change that preserves both
+    # passes it. The strict check run at job start always hashes.
+    from indexed_scores import ManifestError, validate_manifest_files
+    from pathlib import Path
+
+    cfg = _full_cfg(str(tmp_path))
+    manifest_path = cfg["plugins"]["FuncVEP"]["manifest"]
+    score_path = cfg["plugins"]["FuncVEP"]["file"]
+    with open(manifest_path, encoding="utf-8") as handle:
+        payload = json.load(handle)
+
+    # Intact dataset: both checks pass, strict emits the plugin.
+    validate_manifest_files(payload, Path(score_path), Path(score_path + ".tbi"))
+    validate_manifest_files(
+        payload, Path(score_path), Path(score_path + ".tbi"), strict=True
+    )
+    strict_plan = build_vep_command(
+        cfg, "in.vcf", "out.vcf", container=False, verify_integrity=True
+    )
+    assert not strict_plan.errors
+    assert any(value.startswith("IndexedScores,") for value in strict_plan.argv)
+
+    # Same-size overwrite with the original timestamp restored.
+    before = os.stat(score_path)
+    with open(score_path, "wb") as handle:
+        handle.write(b"scorf")
+    os.utime(score_path, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert os.stat(score_path).st_size == before.st_size
+    assert os.stat(score_path).st_mtime_ns == before.st_mtime_ns
+
+    # Fast status check: still passes (by design — it is the cheap poll).
+    validate_manifest_files(payload, Path(score_path), Path(score_path + ".tbi"))
+    fast_plan = build_vep_command(cfg, "in.vcf", "out.vcf", container=False)
+    assert not fast_plan.errors
+    assert any(value.startswith("IndexedScores,") for value in fast_plan.argv)
+
+    # Strict verification: refuses the dataset, and the plan drops the plugin
+    # with a warning naming the checksum.
+    try:
+        validate_manifest_files(
+            payload, Path(score_path), Path(score_path + ".tbi"), strict=True
+        )
+    except ManifestError as error:
+        assert "sha256" in str(error) and "strict" in str(error)
+    else:
+        raise AssertionError("strict verification accepted a changed file")
+    strict_plan = build_vep_command(
+        cfg, "in.vcf", "out.vcf", container=False, verify_integrity=True
+    )
+    assert not strict_plan.errors  # FuncVEP is optional in this fixture
+    assert any("sha256" in warning for warning in strict_plan.warnings)
+    assert not any(value.startswith("IndexedScores,") for value in strict_plan.argv)
+
+    # A manifest without mtime_ns is accepted by the fast check on name+size
+    # alone, and still refused by the strict check.
+    payload["files"]["data"].pop("mtime_ns")
+    validate_manifest_files(payload, Path(score_path), Path(score_path + ".tbi"))
+    try:
+        validate_manifest_files(
+            payload, Path(score_path), Path(score_path + ".tbi"), strict=True
+        )
+    except ManifestError:
+        pass
+    else:
+        raise AssertionError("strict verification accepted a changed file")
+
+
 def test_required_missing_errors(tmp_path):
     """A missing REQUIRED file becomes an error (would abort the run)."""
     cfg = _full_cfg(str(tmp_path))

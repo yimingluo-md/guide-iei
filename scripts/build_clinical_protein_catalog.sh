@@ -40,9 +40,12 @@ METADATA="${WORK}/source-metadata.tsv"
 VEP_TAB="${WORK}/source.vep.tsv"
 CATALOG="${WORK}/catalog.tsv"
 
+# The configured pathogenic_terms (post_processing.clinical_protein_match, or
+# the legacy clinvar_aa_match key) decide which source labels are admitted;
+# the same list is recorded in the catalog manifest.
 python3 "${ROOT}/pipeline/prepare_clinical_protein_catalog.py" export \
   --source-type "$SOURCE_TYPE" --source "$SOURCE_PATH" \
-  --output-vcf "$SOURCE_VCF" --metadata "$METADATA"
+  --output-vcf "$SOURCE_VCF" --metadata "$METADATA" --config "$CONFIG"
 
 VEP_INNER="vep -i /w/source.vcf -o /w/source.vep.tsv \
   --offline --cache --dir_cache /cache --species homo_sapiens --assembly ${ASSEMBLY} \
@@ -52,7 +55,7 @@ VEP_INNER="vep -i /w/source.vcf -o /w/source.vep.tsv \
 
 case "$RUNTIME" in
   docker|podman)
-    "$RUNTIME" run --rm --ulimit core=0:0 \
+    "$RUNTIME" run --rm --pull=never --network=none --ulimit core=0:0 \
       -v "${WORK}:/w" -v "${VEP_CACHE_DIR}:/cache:ro" \
       --entrypoint sh "$IMAGE" -c "$VEP_INNER"
     ;;
@@ -66,7 +69,7 @@ esac
 
 REDUCE_ARGS=(
   reduce --vep-tab "$VEP_TAB" --metadata "$METADATA" --output "$CATALOG"
-  --source "$SOURCE_PATH" --source-type "$SOURCE_TYPE"
+  --source "$SOURCE_PATH" --source-type "$SOURCE_TYPE" --config "$CONFIG"
 )
 [[ -z "$MANIFEST" ]] || REDUCE_ARGS+=(--manifest "${WORK}/manifest.json")
 python3 "${ROOT}/pipeline/prepare_clinical_protein_catalog.py" "${REDUCE_ARGS[@]}"

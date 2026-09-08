@@ -524,6 +524,40 @@ def test_provenance_details_and_exact_allele_exclusion(tmp_path):
     assert info["ClinVar_path_aa_details"] == "."
 
 
+def test_exact_allele_exclusion_survives_padded_and_lowercase_representations(tmp_path):
+    """Audit repro (H5): the catalog's source allele is minimal (ClinVar VCF
+    form); a padded or lowercase patient representation of the SAME allele
+    used to bypass the exclusion and let the record support itself."""
+    catalog = tmp_path / "catalog.tsv"
+    catalog.write_text(
+        "BRCA1\t100\tR\tH\tENST0\tRCV1\t1:1001:C:A\tPathogenic\tDisease A\n"
+    )
+    loaded = aam.load_reference(str(catalog))
+    vin = str(tmp_path / "in.vcf"); vout = str(tmp_path / "out.vcf")
+    text = _vcf([_csq("missense_variant", "BRCA1", "100")])
+    # Same allele, padded by one shared trailing base and lowercase:
+    # 1:1001 cg>ag  ==  1:1001 C>A.
+    padded = text.replace("1\t1001\t.\tC\tA\t", "1\t1001\t.\tcg\tag\t")
+    assert padded != text
+    _write(vin, padded)
+    aam.annotate(vin, vout, loaded)
+    record = [line for line in open(vout) if not line.startswith("#")][0]
+    info = dict(item.split("=", 1) for item in record.split("\t")[7].split(";") if "=" in item)
+    assert info["ClinVar_path_aa_match"] == "0"
+    assert info["ClinVar_path_aa_change_match"] == "0"
+    # A genuinely different allele at the same residue still counts.
+    different = text.replace("1\t1001\t.\tC\tA\t", "1\t1001\t.\tC\tT\t")
+    _write(vin, different)
+    aam.annotate(vin, vout, loaded)
+    record = [line for line in open(vout) if not line.startswith("#")][0]
+    info = dict(item.split("=", 1) for item in record.split("\t")[7].split(";") if "=" in item)
+    assert info["ClinVar_path_aa_match"] == "1"
+    assert aam._canonical_allele_text("chr1:100:AT:ATT") == "1:100:A:AT"
+    assert aam._canonical_allele_text("1:298:atg:atc") == "1:300:G:C"
+    assert aam._canonical_allele_text("M:8993:T:G") == "MT:8993:T:G"
+    assert aam._canonical_allele_text("1:100:A:<DEL>") == "1:100:A:<DEL>"
+
+
 def test_provenance_residue_kind_is_disjoint_from_change(tmp_path):
     catalog = tmp_path / "catalog.tsv"
     catalog.write_text(

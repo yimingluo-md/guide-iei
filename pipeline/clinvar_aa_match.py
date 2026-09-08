@@ -63,6 +63,13 @@ import sys
 from dataclasses import dataclass
 from urllib.parse import quote
 
+try:
+    from .research_use_notice import is_notice_header as _is_notice_header
+    from .research_use_notice import vcf_header_line as _notice_header_line
+except ImportError:  # direct script execution
+    from research_use_notice import is_notice_header as _is_notice_header
+    from research_use_notice import vcf_header_line as _notice_header_line
+
 
 # --------------------------------------------------------------------------- #
 # small gzip-aware IO (stdlib only — no pysam/bcftools dependency)
@@ -193,7 +200,16 @@ class Reference:
 
 
 def _canonical_allele_text(value: str) -> str:
-    """Normalize the spelling, but not the representation, of CHROM:POS:REF:ALT."""
+    """Normalize the spelling AND the minimal representation of CHROM:POS:REF:ALT.
+
+    The same-allele exclusion compares the patient's genomic allele with the
+    catalog record's source allele. Catalog alleles come from ClinVar's VCF
+    (minimal, left-aligned); a patient VCF may carry the same allele padded
+    (REF=AT ALT=ATT for A>AT) or with lowercase bases, which used to bypass
+    the exclusion and let a record support itself (audit H5). Repeat
+    left-alignment needs the reference and is not attempted here; shared
+    prefix/suffix trimming covers the padded multi-allelic case.
+    """
     parts = (value or "").split(":", 3)
     if len(parts) != 4:
         return value or ""
@@ -201,7 +217,17 @@ def _canonical_allele_text(value: str) -> str:
     chrom = chrom.removeprefix("chr")
     if chrom == "M":
         chrom = "MT"
-    return f"{chrom}:{pos}:{ref.upper()}:{alt.upper()}"
+    ref, alt = ref.upper(), alt.upper()
+    try:
+        position = int(pos)
+    except ValueError:
+        return f"{chrom}:{pos}:{ref}:{alt}"
+    if ref and alt and all(base in "ACGTN" for base in ref + alt) and ref != alt:
+        while len(ref) > 1 and len(alt) > 1 and ref[-1] == alt[-1]:
+            ref, alt = ref[:-1], alt[:-1]
+        while len(ref) > 1 and len(alt) > 1 and ref[0] == alt[0]:
+            ref, alt, position = ref[1:], alt[1:], position + 1
+    return f"{chrom}:{position}:{ref}:{alt}"
 
 
 def load_reference(path: str) -> Reference:
@@ -514,9 +540,12 @@ def annotate(in_path: str, out_path: str, ref: Reference,
                     # them.
                     if h.startswith(f"##INFO=<ID={info_key},") or \
                             h.startswith(f"##INFO=<ID={change_key},") or \
-                            h.startswith(f"##INFO=<ID={detail_key},"):
+                            h.startswith(f"##INFO=<ID={detail_key},") or \
+                            _is_notice_header(h):
                         continue
                     fout.write(h + "\n")
+                # The research-use notice travels inside the deliverable.
+                fout.write(_notice_header_line())
                 fout.write(residue_info + "\n")
                 fout.write(change_info + "\n")
                 if include_details:

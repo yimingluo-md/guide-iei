@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 
 from build_vep_command import load_config
 from predictor_registry import RegistryError, load_registry
+from research_use_notice import RESEARCH_USE_NOTICE
 
 
 def file_metadata(path: str) -> dict:
@@ -215,6 +216,7 @@ def main() -> int:
 
     manifest = {
         "created_utc": datetime.now(timezone.utc).isoformat(),
+        "research_use_notice": RESEARCH_USE_NOTICE,
         "pipeline_version": pipeline_version,
         "config": {"path": os.path.abspath(args.config), "sha256": sha256(args.config)},
         "input": input_metadata,

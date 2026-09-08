@@ -103,10 +103,7 @@ MIRROR_SHA_HA_GZI="a31e4ee63e519a0da4a8e2750dabbca177129b7f312b2a993c17a99981e6a
 MIRROR_SHA_LOFTEE_SQL="22e214f1513d67682602b5915dfd220ea9d8360448f0de0b8db72c49bf03649a"
 MIRROR_SHA_GERP="8801e57ce8effbef9248b122caee16da338bfa8319dd41392c9ce4e58ea6cfe8"
 
-_sha256_of() {
-    if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | awk '{print $1}'
-    else shasum -a 256 "$1" | awk '{print $1}'; fi
-}
+_sha256_of() { sha256_file "$1"; }
 
 mirror_fetch() { # mirror_fetch <mirror-filename> <sha256> <dest>; 0 on verified success
     local name="$1" want="$2" dest="$3" got
@@ -217,6 +214,12 @@ fi
 if want fasta; then
     log "=== reference FASTA ==="
     mkdir -p "$(dirname "$FASTA_PATH")"
+    if [[ -s "$FASTA_PATH" ]] && ! bgzf_complete "$FASTA_PATH"; then
+        # A BGZF stream without its EOF marker was cut short by an interrupted
+        # write; a bare -s test kept it forever (audit M12).
+        warn "reference FASTA is an incomplete BGZF stream; removing it so it is re-installed: $FASTA_PATH"
+        rm -f "$FASTA_PATH" "${FASTA_PATH}.fai" "${FASTA_PATH}.gzi"
+    fi
     if [[ -s "$FASTA_PATH" ]]; then
         log "FASTA present, skip."
     elif [[ "$ASSEMBLY" == "GRCh38" \
@@ -239,9 +242,10 @@ if want fasta; then
             gzip -t "$RAW" 2>/dev/null || { rm -f "$RAW" "$RAW.part"; die "FASTA is corrupt after a clean refetch: $FASTA_URL"; }
         fi
         log "re-compressing FASTA as bgzip (VEP/LOFTEE require bgzip, not gzip)"
-        # decompress then bgzip; route bgzip through container if needed
-        gunzip -c "$RAW" > "${FASTA_PATH%.gz}"
-        ( cd "$(dirname "$FASTA_PATH")" && hts bgzip -f "$(basename "${FASTA_PATH%.gz}")" )
+        # decompress then bgzip; route bgzip through container if needed. The
+        # final name is only ever given to a complete BGZF stream.
+        gunzip -c "$RAW" > "${FASTA_PATH%.gz}" || { rm -f "${FASTA_PATH%.gz}"; die "FASTA decompression failed: $RAW"; }
+        publish_bgzf "${FASTA_PATH%.gz}" "$FASTA_PATH" || { rm -f "${FASTA_PATH%.gz}"; die "FASTA could not be published as a complete BGZF file: $FASTA_PATH"; }
         rm -f "$RAW"
         if ! ( cd "$(dirname "$FASTA_PATH")" && hts samtools faidx "$(basename "$FASTA_PATH")" 2>/dev/null ); then
             sleep 5  # same settle-and-retry as tabix above
@@ -431,11 +435,7 @@ if want ccre; then
         rm -f "$RAW"
         log "wrote $CCRE_ROWS SCREEN cCRE intervals"
     fi
-    (
-      cd "$(dirname "$CCRE_PATH")"
-      shasum -a 256 "$(basename "$CCRE_PATH")" \
-        > "$(basename "$CCRE_PATH").sha256.local"
-    )
+    write_sha256_sidecar "$CCRE_PATH" || die "cannot record the SCREEN cCRE checksum: $CCRE_PATH"
     [[ -n "$GENE_TSS_PATH" ]] || die "wgs_review.gene_tss.path is not configured"
     [[ -n "$GENE_TSS_GTF" ]] || die "wgs_review.gene_tss.gtf is not configured"
     if [[ ! -s "$GENE_TSS_GTF" ]]; then
@@ -464,6 +464,10 @@ if want liftover; then
     [[ -n "$LIFTOVER_CHAIN" ]] || die "liftover.grch37_to_grch38.chain is not configured"
     [[ -n "$LIFTOVER_SOURCE_FASTA" ]] || die "liftover.grch37_to_grch38.source_fasta is not configured"
 
+    if [[ -s "$LIFTOVER_SOURCE_FASTA" ]] && ! bgzf_complete "$LIFTOVER_SOURCE_FASTA"; then
+        warn "hg19 source FASTA is an incomplete BGZF stream; removing it so it is rebuilt: $LIFTOVER_SOURCE_FASTA"
+        rm -f "$LIFTOVER_SOURCE_FASTA" "${LIFTOVER_SOURCE_FASTA}.fai" "${LIFTOVER_SOURCE_FASTA}.gzi"
+    fi
     if [[ ! -s "$LIFTOVER_SOURCE_FASTA" ]]; then
         mkdir -p "$(dirname "$LIFTOVER_SOURCE_FASTA")"
         RAW_HG19="${LIFTOVER_SOURCE_FASTA%.fa.gz}.ucsc.fa.gz"
@@ -486,13 +490,18 @@ if want liftover; then
               }
               keep {print}
             ' > "$UNCOMPRESSED_HG19"
-        hts bgzip -@ 4 -f "$UNCOMPRESSED_HG19"
+        publish_bgzf "$UNCOMPRESSED_HG19" "$LIFTOVER_SOURCE_FASTA" \
+            || { rm -f "$UNCOMPRESSED_HG19"; die "hg19 FASTA could not be published as a complete BGZF file: $LIFTOVER_SOURCE_FASTA"; }
         rm -f "$RAW_HG19"
     else
         log "hg19 source FASTA present, skip."
     fi
     hts samtools faidx "$LIFTOVER_SOURCE_FASTA"
 
+    if [[ -s "$LIFTOVER_CHAIN" ]] && ! gzip -t "$LIFTOVER_CHAIN" 2>/dev/null; then
+        warn "hg19-to-GRCh38 chain is a corrupt gzip stream; removing it so it is rebuilt: $LIFTOVER_CHAIN"
+        rm -f "$LIFTOVER_CHAIN"
+    fi
     if [[ ! -s "$LIFTOVER_CHAIN" ]]; then
         RAW_CHAIN="${LIFTOVER_CHAIN%.gz}.ucsc.chain.gz"
         fetch \
@@ -507,19 +516,25 @@ if want liftover; then
                 if ($3=="M") $3="MT"; if ($8=="M") $8="MT"
               }
               {print}' \
-          | gzip -c > "$LIFTOVER_CHAIN"
+          | gzip -c > "${LIFTOVER_CHAIN}.tmp" \
+          || { rm -f "${LIFTOVER_CHAIN}.tmp"; die "chain normalization failed: $RAW_CHAIN"; }
+        # Publish only a verified, non-empty chain: an interrupted pipe left a
+        # truncated gzip that a -s test treated as installed forever.
+        gzip -t "${LIFTOVER_CHAIN}.tmp" 2>/dev/null \
+            || { rm -f "${LIFTOVER_CHAIN}.tmp"; die "normalized chain is not a valid gzip stream"; }
+        # Consume the whole stream so gzip cannot fail with SIGPIPE after
+        # the first record. Keep pipefail to catch read/decompression errors.
+        gzip -cd "${LIFTOVER_CHAIN}.tmp" | awk '/^chain / { found=1 } END { exit !found }' \
+            || { rm -f "${LIFTOVER_CHAIN}.tmp"; die "normalized chain contains no chain records"; }
+        mv -f "${LIFTOVER_CHAIN}.tmp" "$LIFTOVER_CHAIN"
         rm -f "$RAW_CHAIN"
     else
         log "hg19-to-GRCh38 chain present, skip."
     fi
-    (
-      cd "$(dirname "$LIFTOVER_SOURCE_FASTA")"
-      shasum -a 256 "$(basename "$LIFTOVER_SOURCE_FASTA")" > "$(basename "$LIFTOVER_SOURCE_FASTA").sha256.local"
-    )
-    (
-      cd "$(dirname "$LIFTOVER_CHAIN")"
-      shasum -a 256 "$(basename "$LIFTOVER_CHAIN")" > "$(basename "$LIFTOVER_CHAIN").sha256.local"
-    )
+    # The conversion cache compares these sidecars with the provenance it
+    # recorded, so they must be real digests, never an empty file.
+    write_sha256_sidecar "$LIFTOVER_SOURCE_FASTA" || die "cannot record the hg19 FASTA checksum: $LIFTOVER_SOURCE_FASTA"
+    write_sha256_sidecar "$LIFTOVER_CHAIN" || die "cannot record the chain checksum: $LIFTOVER_CHAIN"
 fi
 
 # ============================================================================ #

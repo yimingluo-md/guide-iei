@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import tempfile
 import unittest
+from unittest import mock
 import sqlite3
 from pathlib import Path
 
@@ -81,6 +82,125 @@ class SampleLibraryTests(unittest.TestCase):
         again = self.library.review_file(by_sample["P1"]["id"])
         self.assertEqual(again, projected)
 
+    def test_removing_a_dataset_deletes_its_review_projection(self):
+        """Audit repro (M28): the per-sample projection (that individual's
+        genotypes) stayed on disk forever after the dataset was removed —
+        outside every cleanup category. Removing one of two datasets sharing
+        a managed file deletes only that sample's projection; removing the
+        last one deletes every projection of the file."""
+        from local_service.cohort_store import HtsBackend
+        backend = HtsBackend.discover()
+        if backend is None or not backend.native_tools.get("bcftools"):
+            self.skipTest("native bcftools is required for sample projections")
+        self.cohort.hts_backend = backend
+        result = self.library.import_vcf(self.vcf, self.payload(include=False))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+        p1 = self.library.review_file(by_sample["P1"]["id"])
+        p2 = self.library.review_file(by_sample["P2"]["id"])
+        self.assertTrue(p1.exists() and p2.exists())
+        self.assertNotEqual(p1, p2)
+        managed = self.library.file(by_sample["P1"]["id"])
+        # A stale sibling projection (another sample name, same file) should
+        # go with the last dataset, not linger.
+        checksum = p1.name.split(".")[0]
+        stray = p1.parent / f"{checksum}.OLD.deadbeef0000.review.vcf.gz"
+        stray.write_bytes(b"stale projection")
+
+        removed = self.library.remove(by_sample["P1"]["id"])
+        self.assertIn(str(p1), removed["removed_files"])
+        self.assertFalse(p1.exists(), "P1's projection must be deleted with P1")
+        self.assertTrue(p2.exists(), "P2's projection must survive P1's removal")
+        self.assertTrue(managed.exists(), "shared managed file survives")
+
+        removed = self.library.remove(by_sample["P2"]["id"])
+        self.assertFalse(p2.exists())
+        self.assertFalse(managed.exists())
+        self.assertFalse(stray.exists(), "every projection of the file goes with the last dataset")
+
+    def test_removing_a_dataset_deletes_combined_projections_that_carried_it(self):
+        """Review follow-up of M28: a combined (subset) projection is named
+        by its selection, not its members, so removing P1 left the cached
+        P1+P2 projection — P1's genotypes — on disk while P3's dataset still
+        referenced the file, and ordinary cleanup preserved it too."""
+        import gzip
+        from local_service.cohort_store import HtsBackend
+        backend = HtsBackend.discover()
+        if backend is None or not backend.native_tools.get("bcftools"):
+            self.skipTest("native bcftools is required for sample projections")
+        self.cohort.hts_backend = backend
+        # Three samples, so that P1+P2 is a subset of the file.
+        lines = self.vcf.read_text(encoding="utf-8").splitlines()
+        widened = []
+        for line in lines:
+            if line.startswith("#CHROM"):
+                widened.append(line + "\tP3")
+            elif line.startswith("#") or not line.strip():
+                widened.append(line)
+            else:
+                widened.append(line + "\t0/1:10,10:20:60")
+        trio = self.state / "trio.vcf"
+        trio.write_text("\n".join(widened) + "\n", encoding="utf-8")
+        result = self.library.import_vcf(trio, self.payload(include=False))
+        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
+        self.assertEqual(set(by_sample), {"P1", "P2", "P3"})
+        combined = self.library.review_file_combined([by_sample["P1"]["id"], by_sample["P2"]["id"]])
+        self.assertIn(".subset-", combined.name)
+        self.assertTrue(combined.exists())
+        p2 = self.library.review_file(by_sample["P2"]["id"])
+
+        # A stale combined projection from an earlier build that removal did
+        # not catch: ordinary cleanup must recognise it by its header.
+        checksum = combined.name.split(".", 1)[0]
+        stale = combined.with_name(f"{checksum}.subset-0123456789abcdef.review.vcf.gz")
+        with gzip.open(stale, "wt", encoding="utf-8") as handle:
+            handle.write("##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\tGHOST\n")
+        stale_index = stale.with_name(stale.name + ".tbi")
+        stale_index.write_bytes(b"index")
+        summary = self.library.cleanup(["uploads"])
+        self.assertFalse(stale.exists(), "a projection carrying a sample no dataset has is orphaned")
+        self.assertFalse(stale_index.exists())
+        self.assertTrue(combined.exists(), "a projection of current samples is not")
+        self.assertTrue(p2.exists())
+
+        removed = self.library.remove(by_sample["P1"]["id"])
+        self.assertIn(str(combined), removed["removed_files"])
+        self.assertFalse(combined.exists(), "the P1+P2 projection carried P1's genotypes")
+        self.assertTrue(p2.exists(), "P2's own projection survives")
+        self.assertTrue(self.library.file(by_sample["P3"]["id"]).exists())
+        # Rebuilt on demand for the remaining samples.
+        again = self.library.review_file_combined([by_sample["P2"]["id"], by_sample["P3"]["id"]])
+        self.assertTrue(again.exists())
+
+    def test_cleanup_reclaims_review_projections(self):
+        """Audit M28 (cleanup half): completed projections are a rebuildable
+        cache. The "projections" category removes them all; any other cleanup
+        reaps the orphaned ones (no dataset references their managed file);
+        the Storage figures report them."""
+        result = self.library.import_vcf(self.vcf, self.payload(include=False))
+        checksum = self.library.file(result["datasets"][0]["id"]).name.split(".", 1)[0]
+        files = self.library.files_dir
+        live = files / f"{checksum}.GRCh38.abcdef012345.review.vcf.gz"
+        live_index = files / f"{checksum}.GRCh38.abcdef012345.review.vcf.gz.tbi"
+        orphan = files / "0000deadbeef.GRCh38.abcdef012345.review.vcf.gz"
+        for path in (live, live_index, orphan):
+            path.write_bytes(b"projection bytes")
+        stats = self.library.storage_stats()
+        self.assertEqual(stats["locations"]["projections"], 3 * len(b"projection bytes"))
+
+        # Uploads cleanup alone: only the orphan goes.
+        summary = self.library.cleanup(["uploads"])
+        self.assertFalse(orphan.exists())
+        self.assertTrue(live.exists() and live_index.exists())
+        self.assertGreaterEqual(summary["removed_files"], 1)
+
+        # The projections category reclaims the live cache too (rebuilt on demand).
+        self.library.cleanup(["projections"])
+        self.assertFalse(live.exists())
+        self.assertFalse(live_index.exists())
+        self.assertEqual(self.library.storage_stats()["locations"]["projections"], 0)
+        # The managed VCF itself is untouched.
+        self.assertTrue(self.library.file(result["datasets"][0]["id"]).exists())
+
     def test_original_review_record_restores_transcripts_omitted_from_managed_vcf(self):
         fields = "Allele|Consequence|IMPACT|SYMBOL|Feature|HGVSp|MANE_SELECT|PICK"
         header = (
@@ -114,6 +234,33 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(restored["sample"], "P1")
         self.assertIn(f"CSQ={mane},{alternative}", restored["vcf"])
         self.assertEqual(restored["vcf"].count("\n1\t100\t"), 1)
+
+    def test_original_review_record_matches_padded_representations(self):
+        """Audit repro (H5): the stored record can be padded (REF=AT ALT=GT)
+        while the canonical key is 1:100:A:G; the lookup must compare
+        canonical alleles, not raw columns."""
+        fields = "Allele|Consequence|IMPACT|SYMBOL|Feature|HGVSp|MANE_SELECT|PICK"
+        header = (
+            "##fileformat=VCFv4.2\n"
+            "##reference=GRCh38\n"
+            "##contig=<ID=1,length=248956422>\n"
+            f'##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: {fields}">\n'
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
+        )
+        csq = "GT|missense_variant|MODERATE|GENE1|ENST_MANE|p.Gly1Asp|NM_1|1"
+        original = self.state / "padded-original.vcf"
+        original.write_text(header + f"1\t100\t.\tAT\tGT\t50\tPASS\tCSQ={csq}\tGT\t0/1\n")
+        managed = self.state / "padded-managed.vcf"
+        managed.write_text(header + f"1\t100\t.\tAT\tGT\t50\tPASS\tCSQ={csq}\tGT\t0/1\n")
+        result = self.library.import_vcf(managed, {
+            **self.payload(include=False),
+            "original_path": str(original), "original_name": original.name,
+        })
+        self.cohort.hts_backend = FakeHtsBackend()
+        for query in ("1:100:A:G", "1:100:AT:GT", "chr1-100-at-gt"):
+            restored = self.library.original_review_record(result["datasets"][0]["id"], query)
+            self.assertEqual(restored["variant_key"], "1:100:A:G", query)
+            self.assertIn("\n1\t100\t.\tAT\tGT\t", restored["vcf"], query)
 
     def test_review_file_cache_keys_cannot_collide_across_sanitized_names(self):
         """Sample names that differ only in special characters (PAT/1 vs
@@ -474,6 +621,136 @@ class SampleLibraryTests(unittest.TestCase):
         self.cohort.remove_samples([cohort_sample["id"]])
         self.assertEqual(self.library.get(remaining["id"])["cohort_index_status"], "needs_repair")
 
+    def test_removed_cohort_entry_never_rebinds_to_a_later_dataset(self):
+        """Audit repro (H1): cohort_files.id was reused after deletion and the
+        library kept the dangling id, so a LATER dataset with the same VCF
+        sample name resolved as the removed one — and removing the removed
+        one then deleted the later dataset's cohort rows."""
+        # A single-sample dataset: removing its only entry deletes the whole
+        # cohort_files row, which is exactly when SQLite hands the id out again.
+        single = self.state / "single-case.vcf"
+        single.write_text("".join(
+            (line.rsplit("\t", 1)[0] + "\n") if line.startswith("#CHROM") or not line.startswith("#") else line
+            for line in self.vcf.read_text().splitlines(keepends=True)
+        ))
+        imported_a = self.library.import_vcf(single, self.payload(include=True))
+        self.assertEqual([d["vcf_sample_name"] for d in imported_a["datasets"]], ["P1"])
+        a = self.library.get(imported_a["datasets"][0]["id"])
+        a_file_id = a["cohort_file_id"]
+        self.assertIsNotNone(a_file_id)
+
+        # Remove A's entry through the Cohort Search manager path (cohort
+        # store only), exactly as the HTTP endpoint used to do it.
+        a_entry = next(
+            item for item in self.cohort.list_samples()
+            if item["file_id"] == a_file_id and item["name"] == "P1"
+        )
+        identities = self.library.cohort_entry_identities([a_entry["id"]])
+        self.assertEqual(identities, [(a_file_id, "P1")])
+        self.cohort.remove_samples([a_entry["id"]])
+        self.assertEqual(self.library.get(a["id"])["cohort_index_status"], "needs_repair")
+
+        # A separate dataset B: different content (so it is not treated as
+        # an exact re-import of A's callset) but the same sample name P1.
+        other = self.state / "other-case.vcf"
+        write_vcf(other)
+        other.write_text(other.read_text().replace("\t99\tPASS", "\t98\tPASS"))
+        imported_b = self.library.import_vcf(
+            other, {**self.payload(include=True), "identity_action": "separate"}
+        )
+        b = self.library.get(next(
+            d for d in imported_b["datasets"] if d["vcf_sample_name"] == "P1"
+        )["id"])
+        self.assertEqual(b["cohort_index_status"], "ready")
+
+        # The id A pointed at must never be handed out again ...
+        self.assertNotEqual(b["cohort_file_id"], a_file_id)
+        self.assertGreater(b["cohort_file_id"], a_file_id)
+        # ... so A stays needs_repair instead of silently resolving as B.
+        a_now = self.library.get(a["id"])
+        self.assertEqual(a_now["cohort_index_status"], "needs_repair")
+        self.assertIsNone(a_now.get("cohort_sample_entry_id"))
+        # And removing A cannot touch B's cohort rows.
+        self.library.remove(a["id"])
+        self.assertEqual(self.library.get(b["id"])["cohort_index_status"], "ready")
+
+    def test_cohort_manager_removal_detaches_library_linkage(self):
+        imported = self.library.import_vcf(self.vcf, self.payload(include=True))
+        p1 = self.library.get(next(
+            d for d in imported["datasets"] if d["vcf_sample_name"] == "P1"
+        )["id"])
+        entry = next(
+            item for item in self.cohort.list_samples()
+            if item["file_id"] == p1["cohort_file_id"] and item["name"] == "P1"
+        )
+        identities = self.library.cohort_entry_identities([entry["id"]])
+        self.cohort.remove_samples([entry["id"]])
+        self.assertEqual(self.library.detach_cohort_entries(identities), 1)
+        record = self.library.get(p1["id"])
+        self.assertIsNone(record["cohort_file_id"])
+        self.assertTrue(record["include_in_cohort"])
+        self.assertEqual(record["cohort_index_status"], "needs_repair")
+        # The sibling dataset (P2) in the same file is untouched.
+        p2 = next(d for d in imported["datasets"] if d["vcf_sample_name"] == "P2")
+        self.assertEqual(self.library.get(p2["id"])["cohort_index_status"], "ready")
+
+    def test_upgraded_database_never_reissues_a_dangling_library_id(self):
+        """Audit repro (H1, P1): a database created before the allocator
+        existed can hold a library row whose cohort_file_id names a cohort
+        file that is already gone. Seeding the allocator from cohort_files
+        alone re-issued that id on upgrade, re-binding the removed dataset
+        to the next import."""
+        single = self.state / "single-legacy.vcf"
+        single.write_text("".join(
+            (line.rsplit("\t", 1)[0] + "\n") if line.startswith("#CHROM") or not line.startswith("#") else line
+            for line in self.vcf.read_text().splitlines(keepends=True)
+        ))
+        a = self.library.get(self.library.import_vcf(single, self.payload(include=True))["datasets"][0]["id"])
+        a_file_id = a["cohort_file_id"]
+        entry = next(
+            item for item in self.cohort.list_samples()
+            if item["file_id"] == a_file_id and item["name"] == "P1"
+        )
+        # Old removal path: the cohort index is emptied, the library keeps
+        # its dangling id, and the database predates cohort_meta.
+        self.cohort.remove_samples([entry["id"]])
+        with sqlite3.connect(self.database) as connection:
+            self.assertEqual(connection.execute("SELECT COUNT(*) FROM cohort_files").fetchone()[0], 0)
+            connection.execute("DROP TABLE cohort_meta")
+        upgraded = CohortStore(self.database)
+        library = SampleLibrary(self.state, upgraded)
+        other = self.state / "other-legacy.vcf"
+        write_vcf(other)
+        other.write_text(other.read_text().replace("\t99\tPASS", "\t98\tPASS"))
+        b = library.get(next(
+            d for d in library.import_vcf(other, {**self.payload(include=True), "identity_action": "separate"})["datasets"]
+            if d["vcf_sample_name"] == "P1"
+        )["id"])
+        self.assertGreater(b["cohort_file_id"], a_file_id)
+        self.assertEqual(library.get(a["id"])["cohort_index_status"], "needs_repair")
+        self.assertIsNone(library.get(a["id"]).get("cohort_sample_entry_id"))
+        library.remove(a["id"])
+        self.assertEqual(library.get(b["id"])["cohort_index_status"], "ready")
+
+    def test_cohort_file_ids_survive_a_full_reset(self):
+        imported = self.library.import_vcf(self.vcf, self.payload(include=True))
+        before = max(
+            self.library.get(d["id"])["cohort_file_id"] for d in imported["datasets"]
+        )
+        # Dropping and recreating the cohort tables resets sqlite_sequence
+        # too; the allocator must not.
+        self.cohort._reset_cohort_tables()
+        other = self.state / "after-reset.vcf"
+        write_vcf(other)
+        other.write_text(other.read_text().replace("\t99\tPASS", "\t98\tPASS"))
+        reimported = self.library.import_vcf(
+            other, {**self.payload(include=True), "identity_action": "separate"}
+        )
+        after = min(
+            self.library.get(d["id"])["cohort_file_id"] for d in reimported["datasets"]
+        )
+        self.assertGreater(after, before)
+
     def test_metadata_edit_touches_only_the_addressed_dataset(self):
         # Audit repro (SVC-1): managed_path is shared by both samples of a
         # multi-sample VCF; the capture-kit edit used to rewrite siblings.
@@ -595,6 +872,55 @@ class SampleLibraryTests(unittest.TestCase):
             "sibling sample's cohort entry must survive a co-resident reindex",
         )
 
+    def test_full_wgs_reindex_indexes_only_the_addressed_sample(self):
+        """Audit repro (H2), REAL importer: the full-WGS reindex imported the
+        whole original multi-sample VCF, so the sibling ended up in both the
+        prefiltered file and the new full file — counted twice in Cohort
+        Search. The two mocked tests above could not see this."""
+        wgs_payload = self.payload(include=True)
+        wgs_payload["analysis_scope"] = "whole_genome"
+        imported = self.library.import_vcf(self.vcf, wgs_payload)
+        by_name = {d["vcf_sample_name"]: d for d in imported["datasets"]}
+        p1, p2 = by_name["P1"], by_name["P2"]
+        p2_before = self.library.get(p2["id"])
+
+        self.library.reindex(p1["id"], full_wgs=True)
+
+        p1_after = self.library.get(p1["id"])
+        p2_after = self.library.get(p2["id"])
+        self.assertEqual(p1_after["index_scope"], "full")
+        self.assertEqual(p1_after["cohort_index_status"], "ready")
+        self.assertEqual(p2_after["cohort_index_status"], "ready")
+        self.assertEqual(p2_after["cohort_file_id"], p2_before["cohort_file_id"])
+
+        entries = [(item["file_id"], item["name"]) for item in self.cohort.list_samples()]
+        self.assertEqual(
+            [name for _, name in entries].count("P2"), 1,
+            f"sibling P2 must be indexed exactly once, found {entries}",
+        )
+        self.assertEqual([name for _, name in entries].count("P1"), 1)
+        # The full file holds only P1.
+        full_file_id = p1_after["cohort_file_id"]
+        self.assertEqual(
+            sorted(name for file_id, name in entries if file_id == full_file_id), ["P1"],
+        )
+        # Carrier rows: variant 1:200 C>T is carried by P2 only (1/1); it
+        # must appear in exactly one cohort file.
+        hits = self.cohort.query({"mode": "variant", "query": "1:200:C:T", "limit": 50})
+        self.assertEqual(hits["total"], 1, hits["rows"])
+        self.assertEqual(hits["rows"][0]["sample"], "P2")
+
+        # A sibling's own full reindex APPENDS to the same full file rather
+        # than replacing it (cohort_files.path is unique).
+        self.library.reindex(p2["id"], full_wgs=True)
+        p1_final = self.library.get(p1["id"])
+        p2_final = self.library.get(p2["id"])
+        self.assertEqual(p1_final["cohort_index_status"], "ready")
+        self.assertEqual(p2_final["cohort_index_status"], "ready")
+        self.assertEqual(p1_final["cohort_file_id"], p2_final["cohort_file_id"])
+        entries = [(item["file_id"], item["name"]) for item in self.cohort.list_samples()]
+        self.assertEqual(sorted(name for _, name in entries), ["P1", "P2"])
+
     def test_review_once_equivalent_not_persisted_and_dedup_cleanup(self):
         self.assertEqual(self.library.list(), [])
         first = self.library.import_vcf(self.vcf, self.payload(include=False))
@@ -633,6 +959,92 @@ class SampleLibraryTests(unittest.TestCase):
         self.library.map_identity(second_id, {"mode": "existing", "individual_id": "IND-002"})
         records = {record["id"]: record for record in self.library.list()}
         self.assertEqual(records[first_id]["sample_id"], records[second_id]["sample_id"])
+
+    def _legacy_library(self, name="interrupted"):
+        """A library whose datasets table predates the version columns."""
+        state = self.state / name
+        state.mkdir()
+        cohort = CohortStore(state / "cohort.sqlite3")
+        library = SampleLibrary(state, cohort)
+        vcf = state / "legacy.vcf"
+        write_vcf(vcf)
+        library.import_vcf(vcf, self.payload(include=True))
+        version_columns = {
+            "callset_id", "callset_fingerprint", "version_id", "version_number",
+            "is_current", "cohort_preferred", "supersedes_version_id",
+        }
+        with sqlite3.connect(state / "cohort.sqlite3") as connection:
+            connection.row_factory = sqlite3.Row
+            connection.execute("DROP INDEX IF EXISTS library_datasets_current_content_idx")
+            connection.execute("DROP INDEX IF EXISTS library_datasets_current_callset_idx")
+            connection.execute("DROP INDEX IF EXISTS library_datasets_callset_idx")
+            columns = [
+                row["name"] for row in connection.execute("PRAGMA table_info(library_datasets)")
+            ]
+            old_columns = [column for column in columns if column not in version_columns]
+            connection.execute(
+                f"CREATE TABLE library_datasets_legacy AS SELECT {','.join(old_columns)} FROM library_datasets"
+            )
+            connection.execute("DROP TABLE library_datasets")
+            connection.execute("ALTER TABLE library_datasets_legacy RENAME TO library_datasets")
+            connection.execute("UPDATE library_datasets SET include_in_cohort=1")
+            connection.execute("DELETE FROM sample_library_meta")
+        return state, cohort
+
+    def test_interrupted_column_migration_is_completed_on_the_next_open(self):
+        """Audit M30: the old migration ran ALTER TABLE in autocommit and the
+        backfill in a later transaction. Killed in between, the next open saw
+        the columns and skipped the backfill: include_in_cohort stayed 1
+        while cohort_preferred stayed 0 and version ids were assigned by the
+        wrong rule. Simulate exactly that state (columns present, defaults
+        only, no marker) and require the backfill to complete."""
+        state, cohort = self._legacy_library()
+        with sqlite3.connect(state / "cohort.sqlite3") as connection:
+            for column, declaration in (
+                ("callset_id", "TEXT NOT NULL DEFAULT ''"),
+                ("callset_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+                ("version_id", "TEXT NOT NULL DEFAULT ''"),
+                ("version_number", "INTEGER NOT NULL DEFAULT 1"),
+                ("is_current", "INTEGER NOT NULL DEFAULT 1"),
+                ("cohort_preferred", "INTEGER NOT NULL DEFAULT 0"),
+                ("supersedes_version_id", "TEXT"),
+            ):
+                connection.execute(f"ALTER TABLE library_datasets ADD COLUMN {column} {declaration}")
+        library = SampleLibrary(state, cohort)
+        records = library.list()
+        self.assertTrue(records)
+        for record in records:
+            self.assertEqual(record["include_in_cohort"], 1)
+            self.assertEqual(record["cohort_preferred"], 1, "backfill from include_in_cohort was skipped")
+            self.assertTrue(record["version_id"])
+            self.assertNotEqual(record["version_id"], record["managed_checksum"],
+                                "version id must come from the legacy grouping rule")
+            self.assertEqual(record["callset_id"], record["managed_checksum"])
+        status = library.migration_status()
+        self.assertTrue(all(item["applied_at"] for item in status["migrations"]))
+        self.assertEqual(status["schema_version"], "portable_paths_v2")
+
+    def test_migration_step_is_atomic_with_its_marker(self):
+        """A step that fails half-way leaves neither columns nor marker: the
+        ALTER and the backfill share one transaction with the marker write."""
+        state, cohort = self._legacy_library("atomic")
+        original = SampleLibrary._migrate_library_versions
+
+        def exploding(self_, connection):
+            original(self_, connection)
+            raise RuntimeError("simulated crash after the backfill")
+
+        with mock.patch.object(SampleLibrary, "_migrate_library_versions", exploding):
+            with self.assertRaises(RuntimeError):
+                SampleLibrary(state, cohort)
+        with sqlite3.connect(state / "cohort.sqlite3") as connection:
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(library_datasets)")}
+            self.assertNotIn("cohort_preferred", columns, "a failed step must roll back its ALTER")
+            markers = {row[0] for row in connection.execute("SELECT key FROM sample_library_meta")}
+            self.assertNotIn("library_versions_v1", markers)
+        # The next open completes it.
+        library = SampleLibrary(state, cohort)
+        self.assertTrue(all(record["cohort_preferred"] == 1 for record in library.list()))
 
     def test_legacy_duplicate_imports_migrate_as_separate_versions(self):
         """Upgrading an old library must not mix duplicate sample cards.

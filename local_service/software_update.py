@@ -68,6 +68,15 @@ CONTAINER_FILES = (
     "docker/IndexedScores.pm",
 )
 MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
+# Bounds on what the archive may EXPAND to (audit M20): the download cap above
+# bounds compressed bytes only, and every member used to be read whole into
+# memory. A release is source code: no single file approaches 64 MiB and the
+# tree is well under 1 GiB, so an archive that claims otherwise is malformed
+# or hostile and is refused before anything is written.
+MAX_MEMBER_BYTES = 64 * 1024 * 1024
+MAX_EXTRACTED_BYTES = 1024 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 50_000
+_EXTRACT_CHUNK = 1024 * 1024
 
 
 def _default_fetch(url: str, timeout: int = 60) -> bytes:
@@ -138,6 +147,24 @@ class SoftwareUpdater:
         """Called at service startup: a fresh process IS the restart."""
         self._restart_pending_file.unlink(missing_ok=True)
 
+    def full_relaunch_required(self) -> dict:
+        """Which launcher-only steps are pending after an update (audit M21).
+
+        The in-app restart (exit 75) restarts only the Python service: the
+        UI server keeps serving the bundle it was started with, and
+        ``npm ci`` never runs. When an update changed ``webui/`` or its
+        dependencies, only a complete close and relaunch of GUIDE-IEI
+        rebuilds/reinstalls the interface; the flag files below are what
+        ``start_workbench.sh`` consumes on that relaunch.
+        """
+        web = (self.repo_root / "webui" / ".build-required").is_file()
+        deps = (self.repo_root / "webui" / ".dependencies-updated").is_file()
+        return {
+            "required": web or deps,
+            "web_build_required": web,
+            "dependencies_updated": deps,
+        }
+
     def status(self) -> dict:
         rollback_version = None
         version_file = self.rollback_dir / "rollback-version.txt"
@@ -152,6 +179,10 @@ class SoftwareUpdater:
             # NEW version; the sentinel is the only honest witness.
             "incomplete_update": self._sentinel.is_file(),
             "restart_pending": self._restart_pending_file.is_file(),
+            # True when an in-app restart would NOT finish the update: the
+            # interface must be rebuilt or its dependencies reinstalled,
+            # which only a full close-and-relaunch does.
+            "full_relaunch_required": self.full_relaunch_required()["required"],
         }
 
     def check(self) -> dict:
@@ -219,6 +250,12 @@ class SoftwareUpdater:
             raise ValueError(info.get("error") or "release lookup failed")
         if "assets" not in info:
             raise ValueError(info.get("error") or "no installable release")
+        preserve_rollback = repairing and (self.rollback_dir / "rollback-version.txt").is_file()
+        if preserve_rollback and self._sentinel.read_text().strip() != info["latest_version"]:
+            raise ValueError(
+                "a different release became available during the interrupted update; "
+                "roll back the incomplete update before installing it"
+            )
         # A repair (interrupted earlier install) may reinstall the SAME
         # version — the tree already claims it while old files remain.
         if not info.get("update_available") and not repairing:
@@ -279,7 +316,8 @@ class SoftwareUpdater:
                 )
             old_manifest = self._installed_manifest()
             self._sentinel.write_text(info["latest_version"] + "\n")
-            summary = self._apply(staging, manifest, old_manifest)
+            summary = self._apply(staging, manifest, old_manifest,
+                                  preserve_rollback=preserve_rollback)
 
         (self.updates_dir / "installed-manifest.txt").write_text(
             "\n".join(manifest) + "\n"
@@ -309,6 +347,7 @@ class SoftwareUpdater:
         origin = self._wsl_origin_target()
         restored_version = version_file.read_text().strip()
         restored = self._read_manifest(manifest_file, allow_empty=True)
+        self._validate_rollback_files(restored)
         dependency_before = self._dependency_bytes()
         container_before = self._container_bytes()
         for path in restored:
@@ -354,7 +393,8 @@ class SoftwareUpdater:
             (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
         # A rollback changes application code even when package manifests are
         # identical. The next start must not serve a stale production build.
-        if any(path.startswith("webui/") for path in [*restored, *added]):
+        web_changed = any(path.startswith("webui/") for path in [*restored, *added])
+        if web_changed:
             (self.repo_root / "webui" / ".build-required").write_text("1\n")
         synced = self._sync_wsl_origin(
             origin, restored, [*restored, *added]
@@ -367,6 +407,7 @@ class SoftwareUpdater:
             "restored_version": restored_version,
             "restart_required": True,
             "dependencies_changed": dependencies_changed,
+            "web_build_required": web_changed,
             "container_changed": container_changed,
             "wsl_origin_synced": synced,
         }
@@ -374,6 +415,10 @@ class SoftwareUpdater:
     # ------------------------------------------------------------------ #
     # internals
     # ------------------------------------------------------------------ #
+    def _validate_rollback_files(self, manifest: list[str]) -> None:
+        if any(not (self.rollback_dir / "files" / path).is_file() for path in manifest):
+            raise ValueError("the rollback snapshot is incomplete; restore a complete software backup")
+
     @staticmethod
     def _expected_sha256(sums_text: str, asset_name: str) -> str:
         for line in sums_text.splitlines():
@@ -388,17 +433,63 @@ class SoftwareUpdater:
 
     @staticmethod
     def _extract_archive(archive: bytes, staging: Path) -> None:
+        """Extract the release into ``staging`` with bounded, streamed I/O.
+
+        Audit M20: the declared sizes are checked first (a member above
+        MAX_MEMBER_BYTES, a total above MAX_EXTRACTED_BYTES, or an
+        implausible member count is refused before any write), and each
+        member is then copied in chunks with the ACTUAL byte count enforced
+        — a zip entry can lie about its uncompressed size, so the declared
+        total is a pre-check, not the guard.
+        """
         import io
 
         with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-            for member in bundle.infolist():
-                if member.is_dir():
-                    continue
+            members = [member for member in bundle.infolist() if not member.is_dir()]
+            if len(members) > MAX_ARCHIVE_MEMBERS:
+                raise ValueError(
+                    f"release archive lists {len(members)} files; the limit is "
+                    f"{MAX_ARCHIVE_MEMBERS}"
+                )
+            declared_total = 0
+            for member in members:
+                if member.file_size > MAX_MEMBER_BYTES:
+                    raise ValueError(
+                        f"release archive member {member.filename!r} declares "
+                        f"{member.file_size} bytes; the per-file limit is "
+                        f"{MAX_MEMBER_BYTES}"
+                    )
+                declared_total += member.file_size
+            if declared_total > MAX_EXTRACTED_BYTES:
+                raise ValueError(
+                    f"release archive declares {declared_total} extracted bytes; "
+                    f"the limit is {MAX_EXTRACTED_BYTES}"
+                )
+            written_total = 0
+            for member in members:
                 relative = _safe_relative_path(member.filename)
                 target = staging / relative
                 target.parent.mkdir(parents=True, exist_ok=True)
-                with bundle.open(member) as handle:
-                    target.write_bytes(handle.read())
+                written = 0
+                with bundle.open(member) as handle, target.open("wb") as output:
+                    while True:
+                        chunk = handle.read(_EXTRACT_CHUNK)
+                        if not chunk:
+                            break
+                        written += len(chunk)
+                        written_total += len(chunk)
+                        if written > MAX_MEMBER_BYTES:
+                            raise ValueError(
+                                f"release archive member {member.filename!r} "
+                                f"exceeds the per-file limit of {MAX_MEMBER_BYTES} "
+                                "bytes while extracting"
+                            )
+                        if written_total > MAX_EXTRACTED_BYTES:
+                            raise ValueError(
+                                "release archive exceeds the extraction limit of "
+                                f"{MAX_EXTRACTED_BYTES} bytes while extracting"
+                            )
+                        output.write(chunk)
                 # git archive records POSIX modes; keep executables
                 # executable across the update.
                 mode = (member.external_attr >> 16) & 0o777
@@ -468,42 +559,48 @@ class SoftwareUpdater:
                 parent = parent.parent
 
     def _apply(self, staging: Path, manifest: list[str],
-               old_manifest: list[str] | None) -> dict:
+               old_manifest: list[str] | None, *, preserve_rollback: bool = False) -> dict:
         # Snapshot before touching anything: every file the swap will
         # replace or delete, plus which paths are brand new (so rollback
         # can remove them again).
-        shutil.rmtree(self.rollback_dir, ignore_errors=True)
-        files_dir = self.rollback_dir / "files"
-        touched = list(dict.fromkeys([*manifest, *(old_manifest or [])]))
-        snapshotted, added = [], []
-        for path in touched:
-            existing = self.repo_root / path
-            if existing.is_file():
-                backup = files_dir / path
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(existing, backup)
-                snapshotted.append(path)
-            elif path in manifest:
-                added.append(path)
-        self.rollback_dir.mkdir(parents=True, exist_ok=True)
-        (self.rollback_dir / "rollback-manifest.txt").write_text(
-            "\n".join(snapshotted) + ("\n" if snapshotted else "")
-        )
-        (self.rollback_dir / "rollback-added.txt").write_text(
-            "\n".join(added) + ("\n" if added else "")
-        )
-        stored = self.updates_dir / "installed-manifest.txt"
-        if stored.is_file():
-            shutil.copy2(
-                stored, self.rollback_dir / "previous-installed-manifest.txt"
+        if preserve_rollback:
+            # A repair is the continuation of one update. Re-snapshotting the
+            # mixed tree would erase the last known complete software version.
+            self._validate_rollback_files(self._read_manifest(
+                self.rollback_dir / "rollback-manifest.txt", allow_empty=True,
+            ))
+        else:
+            shutil.rmtree(self.rollback_dir, ignore_errors=True)
+            files_dir = self.rollback_dir / "files"
+            touched = list(dict.fromkeys([*manifest, *(old_manifest or [])]))
+            snapshotted, added = [], []
+            for path in touched:
+                existing = self.repo_root / path
+                if existing.is_file():
+                    backup = files_dir / path
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(existing, backup)
+                    snapshotted.append(path)
+                elif path in manifest:
+                    added.append(path)
+            self.rollback_dir.mkdir(parents=True, exist_ok=True)
+            (self.rollback_dir / "rollback-manifest.txt").write_text(
+                "\n".join(snapshotted) + ("\n" if snapshotted else "")
             )
-        # Written LAST: its presence is the promise that the snapshot is
-        # complete, so a crash during the snapshot never offers a partial
-        # rollback.
-        (self.rollback_dir / "rollback-version.txt").write_text(
-            self.current_version() + "\n"
-        )
-
+            (self.rollback_dir / "rollback-added.txt").write_text(
+                "\n".join(added) + ("\n" if added else "")
+            )
+            stored = self.updates_dir / "installed-manifest.txt"
+            if stored.is_file():
+                shutil.copy2(
+                    stored, self.rollback_dir / "previous-installed-manifest.txt"
+                )
+            # Written LAST: its presence is the promise that the snapshot is
+            # complete, so a crash during the snapshot never offers a partial
+            # rollback.
+            (self.rollback_dir / "rollback-version.txt").write_text(
+                self.current_version() + "\n"
+            )
         deps_changed = False
         web_changed = False
         container_changed = False

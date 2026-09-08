@@ -483,7 +483,7 @@ test("provides persistent genotype-first cohort indexing and carrier search", as
   assert.match(source, /Find carriers/);
   assert.match(service, /\/api\/cohort\/import/);
   assert.match(service, /\/api\/cohort\/import-jobs/);
-  assert.match(source, /startCohortImport/);
+  assert.doesNotMatch(source, /startCohortImport|async function indexSources|const \[sourcePaths, setSourcePaths\]/);
   assert.match(source, /role="progressbar"/);
   assert.match(service, /\/api\/cohort\/query/);
   assert.match(service, /\/api\/cohort\/samples/);
@@ -562,4 +562,56 @@ test("links phenotype records from a dedicated variant-review tab", async () => 
   assert.match(source, /Explicitly absent/);
   assert.doesNotMatch(source, /function PhenotypeSummary/);
   assert.match(styles, /\.phenotype-review-panel/);
+});
+
+test("bounds the number of variant rows rendered at once (audit H9)", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  // The results table renders a bounded slice with an explicit "show more"
+  // control instead of every matching row, the row component is memoised,
+  // and the search value is deferred so typing never re-filters synchronously.
+  assert.match(source, /const TABLE_RENDER_STEP = 500;/);
+  assert.match(source, /const visibleRows = rows\.length > renderLimit \? rows\.slice\(0, renderLimit\) : rows;/);
+  assert.match(source, /Showing \{visibleRows\.length\.toLocaleString\(\)\} of \{rows\.length\.toLocaleString\(\)\} matching rows/);
+  assert.match(source, /const VariantTableRow = memo\(function VariantTableRow/);
+  assert.match(source, /const deferredQuery = useDeferredValue\(query\);/);
+  assert.match(source, /const q = deferredQuery\.trim\(\)\.toLowerCase\(\);/);
+  // The review side list shows a window around the selected variant.
+  assert.match(source, /reviewListWindow\.rows\.map\(/);
+  assert.doesNotMatch(source, /<tbody>\{rows\.map\(\(row\) => \{/);
+});
+
+test("explains what a prediction threshold does with a missing score (review M1)", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  // The prediction-score panel states the missing-score rule in place: an
+  // enabled threshold excludes unscored variants, unlike the frequency filter.
+  assert.match(source, /id="prediction-threshold-help"/);
+  assert.match(source, /variants with no value for the predictor are excluded while the threshold is set/);
+  assert.match(source, /the optional CADD dataset adds indels/);
+  // The frequency help names the source preference (review M9) …
+  assert.match(source, /otherwise VEP&apos;s MAX_AF \(highest AF across 1000 Genomes, ESP and gnomAD\)/);
+  // … and the variant page labels the value by its source rather than
+  // calling every fallback "gnomAD popmax".
+  assert.match(source, /function frequencySourceLabel\(/);
+  assert.match(source, /frequencySourceLabel\(selectedFrequencySource, true\)/);
+  // Cohort Search says the single-copy X/Y widening out loud.
+  assert.match(source, /Homozygous \(incl\. single-copy X\/Y\)/);
+  assert.match(source, /Hemizygous \(incl\. single-copy X\/Y unless recorded female\)/);
+  // The CcreContextPanel allele props are not named `ref` (review M36).
+  assert.doesNotMatch(source, /<CcreContextPanel[^>]* ref=\{/);
+  assert.match(source, /<CcreContextPanel[^>]* refAllele=\{/);
+});
+
+test("an update that changed the interface asks for a full relaunch, not an in-app restart (audit M21)", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  // The pending-restart banner hides the Restart button and explains the
+  // close-and-relaunch when the service reports full_relaunch_required…
+  assert.match(source, /status\.full_relaunch_required \? "This update changed the interface, which an in-app restart cannot apply: close the GUIDE-IEI launcher window/);
+  assert.match(source, /\{!status\.full_relaunch_required && <button[^>]*onClick=\{\(\) => void restartNow\(\)\}/);
+  // …and the install result does the same for web_build_required, which
+  // used to get the Restart button like a service-only update.
+  assert.match(source, /installResult\.web_build_required\s*\?\s*" The interface changed: close the launcher window/);
+  assert.match(source, /!installResult\.dependencies_changed && !installResult\.web_build_required && !installResult\.container_changed && <button/);
+  const types = await readFile(new URL("app/local-service.ts", root), "utf8");
+  assert.match(types, /full_relaunch_required\?: boolean;/);
+  assert.match(types, /web_build_required\?: boolean;/);
 });

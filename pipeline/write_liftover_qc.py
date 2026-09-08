@@ -153,6 +153,14 @@ def main() -> int:
     parser.add_argument("--bcftools-version", required=True)
     parser.add_argument("--plugin-commit", required=True)
     parser.add_argument("--pipeline-version", default="unknown")
+    parser.add_argument(
+        "--mt-convention-setting", default="auto",
+        help="the liftover.mt_convention value the run was configured with",
+    )
+    parser.add_argument(
+        "--bcftools-version-measured", default="",
+        help="bcftools --version reported by the binary that actually ran the plugin",
+    )
     args = parser.parse_args()
 
     pre = json.loads(Path(args.pre_stats).read_text())
@@ -219,6 +227,23 @@ def main() -> int:
             "removed_liftover_incompatible_format_fields. GT, GQ, AD, DP, "
             "and compatible fields were retained."
         )
+    mt_convention = pre.get("mt_convention", "unresolved")
+    mt_convention_source = pre.get("mt_convention_source", "unresolved")
+    mt_passthrough = int(pre.get("mt_passthrough_records", 0) or 0)
+    if mt_passthrough:
+        warnings.append(
+            f"{mt_passthrough} mitochondrial record(s) were treated as rCRS "
+            "(identical to GRCh38 MT) and carried over without the hg19 chain "
+            "after base-by-base verification against GRCh38 MT "
+            f"(evidence: {mt_convention_source})."
+        )
+    if mt_convention_source == "default":
+        warnings.append(
+            "The input declared no mitochondrial contig length and no "
+            "recognisable reference name; rCRS was assumed. Set "
+            "liftover.mt_convention explicitly if this callset was aligned "
+            "to UCSC hg19 chrM (NC_001807, 16,571 bp)."
+        )
     qc = {
         "source_assembly": "GRCh37/hg19",
         "target_assembly": "GRCh38",
@@ -254,6 +279,13 @@ def main() -> int:
         "removed_liftover_incompatible_format_fields": pre.get(
             "removed_liftover_incompatible_format_fields", {}
         ),
+        "mt_convention": mt_convention,
+        "mt_convention_source": mt_convention_source,
+        "mt_contig_length": pre.get("mt_contig_length"),
+        "mt_passthrough_records": mt_passthrough,
+        "mt_passthrough_allele_records": int(
+            pre.get("mt_passthrough_allele_records", 0) or 0
+        ),
         "classification": classification,
         "warnings": warnings,
         "artifacts": {
@@ -285,13 +317,25 @@ def main() -> int:
         "target_sequence_dictionary": file_identity(args.target_dict),
         "tool": {
             "name": "BCFtools/liftover",
+            # The configured pin (used for cache validity) and the version
+            # the container actually reported; a mismatch is visible here.
             "bcftools_version": args.bcftools_version,
+            "bcftools_version_measured": args.bcftools_version_measured or None,
+            "bcftools_version_matches_pin": (
+                (args.bcftools_version_measured == args.bcftools_version)
+                if args.bcftools_version_measured else None
+            ),
+            "executed_in_container": True,
             "plugin_commit": args.plugin_commit,
             "publication_doi": "10.1093/bioinformatics/btae038",
         },
         "policy": {
             "canonical_assembly": "GRCh38",
             "source_reference_preset": "UCSC hg19 primary assembly",
+            "mt_convention_setting": args.mt_convention_setting,
+            "mt_convention": mt_convention,
+            "mt_convention_source": mt_convention_source,
+            "rcrs_mitochondrial_records_bypass_chain_after_grch38_verification": True,
             "validated_variant_scope": "primary-contig SNVs and short indels",
             "max_allele_length": pre.get("max_allele_length"),
             "reference_corrections_are_excluded_from_annotation": True,

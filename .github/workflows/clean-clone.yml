@@ -11,6 +11,7 @@ on:
     branches: [main, master]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 jobs:
   windows-launcher:
@@ -58,10 +59,14 @@ jobs:
       - name: Shell test helpers
         run: |
           bash test/test_hts_helper.sh
+          bash test/test_bgzf_publish.sh
+          bash test/test_liftover_lock.sh
+          bash test/test_sha256_helper.sh
           bash test/test_dataset_installer.sh
           bash test/test_download_dbnsfp.sh
           bash test/test_fetch_clinvar.sh
           bash test/test_macos_launcher.sh
+          bash test/test_setup_privileged_consent.sh
 
       - name: Standalone universal Mac release
         if: runner.os == 'macOS'

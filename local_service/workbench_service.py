@@ -25,6 +25,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import traceback
 import time
 import uuid
 from contextlib import closing, contextmanager
@@ -37,11 +38,13 @@ from pathlib import Path
 from typing import Callable
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from local_service.ccre_context import CcreContextStore
 from local_service.clingen_erepo import ClinGenErepoStore
+from local_service import cohort_store as cohort_module
 from local_service.cohort_store import CohortStore
+from local_service.errors import CohortMergeBusyError, NotFoundError
 from local_service.gene_knowledge import (
     OMIM_FILES,
     GeneKnowledgeStore,
@@ -545,6 +548,15 @@ def _directory_size(path: Path) -> int:
     return total
 
 
+class ServiceAlreadyRunningError(RuntimeError):
+    """Another service process already owns this state directory."""
+
+
+# Exit status for the launcher: not a crash (no restart loop), not a clean
+# stop, not the in-app restart code 75.
+EXIT_ALREADY_RUNNING = 4
+
+
 class JobStore:
     """Small SQLite repository; each operation owns its connection."""
 
@@ -617,6 +629,18 @@ class JobStore:
                     "ALTER TABLE annotation_jobs "
                     "ADD COLUMN analysis_scope TEXT NOT NULL DEFAULT 'exome'"
                 )
+            # Jobs still marked running belong to a previous service process.
+            # Their pipeline scripts run in their own session and may well be
+            # alive; remember the pids so the service can reclaim them
+            # (audit H6) before the rows are marked interrupted.
+            self.orphaned_running_jobs: list[tuple[str, int]] = [
+                (str(row["id"]), int(row["pid"]))
+                for row in connection.execute(
+                    "SELECT id, pid FROM annotation_jobs "
+                    "WHERE status = 'running' AND pid IS NOT NULL"
+                ).fetchall()
+                if isinstance(row["pid"], int) and row["pid"] > 0
+            ]
             now = utc_now()
             connection.execute(
                 """
@@ -745,6 +769,12 @@ class AnnotationJobService:
             raise ValueError(
                 f"configured workbench storage is unavailable or not writable: {exc}"
             ) from exc
+        # Exclusive ownership of the state directory BEFORE any recovery
+        # step. A second service process on the same state (a double
+        # launch, or a launcher that only probed the UI port) used to mark
+        # the live instance's running job interrupted, kill its downloads
+        # and delete its secrets, and only then fail to bind (audit H7).
+        self._instance_lock_handle = self._acquire_instance_lock()
         self.logs_dir = self.state_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.resource_logs_dir = self.state_dir / "resource-logs"
@@ -752,6 +782,7 @@ class AnnotationJobService:
         self.resource_secrets_dir = self.state_dir / "resource-secrets"
         self.resource_secrets_dir.mkdir(parents=True, exist_ok=True)
         self.store = JobStore(self.state_dir / "workbench.sqlite3")
+        self._terminate_orphaned_annotation_jobs()
         self.cohort = CohortStore(
             self.state_dir / "cohort.sqlite3",
             enable_auto_index=True,
@@ -844,6 +875,12 @@ class AnnotationJobService:
         if start_worker:
             self._resume_bulk_intake()
         self._worker: threading.Thread | None = None
+        # Worker health (audit M22): every unexpected exception inside the
+        # worker is counted and kept here, so /api/health can say the queue
+        # is unattended instead of jobs silently staying "queued".
+        self._worker_failures = 0
+        self._worker_last_error: str | None = None
+        self._worker_last_error_at: str | None = None
         for job_id in self.store.queued_ids():
             self._queue.put(job_id)
         if start_worker:
@@ -851,6 +888,23 @@ class AnnotationJobService:
                 target=self._worker_loop, name="annotation-worker", daemon=True
             )
             self._worker.start()
+
+    def worker_health(self) -> dict:
+        """Liveness of the single annotation worker, for /api/health.
+
+        ``alive`` is False when the thread was never started (test
+        instances) or has exited; ``failures`` counts exceptions that
+        escaped a job (the job itself was marked failed where the store
+        allowed it; nothing is re-run automatically because the outcome of
+        a half-finished annotation is unknown).
+        """
+        return {
+            "alive": bool(self._worker is not None and self._worker.is_alive()),
+            "queued": self._queue.qsize(),
+            "failures": self._worker_failures,
+            "last_error": self._worker_last_error,
+            "last_error_at": self._worker_last_error_at,
+        }
 
     def _recover_stale_storage_migrations(self) -> None:
         """Remove only staging roots recorded by an interrupted prior process."""
@@ -1166,6 +1220,7 @@ class AnnotationJobService:
                     "uploads": 0,
                     "cohort_cache": 0,
                     "wgs_review_cache": 0,
+                    "projections": 0,
                     "logs": 0,
                     "other": 0,
                 },
@@ -1189,6 +1244,7 @@ class AnnotationJobService:
                         "uploads": 0,
                         "cohort_cache": 0,
                         "wgs_review_cache": 0,
+                        "projections": 0,
                         "logs": 0,
                         "other": 0,
                     },
@@ -1449,8 +1505,13 @@ class AnnotationJobService:
                     "a storage location change is pending; restart the workbench before changing workbench data"
                 )
             self._active_storage_mutations += 1
+        # Tell a running cohort merge that this request is about to write,
+        # so it pauses between chunks long enough for the lock to be taken
+        # (audit M27).
+        cohort_module.WRITE_COORDINATOR.enter()
 
     def end_storage_mutation(self) -> None:
+        cohort_module.WRITE_COORDINATOR.leave()
         with self._storage_transition:
             self._active_storage_mutations = max(0, self._active_storage_mutations - 1)
             self._storage_transition.notify_all()
@@ -1586,6 +1647,17 @@ class AnnotationJobService:
             raise ValueError(
                 str(exc).replace("before changing storage", "before restarting")
             ) from exc
+        relaunch = self.software_updater.full_relaunch_required()
+        if relaunch["required"]:
+            # Audit M21: restarting only the Python service would leave the
+            # old interface bundle (or old dependencies) serving the new
+            # API. Refuse, and say what actually finishes the update.
+            raise ValueError(
+                "An installed update changed the interface"
+                + (" and its components" if relaunch["dependencies_updated"] else "")
+                + "; an in-app restart cannot apply it. Close the GUIDE-IEI "
+                "launcher window completely, then start GUIDE-IEI again."
+            )
         self._restart_requested = True
         return {
             "restarting": True,
@@ -2874,6 +2946,103 @@ class AnnotationJobService:
     def _clear_active_resource_pid(self, job_id: str) -> None:
         self._rewrite_active_resource_pids(lambda data: data.pop(job_id, None))
 
+    def _acquire_instance_lock(self):
+        """Hold an exclusive advisory lock on <state_dir>/service.lock.
+
+        The lock lives for the life of this process (the handle is kept on
+        the service and released by shutdown()); the kernel drops it if the
+        process dies, so a crash never leaves the state directory locked.
+        Filesystems without flock support fall back to no lock with a
+        warning rather than refusing to start.
+        """
+        lock_path = self.state_dir / "service.lock"
+        try:
+            handle = lock_path.open("a+")
+        except OSError as exc:
+            print(f"WARN  cannot open {lock_path}: {exc}; single-instance guard disabled")
+            return None
+        try:
+            import fcntl
+        except ImportError:  # non-posix: no advisory locking available
+            return handle
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            handle.close()
+            raise ServiceAlreadyRunningError(
+                f"another GUIDE-IEI service already owns {self.state_dir} "
+                "(it holds service.lock); this instance will not touch that state. "
+                "Use the running workbench, or stop it before starting another."
+            ) from None
+        except OSError as exc:
+            print(f"WARN  advisory locking unavailable on {lock_path} ({exc}); single-instance guard disabled")
+            return handle
+        try:
+            handle.seek(0)
+            handle.truncate()
+            handle.write(f"{os.getpid()}\n")
+            handle.flush()
+        except OSError:
+            pass
+        return handle
+
+    def _release_instance_lock(self) -> None:
+        handle = getattr(self, "_instance_lock_handle", None)
+        if handle is None:
+            return
+        self._instance_lock_handle = None
+        try:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        except (ImportError, OSError):
+            pass
+        try:
+            handle.close()
+        except OSError:
+            pass
+
+    def _terminate_orphaned_annotation_jobs(self) -> None:
+        """Stop pipeline runs left behind by a previous service process.
+
+        Annotation subprocesses start in their own session, so the death of
+        the service (SIGTERM from the launcher, a closed terminal) never
+        stopped them. The job row was marked interrupted, but VEP kept
+        writing the output for hours, and a resubmitted job raced it for
+        the same output path (audit H6). Same PID-reuse guard as the
+        resource-job reclaim: only a group whose leader still runs one of
+        this pipeline's own scripts is signalled.
+        """
+        orphans = list(getattr(self.store, "orphaned_running_jobs", []))
+        if os.name != "posix" or not orphans:
+            return
+        for job_id, pid in orphans:
+            try:
+                probe = subprocess.run(
+                    ["ps", "-o", "command=", "-p", str(pid)],
+                    capture_output=True, text=True, check=False,
+                )
+            except OSError:
+                continue
+            if str(self.pipeline_root) not in probe.stdout:
+                continue
+            try:
+                os.killpg(pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                continue
+            print(
+                f"stopped orphaned annotation job {job_id} (pgid {pid}) left by a "
+                "previous workbench session; resubmit the job to run it again"
+            )
+            try:
+                self.store.update(
+                    job_id,
+                    error="The local service stopped while this job was running; "
+                          "its pipeline process was stopped at the next start.",
+                    pid=None,
+                )
+            except Exception:  # noqa: BLE001 - bookkeeping only
+                pass
+
     def _terminate_orphaned_resource_jobs(self) -> None:
         path = self._active_resource_pids_path()
         if os.name != "posix" or not path.is_file():
@@ -3143,6 +3312,7 @@ class AnnotationJobService:
         log_path = self.resource_logs_dir / f"{job_id}.log"
         exit_code = 1
         last_line = ""
+        process: subprocess.Popen | None = None
         try:
             with log_path.open("a", encoding="utf-8", buffering=1) as log:
                 log.write("$ " + " ".join(json.dumps(item) for item in command) + "\n")
@@ -3214,6 +3384,13 @@ class AnnotationJobService:
                 error=str(exc),
             )
         finally:
+            # Audit M24: a failure inside the read loop (a log write error,
+            # a progress-store error, undecodable output) left the child
+            # running while its tracking was removed — invisible to crash
+            # cleanup, and the next start of the same download launched a
+            # second writer on the same .part file. Stop and reap the child
+            # BEFORE its pid record goes, so no untracked writer survives.
+            self._stop_resource_process(process, job_id)
             with self._resource_lock:
                 self._resource_processes.pop(job_id, None)
                 sensitive_paths = list(
@@ -3223,11 +3400,46 @@ class AnnotationJobService:
                 Path(path).unlink(missing_ok=True)
             self._clear_active_resource_pid(job_id)
 
+    @staticmethod
+    def _stop_resource_process(
+        process: "subprocess.Popen | None", job_id: str, grace_seconds: float = 10.0
+    ) -> None:
+        """Terminate and reap a still-running download child (its whole
+        process group on POSIX, since it was started in a new session)."""
+        if process is None or process.poll() is not None:
+            return
+        def _signal(sig) -> None:
+            try:
+                if os.name == "posix":
+                    os.killpg(process.pid, sig)
+                else:
+                    process.terminate() if sig == signal.SIGTERM else process.kill()
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        _signal(signal.SIGTERM)
+        try:
+            process.wait(timeout=grace_seconds)
+        except subprocess.TimeoutExpired:
+            _signal(signal.SIGKILL)
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                print(
+                    f"WARN resource job {job_id}: child pid {process.pid} did not "
+                    "exit after SIGKILL",
+                    file=sys.stderr,
+                )
+        if process.stdout is not None:
+            try:
+                process.stdout.close()
+            except OSError:
+                pass
+
     def review_file(self, job_id: str) -> Path:
         """Return only an output path already recorded for a local annotation job."""
         job = self.store.get(job_id)
         if not job:
-            raise KeyError("job not found")
+            raise NotFoundError("job not found")
         candidate = Path(
             job.get("final_output_path") or job.get("output_path") or ""
         ).expanduser().resolve()
@@ -3668,7 +3880,7 @@ class AnnotationJobService:
                 "SELECT status FROM bulk_jobs WHERE id=?", (str(job_id),)
             ).fetchone()
             if not row:
-                raise KeyError("bulk intake job not found")
+                raise NotFoundError("bulk intake job not found")
             if row["status"] not in {"queued", "running"}:
                 self._bulk_intake_cancelled.discard(str(job_id))
         return self.bulk_intake_snapshot(str(job_id))
@@ -3921,6 +4133,24 @@ class AnnotationJobService:
             self._screen_context_manifest(config), payload
         )
 
+    def remove_cohort_samples(self, sample_ids) -> dict:
+        """Remove cohort entries AND clear the library linkage that named them.
+
+        The Cohort Search manager deletes cohort_samples rows directly. Library
+        datasets that pointed at those rows must not keep the dangling
+        cohort_file_id: a later cohort file receiving that id would otherwise
+        be resolved as the removed dataset (and removing the dataset would then
+        delete the other file's rows).
+        """
+        identities = self.sample_library.cohort_entry_identities(
+            sample_ids if isinstance(sample_ids, list) else []
+        )
+        result = self.cohort.remove_samples(sample_ids)
+        detached = self.sample_library.detach_cohort_entries(identities)
+        if isinstance(result, dict):
+            result = {**result, "library_datasets_detached": detached}
+        return result
+
     def start_cohort_import(self, payload: dict) -> dict:
         """Start a full or conservatively prefiltered cohort import."""
         self._ensure_active_storage_available(require_workspace=True)
@@ -4076,7 +4306,7 @@ class AnnotationJobService:
         with self._wgs_review_lock:
             candidate = self._wgs_review_files.get(review_id)
         if candidate is None:
-            raise KeyError("WGS review file not found")
+            raise NotFoundError("WGS review file not found")
         candidate = candidate.resolve()
         cache_root = self.wgs_review.cache_dir.resolve()
         if cache_root not in candidate.parents:
@@ -5148,7 +5378,7 @@ class AnnotationJobService:
     def cancel(self, job_id: str) -> dict:
         job = self.store.get(job_id)
         if not job:
-            raise KeyError(job_id)
+            raise NotFoundError(f"job not found: {job_id}")
         if job["status"] in TERMINAL_STATUSES:
             return job
         if job["status"] == "queued":
@@ -5178,7 +5408,7 @@ class AnnotationJobService:
     def log_tail(self, job_id: str, max_bytes: int = 64_000) -> str:
         job = self.store.get(job_id)
         if not job:
-            raise KeyError(job_id)
+            raise NotFoundError(f"job not found: {job_id}")
         path = Path(job["log_path"])
         if not path.exists():
             return ""
@@ -5229,8 +5459,59 @@ class AnnotationJobService:
                 return
             try:
                 self._run_job(job_id)
+            except Exception as exc:  # noqa: BLE001 - the boundary IS the point
+                # Audit M22: an exception that escaped _run_job (a store
+                # error before the job's own try block, an unplugged data
+                # drive, a bug) used to kill this thread, leaving every later
+                # job "queued" until the next restart with nothing visible in
+                # the UI. Record it, fail the job as far as the store allows,
+                # and keep serving the queue. The job is NOT re-queued: a
+                # run that died at an unknown point may have written a
+                # partial output under the final name, so its outcome must
+                # be judged by the user, not retried behind their back.
+                self._note_worker_failure(job_id, exc)
             finally:
                 self._queue.task_done()
+
+    def _note_worker_failure(self, job_id: str, exc: BaseException) -> None:
+        self._worker_failures += 1
+        self._worker_last_error = f"{type(exc).__name__}: {exc}"
+        self._worker_last_error_at = utc_now()
+        print(
+            f"ERROR annotation worker: job {job_id} escaped with "
+            f"{self._worker_last_error}",
+            file=sys.stderr,
+        )
+        traceback.print_exc(file=sys.stderr)
+        try:
+            current = self.store.get(job_id)
+            if current and current["status"] in {"queued", "running"}:
+                self.store.update(
+                    job_id,
+                    status="failed",
+                    finished_at=utc_now(),
+                    exit_code=1,
+                    pid=None,
+                    error=(
+                        "The annotation worker hit an internal error while "
+                        f"handling this job ({type(exc).__name__}); see the "
+                        "service log. The output, if any, must not be trusted."
+                    ),
+                )
+        except Exception as store_error:  # noqa: BLE001
+            print(
+                f"ERROR annotation worker: could not mark job {job_id} failed: "
+                f"{type(store_error).__name__}: {store_error}",
+                file=sys.stderr,
+            )
+        finally:
+            with self._process_lock:
+                process = self._processes.pop(job_id, None)
+            if process is not None and process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
 
     def _run_job(self, job_id: str) -> None:
         job = self.store.get(job_id)
@@ -5387,6 +5668,7 @@ class AnnotationJobService:
         # the new root after shutdown. The original source remains untouched.
         for thread in storage_threads:
             thread.join(timeout=5)
+        self._release_instance_lock()
 
 
 class WorkbenchRequestHandler(BaseHTTPRequestHandler):
@@ -5399,6 +5681,51 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self) -> None:
+        try:
+            self._get()
+        except CohortMergeBusyError as exc:
+            self._json({"error": str(exc), "kind": "cohort_merge_busy"}, HTTPStatus.SERVICE_UNAVAILABLE)
+        except NotFoundError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except ValueError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary (audit M23)
+            self._internal_error(exc)
+
+    def _internal_error(self, exc: BaseException) -> None:
+        """Answer an unexpected failure with a JSON 500 instead of a dropped
+        connection (audit M23: sqlite3.Error / OSError / RuntimeError from a
+        handler surfaced in the UI as "Failed to fetch").
+
+        The response carries the exception TYPE and a short reference; the
+        message and traceback — which may name workstation paths — go to
+        the service log under that reference.
+        """
+        reference = uuid.uuid4().hex[:12]
+        print(
+            f"ERROR request {self.command} {urlparse(self.path).path} "
+            f"[{reference}] {type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        traceback.print_exc(file=sys.stderr)
+        try:
+            self._json(
+                {
+                    "error": (
+                        "The local service hit an internal error handling this "
+                        "request; see the service log for reference "
+                        f"{reference}."
+                    ),
+                    "kind": type(exc).__name__,
+                    "reference": reference,
+                },
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
+        except (OSError, ValueError):
+            # Headers already sent, or the client is gone: nothing to answer.
+            pass
+
+    def _get(self) -> None:
         # DNS rebinding makes an attacker's page SAME-origin with this
         # loopback service, so CORS never applies and unguarded GETs hand
         # over PHI. The Host check severs that path; loopback browsers and
@@ -5409,7 +5736,16 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
         if path == "/api/health":
-            self._json({"ok": True, "version": SERVICE_VERSION})
+            worker = self.service.worker_health()
+            self._json({
+                "ok": True,
+                "version": SERVICE_VERSION,
+                "worker": worker,
+                # False when the queue is unattended (worker thread gone) or
+                # a job escaped its boundary since startup — the UI surfaces
+                # it; the service keeps answering.
+                "worker_ok": bool(worker["alive"] and worker["failures"] == 0),
+            })
         elif path == "/api/software-update/status":
             self._json(self.service.software_updater.status())
         elif path == "/api/capabilities":
@@ -5554,6 +5890,20 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 self._file(self.service.review_file(job_id))
             except KeyError:
                 self._json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
+            except FileNotFoundError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+            except ValueError as exc:
+                self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        elif path.startswith("/api/cohort/sample-review/"):
+            # Projected stored-review VCFs are files on disk streamed here,
+            # never strings inside the JSON that described them (audit M32).
+            parts = path.split("/")
+            try:
+                if len(parts) != 6:
+                    raise KeyError("review export not found")
+                self._file(self.service.cohort.review_export_file(parts[4], parts[5]))
+            except KeyError:
+                self._json({"error": "review export not found"}, HTTPStatus.NOT_FOUND)
             except FileNotFoundError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             except ValueError as exc:
@@ -5917,7 +6267,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/cohort/samples/remove":
                 body = self._body()
-                self._json(self.service.cohort.remove_samples(
+                self._json(self.service.remove_cohort_samples(
                     body.get("sample_ids")
                 ))
                 return
@@ -5980,16 +6330,48 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 self._json(self.service.software_update_rollback())
                 return
             self._json({"error": "not found"}, HTTPStatus.NOT_FOUND)
-        except KeyError:
-            self._json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
+        except CohortMergeBusyError as exc:
+            self._json({"error": str(exc), "kind": "cohort_merge_busy"}, HTTPStatus.SERVICE_UNAVAILABLE)
+        except NotFoundError as exc:
+            self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
+        except KeyError as exc:
+            # A bare KeyError here is a request payload missing a field
+            # (payload["x"]), not a missing resource: 400, naming the field.
+            field = str(exc.args[0]) if exc.args else "?"
+            self._json(
+                {"error": f"missing required field: {field}"},
+                HTTPStatus.BAD_REQUEST,
+            )
         except (ValueError, json.JSONDecodeError) as exc:
             self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
+        except sqlite3.OperationalError as exc:
+            # The cohort merge now commits in bounded chunks (audit M27), so
+            # a writer normally waits a fraction of a second. If the lock
+            # still times out while an import is finishing, say so plainly
+            # instead of reporting an internal error.
+            if "locked" in str(exc).lower() and self.service.cohort.has_active_import():
+                self._json(
+                    {
+                        "error": (
+                            "An import is finishing (merging into the cohort index); "
+                            "editing is temporarily unavailable — retry in a moment."
+                        ),
+                        "kind": "import_finishing",
+                    },
+                    HTTPStatus.CONFLICT,
+                )
+            else:
+                self._internal_error(exc)
+        except Exception as exc:  # noqa: BLE001 - HTTP boundary (audit M23)
+            self._internal_error(exc)
         finally:
             if mutation_started:
                 self.service.end_storage_mutation()
 
     def _body(self, max_bytes: int = 1_000_000) -> dict:
         length = int(self.headers.get("Content-Length", "0"))
+        if length < 0:
+            raise ValueError("Content-Length must be nonnegative")
         if length > max_bytes:
             raise ValueError("request body is too large")
         raw = self.rfile.read(length)
@@ -6017,10 +6399,14 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         self._cors_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(path.stat().st_size))
-        self.send_header(
-            "Content-Disposition",
-            f'attachment; filename="{path.name.replace(chr(34), "")}"',
-        )
+        # HTTP headers are Latin-1, but workstation filenames may be UTF-8.
+        # Keep the legacy fallback ASCII and carry the exact name in RFC 5987
+        # form; encoding also prevents filename control characters becoming
+        # response headers.
+        encoded_name = quote(path.name, safe="")
+        self.send_header("Content-Disposition", (
+            f'attachment; filename="{encoded_name}"; filename*=UTF-8\'\'{encoded_name}'
+        ))
         self.end_headers()
         with path.open("rb") as handle:
             shutil.copyfileobj(handle, self.wfile, length=1024 * 1024)
@@ -6065,6 +6451,31 @@ def create_server(
         {"service": service},
     )
     return LoopbackHTTPServer((host, port), handler)
+
+
+def _install_shutdown_signal_handlers(server) -> None:
+    """Turn SIGTERM/SIGHUP/SIGINT into an orderly shutdown.
+
+    Under the launcher the service is a background child of a background
+    subshell: bash hands it SIGINT as SIG_IGN, so CPython never installs
+    its KeyboardInterrupt handler, and the supervisor's `kill` (SIGTERM) or
+    a closed terminal (SIGHUP) ended the process immediately — shutdown()
+    never ran and running pipelines were orphaned (audit H6). The handler
+    stops the serve loop from another thread (shutdown() would deadlock if
+    called on the serving thread); main() then runs service.shutdown().
+    """
+    def handle(signum, _frame):
+        print(f"received signal {signum}; stopping the local service")
+        threading.Thread(target=server.shutdown, name="signal-shutdown", daemon=True).start()
+
+    for name in ("SIGTERM", "SIGHUP", "SIGINT"):
+        signum = getattr(signal, name, None)
+        if signum is None:
+            continue
+        try:
+            signal.signal(signum, handle)
+        except (ValueError, OSError):  # not the main thread / unsupported
+            pass
 
 
 def main() -> None:
@@ -6167,12 +6578,25 @@ def main() -> None:
         except StorageRegistryError as exc:
             parser.error(str(exc))
 
-    service = AnnotationJobService(
-        pipeline_root, state_dir, storage_registry=registry
-    )
-    server = create_server(service, args.host, args.port)
+    try:
+        service = AnnotationJobService(
+            pipeline_root, state_dir, storage_registry=registry
+        )
+    except ServiceAlreadyRunningError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_ALREADY_RUNNING)
+    try:
+        server = create_server(service, args.host, args.port)
+    except OSError as exc:
+        # Bind failure after the lock was acquired: another process (not a
+        # GUIDE-IEI service, or one on a different state directory) holds
+        # the port. Release our state cleanly instead of crash-looping.
+        service.shutdown()
+        print(f"ERROR: cannot listen on http://{args.host}:{args.port}: {exc}", file=sys.stderr)
+        raise SystemExit(EXIT_ALREADY_RUNNING)
     print(f"IEI local service listening on http://{args.host}:{args.port}")
     print(f"State: {service.state_dir}")
+    _install_shutdown_signal_handlers(server)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

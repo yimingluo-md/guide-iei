@@ -222,10 +222,115 @@ size the library page paginates (25 callsets per page; search and bulk actions
 apply to current samples), library additions and
 removals run as a single batched request with a per-item outcome report,
 and every Cohort Search query form — variant, gene, gene list, region —
-answers from covering indexes rather than table scans (the test suite
-asserts the query plans). Reviewing, by contrast, stays a per-case or
+answers from indexes rather than table scans (the test suite explains the
+query plan of the assembled statement for every mode and rejects any scan
+of a base table). Reviewing, by contrast, stays a per-case or
 per-subset activity: large collections are meant to be queried through
 Cohort Search, not opened wholesale in the browser.
+
+### Imports and concurrent editing
+
+The cohort index, the Sample Library and the phenotype tables share one
+SQLite file, and SQLite allows one writer at a time. The final merge of an
+import used to be a single transaction that held the write lock for its
+whole duration — minutes for a whole genome — while library and phenotype
+edits waited out their 60-second timeout and failed. The merge now commits
+in bounded chunks (5,000 staged variants each, a fraction of a second) and
+pauses between chunks whenever another request in the service has declared
+that it is about to write, so edits during an import wait for one chunk, not
+for the import. During merging, cleanup, or rollback, **new Cohort Search,
+predictor-evidence, and cohort review-loading requests are temporarily
+unavailable**. The service returns a clear retry message (HTTP 503); retry
+after the import finishes. Queries already reading before the merge finish
+against their consistent pre-merge database snapshot. Progress remains
+available; other library and phenotype edits can still proceed between chunks.
+The imported file is `merging` (excluded from ready-file counts and profiles)
+and its sample rows are inserted
+only in the final short **publish** transaction, which also retires a replaced
+file in the same step; the replaced file's bulk rows are reclaimed afterwards
+in bounded deletes.
+
+Shared evidence rows can change before publication, which is why those
+reads are guarded until all merge work finishes. The merge upserts into tables shared by every file
+(variants, transcript annotations, and — for a sample-restricted re-import —
+the file's own prediction observations), so a merge that fails half-way
+would otherwise leave part of the old cohort carrying the new file's scores.
+Every chunk therefore first writes the pre-image of each existing row it may
+change, and the id of each row it inserts, to a **merge journal** in the
+database (`merge_journal_variants`, `merge_journal_annotations`,
+`merge_journal_observations`, `merge_journal_values`; empty outside a merge).
+A failure before publication restores the pre-images, removes the inserted
+rows and reclaims the unpublished file's genotypes, so the previous cohort
+state stands exactly, including a re-imported sample's earlier rows — those
+are retired only in the publish transaction, together with the appearance
+of their replacements. A merge interrupted by a crash or power loss is
+recovered the same way on the next open from the journal that survived in
+the database (`cohort_meta.merge_cleanup_pending` is `merging:<id>` until
+publication and `published:<id>` until the reclamation finished), and the
+import can simply be repeated. The only remaining long transactions are the secondary-index
+builds after the **first** file is imported into an empty index (one index
+per transaction). If an edit still times out while an import is finishing,
+the service answers with HTTP 409 *import finishing — retry in a moment*
+rather than an internal error.
+
+Import parsing itself was profiled on a synthetic 50,000-record, four-sample
+VEP VCF: annotation normalisation (the per-transcript predictor and
+PromoterAI provenance rules) dominates, CSQ decoding is roughly a fifth. The
+parser now skips `unquote` for values without an escape, builds each CSQ
+entry with one `zip`, evaluates the PromoterAI observation once per
+annotation row, decodes CSQ only for records a selected sample carries (so
+re-indexing one sample of a joint-called file no longer decodes every
+record's annotations), and derives per-header dataset flags once instead of
+per record in the whole-genome prefilter: about 19% faster for a full
+import, 27% for a restricted one, 25% for the prefilter — measured, not the
+order-of-magnitude figure the review estimated.
+
+## Upgrades and stored evidence columns
+
+The cohort index keeps derived evidence columns (population frequency and
+its source, the usable PromoterAI score) beside the full normalised
+observations. When the meaning of such a column changes in a release, the
+database is reconciled once on the next open and stamped
+(`cohort_meta.legacy_column_format`), so a query never mixes old and new
+semantics:
+
+- **PromoterAI.** The stored score is kept only where an exact,
+  provenance-complete observation still backs that annotation row. Scores
+  indexed before the provenance rule — or before the observation tables
+  existed — are cleared; a forced re-import of the file restores the score
+  together with its provenance. The same rule runs after every import, so a
+  re-annotated file whose score lost its provenance clears the stale value
+  instead of keeping it behind the merge's "another file may still know
+  this" fallback.
+- **Population frequency.** Rows indexed before frequency sources were
+  recorded may hold a maximum pooled across gnomAD popmax, `MAX_AF` and
+  global AF fields. They cannot be recomputed without the source record, so
+  they are labelled `legacy_pooled` (Cohort Search shows *Population AF
+  (pre-upgrade index)*), and a forced re-import replaces the value and the
+  label.
+
+An **ordinary** re-import of an unchanged file is a no-op by design (the
+file is recognised by content); use the forced re-import (or remove and
+re-add the dataset) to refresh derived columns from the source.
+
+### Schema migrations
+
+Sample Library schema changes run as an ordered list of named steps
+(`library_versions_v1`, `library_current_uniqueness_v1`, `portable_paths_v2`;
+the last applied name is stored as `sample_library_meta.library_schema_version`).
+Every step executes inside one transaction together with its marker, so a
+crash or kill during a step rolls the whole step back — the columns it added
+and the backfill it performed — and the next open runs it again from the
+start. A recorded step is re-applied when the schema visibly contradicts it
+(a column or index missing, rows never backfilled), so a database restored
+from a partial copy still converges. The cohort index stamps its own
+migrations the same way (`cohort_meta.variant_key_format`,
+`legacy_column_format`, `picked_backfill`). The `picked` backfill for indexes
+created before PICK was retained used to be keyed on the column's absence, so
+a database interrupted between adding the column and backfilling it reopened
+with every eligible row at 0 for good; it is now stamped in the same
+transaction as the backfill, and a stamp-less index with no pick at all is
+backfilled on the next open (one with picks keeps its deliberate zeros).
 
 ## Storage management
 
@@ -253,10 +358,11 @@ is not a backup.** For a recoverable workstation copy:
    for the library backup. Follow each source's redistribution restrictions.
 5. Keep external original VCFs, complete annotation outputs, and their audit
    files separately: a Storage migration does not copy these provenance paths.
-   Browser-local saved candidates, custom gene lists, and display preferences
-   are separate from the server folder; record/export what you need or include
-   the browser profile in an institution-approved backup. A library copy alone
-   will not restore them.
+   Candidate stars are session-only: export the Saved view before loading
+   another dataset, refreshing, or closing the tab. Custom gene lists and
+   display preferences are browser-local and separate from the server folder;
+   record/export them or include the browser profile in an institution-approved
+   backup. A library copy alone will not restore these preferences.
 
 Restore with the same GUIDE-IEI version first, while the service is stopped.
 Keep the original backup untouched. Restore the complete folder structure and
@@ -285,8 +391,17 @@ The Storage page reports:
 - SQLite freelist space that can be reclaimed.
 
 Cleanup is explicit. It removes rebuildable uploads/caches, generated job and
-resource configuration snapshots, and incomplete `.partial` files, but never
-an external original VCF or a managed library VCF.
+resource configuration snapshots, incomplete `.partial` files, and the cached
+per-sample review projections (`<checksum>.<assembly>.<sample>.review.vcf.gz`,
+rebuilt on the next review of that sample; reported as **projections** in the
+storage figures), but never an external original VCF or a managed library
+VCF. Removing a dataset also deletes its own projection and every combined
+(`<checksum>.subset-…`) projection of that file — a combined projection is
+named by its selection, and any of them may carry the removed sample's
+genotypes — and the last dataset of a managed file takes every projection of
+that file with it. Ordinary cleanup treats a projection whose header lists a
+sample no dataset of that file has any more as orphaned, so a combined
+projection left by an earlier build is reclaimed too.
 SQLite compaction is a separate confirmed action; it runs `VACUUM`, can take
 several minutes, and does not remove logical records.
 

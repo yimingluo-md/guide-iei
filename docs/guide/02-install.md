@@ -239,7 +239,13 @@ Ubuntu/WSL2 may request the Linux user's password for system packages:
   installed on the machine itself. An existing Docker Desktop or Podman
   installation is detected and used; on a Mac without one, a small, pinned,
   checksum-verified container stack is set up in the managed folder — no
-  Homebrew, no administrator password.
+  Homebrew, no administrator password. On Linux and inside WSL a container
+  runtime is a system component that needs administrator rights, so the setup
+  never installs one silently: it prints the exact command (Docker's
+  convenience script or your distribution's package) and runs it only after
+  you type `y` at the terminal — the launchers' automatic "yes" does not
+  cover this step. Unattended provisioning that you control can pass
+  `--yes-privileged` to `scripts/setup_environment.sh` explicitly.
 - **Native bcftools/tabix** (optional, recommended) — accelerates file
   operations severalfold; added automatically when a package manager is
   available.

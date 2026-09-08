@@ -31,6 +31,10 @@ import yaml
 
 
 STOP_CODONS = {"TAA", "TAG", "TGA"}
+# PTC_calc_status for transcripts whose CDS carries an annotated UGA-encoded
+# selenocysteine (SELENON, GPX4, TXNRD1/2, ...). The recomputation is refused
+# deliberately; annotation_qc counts the status as a documented skip.
+SELENOPROTEIN_SKIP_STATUS = "selenoprotein_transcript_unsupported"
 APPENDED_FIELDS = (
     "PTC_cds_pos",
     "PTC_aa_pos",
@@ -259,11 +263,19 @@ class Transcript:
     last_coding_exon_cds: int | None = None
     last_exon_junction_cds: int | None = None
     terminal_exon_is_utr_only: bool = False
+    selenocysteine_sites: list[tuple[int, int]] = field(default_factory=list)
+    selenocysteine_cds_codons: list[int] = field(default_factory=list)
     problems: list[str] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return not self.problems
+
+    @property
+    def is_selenoprotein(self) -> bool:
+        """True when the GTF annotates a UGA codon of this CDS as
+        selenocysteine (Ensembl ``Selenocysteine`` feature)."""
+        return bool(self.selenocysteine_cds_codons)
 
 
 def merge_intervals(intervals: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -290,6 +302,7 @@ def load_transcripts(
                 "exon",
                 "CDS",
                 "stop_codon",
+                "Selenocysteine",
             }:
                 continue
             attributes = parse_attributes(columns[8])
@@ -310,6 +323,11 @@ def load_transcripts(
                 model.exons.append((start, end))
             elif columns[2] in {"CDS", "stop_codon"}:
                 model.coding_features.append((start, end))
+            elif columns[2] == "Selenocysteine":
+                # Ensembl annotates each UGA-encoded selenocysteine of a
+                # selenoprotein CDS as its own 3-bp feature; only these
+                # annotated positions are ever treated as non-terminating.
+                model.selenocysteine_sites.append((start, end))
 
     for model in models.values():
         prepare_transcript(model, fasta)
@@ -399,8 +417,35 @@ def prepare_transcript(model: Transcript, fasta: IndexedFasta) -> None:
         model.problems.append("cds_not_multiple_of_3")
     if len(cds) < 3 or cds[-3:] not in STOP_CODONS:
         model.problems.append("cds_no_terminal_stop")
-    internal = (cds[index : index + 3] for index in range(0, max(0, len(cds) - 3), 3))
-    if any(codon in STOP_CODONS for codon in internal):
+    # Annotated selenocysteine codons, as 1-based CDS positions of their
+    # first base. Every annotated site must map inside the CDS and read UGA;
+    # anything else is an annotation/model mismatch, not a Sec site.
+    sec_codons: list[int] = []
+    for site_start, site_end in model.selenocysteine_sites:
+        first = genomic_to_cds(
+            model, site_start if model.strand == 1 else site_end
+        )
+        if first is None or (first - 1) % 3 != 0:
+            if "selenocysteine_site_outside_frame" not in model.problems:
+                model.problems.append("selenocysteine_site_outside_frame")
+            continue
+        if cds[first - 1 : first + 2] != "TGA":
+            if "selenocysteine_site_not_uga" not in model.problems:
+                model.problems.append("selenocysteine_site_not_uga")
+            continue
+        sec_codons.append(first)
+    model.selenocysteine_cds_codons = sorted(set(sec_codons))
+    internal_stops = [
+        index + 1
+        for index in range(0, max(0, len(cds) - 3), 3)
+        if cds[index : index + 3] in STOP_CODONS
+    ]
+    # An in-frame UGA at an annotated selenocysteine position is sense, not a
+    # stop: the model is intact. The 50 bp recomputation is still refused for
+    # such transcripts (see ``calculate``) because a simulated frameshift
+    # would have to decide whether a UGA reached in the shifted frame is
+    # recoded, which the SECIS-dependent biology does not settle.
+    if any(position not in model.selenocysteine_cds_codons for position in internal_stops):
         model.problems.append("cds_internal_stop")
 
 
@@ -536,6 +581,13 @@ def calculate(
         )
     if not model.ok:
         return empty_result("bad_transcript_model:" + "+".join(model.problems))
+    if model.is_selenoprotein:
+        # Deliberate, documented skip (review M4): the reference CDS reads
+        # through an annotated UGA-Sec codon, and simulating a frameshift
+        # past a SECIS-recoded codon has no settled answer. LOFTEE's original
+        # verdict stands and the QC report counts this as a deliberate skip,
+        # not as missing coverage.
+        return empty_result(SELENOPROTEIN_SKIP_STATUS)
     if "start_lost" in consequence.split("&"):
         return empty_result("start_lost_unsupported")
     version_match = re.match(r"^ENST\d+\.(\d+)", unquote(hgvsc or ""))

@@ -27,9 +27,13 @@ requires_numpy = unittest.skipUnless(
     HAVE_NUMPY, "SKIP: NumPy not installed (only needed to prepare SCREEN context data)"
 )
 
+from pipeline import screen_ccre_dataset
 from pipeline.screen_ccre_dataset import (
     AGGREGATE_STATUS,
+    BIGBED_SHA256_PIN_ENV,
     PARTIAL_STATUS,
+    ensure_bigbed_tool,
+    ensure_verified_ucsc_binary,
     immune_relevant,
     lineage_assignment,
     lineage_for,
@@ -228,6 +232,145 @@ class ScreenCcreDatasetTests(unittest.TestCase):
                     selection=manifest_path,
                     prepared_manifest=prepared_manifest,
                 ))
+
+
+class UcscBinaryVerificationTests(unittest.TestCase):
+    """Audit M17: the UCSC bigBedToBed download is verified against UCSC's
+    published md5 listing (or an explicit sha256 pin) BEFORE it is executed;
+    a mismatch is refused and nothing executable is left behind."""
+
+    GOOD = b"#!/bin/sh\necho 'bigBedToBed usage' >&2; exit 1\n" + b"#" * 2048
+    BAD = b"#!/bin/sh\necho 'bigBedToBed usage' >&2; touch \"$(dirname \"$0\")/EXECUTED\"; exit 1\n" + b"#" * 2048
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.tools = Path(self.temp.name) / "tools"
+        self.tools.mkdir()
+        self.served = {"bigBedToBed": self.GOOD}
+        self.executed_before_verification = []
+
+        def fake_curl(url, output):
+            name = url.rsplit("/", 1)[1]
+            if name == "md5sum.txt":
+                listing = "".join(
+                    f"{hashlib.md5(body).hexdigest()}  {n}\n" for n, body in self.listing.items()
+                )
+                output.write_text(listing)
+                return
+            output.parent.mkdir(parents=True, exist_ok=True)
+            output.write_bytes(self.served[name])
+
+        self.listing = dict(self.served)
+        self.curl = mock.patch.object(screen_ccre_dataset, "run_curl", side_effect=fake_curl)
+        self.curl.start()
+        self.which = mock.patch.object(screen_ccre_dataset.shutil, "which", return_value=None)
+        self.which.start()
+        self.env = mock.patch.dict(os.environ, {BIGBED_SHA256_PIN_ENV: ""})
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+        self.which.stop()
+        self.curl.stop()
+        self.temp.cleanup()
+
+    def test_download_is_verified_against_ucsc_listing_before_it_runs(self):
+        tool = ensure_bigbed_tool(self.tools.parent)
+        self.assertEqual(tool, self.tools / "bigBedToBed")
+        record = json.loads((self.tools / "bigBedToBed.manifest.json").read_text())
+        self.assertEqual(record["sha256"], hashlib.sha256(self.GOOD).hexdigest())
+        self.assertEqual(record["md5"], hashlib.md5(self.GOOD).hexdigest())
+        self.assertTrue(record["verified_against"].endswith("/md5sum.txt"))
+        self.assertFalse((self.tools / "bigBedToBed.unverified").exists())
+
+    def test_mismatching_download_is_refused_and_never_executed(self):
+        self.served["bigBedToBed"] = self.BAD  # what the transfer delivers
+        with self.assertRaises(RuntimeError) as caught:
+            ensure_bigbed_tool(self.tools.parent)
+        self.assertIn("does not match UCSC's published", str(caught.exception))
+        self.assertFalse((self.tools / "EXECUTED").exists(), "the unverified binary was executed")
+        self.assertFalse((self.tools / "bigBedToBed").exists())
+        self.assertFalse((self.tools / "bigBedToBed.unverified").exists())
+        self.assertFalse((self.tools / "bigBedToBed.manifest.json").exists())
+
+    def test_missing_listing_fails_closed_unless_pinned(self):
+        self.listing = {}  # UCSC listing has no entry for the binary
+        with self.assertRaises(RuntimeError) as caught:
+            ensure_bigbed_tool(self.tools.parent)
+        self.assertIn(BIGBED_SHA256_PIN_ENV, str(caught.exception))
+        self.assertFalse((self.tools / "bigBedToBed").exists())
+        with mock.patch.dict(os.environ, {BIGBED_SHA256_PIN_ENV: hashlib.sha256(self.GOOD).hexdigest()}):
+            tool = ensure_bigbed_tool(self.tools.parent)
+        self.assertTrue(tool.exists())
+        record = json.loads((self.tools / "bigBedToBed.manifest.json").read_text())
+        self.assertIn("pinned sha256", record["verified_against"])
+        # A wrong pin refuses the file even when UCSC's listing would accept it.
+        self.listing = dict(self.served)
+        (self.tools / "bigBedToBed").unlink()
+        (self.tools / "bigBedToBed.manifest.json").unlink()
+        with mock.patch.dict(os.environ, {BIGBED_SHA256_PIN_ENV: "0" * 64}):
+            with self.assertRaises(RuntimeError):
+                ensure_bigbed_tool(self.tools.parent)
+        self.assertFalse((self.tools / "bigBedToBed").exists())
+
+    def test_cached_binary_must_satisfy_the_current_pin(self):
+        # A binary verified against UCSC's listing earlier is not exempt from
+        # a pin supplied now: the cache-return path compares the pin too.
+        binary = self.tools / "bigBedToBed"
+        ensure_verified_ucsc_binary("linux.x86_64", binary)
+        self.assertTrue(binary.exists())
+        with self.assertRaises(RuntimeError) as caught:
+            ensure_verified_ucsc_binary("linux.x86_64", binary, pinned_sha256="0" * 64)
+        self.assertIn("does not match the pinned digest", str(caught.exception))
+        self.assertFalse(binary.exists(), "a cached binary failing the pin must not be kept")
+        self.assertFalse((self.tools / "bigBedToBed.manifest.json").exists())
+        # The right pin accepts it and is recorded as the verification basis.
+        record = ensure_verified_ucsc_binary("linux.x86_64", binary, pinned_sha256=hashlib.sha256(self.GOOD).hexdigest())
+        self.assertIn("pinned sha256", record["verified_against"])
+        record = ensure_verified_ucsc_binary("linux.x86_64", binary, pinned_sha256=hashlib.sha256(self.GOOD).hexdigest())
+        self.assertIn("pinned sha256", record["verified_against"])
+        # The environment pin is honoured on the cache path as well.
+        with mock.patch.dict(os.environ, {BIGBED_SHA256_PIN_ENV: "1" * 64}):
+            with self.assertRaises(RuntimeError):
+                ensure_verified_ucsc_binary("linux.x86_64", binary)
+
+    def test_binary_left_by_an_older_version_is_verified_in_place(self):
+        # Older versions hashed the binary after running it and never checked
+        # the hash against anything: such a file must be verified (no
+        # re-download when it matches) and replaced when it does not.
+        binary = self.tools / "bigBedToBed"
+        binary.write_bytes(self.GOOD)
+        binary.chmod(0o755)
+        (self.tools / "bigBedToBed.manifest.json").write_text(json.dumps({
+            "source_url": "x", "sha256": hashlib.sha256(self.GOOD).hexdigest(), "size": len(self.GOOD),
+        }))
+        record = ensure_verified_ucsc_binary("linux.x86_64", binary)
+        self.assertTrue(record["verified_against"].endswith("/md5sum.txt"))
+        self.assertEqual(json.loads((self.tools / "bigBedToBed.manifest.json").read_text())["md5"], record["md5"])
+        # Tampered on disk: refused, then replaced by a verified download.
+        binary.write_bytes(self.BAD)
+        record = ensure_verified_ucsc_binary("linux.x86_64", binary)
+        self.assertEqual(binary.read_bytes(), self.GOOD)
+        self.assertFalse((self.tools / "EXECUTED").exists())
+        self.assertEqual(record["sha256"], hashlib.sha256(self.GOOD).hexdigest())
+
+    def test_path_binary_cannot_bypass_an_explicit_pin(self):
+        binary = self.tools / "bigBedToBed"
+        binary.write_bytes(self.BAD)
+        binary.chmod(0o755)
+        with mock.patch.object(screen_ccre_dataset.shutil, "which", return_value=str(binary)):
+            for pin in ("0" * 64, None):
+                with self.subTest(pin=pin), mock.patch.dict(os.environ, {BIGBED_SHA256_PIN_ENV: "1" * 64}):
+                    with self.assertRaisesRegex(RuntimeError, "does not match the pinned digest"):
+                        ensure_bigbed_tool(self.tools.parent, pinned_sha256=pin)
+        self.assertFalse((self.tools / "EXECUTED").exists())
+
+    def test_matching_pin_accepts_path_binary_before_probing(self):
+        binary = self.tools / "bigBedToBed"
+        binary.write_bytes(self.GOOD)
+        binary.chmod(0o755)
+        with mock.patch.object(screen_ccre_dataset.shutil, "which", return_value=str(binary)):
+            self.assertEqual(ensure_bigbed_tool(self.tools.parent, hashlib.sha256(self.GOOD).hexdigest()), binary)
 
 
 if __name__ == "__main__":

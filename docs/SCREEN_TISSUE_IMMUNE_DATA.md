@@ -313,8 +313,12 @@ bash scripts/prepare_screen_ccre_data.sh /path/to/SCREEN/Registry-V4 6
 The workflow downloads/resumes official sources, caches ENCODE metadata,
 validates cCRE order, row counts, schemas, status vocabulary, and class
 vocabulary, builds the baseline immune contexts, then writes all prepared
-artifacts with SHA-256 provenance. On macOS, the UCSC `bigBedToBed` binary may
-require the `xz` runtime (`brew install xz`).
+artifacts with SHA-256 provenance. The UCSC `bigBedToBed` binary it downloads
+is verified against UCSC's published `md5sum.txt` for that platform directory
+before it is executed for the first time (set `IEI_BIGBEDTOBED_SHA256=<sha256>`
+or pass `--bigbedtobed-sha256` to pin an independently verified digest
+instead); a binary that fails verification is deleted, never run. On macOS,
+the UCSC `bigBedToBed` binary may require the `xz` runtime (`brew install xz`).
 
 It also downloads the exact Cell Ontology `v2026-06-08` basic OBO release and
 verifies its pinned SHA-256. A small checked-in content-alignment fixture binds

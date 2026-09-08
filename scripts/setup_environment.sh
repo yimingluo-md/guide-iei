@@ -16,8 +16,10 @@
 #      password. Every direct download is version-pinned and SHA-256-verified.
 #   3. On Linux/WSL2 a container runtime is a system component (kernel
 #      namespaces need root to wire up); the script prints the exact commands
-#      and runs them only after an explicit yes. Existing docker/podman/
-#      singularity/apptainer installs are always detected and preferred.
+#      and runs them only after an explicit, interactive yes — `--yes` does
+#      NOT cover them, because the Docker convenience script is unpinned
+#      remote code executed as root. Existing docker/podman/singularity/
+#      apptainer installs are always detected and preferred.
 #
 # The script never edits shell profiles. Repo scripts (start_workbench.sh)
 # probe the managed tools directory themselves.
@@ -25,7 +27,12 @@
 # Flags:
 #   --check            doctor only (default)
 #   --install          perform tier-2 installs (and consented tier-3 on Linux)
-#   --yes              assume yes for prompts (container VM start, image build)
+#   --yes              assume yes for unprivileged prompts (container VM
+#                      start, image build, user-space installs); never for
+#                      root/remote-script actions
+#   --yes-privileged   ALSO run consented root actions (the Docker convenience
+#                      script, distro package installs of a runtime) without
+#                      asking — for unattended provisioning you control
 #   --skip-container   skip every container-runtime check/install (used by CI)
 #   --tools-dir DIR    override the managed tools directory
 set -u -o pipefail
@@ -65,6 +72,7 @@ DISK_MIN_EXOME_GB=40
 # ---------------------------------------------------------------- cli parsing
 MODE="check"
 ASSUME_YES=0
+ASSUME_YES_PRIVILEGED=0
 SKIP_CONTAINER=0
 TOOLS_DIR="${IEI_TOOLS_DIR:-$HOME/.iei-variant-review/tools}"
 while [ $# -gt 0 ]; do
@@ -72,10 +80,11 @@ while [ $# -gt 0 ]; do
         --check) MODE="check" ;;
         --install) MODE="install" ;;
         --yes) ASSUME_YES=1 ;;
+        --yes-privileged) ASSUME_YES_PRIVILEGED=1 ;;
         --skip-container) SKIP_CONTAINER=1 ;;
         --tools-dir) shift; TOOLS_DIR="${1:?--tools-dir needs a value}" ;;
         -h|--help)
-            sed -n '2,30p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+            sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
             exit 0 ;;
         *) echo "unknown flag: $1 (see --help)" >&2; exit 2 ;;
     esac
@@ -102,6 +111,23 @@ die() { printf 'ERROR: %s\n' "$1" >&2; exit 2; }
 confirm() { # confirm <question>  (respects --yes; non-interactive -> no)
     [ "$ASSUME_YES" = 1 ] && return 0
     [ -t 0 ] || return 1
+    printf '%s [y/N] ' "$1"
+    read -r answer
+    case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
+}
+
+# confirm_privileged <question>: for actions that run as root and/or execute
+# unpinned remote code (curl | sudo sh). `--yes` is deliberately NOT honoured:
+# the double-click launcher passes --yes for user-space work, and that must
+# never silently pipe a remote script into root (audit H11). Only an
+# interactive yes, or the explicit --yes-privileged flag, allows it.
+confirm_privileged() {
+    [ "$ASSUME_YES_PRIVILEGED" = 1 ] && return 0
+    if [ ! -t 0 ]; then
+        note "privileged step skipped (no terminal to ask): $1"
+        return 1
+    fi
+    printf '%s\n' "This step runs with administrator rights (sudo) and is not covered by --yes."
     printf '%s [y/N] ' "$1"
     read -r answer
     case "$answer" in y|Y|yes|YES) return 0 ;; *) return 1 ;; esac
@@ -441,8 +467,10 @@ fi
 # The pipeline is fully functional without these (every htslib operation
 # falls back to the container), but native bcftools/tabix/bgzip avoid
 # containerized I/O over bind mounts — typically 5-20x faster on macOS — and
-# remove the container write-visibility race class entirely. The pinned
-# in-container bcftools/liftover used for GRCh37 intake is unaffected.
+# remove the container write-visibility race class entirely. GRCh37 intake
+# always runs the BCFtools/liftover plugin inside the pinned image
+# (scripts/liftover_grch37_to_grch38.sh forces HTS_VIA_CONTAINER=1 for that
+# call), so a native bcftools without the plugin cannot break it.
 find_conda() {
     local candidate
     command -v conda 2>/dev/null && return 0
@@ -586,7 +614,7 @@ else
                 runtime_cmd="install docker or podman with your distro's package manager"
                 runtime_hint=""
             fi
-            if [ "$MODE" = "install" ] && confirm "Install a container runtime now? Runs: $runtime_cmd"; then
+            if [ "$MODE" = "install" ] && confirm_privileged "Install a container runtime now? Runs: $runtime_cmd"; then
                 if sh -c "$runtime_cmd"; then
                     ok "container runtime installed ($runtime_hint)"
                     note "log out and back in so the docker group membership takes effect"

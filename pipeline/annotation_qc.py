@@ -21,6 +21,13 @@ from typing import Iterable
 
 import yaml
 
+try:
+    from .promoterai_evidence import SCORE_FIELDS as _PROMOTERAI_SCORE_FIELDS
+    from .research_use_notice import RESEARCH_USE_NOTICE
+except ImportError:  # direct script execution
+    from promoterai_evidence import SCORE_FIELDS as _PROMOTERAI_SCORE_FIELDS
+    from research_use_notice import RESEARCH_USE_NOTICE
+
 
 MISSING = {"", ".", "-"}
 PLOF_CONSEQUENCES = {
@@ -42,14 +49,7 @@ SPLICEAI_FIELDS = (
     "SpliceAI_pred_DS_DL",
 )
 DEFAULT_CRITICAL_DBNSFP = ("CADD_phred", "AlphaMissense_score")
-PROMOTERAI_FIELDS = (
-    "PromoterAI_score",
-    "promoterAI_score",
-    "promoterAI_promoterAI",
-    "PromoterAI_promoterAI",
-    "promoterAI",
-    "PromoterAI",
-)
+PROMOTERAI_FIELDS = _PROMOTERAI_SCORE_FIELDS
 LOGOFUNC_SCORE_FIELDS = (
     "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF",
 )
@@ -144,6 +144,9 @@ DELIBERATE_PTC_SKIP_PREFIXES = (
     "unsupported_transcript_biotype:",
     "transcript_version_mismatch",
     "outside_cds",
+    # Selenoprotein transcripts (annotated UGA-Sec codon in the CDS): the
+    # recomputation is refused on purpose, LOFTEE's verdict stands.
+    "selenoprotein_transcript_unsupported",
 )
 
 
@@ -231,7 +234,13 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 if line.startswith("##INFO=<ID=CSQ"):
                     csq_fields = csq_header_fields(line)
                 if line.startswith("##INFO=<ID=ClinVar_path_aa_match"):
-                    release_match = re.search(r"ClinVar release ([^)]+)", line)
+                    # clinvar_aa_match.py writes "(ClinVar snapshot <release>)";
+                    # catalogs built before that wording wrote "ClinVar
+                    # release <release>". Accept both (review M7: the report
+                    # carried a null release for every current output).
+                    release_match = re.search(
+                        r"ClinVar (?:snapshot|release)\s+([^);\s\"]+)", line
+                    )
                     if release_match:
                         clinvar_aa_release = release_match.group(1)
                 continue
@@ -838,6 +847,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         "schema_version": 1,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "purpose": "annotation completeness; not a clinical classification",
+        "research_use_notice": RESEARCH_USE_NOTICE,
         "overall_status": overall,
         "input_vcf": str(vcf_path.resolve()),
         "config": str(config_path.resolve()),
@@ -1047,6 +1057,7 @@ details pre {{ white-space: pre-wrap; background: #f7f9f9; padding: 1rem }}
 <h1>Annotation coverage report</h1>
 <p><strong>{html.escape(overall_label)}</strong></p>
 <p>This report measures annotation coverage; it is not a clinical classification.</p>
+<p class="notice"><em>{html.escape(report.get('research_use_notice', RESEARCH_USE_NOTICE))}</em></p>
 {''.join(f'<p class="warn">Run note: {html.escape(note)}</p>' for note in report.get('run_notes', []))}
 <p><code>{html.escape(report['input_vcf'])}</code></p>
 <p>{summary['records']} records · {summary['pass_records']} PASS ·

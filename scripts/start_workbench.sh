@@ -31,6 +31,13 @@ open_browser() {
 ui_is_guide_iei() {
     curl -s -m 2 "$UI_URL" 2>/dev/null | grep -q "GUIDE-IEI"
 }
+service_is_guide_iei() {
+    # The service answers long before the UI does on a first launch (npm ci
+    # and the production build run in between), so a second double-click
+    # must be recognised from the SERVICE port too — a second service on the
+    # same state used to disturb the live one before failing to bind.
+    curl -s -m 2 "http://127.0.0.1:${SERVICE_PORT}/api/health" 2>/dev/null | grep -q '"ok"'
+}
 
 # Single instance: if the workbench is already up, just open it.
 if ui_is_guide_iei; then
@@ -42,6 +49,12 @@ if curl -s -m 2 -o /dev/null "$UI_URL" 2>/dev/null; then
     echo "ERROR: port ${UI_PORT} is in use by another application." >&2
     echo "Set IEI_UI_PORT to a free port and start again." >&2
     exit 1
+fi
+if service_is_guide_iei; then
+    echo "GUIDE-IEI's annotation service is already running on 127.0.0.1:${SERVICE_PORT}"
+    echo "(another launch is probably still preparing the interface). Wait for that"
+    echo "window to finish, or stop it before starting again."
+    exit 0
 fi
 
 if [[ "$BOOTSTRAP" == "1" ]]; then
@@ -177,6 +190,12 @@ cd "$ROOT"
         if [[ "$rc" -eq 0 || "$rc" -eq 130 || "$rc" -eq 143 ]]; then
             exit "$rc"
         fi
+        # 4 = another service already owns the state directory (or the port):
+        # a deliberate refusal, never a crash to retry.
+        if [[ "$rc" -eq 4 ]]; then
+            echo "[workbench] another GUIDE-IEI service already owns this state; not retrying"
+            exit "$rc"
+        fi
         # Unexpected death (crash, out-of-memory kill): relaunch so the
         # workbench never sits headless, but give up on a rapid crash loop.
         if [[ $((SECONDS - launched_at)) -ge 60 ]]; then
@@ -267,6 +286,11 @@ elif [[ -n "$SOURCE_STAMP" && "$(cat "${ROOT}/webui/.next/.iei-source-stamp" 2>/
     echo "the built interface predates the current source (e.g. after git pull); rebuilding..."
     WEB_BUILD_REQUIRED=1
 fi
+# NEXT_PUBLIC values are embedded in browser JavaScript at build time.
+# A runtime-only port change otherwise leaves the UI calling the old service.
+if [[ "$(cat "${ROOT}/webui/.next/.iei-service-url" 2>/dev/null)" != "$NEXT_PUBLIC_IEI_SERVICE_URL" ]]; then
+    WEB_BUILD_REQUIRED=1
+fi
 if [[ "${IEI_WEB_MODE:-production}" != "dev" && "$WEB_BUILD_REQUIRED" == "1" ]]; then
     echo "building the production workbench interface (one-time after install/update)..."
     npm run build || {
@@ -274,6 +298,7 @@ if [[ "${IEI_WEB_MODE:-production}" != "dev" && "$WEB_BUILD_REQUIRED" == "1" ]];
         exit 1
     }
     rm -f "${ROOT}/webui/.build-required"
+    printf '%s\n' "$NEXT_PUBLIC_IEI_SERVICE_URL" > "${ROOT}/webui/.next/.iei-service-url"
     if [[ -n "$SOURCE_STAMP" ]]; then
         printf '%s\n' "$SOURCE_STAMP" > "${ROOT}/webui/.next/.iei-source-stamp"
     fi

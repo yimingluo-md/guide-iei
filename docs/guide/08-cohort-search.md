@@ -13,6 +13,13 @@ GUIDE-IEI supports two complementary cohort questions:
 - **Cohort search:** Across all locally indexed cases, who carries this variant
   or a qualifying variant in this gene, gene list, or region?
 
+While an import is merging into the cohort index (including cleanup or
+recovery), new Cohort Search and cohort review-loading requests show a
+temporary-unavailability message. Retry after the import finishes; if it
+failed, restart the workbench to complete recovery. This prevents partially
+updated annotations from appearing in results. Already-open reviews remain
+available, and import progress can still be checked.
+
 ## Cohort review: the variant list, with carriers
 
 Importing a multi-sample VCF (16 or more samples) switches the review
@@ -95,7 +102,9 @@ Cohort Search" enabled, or use the library's per-dataset and bulk actions
 (Add to Cohort Search, Remove selected). The records live in a local
 database on this workstation.
 
-Four query forms: an **exact variant** (locus or rsID); **qualifying
+Four query forms: an **exact variant** (locus or rsID — alleles are matched
+by their minimal representation, so `1:100:AT:ATT` and `1:100:A:AT` find the
+same carriers, and results display that canonical form); **qualifying
 variants in one gene**; a **gene list** — paste symbols or insert a saved
 list from Gene lists (an IUIS panel, a custom panel), up to 2,000 genes
 per query; and a **genomic region** (`chrom:start-end`, up to 5 Mb) for
@@ -111,6 +120,21 @@ field the variant page displays reflects the full record.
 
 When a new gene–disease association is published, this is the two-minute
 check across the entire collection — without touching the original files.
+
+The **Genotype** control narrows carriers by stored zygosity, which follows
+how each file encoded the call. A male's single X or Y copy outside the
+pseudoautosomal regions is written haploid (`1`, stored *hemizygous*) by
+some callers and diploid-style (`1/1`, stored *homozygous*) by others, so at
+those single-copy loci the **Homozygous** and **Hemizygous** searches each
+include the other class; elsewhere they stay distinct. Recorded sex from the
+Phenotypes tab narrows this where it is known: a `1/1` on non-PAR X in an
+individual recorded as *female* is a genuine two-copy call and is left out of
+a hemizygous search, while male, other, unknown and unlinked samples keep the
+widening. A haploid call is single-copy whatever the recorded sex and stays in
+both searches. Nothing is re-coded — each result still shows its own genotype
+and stored class — so a hemizygous search on a cohort without phenotype
+records will also list female X homozygotes; link samples to individuals with
+sex at birth to exclude them.
 
 ## Building a large collection: bulk import
 

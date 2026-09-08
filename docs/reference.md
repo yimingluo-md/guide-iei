@@ -27,6 +27,7 @@ task-by-task, in plain language.
 - [Trio analysis](TRIO_ANALYSIS.md)
 - [Phenotype input](PHENOTYPE_INPUT.md)
 - [Sample Library & storage](SAMPLE_LIBRARY_AND_STORAGE.md)
+- [Security & privacy model](SECURITY_AND_PRIVACY.md)
 - [Gene knowledge](GENE_KNOWLEDGE.md)
 - [Bundled workbench references](BUNDLED_WORKBENCH_REFERENCES.md)
 - [Repository layout](REPO_LAYOUT.md)

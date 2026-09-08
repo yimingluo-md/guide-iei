@@ -132,10 +132,14 @@ workbench does not display (caller-specific FORMAT keys, custom INFO
 fields) are not carried into the review and should be inspected in the
 source VCF directly. Carrier checkboxes can instead load selected individuals'
 complete stored review sets, using each file's original Full or Compact WGS
-import profile. Complete-set browser loads are limited to 50 sample entries
-and 200,000 stored carrier observations; very large full-WGS selections
-remain searchable but must be reviewed as matched findings or re-indexed with
-the Compact WGS profile. If an indexed source has moved or been deleted,
+import profile. The service projects each stored set to a file on disk and
+streams it to the browser one file at a time (nothing is assembled as a
+single in-memory string); complete-set browser loads are limited to 50 sample
+entries, 200,000 stored carrier observations, and 256 MB of projected VCF
+(`IEI_REVIEW_EXPORT_MAX_BYTES` overrides the byte budget, which is applied to
+the UTF-8 bytes written to disk, not to a character count). Very large
+full-WGS selections remain searchable but must be reviewed as matched
+findings, in smaller selections, or re-indexed with the Compact WGS profile. If an indexed source has moved or been deleted,
 matched-finding Review reports the source problem and uses the compact SQLite
 fields for that carrier instead. The sample manager removes exact sample/file
 entries, cascades their genotype rows, and reclaims variants with no remaining

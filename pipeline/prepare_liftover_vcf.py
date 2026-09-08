@@ -18,10 +18,24 @@ from urllib.parse import quote
 
 
 PRIMARY_CONTIG = re.compile(r"^(?:chr)?(?:[1-9]|1[0-9]|2[0-2]|X|Y|M|MT)$", re.I)
+MITOCHONDRIAL_CONTIG = re.compile(r"^(?:chr)?(?:M|MT)$", re.I)
 SEQUENCE = re.compile(r"^[ACGTN]+$", re.I)
 INFO_DEFINITION = re.compile(r"^##INFO=<ID=([^,>]+),Number=([^,>]+),")
 FORMAT_DEFINITION = re.compile(
     r"^##FORMAT=<ID=([^,>]+),Number=([^,>]+),Type=([^,>]+),"
+)
+CONTIG_DEFINITION = re.compile(r"^##contig=<ID=([^,>]+)(?:,length=(\d+))?")
+
+# Mitochondrial reference conventions among "GRCh37" callsets. UCSC hg19
+# chrM is NC_001807 (16,571 bp); Ensembl GRCh37, Broad b37/humanG1Kv37 and
+# hs37d5 use the rCRS (NC_012920.1, 16,569 bp), which is byte-identical to
+# GRCh38 MT. Only NC_001807 coordinates may go through the hg19->GRCh38 chain;
+# rCRS records are already on the target sequence and must bypass it.
+MT_LENGTH_RCRS = 16569
+MT_LENGTH_HG19 = 16571
+MT_CONVENTIONS = ("auto", "rcrs", "hg19")
+MT_PASSTHROUGH_HEADER = (
+    '##INFO=<ID=IEI_MT_PASSTHROUGH,Number=0,Type=Flag,Description="Mitochondrial record already on the rCRS/GRCh38 MT sequence; coordinates were carried over without the hg19 chain">\n'
 )
 
 
@@ -184,6 +198,33 @@ def ensembl_contig(value: str) -> str:
     return "MT" if normalized.upper() in {"M", "MT"} else normalized
 
 
+def resolve_mt_convention(
+    requested: str, mt_length: int | None, reference_hint: str
+) -> tuple[str, str]:
+    """Return (convention, evidence) for the source mitochondrial sequence.
+
+    Header contig length is decisive. Without it, a reference name naming a
+    b37-family assembly means rCRS and a bare UCSC "hg19" means NC_001807;
+    otherwise rCRS is assumed (the common clinical GRCh37 exome), and the
+    passthrough records are still verified base-by-base against GRCh38 MT
+    downstream, so a wrong assumption fails loudly instead of shifting.
+    """
+    if requested not in MT_CONVENTIONS:
+        raise ValueError(f"unsupported MT convention: {requested}")
+    if requested != "auto":
+        return requested, "configured"
+    if mt_length == MT_LENGTH_RCRS:
+        return "rcrs", "contig_length_16569"
+    if mt_length == MT_LENGTH_HG19:
+        return "hg19", "contig_length_16571"
+    hint = reference_hint.lower()
+    if any(token in hint for token in ("hs37d5", "b37", "grch37", "g1k_v37", "human_g1k")):
+        return "rcrs", "reference_name"
+    if "hg19" in hint or "ucsc" in hint:
+        return "hg19", "reference_name"
+    return "rcrs", "default"
+
+
 def normalized_contig_header(line: str) -> str:
     return re.sub(
         r"(##contig=<ID=)([^,>]+)",
@@ -200,6 +241,14 @@ def main() -> int:
     parser.add_argument("--unsupported", required=True)
     parser.add_argument("--stats", required=True)
     parser.add_argument("--max-allele-length", type=int, default=50)
+    parser.add_argument(
+        "--passthrough",
+        help="VCF receiving rCRS mitochondrial records that bypass the chain",
+    )
+    parser.add_argument(
+        "--mt-convention", choices=MT_CONVENTIONS, default="auto",
+        help="source mitochondrial sequence: auto (header evidence), rcrs, or hg19",
+    )
     args = parser.parse_args()
 
     if args.max_allele_length < 1:
@@ -209,6 +258,14 @@ def main() -> int:
     unsupported_path = Path(args.unsupported)
     supported_path.parent.mkdir(parents=True, exist_ok=True)
     unsupported_path.parent.mkdir(parents=True, exist_ok=True)
+    passthrough_path = Path(args.passthrough) if args.passthrough else None
+    if passthrough_path is not None:
+        passthrough_path.parent.mkdir(parents=True, exist_ok=True)
+    mt_length: int | None = None
+    reference_hint = ""
+    mt_convention = "auto"
+    mt_convention_source = "unresolved"
+    passthrough_records = passthrough_alleles = 0
     total = supported = unsupported = supported_alleles = 0
     reasons: Counter[str] = Counter()
     removed_info_fields: Counter[str] = Counter()
@@ -221,11 +278,18 @@ def main() -> int:
     format_definitions: dict[str, tuple[str, str]] = {}
     saw_columns = False
 
-    with (
-        text_open(args.input) as source,
-        supported_path.open("w") as good,
-        unsupported_path.open("w") as bad,
-    ):
+    import contextlib
+
+    with contextlib.ExitStack() as stack:
+        source = stack.enter_context(text_open(args.input))
+        good = stack.enter_context(supported_path.open("w"))
+        bad = stack.enter_context(unsupported_path.open("w"))
+        # A closed, header-only passthrough file is still written when no MT
+        # record qualifies, so the caller can test it uniformly.
+        mito = (
+            stack.enter_context(passthrough_path.open("w"))
+            if passthrough_path is not None else None
+        )
         for line in source:
             if line.startswith("##INFO=<"):
                 definition = INFO_DEFINITION.match(line)
@@ -233,6 +297,8 @@ def main() -> int:
                     info_numbers[definition.group(1)] = definition.group(2)
                 good.write(line)
                 bad.write(line)
+                if mito:
+                    mito.write(line)
                 continue
             if line.startswith("##FORMAT=<"):
                 definition = FORMAT_DEFINITION.match(line)
@@ -242,18 +308,39 @@ def main() -> int:
                     )
                 good.write(line)
                 bad.write(line)
+                if mito:
+                    mito.write(line)
                 continue
             if line.startswith("##reference="):
                 original_reference = line.partition("=")[2].strip()
+                reference_hint = original_reference
                 rewritten = f"##iei_original_reference={original_reference}\n"
                 good.write(rewritten)
                 bad.write(line)
+                if mito:
+                    mito.write(rewritten)
                 continue
             if line.startswith("##contig=<"):
+                definition = CONTIG_DEFINITION.match(line)
+                if definition and MITOCHONDRIAL_CONTIG.fullmatch(definition.group(1)):
+                    if definition.group(2):
+                        mt_length = int(definition.group(2))
+                    # The passthrough file is already on GRCh38 MT: declare
+                    # that length so downstream headers never conflict.
+                    if mito:
+                        mito.write(f"##contig=<ID=MT,length={MT_LENGTH_RCRS}>\n")
+                    good.write(normalized_contig_header(line))
+                    bad.write(line)
+                    continue
                 good.write(normalized_contig_header(line))
                 bad.write(line)
+                if mito:
+                    mito.write(normalized_contig_header(line))
                 continue
             if line.startswith("#CHROM"):
+                mt_convention, mt_convention_source = resolve_mt_convention(
+                    args.mt_convention, mt_length, reference_hint
+                )
                 provenance_headers = (
                     '##INFO=<ID=IEI_LIFTOVER,Number=0,Type=Flag,Description="Record converted from GRCh37 to GRCh38 by the IEI pipeline">\n'
                     '##INFO=<ID=IEI_ORIGINAL_ASSEMBLY,Number=1,Type=String,Description="Input reference assembly before liftover">\n'
@@ -268,7 +355,12 @@ def main() -> int:
                     '##INFO=<ID=IEI_LIFTOVER_REJECT_REASON,Number=1,Type=String,Description="Reason the record was not sent to BCFtools/liftover">\n'
                 )
                 good.write(provenance_headers)
+                good.write(MT_PASSTHROUGH_HEADER)
                 bad.write(reject_headers)
+                if mito:
+                    mito.write(provenance_headers)
+                    mito.write(MT_PASSTHROUGH_HEADER)
+                    mito.write(line)
                 good.write(line)
                 bad.write(line)
                 saw_columns = True
@@ -276,6 +368,8 @@ def main() -> int:
             if line.startswith("#"):
                 good.write(line)
                 bad.write(line)
+                if mito:
+                    mito.write(line)
                 continue
             if not line.strip():
                 continue
@@ -329,19 +423,28 @@ def main() -> int:
                     removed_incompatible_format
                 )
             original_alts = ",".join(quote(alt, safe="") for alt in alt_raw.split(","))
-            columns[7] = append_info(
-                columns[7],
-                [
-                    "IEI_LIFTOVER",
-                    "IEI_ORIGINAL_ASSEMBLY=GRCh37",
-                    f"IEI_ORIGINAL_CHROM={quote(chrom, safe='')}",
-                    f"IEI_ORIGINAL_POS={pos}",
-                    f"IEI_ORIGINAL_REF={quote(ref, safe='')}",
-                    f"IEI_ORIGINAL_ALT={original_alts}",
-                    f"IEI_ORIGINAL_RECORD={total}",
-                ],
-            )
+            provenance = [
+                "IEI_ORIGINAL_ASSEMBLY=GRCh37",
+                f"IEI_ORIGINAL_CHROM={quote(chrom, safe='')}",
+                f"IEI_ORIGINAL_POS={pos}",
+                f"IEI_ORIGINAL_REF={quote(ref, safe='')}",
+                f"IEI_ORIGINAL_ALT={original_alts}",
+                f"IEI_ORIGINAL_RECORD={total}",
+            ]
             columns[0] = ensembl_contig(chrom)
+            if (
+                mito is not None
+                and mt_convention == "rcrs"
+                and MITOCHONDRIAL_CONTIG.fullmatch(chrom)
+            ):
+                # rCRS == GRCh38 MT: same coordinates, same bases. The chain
+                # would treat these as NC_001807 and shift them.
+                passthrough_records += 1
+                passthrough_alleles += alternate_count
+                columns[7] = append_info(columns[7], ["IEI_MT_PASSTHROUGH", *provenance])
+                mito.write("\t".join(columns) + "\n")
+                continue
+            columns[7] = append_info(columns[7], ["IEI_LIFTOVER", *provenance])
             good.write("\t".join(columns) + "\n")
 
     stats = {
@@ -364,6 +467,11 @@ def main() -> int:
             sorted(removed_incompatible_format_fields.items())
         ),
         "max_allele_length": args.max_allele_length,
+        "mt_convention": mt_convention,
+        "mt_convention_source": mt_convention_source,
+        "mt_contig_length": mt_length,
+        "mt_passthrough_records": passthrough_records,
+        "mt_passthrough_allele_records": passthrough_alleles,
     }
     Path(args.stats).write_text(json.dumps(stats, indent=2, sort_keys=True) + "\n")
     return 0

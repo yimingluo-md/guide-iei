@@ -1,0 +1,275 @@
+{
+  "description": "Shared contract for reading PromoterAI evidence. pipeline/promoterai_evidence.py and webui/app/vcf.ts (promoterAiObservation) must both produce `expected` for every `record`; test/test_promoterai_evidence.py and webui/tests/vcf.test.mjs assert it.",
+  "cases": [
+    {
+      "name": "plugin output with complete provenance is exact and usable",
+      "record": {
+        "PromoterAI_score": "-0.91",
+        "PromoterAI_TSS": "154000",
+        "PromoterAI_strand": "-1",
+        "PromoterAI_distance": "-120",
+        "PromoterAI_source_transcript": "ENST00000374315.1",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": -0.91,
+        "usable_score": -0.91,
+        "match_status": "exact",
+        "match": "exact_version",
+        "source_transcript": "ENST00000374315.1",
+        "tss": 154000,
+        "strand": "-",
+        "distance": -120
+      }
+    },
+    {
+      "name": "stable_id match with +/1 strand encoding is exact",
+      "record": {
+        "PromoterAI_score": "0.83",
+        "PromoterAI_TSS": "1200",
+        "PromoterAI_strand": "1",
+        "PromoterAI_source_transcript": "ENST00000000001",
+        "PromoterAI_match": "stable_id"
+      },
+      "expected": {
+        "score": 0.83,
+        "usable_score": 0.83,
+        "match_status": "exact",
+        "match": "stable_id",
+        "source_transcript": "ENST00000000001",
+        "tss": 1200,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "score-only annotation (the M5 reproduction) is partial and withheld",
+      "record": {
+        "PromoterAI_score": "0.9"
+      },
+      "expected": {
+        "score": 0.9,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "",
+        "source_transcript": "",
+        "tss": null,
+        "strand": "",
+        "distance": null
+      }
+    },
+    {
+      "name": "legacy custom-annotation alias without provenance is partial and withheld",
+      "record": {
+        "promoterAI_promoterAI": "-0.95"
+      },
+      "expected": {
+        "score": -0.95,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "",
+        "source_transcript": "",
+        "tss": null,
+        "strand": "",
+        "distance": null
+      }
+    },
+    {
+      "name": "canonical field wins over an alias; no maximum across aliases",
+      "record": {
+        "PromoterAI_score": "-0.2",
+        "promoterAI_promoterAI": "0.9",
+        "PromoterAI_TSS": "500",
+        "PromoterAI_strand": "+",
+        "PromoterAI_source_transcript": "ENST00000000002.3",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": -0.2,
+        "usable_score": -0.2,
+        "match_status": "exact",
+        "match": "exact_version",
+        "source_transcript": "ENST00000000002.3",
+        "tss": 500,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "unknown match mode is partial even with every other field",
+      "record": {
+        "PromoterAI_score": "0.9",
+        "PromoterAI_TSS": "500",
+        "PromoterAI_strand": "+",
+        "PromoterAI_source_transcript": "ENST00000000002.3",
+        "PromoterAI_match": "nearest_tss"
+      },
+      "expected": {
+        "score": 0.9,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "nearest_tss",
+        "source_transcript": "ENST00000000002.3",
+        "tss": 500,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "missing source transcript is partial",
+      "record": {
+        "PromoterAI_score": "0.9",
+        "PromoterAI_TSS": "500",
+        "PromoterAI_strand": "+",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": 0.9,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "exact_version",
+        "source_transcript": "",
+        "tss": 500,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "ambiguous multi-valued TSS is not a TSS",
+      "record": {
+        "PromoterAI_score": "0.9",
+        "PromoterAI_TSS": "500&700",
+        "PromoterAI_strand": "+",
+        "PromoterAI_source_transcript": "ENST00000000002.3",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": 0.9,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "exact_version",
+        "source_transcript": "ENST00000000002.3",
+        "tss": null,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "mixed strand tokens are not a strand",
+      "record": {
+        "PromoterAI_score": "0.9",
+        "PromoterAI_TSS": "500",
+        "PromoterAI_strand": "1&-1",
+        "PromoterAI_source_transcript": "ENST00000000002.3",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": 0.9,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "exact_version",
+        "source_transcript": "ENST00000000002.3",
+        "tss": 500,
+        "strand": "",
+        "distance": null
+      }
+    },
+    {
+      "name": "provenance without a score is partial",
+      "record": {
+        "PromoterAI_score": ".",
+        "PromoterAI_TSS": "500",
+        "PromoterAI_strand": "+",
+        "PromoterAI_source_transcript": "ENST00000000002.3",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": null,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "exact_version",
+        "source_transcript": "ENST00000000002.3",
+        "tss": 500,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "dash and dot sentinels mean absent",
+      "record": {
+        "PromoterAI_score": "-",
+        "PromoterAI_TSS": ".",
+        "PromoterAI_strand": "-",
+        "PromoterAI_source_transcript": "-",
+        "PromoterAI_match": "."
+      },
+      "expected": {
+        "score": null,
+        "usable_score": null,
+        "match_status": "unmatched",
+        "match": "",
+        "source_transcript": "",
+        "tss": null,
+        "strand": "",
+        "distance": null
+      }
+    },
+    {
+      "name": "unrelated fields only are unmatched",
+      "record": {
+        "SYMBOL": "NFKB1",
+        "CADD_phred": "12.5"
+      },
+      "expected": {
+        "score": null,
+        "usable_score": null,
+        "match_status": "unmatched",
+        "match": "",
+        "source_transcript": "",
+        "tss": null,
+        "strand": "",
+        "distance": null
+      }
+    },
+    {
+      "name": "legacy VEP STRAND is accepted only when PromoterAI_strand is absent",
+      "record": {
+        "PromoterAI_score": "0.9",
+        "PromoterAI_TSS": "500",
+        "STRAND": "-1",
+        "PromoterAI_source_transcript": "ENST00000000002.3",
+        "PromoterAI_match": "stable_transcript_id"
+      },
+      "expected": {
+        "score": 0.9,
+        "usable_score": 0.9,
+        "match_status": "exact",
+        "match": "stable_transcript_id",
+        "source_transcript": "ENST00000000002.3",
+        "tss": 500,
+        "strand": "-",
+        "distance": null
+      }
+    },
+    {
+      "name": "first numeric token of a multi-valued score is the score",
+      "record": {
+        "PromoterAI_score": "0.35&0.90",
+        "PromoterAI_TSS": "500",
+        "PromoterAI_strand": "+",
+        "PromoterAI_source_transcript": "ENST00000000002.3",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": 0.35,
+        "usable_score": 0.35,
+        "match_status": "exact",
+        "match": "exact_version",
+        "source_transcript": "ENST00000000002.3",
+        "tss": 500,
+        "strand": "+",
+        "distance": null
+      }
+    }
+  ]
+}

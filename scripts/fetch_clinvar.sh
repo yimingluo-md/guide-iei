@@ -49,20 +49,88 @@ URL="${URL_TMPL//\{ASSEMBLY\}/$ASSEMBLY}"
 log "ClinVar source: $URL"
 
 TMP_VCF="${DEST_DIR}/clinvar.download.vcf.gz"
+LATEST="${DEST_DIR}/clinvar_latest.${ASSEMBLY}.vcf.gz"
+# Written after every successful publication; read before every download so
+# an unchanged upstream release (or an unreachable NCBI) reuses the
+# installed copy instead of re-downloading ~100 MB per run (audit M10).
+PROVENANCE="${LATEST}.provenance.json"
+
+release_of() { # release_of <vcf.gz> -> YYYYMMDD from ##fileDate, or empty
+    python3 - "$1" <<'PY'
+import gzip, re, sys
+try:
+    with gzip.open(sys.argv[1], "rb") as handle:
+        for raw in handle:
+            if raw.startswith(b"##fileDate="):
+                match = re.search(rb"##fileDate=([0-9-]+)", raw)
+                if match:
+                    print(match.group(1).decode().replace("-", ""))
+                break
+            if not raw.startswith(b"#"):
+                break
+except (OSError, EOFError):
+    pass
+PY
+}
+recorded_provenance() { # recorded_provenance <key> -> value from the provenance sidecar, or empty
+    python3 - "$PROVENANCE" "$1" <<'PY'
+import json, sys
+try:
+    print(json.load(open(sys.argv[1])).get(sys.argv[2], ""))
+except (OSError, ValueError):
+    pass
+PY
+}
+installed_release_usable() {
+    [[ -s "$LATEST" && -s "${LATEST}.tbi" ]] && bgzf_complete "$LATEST"
+}
+reuse_installed() { # reuse_installed <reason>
+    local release
+    release="$(release_of "$LATEST")"
+    release="${release:-$(recorded_provenance release)}"
+    release="${release:-unknown}"
+    log "$1; reusing the installed ClinVar release ${release}: $LATEST"
+    echo "CLINVAR_VCF=${LATEST}"
+    echo "CLINVAR_RELEASE=${release}"
+    log "ClinVar ready: $LATEST (release $release, installed copy reused)"
+    exit 0
+}
+
 # NCBI publishes MD5 sidecars beside the weekly files; verifying against
 # them turns "same size" into "same content" — a run that crashed after a
 # complete download but before the mv below would otherwise leave a stale
 # temp file that a later same-size release could be mistaken for. When the
-# sidecar is unreachable (offline mirror), the download proceeds on the
-# size check alone, stated as such.
-fetch_upstream_md5() {
-    curl -fsSL --max-time 60 -H "Cache-Control: no-cache" "$1" 2>/dev/null | awk '{print tolower($1); exit}' || true
+# sidecar is missing (a mirror without checksums), the download proceeds on
+# the size check alone, stated as such. UPSTREAM_MD5_STATUS distinguishes a
+# missing sidecar (HTTP error) from an unreachable source (no network).
+UPSTREAM_MD5_STATUS="missing"
+fetch_upstream_md5() { # fetch_upstream_md5 <url> <result-variable>
+    local body rc=0 digest
+    body="$(curl -fsSL --max-time 60 -H "Cache-Control: no-cache" "$1" 2>/dev/null)" || rc=$?
+    case "$rc" in
+        0)  UPSTREAM_MD5_STATUS="ok" ;;
+        22) UPSTREAM_MD5_STATUS="missing" ;;      # HTTP error: no sidecar published
+        *)  UPSTREAM_MD5_STATUS="unreachable" ;;  # DNS/connect/timeout
+    esac
+    digest="$(printf '%s\n' "$body" | awk '{print tolower($1); exit}')" || digest=""
+    printf -v "$2" '%s' "$digest"
 }
 MD5_ARGS=()
-VCF_MD5="$(fetch_upstream_md5 "${URL}.md5")"
+VCF_MD5=""
+fetch_upstream_md5 "${URL}.md5" VCF_MD5
 if [[ "$VCF_MD5" =~ ^[0-9a-f]{32}$ ]]; then
     MD5_ARGS=(--md5 "$VCF_MD5")
     log "ClinVar VCF upstream MD5: $VCF_MD5"
+    if installed_release_usable && [[ "$(recorded_provenance upstream_md5)" == "$VCF_MD5" ]] \
+        && [[ "$(recorded_provenance size_bytes)" == "$(wc -c < "$LATEST" | tr -d ' ')" ]]; then
+        reuse_installed "upstream ClinVar is unchanged (MD5 ${VCF_MD5})"
+    fi
+elif [[ "$UPSTREAM_MD5_STATUS" == "unreachable" ]]; then
+    if installed_release_usable; then
+        warn "cannot reach the ClinVar source ($URL); the installed release may be out of date"
+        reuse_installed "ClinVar source unreachable"
+    fi
+    warn "cannot reach the ClinVar source and no ClinVar release is installed; attempting the download anyway"
 else
     warn "no upstream MD5 available for the ClinVar VCF; only its size can be checked"
 fi
@@ -71,11 +139,17 @@ fi
 # and their metadata remain resumable in place.
 # ${arr[@]+...} keeps the empty-array expansion legal under `set -u` on the
 # bash 3.2 that macOS ships.
-python3 "${HERE}/parallel_fetch.py" "$URL" "$TMP_VCF" \
-    --connections 4 --chunk-mib 64 ${MD5_ARGS[@]+"${MD5_ARGS[@]}"} \
-    || die "ClinVar download failed"
+if ! python3 "${HERE}/parallel_fetch.py" "$URL" "$TMP_VCF" \
+    --connections 4 --chunk-mib 64 ${MD5_ARGS[@]+"${MD5_ARGS[@]}"}; then
+    if installed_release_usable; then
+        warn "ClinVar download failed; the installed release may be out of date"
+        reuse_installed "ClinVar download failed"
+    fi
+    die "ClinVar download failed and no ClinVar release is installed"
+fi
 TBI_MD5_ARGS=()
-TBI_MD5="$(fetch_upstream_md5 "${URL}.tbi.md5")"
+TBI_MD5=""
+fetch_upstream_md5 "${URL}.tbi.md5" TBI_MD5
 [[ "$TBI_MD5" =~ ^[0-9a-f]{32}$ ]] && TBI_MD5_ARGS=(--md5 "$TBI_MD5")
 python3 "${HERE}/parallel_fetch.py" "${URL}.tbi" "${TMP_VCF}.tbi" \
     --connections 1 --chunk-mib 4 ${TBI_MD5_ARGS[@]+"${TBI_MD5_ARGS[@]}"} \
@@ -89,24 +163,11 @@ python3 "${HERE}/parallel_fetch.py" "${URL}.tbi" "${TMP_VCF}.tbi" \
 if [[ ${#MD5_ARGS[@]} -eq 0 ]]; then
     gzip -t "$TMP_VCF" 2>/dev/null || die "ClinVar VCF failed gzip integrity validation"
 fi
-RELEASE="$(python3 - "$TMP_VCF" <<'PY'
-import gzip, re, sys
-with gzip.open(sys.argv[1], "rb") as handle:
-    for raw in handle:
-        if raw.startswith(b"##fileDate="):
-            match = re.search(rb"##fileDate=([0-9-]+)", raw)
-            if match:
-                print(match.group(1).decode().replace("-", ""))
-            break
-        if not raw.startswith(b"#"):
-            break
-PY
-)"
+RELEASE="$(release_of "$TMP_VCF")"
 [[ -n "$RELEASE" ]] || RELEASE="$(date +%Y%m%d)"
 log "ClinVar release date: $RELEASE"
 
 DATED="${DEST_DIR}/clinvar_${RELEASE}.${ASSEMBLY}.vcf.gz"
-LATEST="${DEST_DIR}/clinvar_latest.${ASSEMBLY}.vcf.gz"
 
 mv -f "$TMP_VCF" "$DATED"
 [[ -f "${TMP_VCF}.tbi" ]] && mv -f "${TMP_VCF}.tbi" "${DATED}.tbi"
@@ -130,6 +191,22 @@ publish_alias() {
 }
 publish_alias "$DATED" "$LATEST"
 publish_alias "${DATED}.tbi" "${LATEST}.tbi"
+python3 - "$PROVENANCE" "$URL" "${VCF_MD5:-}" "$RELEASE" "$LATEST" <<'PY'
+import json, os, sys, time
+provenance, url, md5, release, latest = sys.argv[1:]
+record = {
+    "source_url": url,
+    "upstream_md5": md5 if len(md5) == 32 else None,
+    "release": release,
+    "size_bytes": os.stat(latest).st_size,
+    "fetched_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+}
+tmp = provenance + ".tmp"
+with open(tmp, "w") as handle:
+    json.dump(record, handle, indent=2, sort_keys=True)
+    handle.write("\n")
+os.replace(tmp, provenance)
+PY
 
 if [[ "${KEEP_DATED}" == "false" ]]; then
     log "keep_dated_copy=false — removing dated copy, keeping only latest"

@@ -23,6 +23,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString(
 const {
   ADDITIONAL_DBNSFP_PREDICTORS,
   candidateCompoundHetKeys,
+  canonicalVariantKey,
   hasClinGenPathogenicEvidence,
   hasGeniaPathogenicEvidence,
   isHeterozygousGenotype,
@@ -32,10 +33,52 @@ const {
   proteinMatchAppliesToTranscript,
   proteinMatchDisplayStatus,
   predictorBinaryClassification,
+  populationFrequency,
+  promoterAiObservation,
   collapseToOneRowPerVariant,
   preferredClinicalTranscriptRows,
   variantQcFailures,
 } = await import(moduleUrl);
+
+test("canonical variant keys match the service's minimal-allele form", () => {
+  // Audit repro (H5): keys built from the raw VCF representation did not
+  // match the cohort store's keys for padded multi-allelic alleles, so
+  // stored-record and cohort-selection lookups silently missed.
+  assert.equal(canonicalVariantKey("chr1", 100, "AT", "ATT"), "1:100:A:AT");
+  assert.equal(canonicalVariantKey("1", 298, "atg", "atc"), "1:300:G:C");
+  assert.equal(canonicalVariantKey("1", 100, "AT", "A"), "1:100:AT:A");
+  assert.equal(canonicalVariantKey("chrM", 8993, "T", "G"), "MT:8993:T:G");
+  assert.equal(canonicalVariantKey("1", 100, "A", "<DEL>"), "1:100:A:<DEL>");
+  assert.equal(canonicalVariantKey("1", 100, "A", "*"), "1:100:A:*");
+  assert.equal(canonicalVariantKey("X", 5, "GATC", "GTTC"), "X:6:A:T");
+});
+
+test("compound-het candidates exclude missing genes and unrelated contigs", () => {
+  const base = { sample: "S", gene: "G", genotype: "0/1", chrom: "1", pos: 100, ref: "A", alt: "G" };
+  for (const gene of ["", "—", ".", "-"]) {
+    assert.equal(candidateCompoundHetKeys([{ ...base, gene }, { ...base, gene, pos: 200 }]).size, 0);
+  }
+  assert.equal(candidateCompoundHetKeys([base, { ...base, chrom: "2", pos: 200 }]).size, 0);
+  assert.equal(candidateCompoundHetKeys([base, { ...base, chrom: "chr1" }]).size, 0);
+  assert.deepEqual([...candidateCompoundHetKeys([base, { ...base, chrom: "chr1", pos: 200 }])], ["S:G"]);
+});
+
+test("missing PS does not mask PID or become a usable phase block", async () => {
+  for (const [format, genotype, expected] of [
+    ["GT:PS", "0|1:.", ""],
+    ["GT:PS:PID", "0|1:.:block1", "block1"],
+    ["GT:PS:PID", "0|1:123:block1", "123"],
+  ]) {
+    const vcf = [
+      "##fileformat=VCFv4.2", "##reference=GRCh38",
+      '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|SYMBOL|Feature">',
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS",
+      `1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|G1|ENST1\t${format}\t${genotype}`, "",
+    ].join("\n");
+    const parsed = await parseVcfFiles([new File([vcf], "phase.vcf")]);
+    assert.equal(parsed.rows[0].sampleGenotypes.S.phaseSet, expected);
+  }
+});
 
 test("recognizes only source-specific pathogenic and likely-pathogenic assertions", () => {
   const clingen = (assertion) => [{
@@ -887,6 +930,96 @@ test("normalizes PromoterAI strand encoding and supports legacy VEP STRAND", asy
   assert.deepEqual(ambiguous.values, {});
   assert.equal(ambiguous.provenance.withheld_metrics, "score");
   assert.equal(result.rows[2].promoterAI, null);
+});
+
+test("PromoterAI evidence follows the shared contract fixture (review M5)", async () => {
+  // test/contracts/promoterai_evidence_cases.json is the single contract for
+  // the browser parser, the cohort index and the WGS prefilter
+  // (pipeline/promoterai_evidence.py runs the same cases).
+  const fixture = JSON.parse(await readFile(
+    new URL("../../test/contracts/promoterai_evidence_cases.json", import.meta.url),
+    "utf8",
+  ));
+  assert.ok(fixture.cases.length >= 10);
+  for (const testCase of fixture.cases) {
+    const observation = promoterAiObservation(testCase.record);
+    assert.deepEqual(
+      {
+        score: observation.score,
+        usable_score: observation.usableScore,
+        match_status: observation.matchStatus,
+        match: observation.match,
+        source_transcript: observation.sourceTranscript,
+        tss: observation.tss,
+        strand: observation.strand,
+        distance: observation.distance,
+      },
+      testCase.expected,
+      testCase.name,
+    );
+  }
+});
+
+test("a score-only PromoterAI annotation is withheld from the row (review M5)", async () => {
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature", "PICK",
+    "PromoterAI_score",
+  ];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|upstream_gene_variant|MODIFIER|GENE1|ENSG1|ENST1|1|0.9\tGT\t0/1",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "promoter-score-only.vcf")]);
+  assert.equal(result.rows[0].promoterAI, null);
+  const prediction = result.rows[0].predictions.promoterai;
+  assert.equal(prediction.matchStatus, "partial");
+  assert.deepEqual(prediction.values, {});
+  assert.equal(prediction.provenance.withheld_metrics, "score");
+});
+
+test("population frequency prefers gnomAD popmax over MAX_AF and labels its source (review M9)", async () => {
+  // A supplied popmax is never overridden by VEP's MAX_AF (max across 1000
+  // Genomes, ESP and gnomAD); MAX_AF is used, and named, only without one.
+  assert.deepEqual(
+    populationFrequency({ gnomADe_AF_popmax: "0.001", MAX_AF: "0.04", gnomADe_AF: "0.0004" }),
+    { value: 0.001, source: "gnomad_popmax" },
+  );
+  assert.deepEqual(
+    populationFrequency({ gnomADe_AF_popmax: "0.001", gnomADg_AF_popmax: "0.002" }),
+    { value: 0.002, source: "gnomad_popmax" },
+  );
+  assert.deepEqual(
+    populationFrequency({ MAX_AF: "0.04", MAX_AF_POPS: "AFR", gnomADe_AF: "0.0004" }),
+    { value: 0.04, source: "max_af" },
+  );
+  assert.deepEqual(
+    populationFrequency({ gnomADg_AF: "0.0003", gnomADe_AF: "0.0004" }),
+    { value: 0.0004, source: "gnomad_global" },
+  );
+  assert.deepEqual(populationFrequency({ SYMBOL: "X" }), { value: null, source: "" });
+
+  const fields = [
+    "Allele", "Consequence", "IMPACT", "SYMBOL", "Gene", "Feature", "PICK",
+    "gnomADe_AF_popmax", "MAX_AF", "MAX_AF_POPS",
+  ];
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1|ENSG1|ENST1|1|0.001|0.04|AFR\tGT\t0/1",
+    "1\t200\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|GENE1|ENSG1|ENST1|1|.|0.04|AFR\tGT\t0/1",
+    "",
+  ].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "frequency-source.vcf")]);
+  assert.equal(result.rows[0].gnomadPopmax, 0.001);
+  assert.equal(result.rows[0].gnomadPopmaxSource, "gnomad_popmax");
+  assert.equal(result.rows[1].gnomadPopmax, 0.04);
+  assert.equal(result.rows[1].gnomadPopmaxSource, "max_af");
 });
 
 test("prefers the selected WGS CADD plugin over a duplicate dbNSFP value", async () => {

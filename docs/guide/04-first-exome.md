@@ -138,6 +138,19 @@ monogenic condition:
 4. **ClinVar** — optionally surface variants with existing pathogenic or
    conflicting reports first.
 
+Missing values are treated differently by the two kinds of control, and the
+difference matters for a shortlist. The **frequency** filter keeps a variant
+with no frequency value (unavailable is not the same as common). A
+**prediction-score threshold** does the opposite: `CADD ≥ 20` keeps only
+variants that *have* a CADD score of 20 or more, so every variant the
+predictor did not score is removed for as long as the threshold is set —
+frameshifts and other indels when only dbNSFP's SNV-based CADD is installed,
+non-missense variants for AlphaMissense, variants far from splice sites for
+SpliceAI. Use score thresholds to rank a shortlist you have already made
+with frequency, impact and gene-list filters, and clear them before
+concluding that nothing else is there. The Prediction scores panel says the
+same thing in place.
+
 Counts depend on the number of samples, transcript display, calling pipeline,
 and intake profile. A multi-sample exome can legitimately produce hundreds
 of thousands of transcript-level rows. Compare the record, allele, transcript,

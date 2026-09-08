@@ -445,6 +445,8 @@ export type VariantRow = {
   dbnsfpPredictors?: Record<string, DbnsfpPredictorValue>;
   gnomadFrequencies?: Record<string, number>;
   gnomadPopmaxPopulation?: string;
+  /** Which field group supplied gnomadPopmax (see populationFrequency). */
+  gnomadPopmaxSource?: PopulationFrequencySource;
   loftee: string;
   lofteeFilter: string;
   lofteeFlags: string;
@@ -706,17 +708,52 @@ export function isHeterozygousGenotype(genotype: string) {
   );
 }
 
+/**
+ * Canonical carrier-index key shared with the Python cohort store
+ * (local_service/cohort_store.py: variant_key). The chromosome is normalised
+ * (chr-stripped, M -> MT) and the allele reduced to its anchored minimal
+ * representation by trimming shared suffix then prefix bases, so a padded
+ * multi-allelic representation (REF=AT ALT=ATT) and its minimal form (A>AT)
+ * produce the same key. Symbolic or non-sequence alleles are left unchanged.
+ */
+export function canonicalVariantKey(
+  chrom: string, pos: number, ref: string, alt: string,
+): string {
+  let contig = chrom.replace(/^chr/i, "").toUpperCase();
+  if (contig === "M") contig = "MT";
+  let position = pos;
+  let reference = ref.toUpperCase();
+  let alternate = alt.toUpperCase();
+  const isSequence = (value: string) => /^[ACGTN]+$/.test(value);
+  if (reference !== alternate && isSequence(reference) && isSequence(alternate)) {
+    while (
+      reference.length > 1 && alternate.length > 1
+      && reference[reference.length - 1] === alternate[alternate.length - 1]
+    ) {
+      reference = reference.slice(0, -1);
+      alternate = alternate.slice(0, -1);
+    }
+    while (reference.length > 1 && alternate.length > 1 && reference[0] === alternate[0]) {
+      reference = reference.slice(1);
+      alternate = alternate.slice(1);
+      position += 1;
+    }
+  }
+  return `${contig}:${position}:${reference}:${alternate}`;
+}
+
 export function candidateCompoundHetKeys(rows: VariantRow[]) {
   const groups = new Map<string, Set<string>>();
   rows.filter((row) => isHeterozygousGenotype(row.genotype)).forEach((row) => {
-    const key = `${row.sample}:${row.gene}`;
+    if (!row.gene || ["—", ".", "-"].includes(row.gene)) return;
+    const key = `${row.sample}:${row.gene}:${normalizedContig(row.chrom)}`;
     if (!groups.has(key)) groups.set(key, new Set());
-    groups.get(key)!.add(`${row.chrom}:${row.pos}:${row.ref}:${row.alt}`);
+    groups.get(key)!.add(`${normalizedContig(row.chrom)}:${row.pos}:${row.ref}:${row.alt}`);
   });
   return new Set(
     [...groups.entries()]
       .filter(([, variants]) => variants.size >= 2)
-      .map(([key]) => key),
+      .map(([key]) => key.slice(0, key.lastIndexOf(":"))),
   );
 }
 
@@ -857,33 +894,136 @@ function number(value: string | undefined): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-function unambiguousInteger(value: string | undefined): number | null {
-  if (!value || EMPTY.has(value)) return null;
+// ---------------------------------------------------------------------------
+// PromoterAI evidence: the browser half of the shared rule in
+// pipeline/promoterai_evidence.py (review M5). The cohort index, the
+// whole-genome prefilter and this parser must read a PromoterAI annotation
+// identically; test/contracts/promoterai_evidence_cases.json pins all of them.
+//
+// * The score is the first numeric token of the first present score field
+//   (priority order below, case-insensitive). No maximum across aliases: the
+//   score is signed.
+// * It is usable ("exact") only with the provenance the plugin writes beside
+//   it — PromoterAI_match in PROMOTERAI_EXACT_MATCH_VALUES, a source
+//   transcript, an unambiguous integer TSS and a strand. Otherwise the score
+//   is withheld everywhere.
+// ---------------------------------------------------------------------------
+export const PROMOTERAI_SCORE_FIELDS = [
+  "PromoterAI_score", "promoterAI_score",
+  "PromoterAI_promoterAI", "promoterAI_promoterAI",
+  "PromoterAI", "promoterAI", "PROMOTERAI",
+] as const;
+const PROMOTERAI_SCORE_KEYS = [...new Set(
+  PROMOTERAI_SCORE_FIELDS.map((field) => field.toLowerCase()),
+)];
+export const PROMOTERAI_EXACT_MATCH_VALUES = new Set([
+  "allele_transcript_tss_strand", "exact_version", "stable_id",
+  "stable_transcript_id",
+]);
+
+export type PromoterAiObservation = {
+  score: number | null;
+  usableScore: number | null;
+  matchStatus: "exact" | "partial" | "unmatched";
+  match: string;
+  sourceTranscript: string;
+  tss: number | null;
+  strand: "" | "+" | "-";
+  distance: number | null;
+};
+
+function promoterAiTokens(raw: string) {
+  return raw.replace(/[,|]/g, "&").split("&").map((token) => token.trim());
+}
+
+function promoterAiFirstNumber(raw: string): number | null {
+  if (EMPTY.has(raw)) return null;
+  for (const token of promoterAiTokens(raw)) {
+    if (EMPTY.has(token)) continue;
+    const parsed = Number(token);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function promoterAiUnambiguousInteger(raw: string): number | null {
+  if (EMPTY.has(raw)) return null;
   const values = [...new Set(
-    value.split(/[,&]/)
+    promoterAiTokens(raw)
+      .filter((token) => !EMPTY.has(token))
       .map((token) => Number(token))
-      .filter((token) => Number.isFinite(token) && Number.isInteger(token)),
+      .filter((value) => Number.isFinite(value) && Number.isInteger(value)),
   )];
   return values.length === 1 ? values[0] : null;
 }
 
-function promoterAiSourceStrand(record: Record<string, string>) {
+function promoterAiNormalizedStrand(raw: string): "" | "+" | "-" {
+  if (EMPTY.has(raw)) return "";
   const encoding: Record<string, "+" | "-"> = {
     "+": "+", "1": "+", "-": "-", "-1": "-",
   };
-  for (const field of ["PromoterAI_strand", "STRAND"]) {
-    const raw = record[field];
-    if (!raw || raw === ".") continue;
-    const strands = [...new Set(
-      raw.split(/[,&]/).flatMap((token) => {
-        const strand = encoding[token.trim()];
-        return strand ? [strand] : [];
-      }),
-    )];
-    if (strands.length === 1) return strands[0];
-    if (strands.length > 1) return "";
+  const strands = [...new Set(
+    promoterAiTokens(raw).flatMap((token) => {
+      const strand = encoding[token];
+      return strand ? [strand] : [];
+    }),
+  )];
+  return strands.length === 1 ? strands[0] : "";
+}
+
+export function promoterAiObservation(
+  record: Record<string, string>,
+): PromoterAiObservation {
+  const lowered = new Map<string, string>();
+  for (const [key, value] of Object.entries(record)) {
+    const text = (value ?? "").trim();
+    if (!lowered.has(key.toLowerCase())) lowered.set(key.toLowerCase(), text);
   }
-  return "";
+  const field = (name: string) => {
+    const value = lowered.get(name.toLowerCase()) ?? "";
+    return EMPTY.has(value) ? "" : value;
+  };
+  let score: number | null = null;
+  for (const key of PROMOTERAI_SCORE_KEYS) {
+    const raw = field(key);
+    if (raw) {
+      score = promoterAiFirstNumber(raw);
+      break;
+    }
+  }
+  const match = field("PromoterAI_match");
+  const sourceTranscript = field("PromoterAI_source_transcript");
+  const tss = promoterAiUnambiguousInteger(field("PromoterAI_TSS"));
+  let strand: "" | "+" | "-" = "";
+  for (const name of ["PromoterAI_strand", "STRAND"]) {
+    const raw = field(name);
+    if (raw) {
+      strand = promoterAiNormalizedStrand(raw);
+      break;
+    }
+  }
+  const distanceRaw = field("PromoterAI_distance");
+  const distance = distanceRaw ? promoterAiUnambiguousInteger(distanceRaw) : null;
+  const matchStatus: PromoterAiObservation["matchStatus"] =
+    score !== null
+      && PROMOTERAI_EXACT_MATCH_VALUES.has(match.toLowerCase())
+      && Boolean(sourceTranscript)
+      && tss !== null
+      && Boolean(strand)
+      ? "exact"
+      : score !== null || match || sourceTranscript || tss !== null || strand
+        ? "partial"
+        : "unmatched";
+  return {
+    score,
+    usableScore: matchStatus === "exact" ? score : null,
+    matchStatus,
+    match,
+    sourceTranscript,
+    tss,
+    strand,
+    distance,
+  };
 }
 
 function truthy(value: string | undefined) {
@@ -1069,6 +1209,45 @@ export function haplotypeFrameEvidence(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Population frequency used for rarity filtering (review M9). Sources are
+// tried in preference order and never pooled: an explicit gnomAD popmax is
+// not overridden by VEP's MAX_AF (the highest AF across 1000 Genomes, ESP
+// and gnomAD, which includes small non-gnomAD populations), and a global
+// gnomAD AF is only a last resort. Mirrors
+// local_service/cohort_store.py POPULATION_FREQUENCY_GROUPS.
+// ---------------------------------------------------------------------------
+export type PopulationFrequencySource =
+  | "gnomad_popmax" | "max_af" | "gnomad_global"
+  // Cohort rows indexed before sources were recorded: the stored value may be
+  // a maximum pooled across all frequency fields; a re-import refreshes it.
+  | "legacy_pooled"
+  | "";
+export const POPULATION_FREQUENCY_GROUPS: ReadonlyArray<
+  readonly [Exclude<PopulationFrequencySource, "">, readonly string[]]
+> = [
+  ["gnomad_popmax", ["gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax", "gnomAD_popmax_AF"]],
+  ["max_af", ["MAX_AF"]],
+  ["gnomad_global", ["gnomADg_AF", "gnomADe_AF", "gnomAD_AF"]],
+];
+export const POPULATION_FREQUENCY_SOURCE_LABELS: Record<PopulationFrequencySource, string> = {
+  gnomad_popmax: "gnomAD popmax",
+  max_af: "VEP MAX_AF (highest AF across 1000 Genomes, ESP and gnomAD)",
+  gnomad_global: "gnomAD global AF",
+  legacy_pooled: "Population frequency (indexed before source tracking; may be a pooled maximum — re-import to refresh)",
+  "": "Population frequency",
+};
+
+export function populationFrequency(
+  record: Record<string, string>,
+): { value: number | null; source: PopulationFrequencySource } {
+  for (const [source, keys] of POPULATION_FREQUENCY_GROUPS) {
+    const value = maximum(record, [...keys]);
+    if (value !== null) return { value, source };
+  }
+  return { value: null, source: "" };
+}
+
 function first(record: Record<string, string>, keys: string[]) {
   for (const key of keys) {
     const value = record[key];
@@ -1246,7 +1425,7 @@ function parseGenotype(
     alleleBalance: adAlt !== null && totalDepth > 0 ? adAlt / totalDepth : null,
     pl,
     phased: gt.includes("|"),
-    phaseSet: fields.PS || fields.PID || "",
+    phaseSet: first(fields, ["PS", "PID"]),
     phaseHaplotype,
     genotypeClass,
     partialCall,
@@ -1804,10 +1983,7 @@ export async function parseVcfFiles(
             const popmaxThreshold = options.aggregateMaxPopmax ?? null;
             if (popmaxThreshold !== null) {
               const probe = { ...alleleIndexedInfo(info, altIndex, alts.length), ...(consequences[0] ?? {}) };
-              const variantPopmax = maximum(probe, [
-                "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax", "gnomAD_popmax_AF",
-                "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
-              ]);
+              const variantPopmax = populationFrequency(probe).value;
               if (variantPopmax !== null && variantPopmax > popmaxThreshold) {
                 aggregatedVariants.set(variantEvidenceKey, { dropped: true });
                 return;
@@ -1886,10 +2062,7 @@ export async function parseVcfFiles(
               cohortMode ? cohortRepresentative!.sample : sample,
               first(combined, ["Feature"]),
             );
-            const popmax = maximum(combined, [
-              "gnomADg_AF_popmax", "gnomADe_AF_popmax", "gnomAD_AF_popmax", "gnomAD_popmax_AF",
-              "MAX_AF", "gnomADg_AF", "gnomADe_AF", "gnomAD_AF",
-            ]);
+            const { value: popmax, source: popmaxSource } = populationFrequency(combined);
             const splice = maximum(combined, [
               "SpliceAI_pred_DS_AG", "SpliceAI_pred_DS_AL", "SpliceAI_pred_DS_DG", "SpliceAI_pred_DS_DL",
               "DS_AG", "DS_AL", "DS_DG", "DS_DL", "SpliceAI",
@@ -1928,31 +2101,14 @@ export async function parseVcfFiles(
             const alphaPrediction = uniqueValues(
               first(combined, ["AlphaMissense_pred", "am_class"]),
             ).join(" / ");
-            const promoterAi = maximum(combined, [
-              "PromoterAI_score", "promoterAI_score",
-              "promoterAI_promoterAI", "PromoterAI_promoterAI",
-              "promoterAI", "PromoterAI",
-            ]);
-            const promoterAiMatch = first(combined, ["PromoterAI_match"]);
-            const promoterAiSourceTranscript = first(combined, [
-              "PromoterAI_source_transcript",
-            ]);
-            const promoterAiTss = unambiguousInteger(first(combined, ["PromoterAI_TSS"]));
-            const promoterAiStrand = promoterAiSourceStrand(combined);
-            const promoterAiMatchIsExact = [
-              "allele_transcript_tss_strand", "exact_version", "stable_id",
-              "stable_transcript_id",
-            ].includes(promoterAiMatch);
+            const promoterAiEvidence = promoterAiObservation(combined);
+            const promoterAi = promoterAiEvidence.score;
+            const promoterAiMatch = promoterAiEvidence.match;
+            const promoterAiSourceTranscript = promoterAiEvidence.sourceTranscript;
+            const promoterAiTss = promoterAiEvidence.tss;
+            const promoterAiStrand = promoterAiEvidence.strand;
             const promoterAiStatus: PredictorObservation["matchStatus"] =
-              promoterAi !== null && promoterAiMatchIsExact
-                && Boolean(promoterAiSourceTranscript)
-                && promoterAiTss !== null && Boolean(promoterAiStrand)
-                ? "exact"
-                : promoterAi !== null || Boolean(promoterAiMatch)
-                  || Boolean(promoterAiSourceTranscript)
-                  || promoterAiTss !== null || Boolean(promoterAiStrand)
-                  ? "partial"
-                  : "unmatched";
+              promoterAiEvidence.matchStatus;
             const loGoFuncPrediction = first(combined, ["LoGoFunc_prediction"]);
             const loGoFuncNeutral = maximum(combined, ["LoGoFunc_neutral"]);
             const loGoFuncGof = maximum(combined, ["LoGoFunc_GOF"]);
@@ -2294,8 +2450,8 @@ export async function parseVcfFiles(
                       : {}),
                     ...(promoterAiTss !== null ? { tss: promoterAiTss } : {}),
                     ...(promoterAiStrand ? { strand: promoterAiStrand } : {}),
-                    ...(number(first(combined, ["PromoterAI_distance"])) !== null
-                      ? { distance: number(first(combined, ["PromoterAI_distance"]))! }
+                    ...(promoterAiEvidence.distance !== null
+                      ? { distance: promoterAiEvidence.distance }
                       : {}),
                   }
                 : undefined,
@@ -2584,6 +2740,7 @@ export async function parseVcfFiles(
               consequence: first(combined, ["Consequence"]) || "unannotated",
               impact: (first(combined, ["IMPACT"]) || "UNKNOWN") as Impact,
               gnomadPopmax: popmax,
+              gnomadPopmaxSource: popmaxSource,
               gnomadPopmaxPopulation: first(combined, ["MAX_AF_POPS", "gnomAD_AF_popmax_population"]),
               gnomadFrequencies: populationFrequencies,
               cadd,
@@ -2637,7 +2794,7 @@ export async function parseVcfFiles(
               haplotypeFramePartners: haplotypeFrame.partners,
               haplotypeProteinChange: haplotypeFrame.protein,
               spliceAI: splice,
-              promoterAI: promoterAiStatus === "exact" ? promoterAi : null,
+              promoterAI: promoterAiEvidence.usableScore,
               loGoFuncPrediction,
               loGoFuncNeutral,
               loGoFuncGof,

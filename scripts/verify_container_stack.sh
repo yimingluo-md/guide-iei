@@ -50,12 +50,12 @@ pass() { log "ok    $*"; }
 # ---------------------------------------------------------------------------
 log "=== [1/5] plugin syntax against the real Bio::EnsEMBL modules ==="
 for plugin in PromoterAI LoGoFunc IndexedScores; do
-    if "$RUNTIME" run --rm \
+    if "$RUNTIME" run --rm --pull=never --network=none \
         -v "${ROOT}/docker:/verify:ro" \
         --entrypoint perl "$IMAGE" -I /verify -c "/verify/${plugin}.pm" >/dev/null 2>&1; then
         pass "perl -c ${plugin}.pm (in-container)"
     else
-        "$RUNTIME" run --rm -v "${ROOT}/docker:/verify:ro" \
+        "$RUNTIME" run --rm --pull=never --network=none -v "${ROOT}/docker:/verify:ro" \
             --entrypoint perl "$IMAGE" -I /verify -c "/verify/${plugin}.pm" 2>&1 | sed 's/^/      /' || true
         fail "perl -c ${plugin}.pm"
     fi
@@ -63,7 +63,7 @@ done
 
 # ---------------------------------------------------------------------------
 log "=== [2/5] bcftools plugin -l output format vs preflight detection ==="
-PLUGIN_LIST="$("$RUNTIME" run --rm --entrypoint bcftools "$IMAGE" plugin -l 2>&1 || true)"
+PLUGIN_LIST="$("$RUNTIME" run --rm --pull=never --network=none --entrypoint bcftools "$IMAGE" plugin -l 2>&1 || true)"
 log "plugin -l lines mentioning liftover:"
 grep -i liftover <<<"$PLUGIN_LIST" | sed 's/^/      /' || log "      (none)"
 if grep -qw liftover <<<"$PLUGIN_LIST"; then
@@ -75,9 +75,9 @@ fi
 # ---------------------------------------------------------------------------
 log "=== [3/5] baked plugin files match the repo (image drift) ==="
 for plugin in PromoterAI LoGoFunc IndexedScores; do
-    baked="$("$RUNTIME" run --rm --entrypoint sh "$IMAGE" \
+    baked="$("$RUNTIME" run --rm --pull=never --network=none --entrypoint sh "$IMAGE" \
         -c "sha256sum /plugins/${plugin}.pm" 2>/dev/null | awk '{print $1}')" || baked=""
-    local_sum="$(shasum -a 256 "${ROOT}/docker/${plugin}.pm" | awk '{print $1}')"
+    local_sum="$(sha256_file "${ROOT}/docker/${plugin}.pm")" || local_sum=""
     if [[ -n "$baked" && "$baked" == "$local_sum" ]]; then
         pass "image /plugins/${plugin}.pm is current"
     else

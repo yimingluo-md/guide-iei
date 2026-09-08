@@ -100,7 +100,7 @@ if [[ "$NVAR" -gt 0 ]]; then
 
     case "$RUNTIME" in
         docker|podman)
-            "$RUNTIME" run --rm \
+            "$RUNTIME" run --rm --pull=never --network=none \
                 -v "${WORK}:/w" -v "${VEP_CACHE_DIR}:/cache:ro" \
                 --entrypoint sh "$IMAGE" -c "$VEP_INNER" ;;
         singularity|apptainer)

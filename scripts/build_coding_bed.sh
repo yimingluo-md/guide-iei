@@ -56,8 +56,11 @@ if [[ -n "$CUSTOM" ]]; then
 fi
 
 if [[ -s "$BED" && "$FORCE" != "1" ]]; then
-    log "coding BED already present: $BED  (use --force to rebuild)"
-    exit 0
+    if bgzf_complete "$BED" && [[ -s "$BED.tbi" || -s "$BED.csi" ]]; then
+        log "coding BED already present: $BED  (use --force to rebuild)"
+        exit 0
+    fi
+    warn "coding BED is present but incomplete (missing BGZF EOF marker or index): $BED — rebuilding"
 fi
 
 mkdir -p "$(dirname "$BED")"
@@ -115,12 +118,24 @@ NMERGED=$(wc -l < "$MERGED" | tr -d ' ')
 BPTOTAL=$(awk '{s+=$3-$2} END{printf "%.1f", s/1e6}' "$MERGED")
 log "merged -> $NMERGED intervals covering ~${BPTOTAL} Mb"
 
-# bgzip + tabix (via container passthrough if no host bgzip/tabix).
-PLAIN="${BED%.gz}"
-mv "$MERGED" "$PLAIN"
+# Every primary contig must be represented before the file is published: a
+# GTF truncated by an interrupted download, or a filtered pipe, otherwise
+# yields a region file that quietly excludes whole chromosomes from every
+# annotation run (audit M12).
+REQUIRED_CONTIGS="$(yaml_get "$CONFIG" region.required_contigs)"
+REQUIRED_CONTIGS="${REQUIRED_CONTIGS:-1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 X Y MT}"
+PRESENT_CONTIGS="$(cut -f1 "$MERGED" | sort -u)"
+MISSING_CONTIGS=""
+for contig in $REQUIRED_CONTIGS; do
+    grep -qx -- "$contig" <<<"$PRESENT_CONTIGS" || MISSING_CONTIGS="${MISSING_CONTIGS} ${contig}"
+done
+[[ -z "$MISSING_CONTIGS" ]] || die "coding BED would lack contig(s):${MISSING_CONTIGS} — the GTF is incomplete ($RAW); delete it and rerun"
+
+# bgzip + tabix (via container passthrough if no host bgzip/tabix), published
+# atomically: the final name only ever holds a complete, indexed BGZF file.
 rm -f "$TMP"
-( cd "$(dirname "$BED")" && hts bgzip -f "$(basename "$PLAIN")" )
-( cd "$(dirname "$BED")" && hts tabix -f -p bed "$(basename "$BED")" )
+publish_bgzf "$MERGED" "$BED" bed || die "coding BED could not be published: $BED"
+MERGED=""
 
 log "coding+splice BED ready: $BED"
 log "Restriction is ON by default (region.coding_only: true). To annotate ALL"

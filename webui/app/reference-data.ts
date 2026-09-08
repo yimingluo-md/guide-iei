@@ -39,8 +39,11 @@ export type BundledReferences = {
   ieiGenes: Set<string>;
   hiGenes: Set<string>;
   dominantGenes: Set<string>;
-  manifest: ReferenceManifest;
+  manifest: ReferenceManifest | null;
+  errors: Partial<Record<ReferenceKey, string>>;
 };
+
+export type ReferenceKey = "constraints" | "iei" | "hi" | "dominant" | "manifest";
 
 function parseNumber(value: string | undefined) {
   if (!value) return null;
@@ -56,6 +59,9 @@ export function parseGeneConstraintTsv(text: string) {
   const lines = text.trim().split(/\r?\n/);
   const headers = lines.shift()?.split("\t") ?? [];
   const index = new Map(headers.map((header, position) => [header, position]));
+  for (const required of ["gene_symbol", "pLI", "loeuf"]) {
+    if (!index.has(required)) throw new Error(`Constraint table is missing ${required}`);
+  }
   const value = (columns: string[], name: string) => columns[index.get(name) ?? -1] ?? "";
   const constraints = new Map<string, GeneConstraint>();
   for (const line of lines) {
@@ -94,27 +100,54 @@ export function parseGeneList(text: string) {
 }
 
 async function requireText(path: string) {
-  const response = await fetch(path);
-  if (!response.ok) throw new Error(`Could not load bundled reference ${path}`);
-  return response.text();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(path, { signal: controller.signal, cache: "no-store" });
+    if (!response.ok) throw new Error(`Could not load bundled reference ${path}`);
+    const text = await response.text();
+    if (!text.trim() || /^\s*</.test(text)) throw new Error(`Invalid bundled reference ${path}`);
+    return text;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 export async function loadBundledReferences(): Promise<BundledReferences> {
-  const [constraintText, ieiText, hiText, dominantText, manifestResponse] = await Promise.all([
-    requireText(`${BUNDLED_DATA}/gnomad_v4.1.1_gene_constraint.tsv`),
-    requireText(`${BUNDLED_DATA}/iuis_2024_genes.txt`),
-    requireText(`${BUNDLED_DATA}/iei_haploinsufficiency_genes.txt`),
-    requireText(`${BUNDLED_DATA}/iuis_2024_dominant_genes.txt`),
-    fetch(`${BUNDLED_DATA}/manifest.json`),
-  ]);
-  if (!manifestResponse.ok) throw new Error("Could not load bundled reference manifest");
-  return {
-    constraints: parseGeneConstraintTsv(constraintText),
-    ieiGenes: parseGeneList(ieiText),
-    hiGenes: parseGeneList(hiText),
-    dominantGenes: parseGeneList(dominantText),
-    manifest: await manifestResponse.json() as ReferenceManifest,
+  const errors: BundledReferences["errors"] = {};
+  async function load<T>(key: ReferenceKey, file: string, parse: (text: string) => T, fallback: T): Promise<T> {
+    try {
+      return parse(await requireText(`${BUNDLED_DATA}/${file}`));
+    } catch {
+      errors[key] = `${file} could not be loaded or validated`;
+      return fallback;
+    }
+  }
+  const genes = (text: string) => {
+    const result = parseGeneList(text);
+    if (!result.size || [...result].some((gene) => !/^[A-Z0-9][A-Z0-9._-]*$/.test(gene))) {
+      throw new Error("Invalid gene list");
+    }
+    return result;
   };
+  const [constraints, ieiGenes, hiGenes, dominantGenes, manifest] = await Promise.all([
+    load("constraints", "gnomad_v4.1.1_gene_constraint.tsv", (text) => {
+      const result = parseGeneConstraintTsv(text);
+      if (!result.size) throw new Error("Empty constraint table");
+      return result;
+    }, new Map<string, GeneConstraint>()),
+    load("iei", "iuis_2024_genes.txt", genes, new Set<string>()),
+    load("hi", "iei_haploinsufficiency_genes.txt", genes, new Set<string>()),
+    load("dominant", "iuis_2024_dominant_genes.txt", genes, new Set<string>()),
+    load<ReferenceManifest | null>("manifest", "manifest.json", (text) => {
+      const value = JSON.parse(text);
+      if (!value?.gnomad?.release || !value?.iuis?.release || !value?.haploinsufficiency?.release) {
+        throw new Error("Invalid reference manifest");
+      }
+      return value as ReferenceManifest;
+    }, null),
+  ]);
+  return { constraints, ieiGenes, hiGenes, dominantGenes, manifest, errors };
 }
 
 export function attachGeneConstraints(

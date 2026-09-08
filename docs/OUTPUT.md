@@ -43,6 +43,13 @@ that was evaluated: `ClinVar_path_aa_*`, `ClinGen_path_aa_*`, and
 evidence. Sample columns (`FORMAT` / genotype) are passed through unchanged,
 so zygosity is preserved.
 
+Every deliverable carries the research-use notice shown in the workbench: the
+annotated VCF header contains a `##GUIDE_IEI_notice=` line, the coverage
+report (HTML and JSON) and the run manifest carry a `research_use_notice`
+field, and TSV exports from the workbench start with the notice as a `#`
+comment row. A file that has left the workstation therefore still states that
+it organizes evidence and is not a clinical classification.
+
 Protein matching requires the same gene, Ensembl transcript stable ID, protein
 position, and reference amino acid. Same-change evidence also requires the
 same alternate amino acid; residue-only evidence comes from a different

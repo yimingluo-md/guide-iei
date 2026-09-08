@@ -30,20 +30,33 @@ from local_service.cohort_store import (
     parse_csq_entries,
     read_vcf_header,
 )
+from pipeline.promoterai_evidence import (
+    SCORE_FIELD_KEYS as _PROMOTERAI_SCORE_KEYS,
+    promoterai_observation,
+)
 
 
-AF_FIELDS = {
-    "max_af", "gnomad_af_popmax", "gnomad_popmax_af",
-    "gnomadg_af_popmax", "gnomade_af_popmax",
-}
+# Frequency fields by source, in the preference order shared with the cohort
+# index (cohort_store.POPULATION_FREQUENCY_GROUPS): an explicit gnomAD popmax
+# is used when present; VEP's MAX_AF (highest AF across 1000 Genomes, ESP and
+# gnomAD) only when it is not; the gnomAD global AF only as a last resort.
+# The groups are never pooled, so a supplied popmax is not overridden by a
+# larger MAX_AF from a small non-gnomAD population (review M9).
+AF_FIELD_GROUPS = (
+    {"gnomad_af_popmax", "gnomad_popmax_af", "gnomadg_af_popmax", "gnomade_af_popmax"},
+    {"max_af"},
+    {"gnomadg_af", "gnomade_af", "gnomad_af"},
+)
+AF_FIELDS = set().union(*AF_FIELD_GROUPS)
 SPLICEAI_FIELDS = {
     "spliceai", "spliceai_pred_ds_ag", "spliceai_pred_ds_al",
     "spliceai_pred_ds_dg", "spliceai_pred_ds_dl",
     "ds_ag", "ds_al", "ds_dg", "ds_dl",
 }
-PROMOTERAI_FIELDS = {
-    "promoterai", "promoterai_promoterai", "promoterai_score",
-}
+# Score field names (lower-cased) come from the shared PromoterAI rule; they
+# decide whether the dataset is present in the schema. Whether a value
+# QUALIFIES a record is decided by that rule too (see _promoter_scores).
+PROMOTERAI_FIELDS = set(_PROMOTERAI_SCORE_KEYS)
 NONCODING_MODES = {"ccre", "all", "none"}
 UNSCORED_SPLICEAI_INTRONIC = "SpliceAI_intronic"
 UNSCORED_PROMOTERAI_PROMOTER = "PromoterAI_promoter"
@@ -235,6 +248,36 @@ def _numbers(records: Iterable[dict[str, str]], names: set[str]) -> list[float]:
     return values
 
 
+def _population_frequencies(
+    matched: list[dict[str, str]], info: dict[str, str], alt_index: int, alt_count: int
+) -> list[float]:
+    """Frequencies of the preferred source group only (see AF_FIELD_GROUPS)."""
+    for names in AF_FIELD_GROUPS:
+        values = _numbers(matched, names) + _info_numbers(
+            info, names, alt_index, alt_count
+        )
+        if values:
+            return values
+    return []
+
+
+def _promoter_scores(records: Iterable[dict[str, str]]) -> list[float]:
+    """Usable PromoterAI scores of CSQ entries already matched to one ALT.
+
+    A score only counts when the entry carries the transcript/TSS provenance
+    the plugin writes with it (shared rule in pipeline/promoterai_evidence.py).
+    A bare score — the M5 reproduction — is withheld by the cohort index and
+    the review UI, so it must not retain a record here either. Record-level
+    INFO scores carry no such provenance and are never used for this route.
+    """
+    values: list[float] = []
+    for record in records:
+        score = promoterai_observation(record).usable_score
+        if score is not None:
+            values.append(score)
+    return values
+
+
 def _info_numbers(
     info: dict[str, str], names: set[str], alt_index: int, alt_count: int
 ) -> list[float]:
@@ -282,6 +325,33 @@ def _range_overlaps(
     return low > 0 and values[low - 1][1] >= start
 
 
+_HEADER_FLAG_CACHE: dict[int, tuple[VcfHeader, tuple[list[str], bool, bool]]] = {}
+
+
+def _header_dataset_flags(header: VcfHeader) -> tuple[list[str], bool, bool]:
+    """(csq field list, SpliceAI present, PromoterAI present) for a header.
+
+    Computed once per header rather than once per record — the per-record
+    set comprehension over every CSQ/INFO field was a measurable share of
+    the whole-genome prefilter (audit M31).
+    """
+    cached = _HEADER_FLAG_CACHE.get(id(header))
+    if cached is not None and cached[0] is header:
+        return cached[1]
+    available_fields = {
+        field.lower() for field in (*header.csq_fields, *header.info_fields)
+    }
+    flags = (
+        list(header.csq_fields),
+        bool(available_fields & SPLICEAI_FIELDS),
+        bool(available_fields & PROMOTERAI_FIELDS),
+    )
+    if len(_HEADER_FLAG_CACHE) > 16:
+        _HEADER_FLAG_CACHE.clear()
+    _HEADER_FLAG_CACHE[id(header)] = (header, flags)
+    return flags
+
+
 def evaluate_record(
     line: str,
     header: VcfHeader,
@@ -318,12 +388,10 @@ def evaluate_record(
     )
 
     info = info_map(columns[7])
-    consequences = parse_csq_entries(info.get("CSQ", ""), list(header.csq_fields))
-    available_fields = {
-        field.lower() for field in (*header.csq_fields, *header.info_fields)
-    }
-    spliceai_dataset_available = bool(available_fields & SPLICEAI_FIELDS)
-    promoterai_dataset_available = bool(available_fields & PROMOTERAI_FIELDS)
+    csq_fields, spliceai_dataset_available, promoterai_dataset_available = (
+        _header_dataset_flags(header)
+    )
+    consequences = parse_csq_entries(info.get("CSQ", ""), csq_fields)
     alts = columns[4].split(",")
     reasons_by_alt: list[tuple[str, ...]] = []
     retain_record = False
@@ -349,9 +417,7 @@ def evaluate_record(
         # the record is the safe direction for a diagnostic prefilter.
         qualification_entries = matched or consequences
 
-        frequencies = _numbers(matched, AF_FIELDS) + _info_numbers(
-            info, AF_FIELDS, alt_index, len(alts)
-        )
+        frequencies = _population_frequencies(matched, info, alt_index, len(alts))
         if (
             options.max_gnomad_popmax is not None
             and frequencies
@@ -363,9 +429,7 @@ def evaluate_record(
         splice_values = _numbers(qualification_entries, SPLICEAI_FIELDS) + _info_numbers(
             info, SPLICEAI_FIELDS, alt_index, len(alts)
         )
-        promoter_values = _numbers(qualification_entries, PROMOTERAI_FIELDS) + _info_numbers(
-            info, PROMOTERAI_FIELDS, alt_index, len(alts)
-        )
+        promoter_values = _promoter_scores(qualification_entries)
         splice_qualifies = bool(
             options.min_spliceai is not None
             and splice_values

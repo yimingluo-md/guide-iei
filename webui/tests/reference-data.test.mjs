@@ -9,7 +9,55 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
-const { attachGeneConstraints, deriveLofConstrainedGenes, parseGeneConstraintTsv, parseGeneList } = await import(moduleUrl);
+const { attachGeneConstraints, deriveLofConstrainedGenes, parseGeneConstraintTsv, parseGeneList, loadBundledReferences } = await import(moduleUrl);
+
+test("reference failures are isolated, validated, and recover on retry", async (t) => {
+  const files = [
+    "gnomad_v4.1.1_gene_constraint.tsv", "iuis_2024_genes.txt",
+    "iei_haploinsufficiency_genes.txt", "iuis_2024_dominant_genes.txt", "manifest.json",
+  ];
+  const keys = ["constraints", "iei", "hi", "dominant", "manifest"];
+  const contents = new Map(await Promise.all(files.map(async (file) => [
+    file, await readFile(new URL(`public/bundled-data/${file}`, root), "utf8"),
+  ])));
+  let failedFile = "";
+  let corrupt = false;
+  t.mock.method(globalThis, "fetch", async (path) => {
+    const file = path.split("/").pop();
+    return {
+      ok: file !== failedFile || corrupt,
+      text: async () => file === failedFile && corrupt ? "<html>Error page</html>" : contents.get(file),
+    };
+  });
+  for (let index = 0; index < files.length; index++) {
+    failedFile = files[index];
+    for (corrupt of [false, true]) {
+      const result = await loadBundledReferences();
+      assert.deepEqual(Object.keys(result.errors), [keys[index]]);
+      if (index !== 0) assert.equal(result.constraints.size, 19638);
+      if (index !== 1) assert.equal(result.ieiGenes.size, 505);
+      if (index !== 2) assert.equal(result.hiGenes.size, 50);
+      if (index !== 3) assert.equal(result.dominantGenes.size, 137);
+    }
+  }
+  failedFile = "";
+  const recovered = await loadBundledReferences();
+  assert.deepEqual(recovered.errors, {});
+  assert.equal(recovered.ieiGenes.size, 505);
+  assert.equal(recovered.manifest.gnomad.release, "4.1.1");
+});
+
+test("missing constraint schema and malformed manifests are not treated as empty valid data", async (t) => {
+  t.mock.method(globalThis, "fetch", async (path) => ({
+    ok: true,
+    text: async () => path.endsWith(".tsv") ? "gene_symbol\nNFKB1" : path.endsWith(".json") ? "{}" : "NFKB1",
+  }));
+  const result = await loadBundledReferences();
+  assert.deepEqual(Object.keys(result.errors).sort(), ["constraints", "manifest"]);
+  assert.equal(result.constraints.size, 0);
+  assert.equal(result.manifest, null);
+  assert.equal(result.ieiGenes.size, 1);
+});
 
 const constraintText = await readFile(
   new URL("public/bundled-data/gnomad_v4.1.1_gene_constraint.tsv", root),

@@ -18,6 +18,7 @@ from pipeline.haplotype_consequences import (  # noqa: E402
     classify_phase,
     minimal_variant_id,
     parse_candidate_genotypes,
+    parse_frameshift_transcripts,
     restoring_events,
 )
 
@@ -33,6 +34,29 @@ def state(gt: str, haplotypes, homo=False, phase_set=""):
 
 
 class PhaseClassificationTests(unittest.TestCase):
+    def test_missing_or_different_phase_sets_never_establish_cis_or_trans(self):
+        for left, right in [(".", "."), ("", ""), ("12", "34"), ("12", ".")]:
+            for second_haplotype in ({0}, {1}):
+                with self.subTest(left=left, right=right, second=second_haplotype):
+                    self.assertEqual(classify_phase([
+                        state("0|1", {1}, phase_set=left),
+                        state("1|0" if second_haplotype == {0} else "0|1",
+                              second_haplotype, phase_set=right),
+                    ]), POSSIBLE)
+
+    def test_missing_ps_uses_informative_pid(self):
+        with tempfile.TemporaryDirectory() as directory:
+            candidate = pathlib.Path(directory) / "candidate.vcf"
+            candidate.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n"
+                "1\t100\t.\tAT\tA\t.\tPASS\t.\tGT:PS:PID\t0|1:.:block1\n"
+            )
+            genotypes, _ = parse_candidate_genotypes(candidate)
+            self.assertTrue(genotypes)
+            for samples in genotypes.values():
+                self.assertEqual(samples["S"]["phase_set"], "block1")
+
     def test_homozygous_pair_is_confirmed(self):
         self.assertEqual(
             classify_phase([
@@ -85,15 +109,71 @@ class PhaseClassificationTests(unittest.TestCase):
         )
 
     def test_phased_pair_without_phase_set_is_not_confirmed(self):
-        # A "|" separator with no PS/PID on either record says nothing about
-        # cross-record phase; asserting cis here is the over-call the module
-        # exists to prevent.
+        # VCF declares phased genotypes without PS/PID to share one implicit,
+        # contig-wide phase set (statistical phasers write exactly this), but
+        # the module deliberately does not treat an implicit block as verified
+        # cross-record phase; asserting cis or trans from it is the over-call
+        # the module exists to prevent.
         self.assertEqual(
             classify_phase([
                 state("0|1", {1}),
                 state("0|1", {1}),
             ]),
             POSSIBLE,
+        )
+        self.assertEqual(
+            classify_phase([
+                state("0|1", {1}),
+                state("1|0", {0}),
+            ]),
+            POSSIBLE,
+        )
+
+    def test_phased_heterozygous_without_phase_set_plus_homozygous_is_partial(self):
+        # Review M2: a hom-alt partner sits on both copies, so a single
+        # heterozygous variant is in cis with it whatever its phase state.
+        # A phased het without PS must not be graded below the unphased het
+        # (PARTIAL) for the same genotypes.
+        for het in (state("0|1", {1}), state("1|0", {0}), state("0/1", None),
+                    state("0|1", {1}, phase_set="12")):
+            for hom in (state("1/1", {0, 1}, True), state("1|1", {0, 1}, True)):
+                with self.subTest(het=het["gt"], hom=hom["gt"], ps=het["phase_set"]):
+                    self.assertEqual(classify_phase([het, hom]), PARTIAL)
+                    self.assertEqual(classify_phase([hom, het]), PARTIAL)
+        # Two homozygous partners plus one het: still cis by construction.
+        self.assertEqual(
+            classify_phase([
+                state("1/1", {0, 1}, True),
+                state("0|1", {1}),
+                state("1/1", {0, 1}, True),
+            ]),
+            PARTIAL,
+        )
+
+    def test_two_heterozygous_calls_still_need_a_shared_phase_set_next_to_a_homozygous(self):
+        # The hom-alt partner does not vouch for phase BETWEEN two hets.
+        self.assertEqual(
+            classify_phase([
+                state("1/1", {0, 1}, True),
+                state("0|1", {1}),
+                state("0|1", {1}),
+            ]),
+            POSSIBLE,
+        )
+        self.assertEqual(
+            classify_phase([
+                state("1/1", {0, 1}, True),
+                state("0|1", {1}, phase_set="7"),
+                state("0|1", {1}, phase_set="7"),
+            ]),
+            PARTIAL,
+        )
+        self.assertIsNone(
+            classify_phase([
+                state("1/1", {0, 1}, True),
+                state("0|1", {1}, phase_set="7"),
+                state("1|0", {0}, phase_set="7"),
+            ])
         )
 
     def test_one_missing_phase_set_is_still_possible(self):
@@ -417,6 +497,184 @@ class IntegrationTests(unittest.TestCase):
             self.assertFalse(events)
             self.assertEqual(counts["non_restoring_haplotypes"], 1)
 
+
+
+CSQ_HEADER = (
+    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Consequence annotations '
+    'from Ensembl VEP. Format: Allele|Consequence|Feature|ALLELE_NUM">\n'
+)
+
+
+class ContributorCheckTests(unittest.TestCase):
+    """Review M3: frame restoration needs contributors that are themselves
+    frameshifting on the haplotype's transcript. Candidate selection is
+    record-wide, so sibling ALTs of a frameshift allele reach Haplosaurus."""
+
+    def _run(self, annotated_records, candidate_records, contributing, flags=("indel",),
+             transcript="ENST1", samples=None):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            annotated = root / "annotated.vcf"
+            candidate = root / "candidate.vcf"
+            haplo = root / "haplo.json"
+            annotated.write_text(
+                "##fileformat=VCFv4.2\n" + CSQ_HEADER
+                + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+                + "".join(annotated_records),
+                encoding="utf-8",
+            )
+            candidate.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+                + "".join(candidate_records),
+                encoding="utf-8",
+            )
+            haplo.write_text(json.dumps({
+                "transcript_id": transcript,
+                "protein_haplotypes": [{
+                    "name": "ENSP1:haplotype",
+                    "contributing_variants": list(contributing),
+                    "samples": samples or {"S1": 2},
+                    "has_indel": 1,
+                    "flags": list(flags),
+                }],
+            }) + "\n", encoding="utf-8")
+            genotypes, _ = parse_candidate_genotypes(candidate)
+            index = parse_frameshift_transcripts(annotated)
+            return restoring_events(haplo, genotypes, index)
+
+    def test_in_frame_deletion_plus_substitution_is_not_frame_restoration(self):
+        # The in-frame deletion shares a record with a frameshift sibling ALT
+        # (ALLELE_NUM=2); record-wide selection admits it, per-allele CSQ must
+        # not credit it. Both calls are homozygous, so before the check this
+        # was reported FRAME_RESTORED_CONFIRMED.
+        events, counts = self._run(
+            annotated_records=[
+                "1\t100\t.\tAGCT\tA,AGCTT\t99\tPASS\t"
+                "CSQ=-|inframe_deletion|ENST1.3|1,T|frameshift_variant|ENST1.3|2"
+                "\tGT\t1/1\n",
+                "1\t200\t.\tG\tA\t99\tPASS\tCSQ=A|missense_variant|ENST1.3|1\tGT\t1/1\n",
+            ],
+            candidate_records=[
+                "1\t100\t1:100:AGCT:A\tAGCT\tA\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t200\t1:200:G:A\tG\tA\t99\tPASS\t.\tGT\t1/1\n",
+            ],
+            contributing=["1:100:AGCT:A", "1:200:G:A"],
+        )
+        self.assertEqual(events, {})
+        self.assertEqual(counts["insufficient_frameshift_contributors"], 1)
+        self.assertEqual(counts[CONFIRMED], 0)
+        self.assertEqual(counts["candidate_restoring_haplotypes"], 0)
+
+    def test_two_frameshifts_on_the_same_transcript_remain_confirmed(self):
+        events, counts = self._run(
+            annotated_records=[
+                "1\t100\t.\tA\tAT\t99\tPASS\tCSQ=T|frameshift_variant|ENST1.3|1\tGT\t1/1\n",
+                "1\t200\t.\tAG\tA\t99\tPASS\tCSQ=-|frameshift_variant|ENST1.3|1\tGT\t1/1\n",
+            ],
+            candidate_records=[
+                "1\t100\t1:100:A:AT\tA\tAT\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t200\t1:200:AG:A\tAG\tA\t99\tPASS\t.\tGT\t1/1\n",
+            ],
+            contributing=["1:100:A:AT", "1:200:AG:A"],
+        )
+        self.assertEqual(counts[CONFIRMED], 1)
+        self.assertEqual(set(events), {"1:100:A:AT", "1:200:AG:A"})
+
+    def test_frameshift_on_another_transcript_does_not_count(self):
+        events, counts = self._run(
+            annotated_records=[
+                "1\t100\t.\tA\tAT\t99\tPASS\tCSQ=T|frameshift_variant|ENST1|1\tGT\t1/1\n",
+                "1\t200\t.\tAG\tA\t99\tPASS\t"
+                "CSQ=-|frameshift_variant|ENST2|1,-|intron_variant|ENST1|1\tGT\t1/1\n",
+            ],
+            candidate_records=[
+                "1\t100\t1:100:A:AT\tA\tAT\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t200\t1:200:AG:A\tAG\tA\t99\tPASS\t.\tGT\t1/1\n",
+            ],
+            contributing=["1:100:A:AT", "1:200:AG:A"],
+        )
+        self.assertEqual(events, {})
+        self.assertEqual(counts["insufficient_frameshift_contributors"], 1)
+
+    def test_allele_field_fallback_attributes_without_allele_num(self):
+        # Legacy annotations without ALLELE_NUM: VEP's minimised Allele
+        # ("-" for the deletion, "T" for the insertion) attributes the entry.
+        events, counts = self._run(
+            annotated_records=[
+                "1\t100\t.\tAGCT\tA,AGCTT\t99\tPASS\t"
+                "CSQ=-|inframe_deletion|ENST1|,T|frameshift_variant|ENST1|\tGT\t1/1\n",
+                "1\t200\t.\tAG\tA\t99\tPASS\tCSQ=-|frameshift_variant|ENST1|\tGT\t1/1\n",
+            ],
+            candidate_records=[
+                "1\t100\t1:100:AGCT:A\tAGCT\tA\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t102\t1:102:C:CT\tC\tCT\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t200\t1:200:AG:A\tAG\tA\t99\tPASS\t.\tGT\t1/1\n",
+            ],
+            contributing=["1:100:AGCT:A", "1:200:AG:A"],
+        )
+        self.assertEqual(events, {})
+        self.assertEqual(counts["insufficient_frameshift_contributors"], 1)
+        # The genuine frameshift pair (split sibling + deletion) still works.
+        events, counts = self._run(
+            annotated_records=[
+                "1\t100\t.\tAGCT\tA,AGCTT\t99\tPASS\t"
+                "CSQ=-|inframe_deletion|ENST1|,T|frameshift_variant|ENST1|\tGT\t1/1\n",
+                "1\t200\t.\tAG\tA\t99\tPASS\tCSQ=-|frameshift_variant|ENST1|\tGT\t1/1\n",
+            ],
+            candidate_records=[
+                "1\t100\t1:100:AGCT:A\tAGCT\tA\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t102\t1:102:C:CT\tC\tCT\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t200\t1:200:AG:A\tAG\tA\t99\tPASS\t.\tGT\t1/1\n",
+            ],
+            contributing=["1:102:C:CT", "1:200:AG:A"],
+        )
+        self.assertEqual(counts[CONFIRMED], 1)
+
+    def test_frame_arithmetic_rejects_a_pair_whose_lengths_do_not_restore(self):
+        # Two +1 frameshifts sum to +2: not restoring, whatever the container
+        # flags claim. Counted separately so the audit shows the disagreement.
+        events, counts = self._run(
+            annotated_records=[
+                "1\t100\t.\tA\tAT\t99\tPASS\tCSQ=T|frameshift_variant|ENST1|1\tGT\t1/1\n",
+                "1\t200\t.\tG\tGC\t99\tPASS\tCSQ=C|frameshift_variant|ENST1|1\tGT\t1/1\n",
+            ],
+            candidate_records=[
+                "1\t100\t1:100:A:AT\tA\tAT\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t200\t1:200:G:GC\tG\tGC\t99\tPASS\t.\tGT\t1/1\n",
+            ],
+            contributing=["1:100:A:AT", "1:200:G:GC"],
+        )
+        self.assertEqual(events, {})
+        self.assertEqual(counts["frame_arithmetic_mismatch_haplotypes"], 1)
+        self.assertEqual(counts[CONFIRMED], 0)
+
+    def test_annotated_input_without_csq_verifies_nothing(self):
+        with tempfile.TemporaryDirectory() as directory:
+            annotated = pathlib.Path(directory) / "annotated.vcf"
+            annotated.write_text(
+                "##fileformat=VCFv4.2\n"
+                "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+                "1\t100\t.\tA\tAT\t99\tPASS\tDP=3\tGT\t1/1\n",
+                encoding="utf-8",
+            )
+            self.assertIsNone(parse_frameshift_transcripts(annotated))
+        # main() then supplies an empty index: nothing is confirmed.
+        events, counts = self._run(
+            annotated_records=[
+                "1\t100\t.\tA\tAT\t99\tPASS\tDP=3\tGT\t1/1\n",
+                "1\t200\t.\tAG\tA\t99\tPASS\tDP=3\tGT\t1/1\n",
+            ],
+            candidate_records=[
+                "1\t100\t1:100:A:AT\tA\tAT\t99\tPASS\t.\tGT\t1/1\n",
+                "1\t200\t1:200:AG:A\tAG\tA\t99\tPASS\t.\tGT\t1/1\n",
+            ],
+            contributing=["1:100:A:AT", "1:200:AG:A"],
+        )
+        # CSQ header present in _run's fixture but the records carry no CSQ:
+        # no allele is credited, so no restoration is confirmed.
+        self.assertEqual(events, {})
+        self.assertEqual(counts["insufficient_frameshift_contributors"], 1)
 
 
 class StaleEvidenceTests(unittest.TestCase):

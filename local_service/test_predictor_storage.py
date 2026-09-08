@@ -908,14 +908,21 @@ class PredictorImportIntegrationTests(unittest.TestCase):
         with store._session() as connection:
             rows = connection.execute(
                 """
-                SELECT cohort_variants.alt, cohort_annotations.gene
+                SELECT cohort_variants.variant_key, cohort_variants.ref,
+                       cohort_variants.alt, cohort_annotations.gene
                 FROM cohort_annotations
                 JOIN cohort_variants
                   ON cohort_variants.id = cohort_annotations.variant_id
-                ORDER BY cohort_variants.alt
+                ORDER BY cohort_variants.variant_key
                 """
             ).fetchall()
-        assert [tuple(row) for row in rows] == [("C", "—"), ("CT", "—")]
+        # Alleles are stored in their canonical minimal representation
+        # (CTT>CT is CT>C at the same position); both ALTs stay distinct
+        # variants and neither receives an annotation it cannot own.
+        assert [tuple(row) for row in rows] == [
+            ("1:320:CT:C", "CT", "C", "—"),
+            ("1:320:CTT:C", "CTT", "C", "—"),
+        ]
 
     def test_multiallelic_info_predictors_are_selected_per_alt(self):
         fields = [

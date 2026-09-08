@@ -82,6 +82,65 @@ test("parses standard PED trios and validates sample names", () => {
   assert.deepEqual(result.warnings, []);
 });
 
+test("missing phase sets and independent files cannot confirm physical phase", () => {
+  const phasedRow = (pos, phaseSet, haplotype, source = "trio.vcf.gz") => row({
+    pos, source,
+    sampleGenotypes: {
+      CHILD: evidence(haplotype === 0 ? "1|0" : "0|1", 30, 99, 15, 15,
+        { phaseSet, phaseHaplotype: haplotype }),
+    },
+  });
+  for (const phaseSet of ["", "."]) {
+    for (const haplotype of [0, 1]) {
+      const pairs = compoundHetPairs([
+        phasedRow(100, phaseSet, 0), phasedRow(200, phaseSet, haplotype),
+      ], trio);
+      assert.equal(pairs[0].phase, "phase_unknown");
+    }
+  }
+  assert.equal(compoundHetPairs([
+    phasedRow(100, "123", 0, "first.vcf"),
+    phasedRow(200, "123", 1, "second.vcf"),
+  ], trio)[0].phase, "phase_unknown");
+  assert.equal(compoundHetPairs([
+    phasedRow(100, "123", 0), phasedRow(200, "123", 1),
+  ], trio)[0].phase, "confirmed_trans_phasing");
+});
+
+test("compound-het pairs require a named gene on the same contig", () => {
+  for (const gene of ["", "—", ".", "-"]) {
+    assert.deepEqual(compoundHetPairs([row({ gene }), row({ gene, pos: 200 })], trio), []);
+  }
+  assert.deepEqual(compoundHetPairs([row(), row({ chrom: "2", pos: 200 })], trio), []);
+  assert.equal(compoundHetPairs([row(), row({ chrom: "chr1", pos: 200 })], trio).length, 1);
+});
+
+test("zero or missing parental allele-depth coverage cannot confirm de novo", () => {
+  for (const adRef of [0, null]) {
+    const variant = row();
+    variant.sampleGenotypes.MOTHER = {
+      ...evidence("0/0", 30, 99, 30, 0), adRef, alleleBalance: null,
+    };
+    assert.equal(assessDeNovo(variant, trio).status, "possible");
+  }
+});
+
+test("a 1/2 child is not labelled homozygous alternate", () => {
+  const variant = row();
+  variant.sampleGenotypes.CHILD = {
+    ...evidence("1/2", 30, 99, 0, 15), alleleBalance: 0.5,
+  };
+  assert.notEqual(assessDeNovo(variant, trio).status, "mendelian_conflict");
+});
+
+test("PED trios cannot reuse the child or the same parent sample", () => {
+  for (const parents of ["CHILD MOTHER", "FATHER CHILD", "MOTHER MOTHER"]) {
+    const result = parsePedigree(`F1 CHILD ${parents} 2 2\n`, new Set(["CHILD", "MOTHER", "FATHER"]));
+    assert.deepEqual(result.trios, []);
+    assert.ok(result.warnings.some(warning => warning.includes("different samples")));
+  }
+});
+
 test("classifies high-confidence, possible, mosaic, and artifact de novo evidence", () => {
   assert.equal(assessDeNovo(row(), trio, DEFAULT_TRIO_THRESHOLDS).status, "high_confidence");
 

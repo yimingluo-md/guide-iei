@@ -117,19 +117,20 @@ For routine intake, retain a sample in **Sample Library** and leave **Include
 qualifying variants in Cohort Search** enabled. The library can later reopen,
 relink, or add that dataset to Cohort Search. Indexed samples show a status
 badge rather than a routine maintenance button; repair and rebuild actions
-appear only when needed or under **More actions**. Direct path-based cohort indexing remains
-available for existing collections.
+appear only when needed or under **More actions**.
 
-Open **Cohort search** in the workbench and enter one or more annotated VCF
-paths, or a directory containing them. Directories can be scanned recursively.
+Use **Import & QC → Review annotated VCF** to add a collection, keep it in
+**Sample Library**, and enable **Include qualifying variants in Cohort Search**.
+Then open **Cohort search** to find carriers; this page does not import paths
+or scan directories. Existing workstation paths remain available in the
+appropriate Import & QC workflows.
 The indexer accepts single- and multi-sample `.vcf` / `.vcf.gz` files, retains
 `FILTER=PASS` and unfiltered `FILTER=.` records, and stores non-reference calls in the
 local cohort database. Re-adding an unchanged file is fast because it is
 recognized by resolved path, size, and modification time.
 
 The cohort is GRCh38-only. Explicit GRCh37 files are rejected. Header-ambiguous
-VCFs require checking **I confirm header-ambiguous VCFs are GRCh38** before
-indexing. Chromosome labels are normalized
+VCFs require confirming GRCh38 during intake before indexing. Chromosome labels are normalized
 (`chr1` → `1`, `chrM` → `MT`), but alleles are matched exactly, so source VCFs
 should use a consistent left-normalized representation.
 

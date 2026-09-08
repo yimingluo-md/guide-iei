@@ -14,6 +14,101 @@ ulimit -c 0 || die "cannot disable core dumps for this process"
 # --- repo root ----------------------------------------------------------------
 repo_root() { cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd; }
 
+# --- BGZF integrity ------------------------------------------------------------
+# A BGZF file ends with a fixed 28-byte empty block (the EOF marker). A stream
+# cut exactly at a block boundary is otherwise a perfectly valid gzip: `gzip -t`
+# passes, tabix indexes it, and htslib readers stop early with only a warning
+# on stderr — `bcftools view -R` then silently drops every region after the cut
+# and exits 0 (audit M12). Presence tests for published BGZF files must use
+# this, not -s or gzip -t.
+BGZF_EOF_MARKER_HEX="1f8b08040000000000ff0600424302001b0003000000000000000000"
+bgzf_complete() { # bgzf_complete <file.gz>  -> 0 when the EOF marker is present
+    [[ -s "$1" ]] || return 1
+    local tail_hex
+    tail_hex="$(tail -c 28 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
+    [[ "$tail_hex" == "$BGZF_EOF_MARKER_HEX" ]]
+}
+# Compress <plain> into <final.gz> atomically: move the plain file to a sibling
+# temp name, bgzip it there, require the EOF marker, index, then rename so a
+# partial file never carries the final name. The plain input is consumed
+# (as `bgzip` would consume it); on failure nothing is left under either name.
+#   publish_bgzf <plain> <final.gz> [tabix preset: vcf|bed|gff|sam]
+publish_bgzf() {
+    local plain="$1" final="$2" preset="${3:-}"
+    local dir base tmp
+    [[ -s "$plain" ]] || { warn "nothing to publish as $(basename "$final"): $plain is missing or empty"; return 1; }
+    dir="$(dirname "$final")"; base="$(basename "$final")"
+    tmp="${dir}/.${base}.publish.$$"
+    rm -f "$tmp" "$tmp.gz" "$tmp.gz.tbi"
+    mv -f "$plain" "$tmp" || return 1
+    ( cd "$dir" && hts bgzip -f "$(basename "$tmp")" ) || { rm -f "$tmp" "$tmp.gz"; return 1; }
+    if ! bgzf_complete "$tmp.gz"; then
+        rm -f "$tmp" "$tmp.gz"
+        warn "bgzip produced an incomplete BGZF stream for $base; not publishing it"
+        return 1
+    fi
+    if [[ -n "$preset" ]]; then
+        ( cd "$dir" && hts tabix -f -p "$preset" "$(basename "$tmp.gz")" ) \
+            || { rm -f "$tmp.gz" "$tmp.gz.tbi"; return 1; }
+        mv -f "$tmp.gz.tbi" "$final.tbi" || { rm -f "$tmp.gz" "$tmp.gz.tbi"; return 1; }
+    fi
+    mv -f "$tmp.gz" "$final" || { rm -f "$tmp.gz" "$final.tbi"; return 1; }
+    return 0
+}
+
+# --- SHA-256 ------------------------------------------------------------------
+# sha256_file <file>  -> hex digest on stdout. macOS ships shasum (Perl) but
+# not sha256sum; minimal Linux images ship sha256sum but not Perl. A missing
+# tool used to be swallowed by `shasum ... 2>/dev/null | cut`, which turned
+# every content stamp into "unknown" and silently disabled rebuild detection
+# (audit M11): this helper fails loudly instead, after trying python3.
+sha256_file() {
+    local file="$1"
+    [[ -r "$file" ]] || { warn "sha256_file: cannot read $file"; return 1; }
+    if command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$file" | awk '{print $1}'
+    elif command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$file" | awk '{print $1}'
+    elif command -v python3 >/dev/null 2>&1; then
+        python3 - "$file" <<'PY'
+import hashlib, sys
+digest = hashlib.sha256()
+with open(sys.argv[1], "rb") as handle:
+    for chunk in iter(lambda: handle.read(1 << 20), b""):
+        digest.update(chunk)
+print(digest.hexdigest())
+PY
+    else
+        die "no SHA-256 tool available (need shasum, sha256sum, or python3)"
+    fi
+}
+# write_sha256_sidecar <file>  -> writes "<digest>  <basename>" to <file>.sha256.local
+write_sha256_sidecar() {
+    local file="$1" digest
+    digest="$(sha256_file "$file")" || return 1
+    printf '%s  %s\n' "$digest" "$(basename "$file")" > "${file}.sha256.local"
+}
+
+# Catalog stamps require a real cache version, including on the ClinVar path.
+vep_cache_tag() {
+    python3 - "$1" <<'PY'
+from pathlib import Path
+import sys
+
+cache = Path(sys.argv[1])
+try:
+    versions = sorted(p.name for p in (cache / "homo_sapiens").iterdir() if p.is_dir())
+except OSError:
+    versions = []
+if not versions:
+    print(f"VEP cache has no homo_sapiens/<release> directory under {cache} "
+          "(missing or unreadable); install the VEP cache before building a protein-match catalog",
+          file=sys.stderr)
+    raise SystemExit(1)
+print(versions[-1])
+PY
+}
+
 # --- downloader: prefer curl, fall back to wget -------------------------------
 # fetch <url> <dest>   (resumable; skips if dest already present and non-empty)
 fetch() {
@@ -114,6 +209,9 @@ hts() {
         fi
         mapped="${conts[$found]}"
         [[ -n "$base" ]] && mapped="${mapped}/${base}"
+        # A trailing slash is meaningful to `bcftools sort -T DIR/` (temp
+        # files inside DIR rather than DIR as a name prefix); keep it.
+        [[ "$arg" == */ && -z "$base" ]] && mapped="${mapped}/"
         args[$i]="$mapped"
     done
 
@@ -127,7 +225,7 @@ hts() {
                 || die "container image $img is not available locally; run bash docker/build.sh before preparing indexed resources"
             mount_flags=(-v "$PWD:/w")
             for i in "${!hosts[@]}"; do mount_flags+=(-v "${hosts[$i]}:${conts[$i]}:rw"); done
-            "$rt" run --pull=never --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+            "$rt" run --pull=never --network=none --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
             # A file written by the host or another container can be
             # incompletely visible to a container started moments later
             # (Docker Desktop VirtioFS bind caching; worse on FSKit-exFAT
@@ -138,7 +236,7 @@ hts() {
                 log "WARN  containerized $tool failed (rc=$rc); retrying once after write settling"
                 sleep 5
                 rc=0
-                "$rt" run --pull=never --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+                "$rt" run --pull=never --network=none --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
             fi
             if [[ "$rc" -ge 128 ]]; then
                 log "ERROR: containerized $tool terminated by a signal (exit $rc); not retrying"

@@ -18,6 +18,7 @@ from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -30,10 +31,12 @@ from local_service.storage_locations import (
 )
 from local_service.workbench_service import (
     CONTAINER_FINGERPRINT_FILES,
+    EXIT_ALREADY_RUNNING,
     FUNCVEP_ARCHIVE_NAME,
     AnnotationJobService,
     JobStore,
     SERVICE_VERSION,
+    ServiceAlreadyRunningError,
     create_server,
 )
 
@@ -146,6 +149,127 @@ class AnnotationJobServiceTests(unittest.TestCase):
     def tearDown(self):
         self.service.shutdown()
         self.temp.cleanup()
+
+    def test_second_instance_on_the_same_state_is_refused_before_any_recovery(self):
+        """Audit repro (H7): a second service process on one state
+        directory marked the live instance's running job interrupted,
+        killed its downloads and deleted its resource secrets, and only then
+        failed to bind the port."""
+        job = self.service.store.create({
+            "id": "live-job", "status": "running", "profile": "exome",
+            "created_at": "now", "updated_at": "now",
+            "input_path": "/x.vcf", "output_path": "/y.vcf",
+            "config_path": "", "log_path": "", "pid": None,
+        })
+        self.assertEqual(job["status"], "running")
+        secret = self.service.resource_secrets_dir / "dbnsfp-url.txt"
+        secret.write_text("private\n")
+        with self.assertRaises(ServiceAlreadyRunningError):
+            AnnotationJobService(self.root, self.state, start_worker=False)
+        # Nothing of the live instance was touched.
+        self.assertEqual(self.service.store.get("live-job")["status"], "running")
+        self.assertTrue(secret.is_file())
+        self.assertGreater(EXIT_ALREADY_RUNNING, 0)
+        self.assertNotIn(EXIT_ALREADY_RUNNING, {0, 75, 130, 143})
+        # After an orderly shutdown the state can be owned again.
+        self.service.shutdown()
+        successor = AnnotationJobService(self.root, self.state, start_worker=False)
+        try:
+            self.assertEqual(successor.store.get("live-job")["status"], "interrupted")
+        finally:
+            successor.shutdown()
+        # tearDown shuts self.service down again; that must be harmless.
+
+    def test_orphaned_annotation_jobs_are_reclaimed_at_startup(self):
+        """Audit repro (H6): the pipeline script of a job that was running
+        when the service died kept running in its own session; only the row
+        was marked interrupted. A pid whose command line no longer belongs to
+        this pipeline (PID reuse) must be left alone."""
+        import subprocess
+        state = Path(self.temp.name) / "orphan-state"
+        seed = AnnotationJobService(self.root, state, start_worker=False)
+        seed.shutdown()
+        orphan = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)", str(self.root)],
+            start_new_session=True,
+        )
+        bystander = subprocess.Popen(
+            [sys.executable, "-c", "import time; time.sleep(120)", "unrelated-process"],
+            start_new_session=True,
+        )
+        try:
+            with sqlite3.connect(state / "workbench.sqlite3") as connection:
+                for job_id, pid in (("orphan", orphan.pid), ("bystander", bystander.pid)):
+                    connection.execute(
+                        "INSERT INTO annotation_jobs(id, status, profile, created_at, "
+                        "updated_at, input_path, output_path, config_path, log_path, pid) "
+                        "VALUES (?, 'running', 'exome', 'now', 'now', '/x', '/y', '', '', ?)",
+                        (job_id, pid),
+                    )
+            time.sleep(0.2)
+            reopened = AnnotationJobService(self.root, state, start_worker=False)
+            try:
+                deadline = time.time() + 5
+                while orphan.poll() is None and time.time() < deadline:
+                    time.sleep(0.05)
+                self.assertIsNotNone(orphan.poll(), "the orphaned pipeline process must be stopped")
+                self.assertIsNone(bystander.poll(), "an unrelated process with a reused pid must survive")
+                self.assertEqual(reopened.store.get("orphan")["status"], "interrupted")
+                self.assertIsNone(reopened.store.get("orphan")["pid"])
+                self.assertIn("stopped at the next start", reopened.store.get("orphan")["error"])
+                self.assertEqual(reopened.store.get("bystander")["status"], "interrupted")
+            finally:
+                reopened.shutdown()
+        finally:
+            for process in (orphan, bystander):
+                if process.poll() is None:
+                    process.kill()
+                process.wait(timeout=5)
+
+    def test_sigterm_stops_the_service_process_cleanly(self):
+        """Audit repro (H6): under the launcher the service had no SIGTERM
+        handler, so `kill` ended it without shutdown(); the state lock must
+        be released and the exit status must read as a clean stop."""
+        import signal
+        import socket
+        import subprocess
+        state = Path(self.temp.name) / "signal-state"
+        with socket.socket() as probe:
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        environment = {**os.environ, "IEI_WORKBENCH_STATE_DIR": str(state)}
+        process = subprocess.Popen(
+            [
+                sys.executable, "-m", "local_service.workbench_service",
+                "--port", str(port), "--pipeline-root", str(self.root),
+                "--state-dir", str(state),
+                "--storage-registry", str(Path(self.temp.name) / "signal-registry.json"),
+            ],
+            cwd=str(Path(__file__).resolve().parents[1]),
+            env=environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+        try:
+            deadline = time.time() + 30
+            ready = False
+            while time.time() < deadline and process.poll() is None:
+                try:
+                    with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=1) as response:
+                        ready = response.status == 200
+                        break
+                except (urllib.error.URLError, ConnectionError, OSError):
+                    time.sleep(0.1)
+            self.assertTrue(ready, f"service did not start: {process.stdout.read() if process.poll() is not None else ''}")
+            process.send_signal(signal.SIGTERM)
+            output = process.communicate(timeout=30)[0]
+            self.assertEqual(process.returncode, 0, output)
+            self.assertIn("received signal", output)
+            # The state directory is free for a successor.
+            successor = AnnotationJobService(self.root, state, start_worker=False)
+            successor.shutdown()
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait(timeout=10)
 
     def test_sample_library_service_import_records_bundle_and_identity(self):
         review = self.root / "review.vcf"
@@ -664,6 +788,54 @@ class AnnotationJobServiceTests(unittest.TestCase):
 
         reopened = JobStore(self.state / "workbench.sqlite3")
         self.assertEqual(reopened.get(job["id"])["status"], "succeeded")
+
+    def test_worker_survives_an_exception_that_escapes_a_job(self):
+        """Audit repro (M22): a store failure raised before _run_job's own
+        try block (an unplugged data drive, a locked database) killed the
+        worker thread; every later job stayed "queued" silently until the
+        next restart. The boundary fails that job, records the failure for
+        /api/health, keeps the worker alive, and never re-runs the job."""
+        import sqlite3 as sqlite_module
+        original_get = self.service.store.get
+        first_id: dict[str, str] = {}
+        calls = {"count": 0}
+
+        def failing_get(job_id):
+            # Fail the FIRST store read the worker makes for the first job,
+            # i.e. the one outside _run_job's try/except.
+            if (
+                threading.current_thread().name == "annotation-worker"
+                and job_id == first_id.get("id") and calls["count"] == 0
+            ):
+                calls["count"] += 1
+                raise sqlite_module.OperationalError(
+                    "simulated: database or disk is full"
+                )
+            return original_get(job_id)
+
+        with patch.object(self.service.store, "get", side_effect=failing_get):
+            first = self.service.submit(
+                {"input_path": str(self.input), "output_path": str(self.output)}
+            )
+            first_id["id"] = first["id"]
+            failed = self._wait(first["id"])
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("internal error", failed["error"])
+        self.assertIn("OperationalError", failed["error"])
+        health = self.service.worker_health()
+        self.assertTrue(health["alive"], "worker thread must survive")
+        self.assertEqual(health["failures"], 1)
+        self.assertIn("OperationalError", health["last_error"])
+
+        # The next job still runs to completion on the same worker.
+        second_output = self.root / "results" / "second.vep.vcf.gz"
+        second = self.service.submit(
+            {"input_path": str(self.input), "output_path": str(second_output)}
+        )
+        completed = self._wait(second["id"])
+        self.assertEqual(completed["status"], "succeeded", completed.get("error"))
+        # The failed job was not silently retried.
+        self.assertEqual(self.service.store.get(first["id"])["status"], "failed")
 
     def test_defaults_keep_coding_pass_and_clinvar(self):
         job = self.service.submit(
@@ -1368,6 +1540,25 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(result["exit_code"], 75)
         self.assertTrue(self.service.restart_requested)
 
+    def test_service_restart_refuses_when_the_interface_needs_a_full_relaunch(self):
+        """Audit repro (M21): with webui/.build-required pending, the exit-75
+        restart would bring up the new API behind the old interface bundle."""
+        flag = self.root / "webui" / ".build-required"
+        flag.parent.mkdir(parents=True, exist_ok=True)
+        flag.write_text("1\n")
+        try:
+            with self.assertRaises(ValueError) as context:
+                self.service.request_service_restart()
+            self.assertIn("Close the GUIDE-IEI launcher window", str(context.exception))
+            self.assertFalse(self.service.restart_requested)
+            self.assertTrue(
+                self.service.software_updater.status()["full_relaunch_required"]
+            )
+        finally:
+            flag.unlink()
+        # Without the flag the in-app restart is accepted as before.
+        self.assertTrue(self.service.request_service_restart()["restarting"])
+
     def test_service_restart_refuses_while_work_is_running(self):
         with patch.object(
             self.service.store, "list",
@@ -1614,6 +1805,58 @@ class AnnotationJobServiceTests(unittest.TestCase):
             self.assertIn("100.0% CADD", completed_cadd["log"])
             with self.assertRaisesRegex(ValueError, "cannot be downloaded"):
                 self.service.start_resource_download("dbnsfp")
+
+    def test_read_loop_failure_stops_and_reaps_the_download_child(self):
+        """Audit repro (M24): a failure while reading the downloader's output
+        marked the job failed and dropped its tracking, but the child kept
+        running — invisible to crash cleanup, and a second start of the same
+        download would open a second writer on the same .part file."""
+        # A downloader that prints one line, then keeps working for a while.
+        self._write_script(
+            "download_references.sh",
+            "#!/usr/bin/env bash\nset -eu\n"
+            'printf " 10.0%%  test\\n"\nsleep 30\nprintf "complete\\n"\n',
+        )
+        seen: dict[str, object] = {}
+
+        def failing_update(stage, line):
+            raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "simulated undecodable output")
+
+        real_popen = subprocess.Popen
+
+        def recording_popen(*args, **kwargs):
+            process = real_popen(*args, **kwargs)
+            seen["process"] = process
+            return process
+
+        with patch.object(self.service, "_ensure_annotation_download_space"), \
+                patch.object(
+                    type(self.service), "_resource_progress_update",
+                    side_effect=failing_update,
+                ), patch("local_service.workbench_service.subprocess.Popen",
+                         side_effect=recording_popen):
+            job = self.service.start_resource_download("spliceai")
+            failed = self._wait_resource(job["id"], timeout=20)
+        self.assertIn("process", seen, "child was not started")
+        self.assertEqual(failed["status"], "failed")
+        self.assertIn("undecodable", failed["error"])
+        process = seen["process"]
+        # Reaped: the child is gone, not orphaned, before tracking was cleared.
+        self.assertIsNotNone(process.poll(), "download child must be stopped and reaped")
+        with self.service._resource_lock:
+            self.assertNotIn(job["id"], self.service._resource_processes)
+        pids_path = self.service._active_resource_pids_path()
+        recorded = json.loads(pids_path.read_text()) if pids_path.exists() else {}
+        self.assertNotIn(job["id"], recorded)
+        # A new download of the same resource starts cleanly.
+        self._write_script(
+            "download_references.sh",
+            "#!/usr/bin/env bash\nset -eu\nprintf \"complete\\n\"\n",
+        )
+        with patch.object(self.service, "_ensure_annotation_download_space"):
+            again = self.service.start_resource_download("spliceai")
+            self.assertNotEqual(again["id"], job["id"])
+            self.assertEqual(self._wait_resource(again["id"])["status"], "succeeded")
 
     def test_promoterai_preparation_requires_and_uses_the_two_local_files(self):
         source = self.root / "licensed-promoterai"
@@ -2126,8 +2369,19 @@ class AnnotationJobServiceTests(unittest.TestCase):
             self.assertEqual(sample_review["sample_entries"], 1)
             self.assertEqual(sample_review["records"], 3)
             self.assertEqual(sample_review["analysis_scope"], "exome")
-            self.assertIn("1\t400\t.\tT\tC", sample_review["files"][0]["vcf"])
-            self.assertNotIn("\tP2\n", sample_review["files"][0]["vcf"])
+            # The projected VCF is streamed from disk (audit M32), not embedded.
+            self.assertNotIn("vcf", sample_review["files"][0])
+            with urllib.request.urlopen(
+                base + sample_review["files"][0]["vcf_url"], timeout=5
+            ) as response:
+                self.assertEqual(response.headers["Content-Type"], "text/plain; charset=utf-8")
+                streamed = response.read().decode("utf-8")
+            self.assertEqual(len(streamed.encode("utf-8")), sample_review["files"][0]["vcf_bytes"])
+            self.assertIn("1\t400\t.\tT\tC", streamed)
+            self.assertNotIn("\tP2\n", streamed)
+            with self.assertRaises(urllib.error.HTTPError) as missing:
+                urllib.request.urlopen(base + "/api/cohort/sample-review/nosuchtoken/0", timeout=5)
+            self.assertEqual(missing.exception.code, 404)
 
             individual = post("/api/phenotypes/individual", {
                 "individual_id": "CASE-P1",
