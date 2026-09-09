@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import shutil
 import sqlite3
 import tempfile
 import unittest
@@ -98,6 +99,54 @@ class ScreenContextStoreTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def test_relocated_bundle_uses_selected_storage_even_if_original_exists(self):
+        original = self.manifest.parent
+        relocated = original / "new annotation storage" / "prepared"
+        relocated.mkdir(parents=True)
+        for path in original.iterdir():
+            if path.is_file():
+                shutil.copy2(path, relocated / path.name)
+        manifest_bytes = (relocated / "contexts.json").read_bytes()
+        prepared_bytes = (relocated / "prepared.json").read_bytes()
+        # The previous location remains present but must not supply evidence.
+        (original / "tissues.u8").write_bytes(bytes([0, 0]))
+        evidence = self.store.evidence(
+            relocated / "contexts.json",
+            {"chrom": "1", "pos": 100, "ref": "A", "alt": "G"},
+        )
+        self.assertEqual(evidence["overlaps"][0]["tissues"][0]["state_label"], "Enhancer-like")
+        self.assertEqual((relocated / "contexts.json").read_bytes(), manifest_bytes)
+        self.assertEqual((relocated / "prepared.json").read_bytes(), prepared_bytes)
+        # A missing local artifact must not silently use the previous copy.
+        (relocated / "tissues.u8").unlink()
+        with self.assertRaisesRegex(ValueError, "Retry the SCREEN download"):
+            ScreenContextStore().catalog(relocated / "contexts.json")
+
+    def test_relative_and_foreign_absolute_paths_resolve_inside_bundle(self):
+        for prefix in ("", "/unavailable/producer/", "C:\\producer\\"):
+            with self.subTest(prefix=prefix):
+                prepared_path = self.manifest.parent / "prepared.json"
+                prepared = json.loads(prepared_path.read_text())
+                for key, name in (("catalog", "catalog.sqlite3"),
+                                  ("tissue_matrix", "tissues.u8"),
+                                  ("immune_matrix", "immune.u8")):
+                    prepared[key]["path"] = prefix + name
+                prepared_path.write_text(json.dumps(prepared))
+                context = json.loads(self.manifest.read_text())
+                context["source_paths"]["prepared_manifest"] = prefix + "prepared.json"
+                context["artifacts"]["database"]["path"] = prefix + "contexts.sqlite3"
+                self.manifest.write_text(json.dumps(context))
+                self.assertTrue(ScreenContextStore().catalog(self.manifest)["available"])
+
+    def test_empty_or_escaping_bundle_path_is_rejected(self):
+        for value in ("", "../prepared.json"):
+            with self.subTest(value=value):
+                context = json.loads(self.manifest.read_text())
+                context["source_paths"]["prepared_manifest"] = value
+                self.manifest.write_text(json.dumps(context))
+                with self.assertRaises(ValueError):
+                    self.store.catalog(self.manifest)
 
     def test_context_evidence_preserves_mixed_and_tissue_states(self):
         evidence = self.store.evidence(

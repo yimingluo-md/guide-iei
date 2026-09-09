@@ -238,6 +238,7 @@ type DisplayItem =
   | "quality" | "population" | "gnomadPopulations" | "clinvar" | "transcript" | "geneConstraint"
   | "alphaMissense" | "cadd" | "spliceAI" | "promoterAI" | "loGoFunc"
   | "funcVepCti" | "funcVepCte" | "funcVepSp"
+  | "alphaGenomeAvi" | "alphaGenomeAviRaw"
   | "revel" | "metaRnn" | "primateAi" | "sift" | "polyPhen"
   | "caddRaw" | "gerp" | "phyloP" | "phastCons" | "loftee";
 
@@ -275,8 +276,10 @@ const CODING_CONSEQUENCES = new Set([
 const DEFAULT_DISPLAY = new Set<DisplayItem>([
   "quality", "population", "clinvar", "transcript", "geneConstraint",
   "alphaMissense", "cadd", "spliceAI", "promoterAI", "loGoFunc", "funcVepCti", "loftee",
+  "alphaGenomeAvi",
 ]);
 const DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v3";
+const AVI_DISPLAY_MIGRATION_KEY = "iei-review-avi-display-v1";
 const PREVIOUS_DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v2";
 const LEGACY_DISPLAY_STORAGE_KEY = "iei-review-visible-evidence-v1";
 const DBNSFP_DISPLAY_STORAGE_KEY = "iei-review-visible-dbnsfp-predictors-v1";
@@ -1015,6 +1018,9 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
             migrated = migrated.filter((item) => item !== "funcVepCte" && item !== "funcVepSp");
             if (!migrated.includes("funcVepCti")) migrated.push("funcVepCti");
           }
+          if (localStorage.getItem(AVI_DISPLAY_MIGRATION_KEY) === null) {
+            if (!migrated.includes("alphaGenomeAvi")) migrated.push("alphaGenomeAvi");
+          }
           setVisibleInfo(new Set(migrated as DisplayItem[]));
         }
         const storedDbnsfp = JSON.parse(localStorage.getItem(DBNSFP_DISPLAY_STORAGE_KEY) ?? "null");
@@ -1030,6 +1036,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
   useEffect(() => {
     if (settingsLoaded) {
       localStorage.setItem(DISPLAY_STORAGE_KEY, JSON.stringify([...visibleInfo]));
+      localStorage.setItem(AVI_DISPLAY_MIGRATION_KEY, "1");
       localStorage.setItem(DBNSFP_DISPLAY_STORAGE_KEY, JSON.stringify([...visibleDbnsfpPredictors]));
     }
   }, [visibleInfo, visibleDbnsfpPredictors, settingsLoaded]);
@@ -2006,6 +2013,7 @@ function DisplaySettingsButton({
   const toggle = (item: DisplayItem, checked: boolean) => setVisibleInfo((current) => toggleSet(current, item, checked));
   const toggleDbnsfp = (id: string, checked: boolean) => setVisibleDbnsfpPredictors((current) => toggleSet(current, id, checked));
   const predictors: [DisplayItem, string][] = [
+    ["alphaGenomeAvi", "AlphaGenome AVI — Phred (WGS)"], ["alphaGenomeAviRaw", "AlphaGenome AVI — raw (WGS)"],
     ["alphaMissense", "AlphaMissense"], ["cadd", "CADD"], ["spliceAI", "SpliceAI"], ["promoterAI", "promoterAI"], ["loGoFunc", "LoGoFunc mechanism"],
     ["revel", "REVEL"], ["metaRnn", "MetaRNN"], ["primateAi", "PrimateAI"], ["sift", "SIFT"], ["polyPhen", "PolyPhen"], ["loftee", "LOFTEE"],
     ["caddRaw", "CADD raw"], ["gerp", "GERP++ RS"], ["phyloP", "phyloP 100-way"], ["phastCons", "phastCons 100-way"],
@@ -2191,6 +2199,8 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
     { key: "cadd", label: "CADD phred", value: selected.cadd, strong: (selected.cadd ?? 0) >= 20 },
     { key: "spliceAI", label: "SpliceAI max", value: selected.spliceAI, strong: (selected.spliceAI ?? 0) >= 0.2 },
     { key: "promoterAI", label: "PromoterAI", value: selected.promoterAI, note: "signed promoter-effect score", strong: selected.promoterAI !== null && selected.promoterAI !== undefined && Math.abs(selected.promoterAI) >= 0.8 },
+    { key: "alphaGenomeAvi", label: "AlphaGenome AVI", value: selected.alphaGenomeAviPhred, note: "Phred score", noteTitle: "Genome-wide variant-impact rank, not a clinical pathogenicity classification. AVI includes AlphaMissense and conservation inputs; these are not independent evidence." },
+    { key: "alphaGenomeAviRaw", label: "AlphaGenome AVI raw", value: selected.alphaGenomeAviRaw, note: "Raw logit" },
     { key: "revel", label: "REVEL", value: selected.revel, strong: (selected.revel ?? 0) >= 0.5 },
     { key: "metaRnn", label: "MetaRNN", value: selected.metaRnn, note: selected.metaRnnPrediction },
     { key: "primateAi", label: "PrimateAI", value: selected.primateAi, note: selected.primateAiPrediction },
@@ -2201,7 +2211,8 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
     { key: "phyloP", label: "phyloP 100-way", value: selected.phyloP100way },
     { key: "phastCons", label: "phastCons 100-way", value: selected.phastCons100way },
   ];
-  const predictorCards = predictorOptions.filter((item) => visibleInfo.has(item.key as DisplayItem));
+  const predictorCards = predictorOptions.filter((item) => visibleInfo.has(item.key as DisplayItem)
+    && (!["alphaGenomeAvi", "alphaGenomeAviRaw"].includes(item.key) || analysisScope === "whole_genome"));
   const funcVepPredictorCards: PredictorCardItem[] = FUNCVEP_MODEL_DISPLAY
     .filter((model) => visibleInfo.has(model.key))
     .map((model) => {
@@ -4594,6 +4605,7 @@ function DatasetSetupCard({
     <div className="dataset-actions">
       {downloadId && (source.setup_mode !== "bundled" || !source.installed) && <button type="button" disabled={activeDownload} onClick={() => onDownload(downloadId)}>{activeDownload ? "Downloading…" : buttonLabel}</button>}
       {source.reference_url && <a href={source.reference_url} target="_blank" rel="noreferrer">{source.reference_label || "Official reference"} ↗</a>}
+      {source.id === "alphagenome_avi" && <a href="https://deepmind.google.com/science/alphagenome/downloads" target="_blank" rel="noreferrer">Official downloads and terms ↗</a>}
     </div>
     <details className="dataset-instructions"><summary>Dataset details</summary>{source.access === "registration" && <strong className="dataset-detail-heading">Registration and setup instructions</strong>}{source.access === "license" && <strong className="dataset-detail-heading">License and local setup instructions</strong>}<ol>{(source.instructions ?? []).map((instruction) => <li key={instruction}><GlossaryText text={instruction} /></li>)}</ol>{downloadJob && <div className="dataset-technical-status"><span>Technical status</span><code>{downloadJob.status}</code>{downloadJob.message && <p>{downloadJob.message}</p>}</div>}{(source.configured_paths?.length ?? 0) > 0 && <div className="configured-locations"><span>Configured location{source.configured_paths?.length === 1 ? "" : "s"}</span>{source.configured_paths?.map((path) => <code key={path}>{path}</code>)}</div>}</details>
   </article>;
@@ -5225,7 +5237,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
           <div><p className="eyebrow">One-click setup</p><h4>Download recommended public datasets</h4><p>Choose the analysis profile you expect to use. Complete installations are skipped immediately without rereading large files. Registration- and license-gated datasets are handled separately below.</p></div>
           <div className="dataset-quick-actions">
             <button type="button" disabled={resourceSetupBusy || exomeDatasetsInstalled} onClick={() => void downloadResource("recommended_exome")}><strong>{exomeDatasetsInstalled ? "Exome datasets installed" : failedQuickSetupJob?.resource_id === "recommended_exome" ? "Retry exome setup" : "Recommended for exome"}</strong><span>{exomeDatasetsInstalled ? "No download needed · use Update for new ClinVar or ClinGen releases" : "VEP cache, reference FASTA, LOFTEE data, SpliceAI, ClinVar and ClinGen · up to ~90 GiB"}</span></button>
-            <button type="button" disabled={resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "WGS public core installed" : failedQuickSetupJob?.resource_id === "recommended_wgs" ? "Retry WGS setup" : "Recommended for WGS"}</strong><span>{wgsDatasetsInstalled ? "No download needed · exome set and SCREEN contexts are present" : "Exome set plus SCREEN tissue/immune contexts · up to ~92 GiB"}</span></button>
+            <button type="button" disabled={resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "WGS public core installed" : failedQuickSetupJob?.resource_id === "recommended_wgs" ? "Retry WGS setup" : "Recommended for WGS"}</strong><span>{wgsDatasetsInstalled ? "No download needed · exome set, SCREEN and AVI are present" : "Exome set plus SCREEN and AlphaGenome AVI · up to ~170 GiB free for setup"}</span></button>
             <button type="button" className="dataset-update-all" disabled={resourceSetupBusy} onClick={() => void downloadResource("refresh_updates")}><strong>{failedQuickSetupJob?.resource_id === "refresh_updates" ? "Retry dataset update" : "Update installed datasets"}</strong><span>Refresh ClinVar and ClinGen; pinned resources stay unchanged</span></button>
           </div>
           {quickSetupJob && <><div className="resource-progress"><progress max={100} value={quickSetupJob.progress ?? undefined}/><span role="status" aria-live="polite">{resourceProgressMessage(quickSetupJob, "Preparing recommended datasets…")}</span></div><details className="dataset-instructions"><summary>Dataset details</summary><div className="dataset-technical-status"><span>Technical status</span><code>{quickSetupJob.status}</code>{quickSetupJob.message && <p>{quickSetupJob.message}</p>}</div></details></>}
@@ -5471,7 +5483,11 @@ function downloadTsv(rows: VariantRow[], qcSettings: VariantQcSettings) {
     rows.some((row) => row.availableDbnsfpPredictors?.includes(definition.id)));
   const headers = ["sample", "variant_id", "chrom", "pos", "ref", "alt", "original_assembly", "original_chrom", "original_pos", "original_ref", "original_alt", "unscored_indel_reasons", "gene", "HGVSc", "HGVSp", "consequence", "impact", "gnomad_popmax", "gnomad_popmax_population", "gnomad_frequencies", "CADD_phred", "CADD_raw", "AlphaMissense", "AlphaMissense_pred", "REVEL", "MetaRNN", "MetaRNN_pred", "PrimateAI", "PrimateAI_pred", "SIFT", "SIFT_pred", "PolyPhen_HDIV", "PolyPhen_HDIV_pred", "GERP_RS", "phyloP100way", "phastCons100way", "LOFTEE", "LOFTEE_filter", "LOFTEE_flags", "LOFTEE_PTC_50BP", "LOFTEE_50BP_original", "PTC_distance_from_last_exon", "PTC_calc_status", "haplotype_frame_status", "haplotype_frame_partners", "haplotype_protein_change", "ClinVar", "ClinVar_conflicting_evidence", "SpliceAI", "promoterAI", "LoGoFunc_prediction", "LoGoFunc_neutral", "LoGoFunc_GOF", "LoGoFunc_LOF", "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_match", "FuncVEP_CTI", "FuncVEP_CTE", "FuncVEP_SP", "predictor_observations", "genotype", "DP", "GQ", "allele_balance", "carriers", "MANE", "PICK", "RepeatMasker", "SegDup", ...detectedDbnsfp.flatMap((definition) => [definition.scoreColumn, ...(definition.predictionColumn ? [definition.predictionColumn] : [])])];
   const body = rows.map((row) => [row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "", row.originalChrom ?? "", row.originalPos ?? "", row.originalRef ?? "", row.originalAlt ?? "", row.unscoredIndelReasons?.join("&") ?? "", row.gene, row.hgvsC, row.hgvsP, row.consequence, row.impact, row.gnomadPopmax ?? "", row.gnomadPopmaxPopulation ?? "", JSON.stringify(row.gnomadFrequencies ?? {}), row.cadd ?? "", row.caddRaw ?? "", row.alphaMissense ?? "", row.alphaPrediction, row.revel ?? "", row.metaRnn ?? "", row.metaRnnPrediction ?? "", row.primateAi ?? "", row.primateAiPrediction ?? "", row.sift ?? "", row.siftPrediction ?? "", row.polyPhen ?? "", row.polyPhenPrediction ?? "", row.gerpRs ?? "", row.phyloP100way ?? "", row.phastCons100way ?? "", row.loftee, row.lofteeFilter, row.lofteeFlags, row.loftee50bp, row.loftee50bpOriginal, row.ptcDistanceFromLastExon ?? "", row.ptcCalcStatus, row.haplotypeFrameStatus ?? "", row.haplotypeFramePartners?.join(",") ?? "", row.haplotypeProteinChange ?? "", row.clinvar, row.clinvarConflictingEvidence ?? "", row.spliceAI ?? "", row.promoterAI ?? "", row.loGoFuncPrediction, row.loGoFuncNeutral ?? "", row.loGoFuncGof ?? "", row.loGoFuncLof ?? "", row.loGoFuncSourceTranscript, row.loGoFuncSourceHgvsp, row.loGoFuncMatch, row.funcVepCti ?? "", row.funcVepCte ?? "", row.funcVepSp ?? "", JSON.stringify(row.predictions ?? {}), row.genotype, row.dp ?? "", row.gq ?? "", row.alleleBalance ?? "", row.carriers?.map((carrier) => { const failures = carrierQcFailures(carrier, row, qcSettings); return `${carrier.sample}:${carrier.evidence.gt}${carrier.evidence.partialCall ? "(partial)" : ""}:DP=${carrier.evidence.dp ?? "."}:GQ=${carrier.evidence.gq ?? "."}:AD=${carrier.evidence.adRef ?? "."},${carrier.evidence.adAlt ?? "."}:AB=${carrier.evidence.alleleBalance?.toFixed(3) ?? "."}:FT=${carrier.evidence.genotypeFilter || "."}:QC=${failures.length ? `fail(${failures.join("|").replace(/[;\t]/g, " ")})` : "pass"}`; }).join(";") ?? "", row.mane, row.picked, row.repeat, row.segdup, ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])])].join("\t"));
-  const url = URL.createObjectURL(new Blob([[researchUseNoticeRow(), headers.join("\t"), ...body].join("\n")], { type: "text/tab-separated-values" }));
+  headers.push("AlphaGenomeAVI_phred", "AlphaGenomeAVI_raw");
+  const exportedBody = body.map((line, index) => [line,
+    rows[index].alphaGenomeAviPhred ?? "", rows[index].alphaGenomeAviRaw ?? "",
+  ].join("\t"));
+  const url = URL.createObjectURL(new Blob([[researchUseNoticeRow(), headers.join("\t"), ...exportedBody].join("\n")], { type: "text/tab-separated-values" }));
   const anchor = document.createElement("a"); anchor.href = url; anchor.download = "iei-prioritized-variants.tsv"; anchor.click(); URL.revokeObjectURL(url);
 }
 

@@ -1665,6 +1665,7 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertFalse(sources["funcvep"]["enabled"])
         self.assertEqual(sources["clingen_erepo"]["label"], "ClinGen")
         expected_references = {
+            "alphagenome_avi": ("AlphaGenome published manuscript", "s41586-025-10014-0"),
             "spliceai": ("SpliceAI published manuscript", "10.1016/j.cell.2018.12.015"),
             "logofunc": ("LoGoFunc published manuscript", "s13073-023-01261-9"),
             "funcvep": ("FuncVEP published manuscript", "s41588-026-02727-3"),
@@ -2061,6 +2062,39 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(command[4:], ["--acknowledge-license"])
         self.assertNotIn("--remove-source-after-success", command)
         self.assertTrue(source.is_file())
+
+    def test_avi_download_uses_managed_paths_and_rejects_retired_zip_import(self):
+        source = self.root / "avi.zip"
+        source.write_bytes(b"synthetic fixture")
+        with patch.object(self.service, "_ensure_annotation_download_space"), \
+             patch.object(self.service, "_start_resource_job", return_value={"id":"avi-job"}) as start:
+            job = self.service.start_resource_download("alphagenome_avi")
+        self.assertEqual(job["id"], "avi-job")
+        resource, command, operation = start.call_args.args
+        self.assertEqual((resource, operation), ("alphagenome_avi", "download"))
+        self.assertTrue(command[1].endswith("scripts/download_avi.sh"))
+        config = self.service._load_config(Path(command[2]))
+        self.assertEqual(config["custom_tracks"]["AlphaGenomeAVI"]["dest_dir"],
+                         str(self.service.annotation_root / "alphagenome-avi"))
+        self.assertTrue(source.is_file())
+        with self.assertRaisesRegex(ValueError,"Download / resume"):
+            self.service.start_avi_preparation({"source_path":str(source)})
+
+    def test_avi_is_wgs_recommended_but_not_required(self):
+        with patch.object(self.service, "_container_image_status", return_value={"available":False,"state":"missing","message":"test"}):
+            profile = self.service._annotation_profile()
+        source = next(s for s in profile["sources"] if s["id"] == "alphagenome_avi")
+        self.assertEqual(source["available_in"],["whole_genome"])
+        self.assertEqual(source["recommendation"],"recommended_wgs")
+        self.assertEqual(source["setup_mode"], "download")
+        self.assertFalse(source.get("prepare_id"))
+        self.assertFalse(source["required"])
+        self.assertFalse(source["installed"])
+        self.assertIn("alphagenome_avi",profile["recommended_profiles"]["whole_genome"]["missing"])
+        self.assertNotIn("alphagenome_avi",profile["recommended_profiles"]["exome"]["missing"])
+        self.assertNotIn("cadd_wgs",profile["recommended_profiles"]["whole_genome"]["missing"])
+        source = next(item for item in profile["sources"] if item["id"] == "alphagenome_avi")
+        self.assertEqual(source["description"], "Genome-wide predicted functional impact of single-nucleotide variants, shown as an AVI Phred score")
 
     def test_funcvep_acknowledgement_can_start_automatic_zenodo_download(self):
         with patch.object(

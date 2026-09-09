@@ -79,6 +79,22 @@
       ]
     },
     {
+      "id": "alphagenome_avi",
+      "label": "AlphaGenome AVI",
+      "family": "prediction_database",
+      "config_path": "custom_tracks.AlphaGenomeAVI",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": false,
+      "license_ack_required": false,
+      "license_name": "AlphaGenome Services terms — permissive AVI downloadable artifact",
+      "source_url": "https://deepmind.google.com/science/alphagenome/downloads",
+      "assets": [
+        {"id": "scores", "config_path": "custom_tracks.AlphaGenomeAVI.file", "role": "score_vcf", "required": true, "indexed": true},
+        {"id": "manifest", "config_path": "custom_tracks.AlphaGenomeAVI.manifest", "role": "manifest", "required": true, "indexed": false}
+      ]
+    },
+    {
       "id": "promoterai",
       "label": "PromoterAI",
       "family": "prediction_database",
@@ -373,6 +389,15 @@
       "adapter": "generic_indexed_lookup",
       "implementation": "generic_indexed_table",
       "match": {"scope": "allele_gene", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_gene"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "alphagenome_avi",
+      "label": "AlphaGenome AVI exact-allele VEP custom track",
+      "resource_id": "alphagenome_avi",
+      "config_path": "custom_tracks.AlphaGenomeAVI",
+      "adapter": "vep_custom_track",
+      "implementation": "vep_vcf",
+      "match": {"scope": "allele", "dimensions": ["chromosome", "position", "reference", "alternate"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
     },
     {
       "id": "repeatmasker",
@@ -1075,6 +1100,20 @@
         {"id": "match", "field": "FuncVEP_match", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false},
         {"id": "match_status", "field": "FuncVEP_match_status", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false},
         {"id": "source_gene", "field": "FuncVEP_source_gene", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false}
+      ]
+    },
+    {
+      "id": "alphagenome_avi",
+      "label": "AlphaGenome AVI",
+      "category": "Genome-wide variant impact",
+      "resource_id": "alphagenome_avi",
+      "annotator_id": "alphagenome_avi",
+      "applicability": ["snv"],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {"id": "raw", "field": "AlphaGenomeAVI_raw", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true},
+        {"id": "phred", "field": "AlphaGenomeAVI_phred", "value_type": "float", "direction": "higher", "role": "score", "value_range": null, "derived": false, "filterable": true}
       ]
     },
     {

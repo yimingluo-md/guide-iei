@@ -335,6 +335,20 @@ plugins:
 # -----------------------------------------------------------------------------
 custom_tracks:
 
+  # Exact-allele AVI scores, including intergenic SNVs. Download the pinned
+  # prepared mirror with scripts/download_avi.sh; no local conversion needed.
+  AlphaGenomeAVI:
+    enabled: false
+    required: false
+    dest_dir: "references/alphagenome-avi"
+    file: "references/alphagenome-avi/releases/atlas-2026-09-08-vcf-v1/avi.grch38.vcf.gz"
+    manifest: "references/alphagenome-avi/releases/atlas-2026-09-08-vcf-v1/manifest.json"
+    short_name: AlphaGenomeAVI
+    format: vcf
+    type: exact
+    coords: 0
+    fields: ["raw", "phred"]
+
   RepeatMasker:              # tier: auto (UCSC hg38 rmsk, cleaned for VEP)
     enabled: true
     required: false

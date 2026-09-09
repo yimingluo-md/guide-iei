@@ -23,6 +23,7 @@ task-by-task, in plain language.
 - [Dataset reference](dataset-reference.md)
 - [Reference setup](REFERENCE_SETUP.md)
 - [SCREEN tissue & immune data](SCREEN_TISSUE_IMMUNE_DATA.md)
+- [AlphaGenome AVI: setup, scores and provenance](ALPHAGENOME_AVI.md)
 - [GRCh37 input](GRCH37_INPUT.md)
 - [Trio analysis](TRIO_ANALYSIS.md)
 - [Phenotype input](PHENOTYPE_INPUT.md)

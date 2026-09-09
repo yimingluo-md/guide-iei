@@ -263,6 +263,7 @@ if [[ "${PROFILE}" == "whole_genome" ]]; then
   else
     bash "${HERE}/download_screen_context_bundle.sh" "${SCREEN_ROOT}"
   fi
+  bash "${HERE}/download_avi.sh" "${CONFIG}"
 fi
 
 echo "Recommended ${PROFILE} automatic datasets are ready."

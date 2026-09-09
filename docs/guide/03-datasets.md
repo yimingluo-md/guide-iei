@@ -30,6 +30,7 @@ plain language what it contributes; this chapter is a tour of those cards.
 | SpliceAI MANE SNV scores | 27 GB | splice predictions |
 | ENCODE SCREEN + tissue/immune contexts | ~2 GB | WGS regulatory review |
 | PromoterAI (licensed; recommended for WGS) | <1 GB | promoter predictions |
+| AlphaGenome AVI (recommended for WGS) | 75.8 GB prepared download; allow 80 GiB free for setup | genome-wide SNV impact scores |
 | CADD whole-genome (optional) | ~83 GiB | non-coding CADD only |
 | LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
 | FuncVEP (optional; licensed) | 4.24 GB source ZIP; 24 GiB free for automatic setup | missense functional-effect scores |
@@ -65,7 +66,7 @@ Two actions install the recommended public resources (not every optional dataset
 - **Recommended for exome** — the core references plus the datasets used in
   exome review.
 - **Recommended for WGS** — the exome set plus ENCODE SCREEN tissue and
-  immune contexts. Both profiles use the same SpliceAI MANE SNV table;
+  immune contexts and **AlphaGenome AVI** SNV scores. Both profiles use the same SpliceAI MANE SNV table;
   the WGS action does not add genome-wide indel scores or optional CADD.
   PromoterAI is also recommended for
   WGS, but because it is licensed it cannot be included in the one-click
@@ -85,6 +86,18 @@ drive. All existing checksum and archive validation remains in place.
 If setup is interrupted or stops on an error, completed and verified files are
 kept. The setup panel shows the error and a **Retry** action; retrying checks
 what is already ready and resumes only the missing work.
+
+### AlphaGenome AVI installation
+
+Read the terms linked from the **AlphaGenome AVI** card before installing.
+Use **Download / resume** to install the prepared GUIDE-IEI Hugging Face
+mirror. No registration, API key, source ZIP, or local conversion is needed.
+Every file is checksum-verified before activation. If a download is interrupted,
+retry the same button to resume. AVI Phred appears by default in WGS Variant Review;
+raw scores are optional in Display settings. Indels remain unscored, and AVI
+does not change which variants WGS intake retains.
+
+See [AlphaGenome AVI](../ALPHAGENOME_AVI.md) for installation, storage and provenance.
 
 ## Step 2 — dbNSFP: the one registration
 

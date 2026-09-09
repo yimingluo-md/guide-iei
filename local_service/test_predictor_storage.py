@@ -181,6 +181,30 @@ def write_invalid_metric_vcf(path: Path) -> None:
 
 
 class PredictorStorageTests(unittest.TestCase):
+    def test_avi_is_allele_scoped_without_a_gene_or_transcript(self):
+        annotation = annotation_from({
+            "Allele": "G", "Consequence": "intergenic_variant",
+            "AlphaGenomeAVI_raw": "-2.4", "AlphaGenomeAVI_phred": "0",
+        })
+        prediction = next(p for p in annotation["_predictions"] if p["predictor_id"] == "alphagenome_avi")
+        self.assertEqual(prediction["target_scope"], "allele")
+        self.assertEqual(prediction["match_status"], "exact")
+        self.assertEqual(prediction["gene_id"], "")
+        self.assertEqual(prediction["transcript_id"], "")
+        self.assertFalse(prediction["bind_annotation"])
+        self.assertEqual(prediction["values"], {"raw": -2.4, "phred": 0})
+
+    def test_avi_rejects_conflicting_or_malformed_values(self):
+        for token in (".", "", "NaN", "Infinity", "1e999", "1,30", "1&30", "12bad", "0x10"):
+            with self.subTest(token=token):
+                annotation = annotation_from({
+                    "Consequence": "intergenic_variant",
+                    "AlphaGenomeAVI_raw": token, "AlphaGenomeAVI_phred": token,
+                })
+                self.assertFalse(any(p["predictor_id"] == "alphagenome_avi" for p in annotation["_predictions"]))
+        annotation = annotation_from({"AlphaGenomeAVI_phred": "-1"})
+        self.assertFalse(any(p["predictor_id"] == "alphagenome_avi" for p in annotation["_predictions"]))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
@@ -597,6 +621,23 @@ class PredictorStorageTests(unittest.TestCase):
 
 
 class PredictorImportIntegrationTests(unittest.TestCase):
+    def test_avi_intergenic_alleles_survive_staged_and_legacy_import(self):
+        vcf = self.root / "avi.vcf"
+        vcf.write_text('##fileformat=VCFv4.2\n##reference=GRCh38\n'
+            '##contig=<ID=1,length=248956422>\n'
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|Consequence|IMPACT|AlphaGenomeAVI_raw|AlphaGenomeAVI_phred">\n'
+            '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n'
+            '1\t10001\t.\tT\tG,A\t99\tPASS\tCSQ=G|1|intergenic_variant|MODIFIER|-0.0372|1.11839,A|2|intergenic_variant|MODIFIER|-0.03868|0\tGT:AD:DP:GQ\t1/2:0,10,10:20:99\n')
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy), patch.dict(os.environ,{"IEI_COHORT_LEGACY_IMPORT":"1" if legacy else "0"}):
+                store = CohortStore(self.root / f"avi-{legacy}.sqlite3")
+                store.import_vcf(vcf)
+                predictions = store.query_predictions(predictor_id="alphagenome_avi")
+                self.assertEqual(len(predictions),2)
+                self.assertEqual(sorted(p["values"]["phred"] for p in predictions),[0,1.11839])
+                self.assertEqual({p["target_scope"] for p in predictions},{"allele"})
+                self.assertTrue(all(p["match_status"]=="exact" for p in predictions))
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)

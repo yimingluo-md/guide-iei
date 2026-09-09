@@ -471,6 +471,8 @@ export type VariantRow = {
   haplotypeProteinChange?: string;
   spliceAI: number | null;
   promoterAI: number | null;
+  alphaGenomeAviPhred?: number | null;
+  alphaGenomeAviRaw?: number | null;
   loGoFuncPrediction: string;
   loGoFuncNeutral: number | null;
   loGoFuncGof: number | null;
@@ -1261,6 +1263,23 @@ function maximum(record: Record<string, string>, keys: string[]) {
     (record[key] ?? "").split(/[,&]/).map(number).filter((v): v is number => v !== null),
   );
   return values.length ? Math.max(...values) : null;
+}
+
+// VEP custom VCF exact matching emits one AVI value for this ALT. Do not
+// aggregate conflicting values or accept a partially numeric token. Keep
+// negative raw logits and zero; Phred ranks must be non-negative.
+export function alphaGenomeAviScores(record: Record<string, string>) {
+  const scalar = (field: string, nonNegative = false): number | null => {
+    const token = (record[field] ?? "").trim();
+    if (!token || EMPTY.has(token)) return null;
+    if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(token)) return null;
+    const value = Number(token);
+    return Number.isFinite(value) && (!nonNegative || value >= 0) ? value : null;
+  };
+  return {
+    raw: scalar("AlphaGenomeAVI_raw"),
+    phred: scalar("AlphaGenomeAVI_phred", true),
+  };
 }
 
 function alleleIndexedInfo(
@@ -2125,6 +2144,7 @@ export async function parseVcfFiles(
             );
             const loGoFuncMatch = first(combined, ["LoGoFunc_match"]);
             const funcVepCti = maximum(combined, ["FuncVEP_CTI"]);
+            const avi = alphaGenomeAviScores(combined);
             const funcVepCte = maximum(combined, ["FuncVEP_CTE"]);
             const funcVepSp = maximum(combined, ["FuncVEP_SP"]);
             const funcVepMatch = first(combined, ["FuncVEP_match"]);
@@ -2352,6 +2372,7 @@ export async function parseVcfFiles(
             const transcriptTarget = transcript
               ? { ensembl_transcript: transcript }
               : undefined;
+            addPrediction("alphagenome_avi", "allele", ALLELE_MATCH_DIMENSIONS, avi);
             const transcriptConsequenceTarget = {
               ...(transcript ? { ensembl_transcript: transcript } : {}),
               ...(consequence ? { consequence } : {}),
@@ -2795,6 +2816,8 @@ export async function parseVcfFiles(
               haplotypeProteinChange: haplotypeFrame.protein,
               spliceAI: splice,
               promoterAI: promoterAiEvidence.usableScore,
+              alphaGenomeAviPhred: avi.phred,
+              alphaGenomeAviRaw: avi.raw,
               loGoFuncPrediction,
               loGoFuncNeutral,
               loGoFuncGof,

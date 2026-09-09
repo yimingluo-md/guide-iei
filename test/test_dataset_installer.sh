@@ -160,4 +160,24 @@ TEST_EXPECT_SINGLE=1 PATH="$WORK/bin:$PATH" HTS_VIA_CONTAINER=1 \
     "$TEST_ROOT/config/test.yaml" exome > "$WORK/repair.log" 2>&1
 grep -Fx 'repeatmasker,segdup,ccre,liftover' "$TEST_ROOT/single-lane.args" >/dev/null
 
-echo "PASS  dataset installer preflight, parallel groups, and one-lane repair"
+# Whole-genome public setup includes AVI but never the optional CADD tables.
+cat > "$TEST_ROOT/scripts/download_avi.sh" <<'SH'
+#!/usr/bin/env bash
+touch "$TEST_ROOT/avi.called"
+SH
+cat > "$TEST_ROOT/scripts/download_screen_context_bundle.sh" <<'SH'
+#!/usr/bin/env bash
+touch "$TEST_ROOT/screen.called"
+SH
+cat > "$TEST_ROOT/scripts/download_cadd_wgs.sh" <<'SH'
+#!/usr/bin/env bash
+echo 'CADD must not be in recommended WGS setup' >&2
+exit 99
+SH
+TEST_EXPECT_SINGLE=1 PATH="$WORK/bin:$PATH" HTS_VIA_CONTAINER=1 \
+  bash "$TEST_ROOT/scripts/install_recommended_datasets.sh" \
+    "$TEST_ROOT/config/test.yaml" whole_genome > "$WORK/wgs.log" 2>&1
+test -f "$TEST_ROOT/avi.called"
+test -f "$TEST_ROOT/screen.called"
+
+echo "PASS  dataset installer preflight, parallel groups, one-lane repair, and WGS AVI selection"

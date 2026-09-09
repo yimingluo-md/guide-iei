@@ -5,7 +5,8 @@
 clinician-developed, locally run, open-source WES/WGS analysis platform.
 
 GUIDE-IEI annotates exome and genome VCFs with a curated annotation stack
-(Ensembl VEP, LOFTEE, dbNSFP, ClinVar, ClinGen, SpliceAI, ENCODE SCREEN
+(Ensembl VEP, LOFTEE, dbNSFP, ClinVar, ClinGen, SpliceAI,
+[AlphaGenome AVI](docs/ALPHAGENOME_AVI.md), ENCODE SCREEN
 regulatory data, and more) and can add optional, user-supplied GenIA gene,
 phenotype, and exact-allele evidence. It presents the results in a local review
 workbench designed for clinicians and wet-lab scientists. All analysis is
@@ -61,8 +62,8 @@ discovering monogenic etiologies in the non-coding genome.
   frame-restoring indel pairs, as well as amino-acid- and residue-match
   annotations.
 - **Non-coding prioritization for WGS** — Deep-intronic splice prediction,
-  promoter prediction, and ENCODE cCRE regulatory context support non-coding
-  variant analysis, with plans for further expansion.
+  promoter prediction, AlphaGenome AVI SNV impact scores, and ENCODE cCRE
+  regulatory context support non-coding variant analysis.
 - **Longitudinal local review** — A sample library, phenotype records, trio
   analysis, genotype-first cohort searches, and annotation-coverage reports
   support reanalysis as knowledge evolves.

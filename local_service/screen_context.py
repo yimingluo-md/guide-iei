@@ -58,6 +58,33 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _bundle_path(manifest: Path, value: str) -> Path:
+    """Resolve runtime artifacts within the installed, self-contained bundle.
+
+    Published legacy manifests record the producer's absolute paths. Those
+    paths are provenance, not a storage override: never fall back to another
+    installation, even if the producer's path still exists. Leave manifests
+    unchanged so the downloader's pinned checksums remain valid.
+    """
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"prepared SCREEN manifest has an empty artifact path: {manifest}")
+    # Accept legacy Windows paths too when loading a bundle on macOS/Linux.
+    normalized = value.replace("\\", "/")
+    path = Path(normalized)
+    if path.is_absolute() or (len(normalized) > 2 and normalized[1:3] == ":/"):
+        path = Path(path.name)
+    root = manifest.parent.resolve()
+    candidate = (root / path).resolve()
+    if candidate == root or root not in candidate.parents:
+        raise ValueError(f"prepared SCREEN artifact path leaves its bundle: {value}")
+    if not candidate.is_file():
+        raise ValueError(
+            f"prepared SCREEN artifact is missing: {candidate}. "
+            "Retry the SCREEN download in Annotation datasets to restore missing files."
+        )
+    return candidate
+
+
 def _json_column(value: str) -> Any:
     return json.loads(value) if value else []
 
@@ -102,20 +129,16 @@ class ScreenContextStore:
             if self._manifest_path == resolved and self._configuration is not None:
                 return self._configuration
             context_manifest = _read_json(resolved)
-            prepared_path = Path(
-                context_manifest.get("source_paths", {}).get("prepared_manifest", "")
-            ).expanduser()
+            prepared_path = _bundle_path(
+                resolved, context_manifest.get("source_paths", {}).get("prepared_manifest", "")
+            )
             prepared = _read_json(prepared_path)
-            catalog_path = Path(prepared["catalog"]["path"]).expanduser()
-            tissue_matrix = Path(prepared["tissue_matrix"]["path"]).expanduser()
-            immune_matrix = Path(prepared["immune_matrix"]["path"]).expanduser()
-            context_database = Path(
-                context_manifest["artifacts"]["database"]["path"]
-            ).expanduser()
-            required = [catalog_path, tissue_matrix, immune_matrix, context_database]
-            missing = [str(path) for path in required if not path.is_file()]
-            if missing:
-                raise ValueError("prepared SCREEN artifact is missing: " + ", ".join(missing))
+            catalog_path = _bundle_path(prepared_path, prepared["catalog"]["path"])
+            tissue_matrix = _bundle_path(prepared_path, prepared["tissue_matrix"]["path"])
+            immune_matrix = _bundle_path(prepared_path, prepared["immune_matrix"]["path"])
+            context_database = _bundle_path(
+                resolved, context_manifest["artifacts"]["database"]["path"]
+            )
 
             catalog = _open_ro(catalog_path)
             catalog.row_factory = sqlite3.Row

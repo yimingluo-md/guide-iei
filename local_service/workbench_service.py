@@ -73,6 +73,7 @@ from pipeline.indexed_scores import (
     validate_manifest_registry_contract,
 )
 from pipeline.funcvep_dataset import PINNED_RELEASE as FUNCVEP_PINNED_RELEASE
+from pipeline.avi_dataset import RELEASE as AVI_RELEASE, valid_bundle as valid_avi_bundle
 from pipeline.predictor_registry import (
     Adapter,
     load_registry as load_predictor_registry,
@@ -106,6 +107,7 @@ ANNOTATION_SOURCE_PATHS = {
     "cadd_wgs": ("plugins", "CADD_WGS"),
     "logofunc": ("plugins", "LoGoFunc"),
     "funcvep": ("plugins", "FuncVEP"),
+    "alphagenome_avi": ("custom_tracks", "AlphaGenomeAVI"),
     "clinvar": ("custom_tracks", "ClinVar"),
     "loftee_ptc_50bp": ("post_processing", "loftee_ptc_50bp"),
     "clinvar_aa_match": ("post_processing", "clinvar_aa_match"),
@@ -123,6 +125,7 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "repeatmasker": "included",
     "segdup": "included",
     "promoterai": "recommended_wgs",
+    "alphagenome_avi": "recommended_wgs",
     "cadd_wgs": "optional",
     "logofunc": "optional",
     "funcvep": "optional",
@@ -292,6 +295,22 @@ ANNOTATION_SOURCE_SETUP = {
             "Scores cover all single-base changes and known gnomAD indels; other indels simply remain unscored and are conservatively retained.",
         ],
     },
+    "alphagenome_avi": {
+        "setup_mode": "download",
+        "access": "terms",
+        "recommendation": "recommended_wgs",
+        "download_id": "alphagenome_avi",
+        "reference_url": "https://www.nature.com/articles/s41586-025-10014-0",
+        "reference_label": "AlphaGenome published manuscript",
+        "size_hint": "75.8 GB prepared download; allow 80 GiB free for setup",
+        "instructions": [
+            "Review the AlphaGenome terms on the official downloads page before installing.",
+            "Click Download / resume to install the prepared GUIDE-IEI Hugging Face mirror into Annotation datasets storage. No account, API key, source ZIP, or local conversion is needed.",
+            "The release is pinned and every downloaded file is SHA-256 verified before activation. Interrupted downloads resume; keep the computer awake and retry this same button if needed.",
+            "AVI Phred scores annotate exact SNV alleles, including intergenic variants. No transcript or gene match is required. Indels and unsupported contigs remain unscored.",
+            "AVI is not used to decide which variants are retained during WGS intake. Existing source archives are not modified or removed.",
+        ],
+    },
     "logofunc": {
         "setup_mode": "prepare",
         "access": "terms",
@@ -427,6 +446,7 @@ ANNOTATION_SOURCE_SETUP = {
     },
 }
 RESOURCE_DOWNLOAD_COMMANDS = {
+    "alphagenome_avi": ("scripts/download_avi.sh",),
     "spliceai": ("scripts/download_references.sh", "--only", "spliceai"),
     "cadd_wgs": ("scripts/download_cadd_wgs.sh",),
     "clinvar": ("scripts/fetch_clinvar.sh",),
@@ -474,6 +494,7 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
     # The preparation streams its 11 GB member into a much smaller score-only
     # indexed table; sorting and atomic publication need at least 20 decimal GB.
     "funcvep_preparation": [(("plugins", "FuncVEP", "file"), 19 * GIB, False)],
+    "alphagenome_avi": [(("custom_tracks", "AlphaGenomeAVI", "dest_dir"), 80 * GIB, True)],
     # Automatic setup also stores the 4.24 GB source ZIP on the same volume.
     "funcvep_download_preparation": [(("plugins", "FuncVEP", "file"), 24 * GIB, False)],
     # SCREEN preparation also downloads the release-matched Ensembl GTF used
@@ -492,12 +513,11 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
         (("clingen_erepo", "dest_dir"), 1 * GIB, True),
     ],
     "recommended_wgs": [
+        (("custom_tracks", "AlphaGenomeAVI", "dest_dir"), 80 * GIB, True),
         (("reference", "vep_cache_dir"), 35 * GIB, True),
         (("reference", "fasta", "path"), 2 * GIB, False),
         (("plugins", "LoF", "human_ancestor_fa"), 20 * GIB, False),
         (("plugins", "SpliceAI", "snv"), 30 * GIB, False),
-        (("plugins", "CADD_WGS", "snv"), 75 * GIB, False),
-        (("plugins", "CADD_WGS", "indels"), 15 * GIB, False),
         (("clinvar", "dest_dir"), 2 * GIB, True),
         (("clingen_erepo", "dest_dir"), 1 * GIB, True),
     ],
@@ -2429,7 +2449,7 @@ class AnnotationJobService:
             else:
                 file_filter = (
                     "ZIP archive (*.zip)|*.zip|All files (*.*)|*.*"
-                    if resource_id == "funcvep"
+                    if resource_id in {"funcvep", "alphagenome_avi"}
                     else "GenIA exports (*.csv;*.tsv;*.vcf;*.vcf.gz)|*.csv;*.tsv;*.vcf;*.vcf.gz|All files (*.*)|*.*"
                     if resource_id == "genia"
                     else "Compressed table (*.csv.gz)|*.csv.gz|All files (*.*)|*.*"
@@ -2605,6 +2625,10 @@ class AnnotationJobService:
             str(config_path),
         ]
         return self._start_resource_job("logofunc", command, "preparation")
+
+    def start_avi_preparation(self, payload: dict) -> dict:
+        # Older open UI tabs get an actionable response, not a large conversion.
+        raise ValueError("AVI ZIP import has been replaced by the prepared mirror. Refresh the page and use Download / resume on the AlphaGenome AVI card.")
 
     def start_funcvep_preparation(self, payload: dict) -> dict:
         """Download or prepare a user-authorized FuncVEP archive locally."""
@@ -4600,6 +4624,11 @@ class AnnotationJobService:
                 "file": str(root / Path(current).name),
                 "manifest": str(root / "logofunc.manifest.json"),
             }
+        if resource_id == "alphagenome_avi":
+            root = self.annotation_root / "alphagenome-avi"
+            release = root / "releases" / AVI_RELEASE
+            return {"dest_dir": str(root), "file": str(release / "avi.grch38.vcf.gz"),
+                    "manifest": str(release / "manifest.json")}
         if resource_id == "funcvep":
             root = self.annotation_root / "funcvep"
             return {
@@ -4659,6 +4688,11 @@ class AnnotationJobService:
         )
         if not paths:
             return
+        if resource_id == "alphagenome_avi":
+            if require_installed and not valid_avi_bundle(Path(paths["manifest"])):
+                return
+            config.setdefault("custom_tracks", {}).setdefault("AlphaGenomeAVI", {}).update(paths)
+            return
         primary = Path(paths["path"] if resource_id == "dbnsfp" else paths["file"])
         required = [primary, Path(str(primary) + ".tbi")]
         if resource_id in {"promoterai", "logofunc", "funcvep"}:
@@ -4696,7 +4730,7 @@ class AnnotationJobService:
         config.setdefault("plugins", {}).setdefault(plugin_name, {}).update(paths)
 
     def _prefer_installed_managed_resources(self, config: dict) -> dict:
-        for resource_id in ("dbnsfp", "promoterai", "logofunc", "funcvep"):
+        for resource_id in ("dbnsfp", "promoterai", "logofunc", "funcvep", "alphagenome_avi"):
             self._set_managed_preparation_paths(
                 config, resource_id, require_installed=True
             )
@@ -4871,6 +4905,7 @@ class AnnotationJobService:
             "cadd_wgs": ("CADD scores for non-coding regions", "Genome-wide CADD deleteriousness scores for variants outside protein-coding regions. Coding-region CADD is already included with dbNSFP — install this only for whole-genome, non-coding analysis"),
             "logofunc": ("LoGoFunc", "Research-grade prediction of whether a missense variant causes gain of function, loss of function, or neither — a mechanism hint, not a clinical classifier"),
             "funcvep": ("FuncVEP", "Research-grade estimates of a missense variant's functional effect from three complementary model settings — not a clinical pathogenicity classification"),
+            "alphagenome_avi": ("AlphaGenome AVI", "Genome-wide predicted functional impact of single-nucleotide variants, shown as an AVI Phred score"),
             "clinvar": ("ClinVar", "What clinical laboratories have reported about each variant. Reports come from many submitters and can conflict; review status matters. Refreshed automatically before every run"),
             "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create and flags cases where the rule suggests possible NMD escape"),
             "clinvar_aa_match": ("Clinical protein-change and residue matching", "Identifies P/LP reports in ClinVar, ClinGen, and an installed GenIA variant export with the same protein change or a different missense change at the same residue. These are candidate PS1/PM5 evidence only; the reviewer must confirm transcript, condition, review status, disease mechanism, and evidence independence"),
@@ -4921,7 +4956,7 @@ class AnnotationJobService:
                 values = [block.get("snv"), block.get("indels")]
             elif source_id == "logofunc":
                 values = [block.get("file"), block.get("manifest")]
-            elif source_id == "funcvep":
+            elif source_id in {"funcvep", "alphagenome_avi"}:
                 values = [block.get("file"), block.get("manifest")]
             elif source_id == "screen_context":
                 # The active bundle is normally recorded by the installed
@@ -5031,6 +5066,10 @@ class AnnotationJobService:
                     paths[-1],
                     registry=indexed_registry,
                 )
+            if installed and source_id == "alphagenome_avi":
+                installed = len(paths) == 2 and valid_avi_bundle(paths[1])
+                if installed:
+                    installed = paths[0].resolve() == (paths[1].parent / "avi.grch38.vcf.gz").resolve()
             if installed and source_id in {
                 "dbnsfp", "spliceai", "cadd_wgs", "repeatmasker", "segdup", "clinvar"
             }:
@@ -5095,7 +5134,7 @@ class AnnotationJobService:
                 source_version = str(component.get("installed_at") or "")[:10]
             available_in = (
                 ["whole_genome"]
-                if source_id in {"promoterai", "cadd_wgs", "ccre", "screen_context"}
+                if source_id in {"promoterai", "cadd_wgs", "ccre", "screen_context", "alphagenome_avi"}
                 else ["exome", "whole_genome"]
             )
             sources.append({
@@ -5193,7 +5232,7 @@ class AnnotationJobService:
             # installed from its own card. The SCREEN context layer powers the
             # whole-genome Regulatory evidence tab and is small, so it is.
             "whole_genome": automatic_profile(
-                automatic_exome_ids + ("ccre", "screen_context")
+                automatic_exome_ids + ("ccre", "screen_context", "alphagenome_avi")
             ),
         }
         dbnsfp_header = self._dbnsfp_header_columns(config)
@@ -5262,7 +5301,7 @@ class AnnotationJobService:
             block = parent if location[1] is None else parent.setdefault(location[1], {})
             block["enabled"] = bool(options[source_id]) and (
                 analysis_scope == "whole_genome"
-                or source_id not in {"promoterai", "cadd_wgs", "ccre"}
+                or source_id not in {"promoterai", "cadd_wgs", "ccre", "alphagenome_avi"}
             )
         if "fork" in options:
             try:
@@ -5345,7 +5384,7 @@ class AnnotationJobService:
         config = self._load_config(
             self.pipeline_root / "config" / "annotation.config.yaml"
         )
-        if resource_id in {"dbnsfp", "promoterai", "logofunc", "funcvep"}:
+        if resource_id in {"dbnsfp", "promoterai", "logofunc", "funcvep", "alphagenome_avi"}:
             self._set_managed_preparation_paths(
                 config,
                 resource_id,
@@ -6081,6 +6120,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     self.service.start_logofunc_preparation(self._body()),
                     HTTPStatus.ACCEPTED,
                 )
+                return
+            if path == "/api/resource-preparations/alphagenome_avi":
+                self._json(self.service.start_avi_preparation(self._body()), HTTPStatus.ACCEPTED)
                 return
             if path == "/api/resource-preparations/funcvep":
                 self._json(

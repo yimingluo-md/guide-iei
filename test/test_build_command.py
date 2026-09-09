@@ -153,6 +153,44 @@ def _full_cfg(root):
     }
 
 
+def test_avi_custom_track_is_exact_allele_vcf_not_a_transcript_plugin(tmp_path):
+    from pathlib import Path
+    from avi_dataset import SCHEMA, RELEASE, EXPECTED_ROWS, digest
+    cfg = _full_cfg(str(tmp_path))
+    source = _touch(str(tmp_path), "avi/avi.grch38.vcf.gz")
+    _touch(str(tmp_path), "avi/avi.grch38.vcf.gz.tbi")
+    manifest_path = Path(tmp_path) / "avi/manifest.json"
+    files = {}
+    for path in (Path(source), Path(source + ".tbi")):
+        files[path.name] = {"size":path.stat().st_size,"mtime_ns":path.stat().st_mtime_ns,"sha256":digest(path)}
+    manifest_path.write_text(json.dumps({"schema":SCHEMA,"release":RELEASE,"assembly":"GRCh38",
+                                         "rows":EXPECTED_ROWS,"positions":EXPECTED_ROWS//3,"files":files}))
+    cfg["custom_tracks"]["AlphaGenomeAVI"] = {
+        "enabled": True, "required": False, "file": source,
+        "manifest": str(manifest_path),
+        "short_name": "AlphaGenomeAVI", "format": "vcf", "type": "exact",
+        "coords": 0, "fields": ["raw", "phred"],
+    }
+    plan = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz", container=False)
+    assert not plan.errors, plan.errors
+    expected = f"file={os.path.realpath(source)},short_name=AlphaGenomeAVI,format=vcf,type=exact,coords=0,fields=raw%phred"
+    assert expected in plan.argv
+    assert plan.argv[plan.argv.index(expected) - 1] == "--custom"
+    assert not any("IndexedScores" in arg and "avi" in arg.lower() for arg in plan.argv)
+    cfg["custom_tracks"]["AlphaGenomeAVI"]["manifest"] = ""
+    missing = build_vep_command(cfg,"in.vcf.gz","out.vcf.gz",container=False,check_exists=False)
+    assert not any("AlphaGenomeAVI" in arg for arg in missing.argv)
+    assert any("manifest" in w for w in missing.warnings)
+    cfg["custom_tracks"]["AlphaGenomeAVI"]["manifest"] = str(manifest_path)
+    # Same-size data replacement must fail the always-hash job-start check.
+    Path(source).write_bytes(b'changed')
+    broken = build_vep_command(cfg,"in.vcf.gz","out.vcf.gz",container=False,verify_integrity=True)
+    assert not any("AlphaGenomeAVI" in arg for arg in broken.argv)
+    cfg["custom_tracks"]["AlphaGenomeAVI"]["enabled"] = False
+    disabled = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz", container=False)
+    assert not any("AlphaGenomeAVI" in arg for arg in disabled.argv)
+
+
 def test_full_stack_native(tmp_path):
     """Every source present -> every flag emitted, no warnings/errors."""
     cfg = _full_cfg(str(tmp_path))

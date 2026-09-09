@@ -1110,6 +1110,18 @@ def _registry_metric_value(record: dict[str, str], metric) -> object | None:
     raw = record.get(metric.field, "")
     if raw in EMPTY:
         return None
+    if metric.field in {"AlphaGenomeAVI_raw", "AlphaGenomeAVI_phred"}:
+        # Exact-allele custom annotations are scalar. Taking a maximum here
+        # would conceal conflicting matches and could cross ALT alleles.
+        token = raw.strip()
+        if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", token):
+            return None
+        value = float(token)
+        if not math.isfinite(value):
+            return None
+        if metric.field == "AlphaGenomeAVI_phred" and value < 0:
+            return None
+        return value
     if metric.value_type in {MetricType.FLOAT, MetricType.INTEGER}:
         values = [
             value

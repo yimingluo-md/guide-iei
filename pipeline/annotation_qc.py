@@ -13,6 +13,7 @@ import argparse
 import gzip
 import html
 import json
+import math
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -30,6 +31,8 @@ except ImportError:  # direct script execution
 
 
 MISSING = {"", ".", "-"}
+AVI_CONTIGS = {*(str(n) for n in range(1, 23)), "X", "Y"}
+SNV_BASES = {"A", "C", "G", "T"}
 PLOF_CONSEQUENCES = {
     "frameshift_variant",
     "splice_acceptor_variant",
@@ -206,6 +209,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     funcvep_enabled = bool(
         (((config.get("plugins") or {}).get("FuncVEP") or {}).get("enabled"))
     )
+    avi_enabled = bool(((config.get("custom_tracks") or {}).get("AlphaGenomeAVI") or {}).get("enabled"))
 
     counters = Counter()
     consequence_counts = Counter()
@@ -264,6 +268,30 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             key = record_key(columns)
             info = parse_info(columns[7])
             entries = csq_entries(info, csq_fields)
+            # AVI is allele-scoped, including gene-less CSQ entries. Count
+            # each eligible ALT once, not once per affected transcript.
+            avi_contig = columns[0].removeprefix("chr")
+            for alt_number, alt in enumerate(columns[4].split(","), 1):
+                if avi_contig not in AVI_CONTIGS or columns[3] not in SNV_BASES or alt not in SNV_BASES or alt == columns[3]:
+                    continue
+                counters["avi_snv_alleles_eligible"] += 1
+                matches = [e for e in entries if (
+                    e.get("ALLELE_NUM") == str(alt_number) if present(e.get("ALLELE_NUM"))
+                    else e.get("Allele") == alt
+                )]
+                scores = {(e.get("AlphaGenomeAVI_raw", ""), e.get("AlphaGenomeAVI_phred", "")) for e in matches
+                          if present(e.get("AlphaGenomeAVI_raw")) or present(e.get("AlphaGenomeAVI_phred"))}
+                valid = False
+                if len(scores) == 1:
+                    raw, phred = next(iter(scores))
+                    try:
+                        valid = all(re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", v) and math.isfinite(float(v)) for v in (raw, phred)) and float(phred) >= 0
+                    except ValueError:
+                        pass
+                if valid:
+                    counters["avi_scored_alleles"] += 1
+                elif avi_enabled:
+                    note_missing("AlphaGenomeAVI", f"{columns[0]}:{columns[1]}:{columns[3]}:{alt}")
             if entries:
                 counters["records_with_csq"] += 1
 
@@ -503,6 +531,17 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         raise ValueError("VEP CSQ header was not found")
 
     metrics: list[dict] = []
+    avi_config = ((config.get("custom_tracks") or {}).get("AlphaGenomeAVI") or {})
+    avi_metric = metric("AlphaGenome AVI on primary-contig SNV alleles",
+                        counters["avi_snv_alleles_eligible"], counters["avi_scored_alleles"],
+                        float(thresholds.get("alphagenome_avi_snv", 0.99)))
+    avi_metric["unit"] = "alleles"
+    avi_metric["schema_present"] = all(f in csq_fields for f in ("AlphaGenomeAVI_raw", "AlphaGenomeAVI_phred"))
+    if not avi_config.get("enabled"):
+        avi_metric["status"] = "SKIPPED_DISABLED"
+    elif not avi_metric["schema_present"]:
+        avi_metric["status"] = "FAIL" if avi_config.get("required") else "SKIPPED_NOT_INSTALLED"
+    metrics.append(avi_metric)
     plugins = config.get("plugins") or {}
     dbnsfp_config = plugins.get("dbNSFP") or {}
     loftee_config = plugins.get("LoF") or {}

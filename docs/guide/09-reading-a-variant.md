@@ -197,7 +197,13 @@ applicable, the genome-wide sources on every annotation:
   variants; not missense-specific, so it also scores synonymous, splice
   region, and non-coding positions. The PHRED value is a rank: 20 means
   the top 1% of all possible SNVs, 30 the top 0.1%. Whole-genome imports
-  add the **CADD_WGS** track so non-coding records are scored too.
+  can use the optional **CADD_WGS** track so non-coding records are scored too.
+- **AlphaGenome AVI** — genome-wide SNV impact predictions from the separately
+  installed AVI dataset. AVI Phred is shown by default in WGS review; raw
+  scores are optional in Display settings. Matching is by the exact GRCh38
+  allele, so intergenic variants can be scored without an assigned transcript.
+  A missing value is not a benign prediction. AVI does not affect WGS intake
+  retention and is not a clinical classification. See [AVI details](../ALPHAGENOME_AVI.md).
 - **SIFT** and **PolyPhen-2 (HumDiv)** — the classical pair. SIFT scores
   homolog-alignment intolerance (0–1, *lower* = deleterious); PolyPhen-2
   combines alignment and structural features (0–1, higher = damaging;

@@ -25,6 +25,22 @@ behavior in [Reference setup](REFERENCE_SETUP.md).
 
 Everything below is the equivalent command-line route.
 
+**AlphaGenome AVI** is included in Recommended for WGS; CADD whole-genome
+remains optional. Use **Download / resume** on its card to install the
+preprocessed, checksum-verified GUIDE-IEI Hugging Face mirror (~75.8 GB).
+Allow 80 GiB free for setup; no source ZIP or local conversion is needed. See
+[AVI setup and storage requirements](ALPHAGENOME_AVI.md).
+
+SCREEN tissue/immune-context downloads are stored under **Storage → Where data
+live → Annotation datasets**, in `screen-context/prepared`. After changing the
+storage location, restart the workbench as prompted. Keep the prepared bundle
+together when moving it: its runtime files are resolved relative to its installed
+manifests, not the original producer's paths recorded in older manifests. If an
+older installation failed with a `/Volumes/...` missing-file error after all
+seven files were verified, restart with the updated software and retry the
+SCREEN download. Verified files already in the active storage location are
+reused, without downloading them again.
+
 ## 1. Build the container image (once)
 
 ```bash

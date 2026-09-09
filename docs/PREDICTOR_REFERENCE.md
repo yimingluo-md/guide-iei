@@ -61,6 +61,7 @@ comparison also checks gene/transcript/protein coordinates. See
 | PromoterAI | `promoterai` | `allele_transcript_tss_strand` | `PromoterAI_score`, `PromoterAI_TSS`, `PromoterAI_strand`, `PromoterAI_distance`, `PromoterAI_source_transcript`, `PromoterAI_match` |
 | LoGoFunc | `logofunc` | `allele_transcript_protein` | `LoGoFunc_prediction`, `LoGoFunc_neutral`, `LoGoFunc_GOF`, `LoGoFunc_LOF`, `LoGoFunc_allele_available`, `LoGoFunc_source_transcript`, `LoGoFunc_source_HGVSp`, `LoGoFunc_match` |
 | FuncVEP | `funcvep` | `allele_gene` | `FuncVEP_CTI`, `FuncVEP_CTE`, `FuncVEP_SP`, `FuncVEP_allele_available`, `FuncVEP_match`, `FuncVEP_match_status`, `FuncVEP_source_gene` |
+| AlphaGenome AVI | `alphagenome_avi` | `allele` | `AlphaGenomeAVI_raw`, `AlphaGenomeAVI_phred` |
 | RepeatMasker overlap | `repeatmasker` | `allele` | `RepeatMasker` |
 | Segmental duplication overlap | `segdup` | `allele` | `SegDup` |
 | ClinVar assertions | `clinvar` | `allele` | `ClinVar_CLNSIG`, `ClinVar_CLNSIGCONF`, `ClinVar_CLNREVSTAT`, `ClinVar_CLNDN` |

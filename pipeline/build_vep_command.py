@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
+    from .avi_dataset import valid_bundle as valid_avi_bundle
     from .indexed_scores import (
         ManifestError,
         load_manifest,
@@ -35,6 +36,7 @@ try:
     )
     from .predictor_registry import Adapter, MatchScope, load_registry
 except ImportError:  # direct script execution
+    from avi_dataset import valid_bundle as valid_avi_bundle
     from indexed_scores import (
         ManifestError,
         load_manifest,
@@ -295,7 +297,8 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
                  verify_integrity=verify_integrity)
 
     # --- custom tracks -------------------------------------------------------
-    _add_custom(cfg.get("custom_tracks", {}), plan, mapper, argv, check_exists)
+    _add_custom(cfg.get("custom_tracks", {}), plan, mapper, argv, check_exists,
+                verify_integrity=verify_integrity)
 
     plan.argv = argv
     # Combine ref mounts (ro) + io mounts, de-duping by (host,container).
@@ -581,10 +584,28 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
 
 
 def _add_custom(tracks: dict, plan: VepPlan, mapper: PathMapper,
-                argv: list[str], check_exists: bool) -> None:
+                argv: list[str], check_exists: bool, *, verify_integrity: bool = False) -> None:
     for name, t in tracks.items():
         if not t.get("enabled"):
             continue
+        if name == "AlphaGenomeAVI":
+            # Enforce allele-specific Number=A VCF semantics; never use a
+            # positional overlap or attach TSV columns to the wrong ALT.
+            required = bool(t.get("required", False))
+            error = None
+            if not t.get("file") or not t.get("manifest"):
+                error = "file and manifest paths must both be configured"
+            elif (t.get("format"), t.get("type"), t.get("fields")) != ("vcf", "exact", ["raw", "phred"]):
+                error = "requires exact VCF matching and raw/phred fields"
+            elif check_exists:
+                manifest = Path(mapper.absolutize(t["manifest"]))
+                score = Path(mapper.absolutize(t["file"]))
+                if score.resolve() != (manifest.parent / "avi.grch38.vcf.gz").resolve() or not valid_avi_bundle(manifest, strict=verify_integrity):
+                    error = "prepared bundle failed validation; repair AlphaGenome AVI in dataset setup"
+            if error:
+                message = f"custom.AlphaGenomeAVI: {error}"
+                (plan.errors if required else plan.warnings).append(message + ("" if required else " [skipped]"))
+                continue
         cp = _resolve(plan, mapper, t["file"], f"custom.{name}", t.get("required", False), check_exists)
         if cp is None:
             continue

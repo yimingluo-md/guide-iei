@@ -22,6 +22,7 @@ const compiled = ts.transpileModule(source, {
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
 const {
   ADDITIONAL_DBNSFP_PREDICTORS,
+  alphaGenomeAviScores,
   candidateCompoundHetKeys,
   canonicalVariantKey,
   hasClinGenPathogenicEvidence,
@@ -39,6 +40,35 @@ const {
   preferredClinicalTranscriptRows,
   variantQcFailures,
 } = await import(moduleUrl);
+
+test("AVI reads scalar Phred and raw logits without merging alleles or discarding zero", () => {
+  assert.deepEqual(alphaGenomeAviScores({ AlphaGenomeAVI_raw: "-2.4", AlphaGenomeAVI_phred: "0" }), { raw: -2.4, phred: 0 });
+  assert.deepEqual(alphaGenomeAviScores({ AlphaGenomeAVI_raw: "1e-5", AlphaGenomeAVI_phred: "3e1" }), { raw: 0.00001, phred: 30 });
+  for (const token of [".", "", "NaN", "Infinity", "1e999", "1,30", "1&30", "12bad", "0x10"]) {
+    assert.deepEqual(alphaGenomeAviScores({ AlphaGenomeAVI_raw: token, AlphaGenomeAVI_phred: token }), { raw: null, phred: null });
+  }
+  assert.equal(alphaGenomeAviScores({ AlphaGenomeAVI_phred: "-1" }).phred, null);
+});
+
+test("AVI custom annotations survive intergenic and multiallelic VCF parsing without a transcript", async () => {
+  const vcf = [
+    "##fileformat=VCFv4.2", "##reference=GRCh38",
+    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|Consequence|IMPACT|SYMBOL|Gene|Feature|AlphaGenomeAVI_raw|AlphaGenomeAVI_phred">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS",
+    "1\t100\t.\tA\tG,T\t99\tPASS\tCSQ=G|1|intergenic_variant|MODIFIER||||-2.4|0,T|2|intergenic_variant|MODIFIER||||1.3|30\tGT\t1/2",
+    "1\t200\t.\tC\tT\t99\tPASS\tCSQ=T|1|intergenic_variant|MODIFIER|||||\tGT\t0/1", "",
+  ].join("\n");
+  const parsed = await parseVcfFiles([new File([vcf], "avi.vcf")]);
+  const g = parsed.rows.find((row) => row.pos === 100 && row.alt === "G");
+  const t = parsed.rows.find((row) => row.pos === 100 && row.alt === "T");
+  assert.equal(g.alphaGenomeAviPhred, 0);
+  assert.equal(g.alphaGenomeAviRaw, -2.4);
+  assert.equal(t.alphaGenomeAviPhred, 30);
+  assert.equal(t.predictions.alphagenome_avi.scope, "allele");
+  assert.equal(t.predictions.alphagenome_avi.matchStatus, "exact");
+  assert.deepEqual(t.predictions.alphagenome_avi.values, { raw: 1.3, phred: 30 });
+  assert.equal(parsed.rows.find((row) => row.pos === 200).alphaGenomeAviPhred, null);
+});
 
 test("canonical variant keys match the service's minimal-allele form", () => {
   // Audit repro (H5): keys built from the raw VCF representation did not
