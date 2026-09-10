@@ -28,6 +28,9 @@ Apple Silicon beta release candidate. Publication remains gated on the
 - Fixed immediate reopening after webpage Quit: recently closed TCP connections
   no longer produce a false “port already in use” error. Genuine running services
   and unrelated applications remain protected; nothing is killed to free a port.
+- Shutdown records interruption before signalling annotation children and stops
+  new child launches once shutdown begins, preventing a timing-dependent false
+  failure status or a child starting after the shutdown snapshot.
 - Post-processing now indexes uniquely named temporary VCFs before replacing
   final files. This avoids indexing a stale container view of a replaced file;
   tabix truncation warnings are failures even when tabix returns zero. The real

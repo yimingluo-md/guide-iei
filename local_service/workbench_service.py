@@ -5698,14 +5698,21 @@ class AnnotationJobService:
                     if not current or current["status"] in {"cancelled", "interrupted"}:
                         return
                     log.write("$ " + " ".join(json.dumps(item) for item in command) + "\n")
-                    process = subprocess.Popen(
-                        command,
-                        cwd=self.pipeline_root,
-                        stdout=log,
-                        stderr=subprocess.STDOUT,
-                        start_new_session=(os.name == "posix"),
-                    )
                     with self._process_lock:
+                        # Shutdown snapshots owned processes under this lock.
+                        # Do not spawn an untracked child after that snapshot.
+                        if self._stop.is_set():
+                            self.store.update(job_id, status="interrupted",
+                                              finished_at=utc_now(), pid=None,
+                                              error="The local service was stopped.")
+                            return
+                        process = subprocess.Popen(
+                            command,
+                            cwd=self.pipeline_root,
+                            stdout=log,
+                            stderr=subprocess.STDOUT,
+                            start_new_session=(os.name == "posix"),
+                        )
                         self._processes[job_id] = process
                     self.store.update(job_id, pid=process.pid)
                     exit_code = process.wait()
@@ -5788,6 +5795,14 @@ class AnnotationJobService:
             bulk_thread.join(timeout=2)
         with self._process_lock:
             running = list(self._processes.items())
+            # Persist the reason BEFORE signalling the child. Otherwise its
+            # wait() can wake and classify SIGTERM as failure before this write.
+            for job_id, process in running:
+                if process.poll() is None:
+                    self.store.update(
+                        job_id, status="interrupted", finished_at=utc_now(),
+                        error="The local service was stopped.",
+                    )
         for job_id, process in running:
             if process.poll() is None:
                 try:
@@ -5797,12 +5812,6 @@ class AnnotationJobService:
                         process.terminate()
                 except (ProcessLookupError, PermissionError):
                     pass
-                self.store.update(
-                    job_id,
-                    status="interrupted",
-                    finished_at=utc_now(),
-                    error="The local service was stopped.",
-                )
         with self._resource_lock:
             resource_running = list(self._resource_processes.items())
             resource_threads = list(self._resource_threads.values())

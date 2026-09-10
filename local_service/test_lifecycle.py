@@ -92,9 +92,43 @@ class LifecycleTests(unittest.TestCase):
         else:
             self.fail("Synthetic annotation did not start")
         self.service.request_service_quit(self.payload())
-        self.service.shutdown()
+        observed = []
+        real_killpg = os.killpg
+
+        def terminate_and_allow_worker_to_finish(pid, sig):
+            observed.append(self.service.store.get(first["id"])["status"])
+            real_killpg(pid, sig)
+            # Force the worker to observe the signal before shutdown returns
+            # from killpg: previously it could record "failed" in this gap.
+            for _ in range(100):
+                if first["id"] not in self.service._processes:
+                    break
+                time.sleep(.01)
+
+        with patch("local_service.workbench_service.os.killpg", side_effect=terminate_and_allow_worker_to_finish):
+            self.service.shutdown()
+        self.assertEqual(observed, ["interrupted"])
         self.assertEqual(self.service.store.get(first["id"])["status"], "interrupted")
         self.assertEqual(self.service.store.get(second["id"])["status"], "queued")
+
+    def test_shutdown_between_dequeue_and_spawn_does_not_start_a_child(self):
+        commands = self.service._commands
+
+        def stop_before_spawn(job):
+            result = commands(job)
+            self.service._stop.set()
+            return result
+
+        with patch.object(self.service, "_commands", side_effect=stop_before_spawn):
+            job = self.service.submit({"input_path": str(self.input), "output_path": str(self.output)})
+            for _ in range(100):
+                current = self.service.store.get(job["id"])
+                if current["status"] not in {"queued", "running"}:
+                    break
+                time.sleep(.02)
+        self.assertEqual(current["status"], "interrupted")
+        self.assertNotIn(job["id"], self.service._processes)
+        self.assertFalse(self.output.exists())
 
     def test_loopback_quit_and_build_recognition(self):
         build = self.root / "desktop-build.json"
