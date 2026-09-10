@@ -45,6 +45,13 @@ export type BundledReferences = {
 
 export type ReferenceKey = "constraints" | "iei" | "hi" | "dominant" | "manifest";
 
+export function isPreviousHaploinsufficiencyDefault(stored: Set<string>, bundled: Set<string>): boolean {
+  // Only migrate an exact copy of the retired 50-gene default, never a custom panel.
+  if (bundled.size !== 48 || bundled.has("NLRP12") || bundled.has("CARD11")) return false;
+  const previous = new Set([...bundled, "NLRP12", "CARD11"]);
+  return stored.size === previous.size && [...stored].every((gene) => previous.has(gene));
+}
+
 function parseNumber(value: string | undefined) {
   if (!value) return null;
   const parsed = Number(value);

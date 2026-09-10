@@ -190,7 +190,9 @@ class AnnotationJobServiceTests(unittest.TestCase):
         seed = AnnotationJobService(self.root, state, start_worker=False)
         seed.shutdown()
         orphan = subprocess.Popen(
-            [sys.executable, "-c", "import time; time.sleep(120)", str(self.root)],
+            # Production commands use the service's resolved root. macOS
+            # temporary paths may otherwise differ by /var vs /private/var.
+            [sys.executable, "-c", "import time; time.sleep(120)", str(seed.pipeline_root)],
             start_new_session=True,
         )
         bystander = subprocess.Popen(
@@ -983,6 +985,34 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(status["state"], "runtime_unavailable")
         self.assertIn("not running", status["message"])
         self.assertNotIn("not installed", status["message"])
+
+    def test_container_status_shows_background_startup_without_starting_from_get(self):
+        self.service.docker_startup.status = {"state": "starting", "message": "Starting Docker Desktop…"}
+        with patch("local_service.workbench_service.subprocess.run") as run:
+            status = self.service._container_image_status({"container": {"runtime": "docker"}})
+        self.assertEqual(status["state"], "runtime_starting")
+        self.assertFalse(status["available"])
+        run.assert_not_called()
+
+    def test_queued_annotation_waits_for_docker_startup(self):
+        self.service.docker_startup.status = {"state": "starting", "message": "Starting"}
+        ran = threading.Event()
+        with patch.object(self.service, "_run_job", side_effect=lambda _: ran.set()):
+            self.service._queue.put("test-job")
+            try:
+                self.assertFalse(ran.wait(.1))
+                self.service.docker_startup.status = {"state": "ready", "message": "Ready"}
+                self.assertTrue(ran.wait(2))
+            finally:
+                self.service.docker_startup.status = {"state": "ready", "message": "Ready"}
+
+    def test_container_status_keeps_startup_failure_guidance(self):
+        self.service.docker_startup.status = {"state": "failed", "message": "Open Docker Desktop; startup log: /test/log"}
+        with patch("local_service.workbench_service.shutil.which", return_value="docker"), patch(
+                "local_service.workbench_service.subprocess.run",
+                return_value=Mock(returncode=1, stdout="", stderr="Cannot connect to the Docker daemon")):
+            status = self.service._container_image_status({"container": {"runtime": "docker"}})
+        self.assertEqual(status["message"], self.service.docker_startup.status["message"])
 
     def test_container_status_reports_missing_image_when_runtime_is_running(self):
         completed = Mock(

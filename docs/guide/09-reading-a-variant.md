@@ -36,6 +36,18 @@ retain important source files in the Sample Library.
 
 ![Evidence sections of a variant page: predictors, call quality, ClinVar, ClinGen, and the transcript block](../assets/img/variant-evidence-sections.png)
 
+For WGS review, **Prediction scores → AlphaGenome AVI Phred ≥** applies an
+optional minimum score. Leave it empty for no AVI filter; zero is valid.
+While a minimum is set, variants without an AVI score (including indels) are
+excluded from this view. This does not change WGS intake or stored variants.
+
+**Require SCREEN regulatory activity** checks the selected contexts in batches.
+Confirmed matches appear as each batch finishes, with an **incomplete results**
+notice until screening completes. TSV export is disabled during screening.
+A service error or empty/stale context set is reported separately, not as a
+completed zero-match result. Changing the context set restarts screening;
+results from the previous selection are not reused.
+
 ## Population frequency
 
 [gnomAD](https://gnomad.broadinstitute.org) frequencies, with **popmax** — the highest frequency observed in any

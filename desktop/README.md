@@ -1,5 +1,10 @@
 # One-click launchers
 
+The new self-contained macOS packaging path (bundled Python, prebuilt UI,
+native app lifecycle and Developer ID/notarization support) is documented in
+[macOS app release builds](../docs/MACOS_APP_RELEASE.md). It is currently a
+preview path; the legacy source-payload release described below is unchanged.
+
 Double-click entry points for clinicians and wet-lab scientists — no
 terminal commands. Both routes call `scripts/start_workbench.sh
 --bootstrap`, which runs the environment setup on first use, starts the

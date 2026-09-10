@@ -135,6 +135,13 @@ class SoftwareUpdater:
         except OSError:
             return "unknown"
 
+    def is_desktop_app(self) -> bool:
+        return (self.repo_root / "desktop-build.json").is_file()
+
+    def _require_source_install(self) -> None:
+        if self.is_desktop_app():
+            raise ValueError("This is a self-contained Mac app. Download the new Mac app from the official release page, quit GUIDE-IEI, and replace the app. Your databases and library stay separate.")
+
     @property
     def _sentinel(self) -> Path:
         return self.updates_dir / "update-in-progress.txt"
@@ -172,8 +179,10 @@ class SoftwareUpdater:
             rollback_version = version_file.read_text().strip() or None
         return {
             "current_version": self.current_version(),
+            "desktop_app": self.is_desktop_app(),
+            "release_page": f"https://github.com/{GITHUB_REPO}/releases/latest",
             "repo": GITHUB_REPO,
-            "rollback_available": rollback_version is not None,
+            "rollback_available": rollback_version is not None and not self.is_desktop_app(),
             "rollback_version": rollback_version,
             # A crash mid-swap leaves a mixed tree that self-reports the
             # NEW version; the sentinel is the only honest witness.
@@ -220,7 +229,10 @@ class SoftwareUpdater:
             "update_available": parse_version(latest) > parse_version(current),
             "incomplete_update": self._sentinel.is_file(),
         }
-        if zip_asset and sums_asset:
+        if self.is_desktop_app():
+            result["desktop_app"] = True
+            result["release_page"] = f"https://github.com/{GITHUB_REPO}/releases/latest"
+        elif zip_asset and sums_asset:
             result["assets"] = {
                 "zip_name": zip_asset.get("name"),
                 "zip_url": zip_asset.get("browser_download_url"),
@@ -239,6 +251,7 @@ class SoftwareUpdater:
     # install
     # ------------------------------------------------------------------ #
     def install(self) -> dict:
+        self._require_source_install()
         if not (self.repo_root / "VERSION").is_file():
             raise ValueError(
                 "the software folder does not look like a GUIDE-IEI "
@@ -340,6 +353,7 @@ class SoftwareUpdater:
     # rollback
     # ------------------------------------------------------------------ #
     def rollback(self) -> dict:
+        self._require_source_install()
         version_file = self.rollback_dir / "rollback-version.txt"
         manifest_file = self.rollback_dir / "rollback-manifest.txt"
         if not (version_file.is_file() and manifest_file.is_file()):

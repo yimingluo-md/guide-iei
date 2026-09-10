@@ -9,7 +9,7 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
-const { attachGeneConstraints, deriveLofConstrainedGenes, parseGeneConstraintTsv, parseGeneList, loadBundledReferences } = await import(moduleUrl);
+const { attachGeneConstraints, deriveLofConstrainedGenes, parseGeneConstraintTsv, parseGeneList, loadBundledReferences, isPreviousHaploinsufficiencyDefault } = await import(moduleUrl);
 
 test("reference failures are isolated, validated, and recover on retry", async (t) => {
   const files = [
@@ -36,7 +36,7 @@ test("reference failures are isolated, validated, and recover on retry", async (
       assert.deepEqual(Object.keys(result.errors), [keys[index]]);
       if (index !== 0) assert.equal(result.constraints.size, 19638);
       if (index !== 1) assert.equal(result.ieiGenes.size, 505);
-      if (index !== 2) assert.equal(result.hiGenes.size, 50);
+      if (index !== 2) assert.equal(result.hiGenes.size, 48);
       if (index !== 3) assert.equal(result.dominantGenes.size, 137);
     }
   }
@@ -95,22 +95,46 @@ test("bundles complete IUIS and AD-derived gene sets", () => {
   assert(ieiGenes.has("IL10RA"));
   assert(dominantGenes.has("NFKB1"));
   assert(!dominantGenes.has("IL10RA"));
+  assert(!dominantGenes.has("CYBB")); // X-linked-only entries are not AD.
+  assert(dominantGenes.has("CARD11"));
+  assert(dominantGenes.has("NLRP12"));
   assert(ieiGenes.has("MS4A1"));
   assert(ieiGenes.has("NCKAP1L"));
 });
 
 test("bundles the manually curated IEI haploinsufficiency set", () => {
   const genes = parseGeneList(haploinsufficiencyText);
-  assert.equal(genes.size, 50);
+  assert.equal(genes.size, 48);
   assert(genes.has("CTLA4"));
   assert(genes.has("NFKB1"));
   assert(genes.has("STAT3"));
+  assert(!genes.has("NLRP12"));
+  assert(!genes.has("CARD11"));
   assert(!genes.has("GENE"));
+});
+
+test("haploinsufficiency manifest matches the curated IUIS 2024 default", async () => {
+  const manifest = JSON.parse(await readFile(new URL("public/bundled-data/manifest.json", root), "utf8"));
+  assert.equal(manifest.haploinsufficiency.genes, parseGeneList(haploinsufficiencyText).size);
+  assert.match(manifest.haploinsufficiency.source, /Manually curated.*IUIS 2024/);
 });
 
 test("custom gene-list input ignores common headers and accepts pasted delimiters", () => {
   const genes = parseGeneList("Gene\nNFKB1, CTLA4;STAT3\tCARD11");
   assert.deepEqual([...genes], ["NFKB1", "CTLA4", "STAT3", "CARD11"]);
+});
+
+test("recognizes only the retired HI default for migration, preserving custom lists", () => {
+  const bundled = parseGeneList(haploinsufficiencyText);
+  const previous = new Set([...bundled, "NLRP12", "CARD11"]);
+  assert(isPreviousHaploinsufficiencyDefault(previous, bundled));
+  assert(!isPreviousHaploinsufficiencyDefault(bundled, bundled));
+  assert(!isPreviousHaploinsufficiencyDefault(new Set([...previous, "MYGENE"]), bundled));
+  const customized = new Set(previous);
+  customized.delete("CTLA4");
+  customized.add("MYGENE");
+  assert(!isPreviousHaploinsufficiencyDefault(customized, bundled));
+  assert(!isPreviousHaploinsufficiencyDefault(previous, new Set()));
 });
 
 test("automatically attaches bundled constraint data by gene symbol", () => {

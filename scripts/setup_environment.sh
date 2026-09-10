@@ -180,6 +180,9 @@ apt_install_packages() { # apt_install_packages <description> <package>...
 # ---------------------------------------------------------------- platform
 OS="$(uname -s)"
 ARCH="$(uname -m)"
+if [ "$OS" = "Darwin" ]; then
+    export PATH="$PATH:$HOME/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin"
+fi
 IS_WSL=0
 if [ "$OS" = "Linux" ] && grep -qi microsoft /proc/version 2>/dev/null; then IS_WSL=1; fi
 case "$OS" in
@@ -424,6 +427,9 @@ install_node() {
 }
 
 NODE_BIN=""
+if [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
+    ok "prebuilt desktop interface (Node/npm not required)"
+else
 if NODE_BIN="$(resolve_node)"; then
     ok "node $("$NODE_BIN" --version) at $NODE_BIN (>= ${NODE_MIN_MAJOR}.${NODE_MIN_MINOR})"
 elif [ "$MODE" = "install" ]; then
@@ -461,6 +467,7 @@ elif [ "$MODE" = "install" ] && [ -n "$NPM_BIN" ]; then
     fi
 else
     fix "webui dependencies not installed" "rerun with --install, or: cd webui && npm ci"
+fi
 fi
 
 # ------------------------------------------------- native htslib tools (optional)
@@ -530,6 +537,7 @@ PYEOF
 CONTAINER_RUNTIME=""
 CONTAINER_BIN=""
 DAEMON_UP=0
+MAC_STACK_INSTALLED=0
 if [ "$SKIP_CONTAINER" = 1 ]; then
     note "container checks skipped (--skip-container)"
 else
@@ -581,6 +589,7 @@ else
         if [ "$OS" = "Darwin" ] && [ "$MODE" = "install" ]; then
             echo "  installing user-space container stack (Lima ${LIMA_VERSION} + Colima ${COLIMA_VERSION} + Docker CLI ${DOCKER_CLI_VERSION}) ..."
             if install_macos_container_stack; then
+                MAC_STACK_INSTALLED=1
                 CONTAINER_RUNTIME="docker"
                 CONTAINER_BIN="$TOOLS_DIR/bin/docker"
                 ok "container stack installed in $TOOLS_DIR (no admin rights used)"
@@ -633,6 +642,16 @@ else
     # Check mode remains read-only; do not overwrite unrelated user executables.
     if [ "$OS" = "Darwin" ] && [ -x "$TOOLS_DIR/bin/colima" ]; then
         ensure_macos_lima_launchers "$TOOLS_DIR" "$LIMA_VERSION" "$MODE" || true
+        # Resume first-time setup if an earlier VM download/start failed after
+        # installing the CLI. Only explicit install mode may create this VM;
+        # never replace an existing Desktop install or a selected custom engine.
+        if [ "$MODE" = "install" ] && [ "$CONTAINER_RUNTIME" = "docker" ] \
+            && [ -z "${DOCKER_HOST:-}" ] && [ -z "${DOCKER_CONTEXT:-}" ] \
+            && [ ! -d /Applications/Docker.app ] && [ ! -d "$HOME/Applications/Docker.app" ] \
+            && [ ! -f "${COLIMA_HOME:-$HOME/.colima}/default/colima.yaml" ] \
+            && [ "$("$CONTAINER_BIN" context show 2>/dev/null)" = "default" ]; then
+            MAC_STACK_INSTALLED=1
+        fi
     fi
 
     # ---- daemon / VM health
@@ -642,7 +661,7 @@ else
                 if "$CONTAINER_BIN" info >/dev/null 2>&1; then
                     DAEMON_UP=1
                     ok "$CONTAINER_RUNTIME daemon reachable ($CONTAINER_BIN)"
-                elif [ "$OS" = "Darwin" ] && [ -x "$TOOLS_DIR/bin/colima" ]; then
+                elif [ "$OS" = "Darwin" ] && [ "$MAC_STACK_INSTALLED" = 1 ] && [ -x "$TOOLS_DIR/bin/colima" ]; then
                     if [ "$MODE" = "install" ] && confirm "Start the Colima VM now (first start downloads a ~1 GB VM image)?"; then
                         host_cpus="$(sysctl -n hw.ncpu 2>/dev/null || echo 4)"
                         host_mem_gb="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) / 1073741824 ))"
@@ -656,6 +675,14 @@ else
                         fi
                     else
                         fix "$CONTAINER_RUNTIME daemon not running" "PATH=\"$TOOLS_DIR/bin:\$PATH\" colima start --cpu 4 --memory 8 --disk 120"
+                    fi
+                elif [ "$OS" = "Darwin" ] && [ "$CONTAINER_RUNTIME" = "docker" ] && [ "$MODE" = "install" ]; then
+                    note "Starting the selected existing Docker Desktop or Colima engine (without switching contexts)"
+                    if IEI_TOOLS_DIR="$TOOLS_DIR" "$PYTHON_BIN" "$ROOT/local_service/container_startup.py"; then
+                        DAEMON_UP=1
+                        ok "Docker engine started"
+                    else
+                        fix "Docker could not be started automatically" "open Docker Desktop or start the selected Colima profile; see ~/.iei-variant-review/logs/docker-startup.log"
                     fi
                 elif [ "$OS" = "Darwin" ]; then
                     fix "$CONTAINER_RUNTIME daemon not running" "start Docker Desktop (or rerun with --install for the no-admin Colima stack)"
@@ -764,7 +791,13 @@ if [ -n "$free_gb" ]; then
 fi
 
 # ---------------------------------------------------------------- smoke test
-if [ "$PYYAML_OK" = 1 ]; then
+if [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
+    if "$PYTHON_BIN" -s -B -c 'import yaml, sqlite3, ssl' >/dev/null 2>&1; then
+        ok "bundled Python dependency check passed"
+    else
+        fix "bundled Python dependency check failed" "download a fresh copy of the Mac app"
+    fi
+elif [ "$PYYAML_OK" = 1 ]; then
     if (cd "$ROOT" && PATH="$(dirname "$PYTHON_BIN"):$PATH" bash test/test_dry_run.sh >/dev/null 2>&1); then
         ok "pipeline smoke test passed (test/test_dry_run.sh — no container or references needed)"
     else

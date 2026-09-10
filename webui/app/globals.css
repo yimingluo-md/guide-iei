@@ -1090,6 +1090,18 @@ tbody tr:last-child td { border-bottom: 0; }
 
 .evidence-layout { margin-top: 13px; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; align-items: start; }
 .evidence-section { min-width: 0; padding: 20px 22px; background: white; border: 1px solid var(--line); border-radius: 8px; }
+.evidence-section:has(.alt-transcripts) { grid-column: 1 / -1; }
+.alt-transcripts { min-width: 0; margin-top: 20px; scroll-margin-top: 80px; }
+.alt-transcripts h4 { margin: 0 0 12px; color: #254c49; font-size: 14px; line-height: 1.5; }
+.transcript-table-scroll { max-width: 100%; overflow-x: auto; border: 1px solid var(--line); border-radius: 6px; }
+.transcript-table-scroll:focus-visible { outline: 2px solid #327c74; outline-offset: 2px; }
+.alt-transcripts table { width: 100%; min-width: 850px; table-layout: auto; }
+.alt-transcripts table th { position: static; width: auto; height: auto; padding: 12px 14px; font-size: 11px; line-height: 1.5; white-space: nowrap; }
+.alt-transcripts table td { height: auto; padding: 12px 14px; vertical-align: top; font-size: 12px; line-height: 1.6; }
+.alt-transcripts table td:nth-child(1), .alt-transcripts table td:nth-child(2), .alt-transcripts table td:nth-child(6) { white-space: nowrap; }
+.alt-transcripts table td:nth-child(4), .alt-transcripts table td:nth-child(5) { min-width: 180px; max-width: 330px; overflow-wrap: anywhere; }
+.alt-transcripts table tbody tr { cursor: default; }
+.alt-transcripts table tr.current { background: #edf6f2; }
 .evidence-section > .eyebrow { margin-bottom: 5px; }
 .evidence-grid { margin: 15px 0 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 22px; }
 .evidence-grid > div { min-width: 0; min-height: 51px; padding: 10px 0; border-top: 1px solid #edf0ee; }

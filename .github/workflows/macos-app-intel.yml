@@ -1,0 +1,63 @@
+name: macos-app-intel
+
+on:
+  push:
+    branches: [main, codex/intel-app-smoke]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  packaged-app:
+    runs-on: macos-15-intel
+    timeout-minutes: 35
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      NEXT_TELEMETRY_DISABLED: "1"
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Verify native Intel runner
+        run: |
+          test "$(uname -m)" = x86_64
+          python3 -c 'import platform; assert platform.machine() == "x86_64"'
+          sw_vers
+          xcrun clang --version
+
+      - name: Install browser-test dependencies
+        working-directory: webui
+        run: npm ci --no-fund --no-audit
+
+      - name: Build self-contained Intel preview (ad-hoc signed, no secrets)
+        run: python3 scripts/build_macos_app.py --preview --output dist/macos-intel-ci
+
+      - name: Check packaged architecture and exercise isolated app and browser
+        env:
+          IEI_TEST_PACKAGED_BROWSER: "1"
+        run: |
+          APP="dist/macos-intel-ci/GUIDE-IEI-macOS-$(tr -d '[:space:]' < VERSION)-x86_64-preview.app"
+          test "$(lipo -archs "$APP/Contents/MacOS/GUIDE-IEI")" = x86_64
+          "$APP/Contents/Frameworks/Python.framework/Versions/Current/bin/python3" -s -B -c 'import platform; assert platform.machine() == "x86_64"'
+          python3 test/test_self_contained_macos.py "$APP"
+
+      - name: Verify packaged archive checksums
+        working-directory: dist/macos-intel-ci
+        run: shasum -a 256 -c ./*.sha256sums.txt
+
+      - name: Save Intel test artifacts (not a signed public release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: GUIDE-IEI-Intel-preview-${{ github.sha }}
+          path: |
+            dist/macos-intel-ci/*.zip
+            dist/macos-intel-ci/*.dmg
+            dist/macos-intel-ci/*.sha256sums.txt
+          if-no-files-found: error
+          retention-days: 14

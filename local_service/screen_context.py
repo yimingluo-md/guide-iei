@@ -492,6 +492,12 @@ class ScreenContextStore:
         if configured is None:
             return {"available": False, "matching_keys": [], "tested": len(variants)}
 
+        unknown = (tissue_ids - {item["id"] for item in configured["tissues"]}) | (
+            immune_ids - {item["id"] for item in configured["immune_contexts"]}
+        )
+        if unknown:
+            raise ValueError("Selected SCREEN contexts are no longer available; select a current context set and retry")
+
         tissue_indices = {
             item["index"] for item in configured["tissues"] if item["id"] in tissue_ids
         }
@@ -500,7 +506,7 @@ class ScreenContextStore:
         ]
         expected = len(tissue_indices) + len(selected_contexts)
         if expected == 0:
-            return {"available": True, "matching_keys": [], "tested": len(variants)}
+            raise ValueError("Select at least one SCREEN tissue or immune-cell context before filtering")
         tissue_columns = configured["tissue_columns"]
         immune_columns = configured["immune_columns"]
         matching: list[str] = []

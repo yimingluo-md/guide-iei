@@ -173,6 +173,13 @@ class ScreenContextStoreTests(unittest.TestCase):
         })
         self.assertEqual(all_result["matching_keys"], [])
 
+    def test_empty_or_stale_context_selection_is_an_error_not_zero_matches(self):
+        for selection in ({}, {"tissue_ids": ["tissue:obsolete"]},
+                          {"immune_context_ids": ["immune:obsolete"]}):
+            with self.subTest(selection=selection):
+                with self.assertRaisesRegex(ValueError, "context"):
+                    self.store.filter_variants(self.manifest, {"variants": [], **selection})
+
     def _rebuild_with_skew(self, *, tissue_rows, matrix_rows, tissue_bytes):
         """Rewrite the catalog's tissue table and the tissue matrix so the
         catalog row count and the stored matrix width disagree."""

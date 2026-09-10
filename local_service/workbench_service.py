@@ -41,6 +41,7 @@ import urllib.request
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from local_service.ccre_context import CcreContextStore
+from local_service.container_startup import DockerStartup, mac_tool_path
 from local_service.clingen_erepo import ClinGenErepoStore
 from local_service import cohort_store as cohort_module
 from local_service.cohort_store import CohortStore
@@ -732,6 +733,7 @@ class AnnotationJobService:
         state_dir: Path,
         start_worker: bool = True,
         storage_registry: StorageLocationRegistry | None = None,
+        auto_start_docker: bool = False,
     ):
         self.pipeline_root = pipeline_root.resolve()
         self.state_dir = state_dir.resolve()
@@ -797,6 +799,7 @@ class AnnotationJobService:
         self._instance_lock_handle = self._acquire_instance_lock()
         self.logs_dir = self.state_dir / "logs"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
+        self.docker_startup = DockerStartup(self.logs_dir / "docker-startup.log")
         self.resource_logs_dir = self.state_dir / "resource-logs"
         self.resource_logs_dir.mkdir(parents=True, exist_ok=True)
         self.resource_secrets_dir = self.state_dir / "resource-secrets"
@@ -903,6 +906,12 @@ class AnnotationJobService:
         self._worker_last_error_at: str | None = None
         for job_id in self.store.queued_ids():
             self._queue.put(job_id)
+        if auto_start_docker:
+            try:
+                config = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
+                self.docker_startup.start((config.get("container") or {}).get("runtime", "docker"))
+            except (OSError, ValueError):
+                pass  # The annotation profile reports config errors separately.
         if start_worker:
             self._worker = threading.Thread(
                 target=self._worker_loop, name="annotation-worker", daemon=True
@@ -1024,6 +1033,7 @@ class AnnotationJobService:
                 },
             ],
             "defaults": {
+                "output_directory": str(self.workspace_dir / "results") if os.environ.get("IEI_DESKTOP_APP") == "1" else str(self.pipeline_root / "results"),
                 "config_path": str(self.pipeline_root / "config" / "annotation.config.yaml"),
                 "analysis_scope": "exome",
                 "coding_only": True,
@@ -4740,6 +4750,10 @@ class AnnotationJobService:
         container = config.get("container") or {}
         runtime = str(container.get("runtime") or "docker")
         image = str(container.get("image") or "vep-annotate:latest")
+        startup_status = self.docker_startup.status if runtime == "docker" else {}
+        if startup_status.get("state") == "starting":
+            return {"available": False, "state": "runtime_starting", "runtime": runtime,
+                    "image": image, "message": startup_status["message"]}
         runtime_label = {
             "docker": "Docker",
             "podman": "Podman",
@@ -4844,7 +4858,7 @@ class AnnotationJobService:
                     "state": "runtime_unavailable",
                     "runtime": runtime,
                     "image": image,
-                    "message": f"{runtime_label} is installed but is not running. {start_hint}, then refresh this page.",
+                    "message": startup_status.get("message") if startup_status.get("state") in {"failed", "unavailable"} else f"{runtime_label} is installed but is not running. {start_hint}, then refresh this page.",
                 }
             if "permission denied" in diagnostic:
                 return {
@@ -5497,6 +5511,10 @@ class AnnotationJobService:
                 self._queue.task_done()
                 return
             try:
+                while self.docker_startup.status["state"] == "starting" and not self._stop.is_set():
+                    self._stop.wait(.25)
+                if self._stop.is_set():
+                    return  # Keep its stored status queued for the next launch.
                 self._run_job(job_id)
             except Exception as exc:  # noqa: BLE001 - the boundary IS the point
                 # Audit M22: an exception that escaped _run_job (a store
@@ -5654,6 +5672,7 @@ class AnnotationJobService:
 
     def shutdown(self) -> None:
         self._stop.set()
+        self.docker_startup.stop()
         # The bulk-intake worker stops between items on _stop. Give it a
         # moment to finish the current bookkeeping write; a worker deep in a
         # long prefilter is left as a daemon — the interrupted item is reset
@@ -5774,6 +5793,10 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
+        if getattr(self.server, "web_root", None) and not path.startswith("/api/"):
+            from local_service.static_site import serve_static
+            serve_static(self, self.server.web_root)
+            return
         if path == "/api/health":
             worker = self.service.worker_health()
             self._json({
@@ -6485,14 +6508,17 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
 
 
 def create_server(
-    service: AnnotationJobService, host: str = "127.0.0.1", port: int = 43117
+    service: AnnotationJobService, host: str = "127.0.0.1", port: int = 43117,
+    web_root: Path | None = None,
 ) -> ThreadingHTTPServer:
     handler = type(
         "ConfiguredWorkbenchRequestHandler",
         (WorkbenchRequestHandler,),
         {"service": service},
     )
-    return LoopbackHTTPServer((host, port), handler)
+    server = LoopbackHTTPServer((host, port), handler)
+    server.web_root = web_root.resolve() if web_root else None
+    return server
 
 
 def _install_shutdown_signal_handlers(server) -> None:
@@ -6526,10 +6552,13 @@ def main() -> None:
     parser.add_argument("--port", default=43117, type=int)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--storage-registry", type=Path)
+    parser.add_argument("--web-root", type=Path, help="Serve the packaged static interface on the API port")
     parser.add_argument(
         "--pipeline-root", type=Path, default=Path(__file__).resolve().parents[1]
     )
     args = parser.parse_args()
+    if platform.system() == "Darwin":
+        os.environ["PATH"] = mac_tool_path()
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("this workstation service may bind only to a loopback address")
 
@@ -6622,13 +6651,13 @@ def main() -> None:
 
     try:
         service = AnnotationJobService(
-            pipeline_root, state_dir, storage_registry=registry
+            pipeline_root, state_dir, storage_registry=registry, auto_start_docker=True
         )
     except ServiceAlreadyRunningError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_ALREADY_RUNNING)
     try:
-        server = create_server(service, args.host, args.port)
+        server = create_server(service, args.host, args.port, web_root=args.web_root)
     except OSError as exc:
         # Bind failure after the lock was acquired: another process (not a
         # GUIDE-IEI service, or one on a different state directory) holds
