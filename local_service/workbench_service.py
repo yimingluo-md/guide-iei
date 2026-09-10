@@ -1024,6 +1024,7 @@ class AnnotationJobService:
                 },
             ],
             "defaults": {
+                "output_directory": str(self.workspace_dir / "results") if os.environ.get("IEI_DESKTOP_APP") == "1" else str(self.pipeline_root / "results"),
                 "config_path": str(self.pipeline_root / "config" / "annotation.config.yaml"),
                 "analysis_scope": "exome",
                 "coding_only": True,
@@ -5774,6 +5775,10 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         parsed_url = urlparse(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
+        if getattr(self.server, "web_root", None) and not path.startswith("/api/"):
+            from local_service.static_site import serve_static
+            serve_static(self, self.server.web_root)
+            return
         if path == "/api/health":
             worker = self.service.worker_health()
             self._json({
@@ -6485,14 +6490,17 @@ class LoopbackHTTPServer(ThreadingHTTPServer):
 
 
 def create_server(
-    service: AnnotationJobService, host: str = "127.0.0.1", port: int = 43117
+    service: AnnotationJobService, host: str = "127.0.0.1", port: int = 43117,
+    web_root: Path | None = None,
 ) -> ThreadingHTTPServer:
     handler = type(
         "ConfiguredWorkbenchRequestHandler",
         (WorkbenchRequestHandler,),
         {"service": service},
     )
-    return LoopbackHTTPServer((host, port), handler)
+    server = LoopbackHTTPServer((host, port), handler)
+    server.web_root = web_root.resolve() if web_root else None
+    return server
 
 
 def _install_shutdown_signal_handlers(server) -> None:
@@ -6526,6 +6534,7 @@ def main() -> None:
     parser.add_argument("--port", default=43117, type=int)
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--storage-registry", type=Path)
+    parser.add_argument("--web-root", type=Path, help="Serve the packaged static interface on the API port")
     parser.add_argument(
         "--pipeline-root", type=Path, default=Path(__file__).resolve().parents[1]
     )
@@ -6628,7 +6637,7 @@ def main() -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_ALREADY_RUNNING)
     try:
-        server = create_server(service, args.host, args.port)
+        server = create_server(service, args.host, args.port, web_root=args.web_root)
     except OSError as exc:
         # Bind failure after the lock was acquired: another process (not a
         # GUIDE-IEI service, or one on a different state directory) holds

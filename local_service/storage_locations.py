@@ -145,7 +145,9 @@ class StorageLocationRegistry:
         persist: bool = True,
     ):
         self.pipeline_root = _resolved(pipeline_root)
-        self.default_annotation_root = _resolved(self.pipeline_root / "references")
+        self.default_annotation_root = _resolved(
+            os.environ.get("IEI_DEFAULT_ANNOTATION_ROOT") or self.pipeline_root / "references"
+        )
         self.default_data_root = _resolved(default_data_root)
         self.registry_path = _resolved(registry_path or default_registry_path())
         self.backup_path = self.registry_path.with_name(self.registry_path.name + ".backup")

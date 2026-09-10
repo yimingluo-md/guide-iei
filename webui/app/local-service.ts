@@ -72,6 +72,7 @@ export type ServiceCapabilities = {
     label: string;
   }[];
   defaults: {
+    output_directory?: string;
     config_path: string;
     analysis_scope: "exome" | "whole_genome";
     coding_only: boolean;
@@ -1725,6 +1726,8 @@ export async function restartWorkbenchService() {
 }
 
 export type SoftwareUpdateStatus = {
+  desktop_app?: boolean;
+  release_page?: string;
   current_version: string;
   repo: string;
   rollback_available: boolean;
@@ -1737,6 +1740,8 @@ export type SoftwareUpdateStatus = {
 };
 
 export type SoftwareUpdateCheck = {
+  desktop_app?: boolean;
+  release_page?: string;
   ok: boolean;
   current_version: string;
   repo: string;

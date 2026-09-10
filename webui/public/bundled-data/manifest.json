@@ -19,9 +19,9 @@
     "unique_genes": 505
   },
   "haploinsufficiency": {
-    "release": "2026-07-27",
-    "genes": 50,
-    "source": "Manually curated IEI haploinsufficiency gene list"
+    "release": "2026-09-09",
+    "genes": 48,
+    "source": "Manually curated IEI haploinsufficiency gene list from IUIS 2024"
   },
   "schema_version": 1
 }

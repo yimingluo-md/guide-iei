@@ -126,8 +126,8 @@ export function RegulatoryFilterControl({
       <label className="check-row"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)} /><span className="custom-check"/><span>Require SCREEN regulatory activity<small>Only detected activity can include a variant; unavailable or not detected is never used automatically.</small></span></label>
       {enabled && <p className="microcopy">A variant qualifies when regulatory activity is detected in any selected SCREEN tissue or cell context.</p>}
     </details>
-    {loading && <p className="microcopy">{progress || "Screening local context matrices…"}</p>}
-    {error && <p className="microcopy filter-error">{error}</p>}
+    {loading && <p className="microcopy" role="status" aria-live="polite">{progress || "Screening local context matrices…"} · results incomplete</p>}
+    {error && <p className="microcopy filter-error" role="alert">{error}</p>}
   </div>;
 }
 

@@ -1,5 +1,7 @@
 "use client";
 
+import { passesMinimumScore, screenVariantBatches } from "./review-filters";
+
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { WorkbenchErrorBoundary } from "./WorkbenchErrorBoundary";
 import { clearLegacySavedCandidates } from "./session-privacy";
@@ -161,6 +163,7 @@ import {
 import {
   attachGeneConstraints,
   deriveLofConstrainedGenes,
+  isPreviousHaploinsufficiencyDefault,
   loadBundledReferences,
   parseGeneList,
   type GeneConstraint,
@@ -668,9 +671,14 @@ function VariantIdentifier({ row, full = false }: { row: VariantCoordinates; ful
 function storedGeneSet(key: BuiltInGeneSetKey, fallback: Set<string>) {
   try {
     const stored = JSON.parse(localStorage.getItem(GENE_SET_STORAGE_KEYS[key]) ?? "null");
-    return Array.isArray(stored)
+    const genes = Array.isArray(stored)
       ? new Set(stored.map((gene) => String(gene).toUpperCase()))
       : new Set(fallback);
+    if (key === "hi" && isPreviousHaploinsufficiencyDefault(genes, fallback)) {
+      localStorage.removeItem(GENE_SET_STORAGE_KEYS[key]);
+      return new Set(fallback);
+    }
+    return genes;
   } catch {
     return new Set(fallback);
   }
@@ -787,6 +795,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
   const [zygosity, setZygosity] = useState<Zygosity>("all");
   const [alphaMin, setAlphaMin] = useState<number | null>(null);
   const [caddMin, setCaddMin] = useState<number | null>(null);
+  const [aviMin, setAviMin] = useState<number | null>(null);
   const [spliceMin, setSpliceMin] = useState<number | null>(null);
   const [promoterAbsMin, setPromoterAbsMin] = useState<number | null>(null);
   const [loGoFuncClass, setLoGoFuncClass] = useState<"all" | "GOF" | "LOF" | "Neutral">("all");
@@ -833,6 +842,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
   const [activeRegulatorySetId, setActiveRegulatorySetId] = useState("immune-core");
   const [regulatoryFilterEnabled, setRegulatoryFilterEnabled] = useState(false);
   const [regulatoryMatches, setRegulatoryMatches] = useState<Set<string> | null>(null);
+  const [regulatoryResultInput, setRegulatoryResultInput] = useState<symbol | null>(null);
   const [regulatoryFilterLoading, setRegulatoryFilterLoading] = useState(false);
   const [regulatoryFilterProgress, setRegulatoryFilterProgress] = useState("");
   const [regulatoryFilterError, setRegulatoryFilterError] = useState("");
@@ -1121,6 +1131,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
     if (selectedCustomListIds.size && !selectedCustomGenes.has(row.gene.toUpperCase())) return false;
     if (alphaMin !== null && (row.alphaMissense === null || row.alphaMissense < alphaMin)) return false;
     if (caddMin !== null && (row.cadd === null || row.cadd < caddMin)) return false;
+    if (reviewAnalysisScope === "whole_genome" && !passesMinimumScore(row.alphaGenomeAviPhred, aviMin)) return false;
     if (spliceMin !== null && (row.spliceAI === null || row.spliceAI < spliceMin)) return false;
     if (promoterAbsMin !== null && (row.promoterAI === null || Math.abs(row.promoterAI) < promoterAbsMin)) return false;
     if (loGoFuncClass !== "all") {
@@ -1131,12 +1142,13 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
       if (loGoFuncMin !== null && (score === null || score < loGoFuncMin)) return false;
     }
     return true;
-  }), [referencedRows, preferredClinicalKeys, deferredQuery, samples, impacts, popmax, maneOnly, excludeRepeat, excludeSegdup, clinvarOnly, clinvarConflictOnly, clingenPathogenicOnly, geniaPathogenicOnly, proteinChangeMatchOnly, proteinResidueMatchOnly, excludeConfirmedFrameRestored, ieiOnly, hiOnly, dominantOnly, lofConstrainedOnly, iuisCategory, selectedIuisCategoryGenes, omimAssociatedOnly, omimGenes, geniaGeiOnly, geniaGeiGenes, selectedCustomListIds, selectedCustomGenes, alphaMin, caddMin, spliceMin, promoterAbsMin, loGoFuncClass, loGoFuncMin, ieiGenes, hiGenes, dominantGenes, lofConstrainedGenes, qcSettings, includeQcFailing]);
+  }), [referencedRows, preferredClinicalKeys, deferredQuery, samples, impacts, popmax, maneOnly, excludeRepeat, excludeSegdup, clinvarOnly, clinvarConflictOnly, clingenPathogenicOnly, geniaPathogenicOnly, proteinChangeMatchOnly, proteinResidueMatchOnly, excludeConfirmedFrameRestored, ieiOnly, hiOnly, dominantOnly, lofConstrainedOnly, iuisCategory, selectedIuisCategoryGenes, omimAssociatedOnly, omimGenes, geniaGeiOnly, geniaGeiGenes, selectedCustomListIds, selectedCustomGenes, alphaMin, caddMin, aviMin, reviewAnalysisScope, spliceMin, promoterAbsMin, loGoFuncClass, loGoFuncMin, ieiGenes, hiGenes, dominantGenes, lofConstrainedGenes, qcSettings, includeQcFailing]);
 
   const selectedRegulatorySet = useMemo(
     () => activeRegulatorySet(screenCatalog, regulatoryContextSets, activeRegulatorySetId),
     [screenCatalog, regulatoryContextSets, activeRegulatorySetId],
   );
+  const regulatoryInput = useMemo(() => ({ token: Symbol("SCREEN input"), eligibleRows, selectedRegulatorySet }), [eligibleRows, selectedRegulatorySet]);
 
   useEffect(() => {
     if (reviewAnalysisScope !== "whole_genome") {
@@ -1148,6 +1160,8 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
     if (!screenCatalog?.available || !selectedRegulatorySet) {
       const frame = window.requestAnimationFrame(() => {
         setRegulatoryMatches(null);
+        setRegulatoryResultInput(regulatoryInput.token);
+        setRegulatoryFilterLoading(false);
         setRegulatoryFilterError("Prepared SCREEN context data or a context set is unavailable.");
       });
       return () => window.cancelAnimationFrame(frame);
@@ -1164,24 +1178,23 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
       if (!active) return;
       setRegulatoryFilterLoading(true);
       setRegulatoryMatches(null);
+      setRegulatoryResultInput(regulatoryInput.token);
       setRegulatoryFilterError("");
-      const matching = new Set<string>();
-      const size = 1000;
-      for (let index = 0; index < variants.length; index += size) {
-        if (!active) return;
-        setRegulatoryFilterProgress(`Screening ${Math.min(index + size, variants.length).toLocaleString()} of ${variants.length.toLocaleString()} unique variants…`);
-        const result = await filterScreenContext({
-          variants: variants.slice(index, index + size),
+      setRegulatoryFilterProgress(`Screening 0 of ${variants.length.toLocaleString()} unique variants…`);
+      await screenVariantBatches(variants, (batch) => filterScreenContext({
+          variants: batch,
           tissue_ids: selectedRegulatorySet.tissueIds,
           immune_context_ids: selectedRegulatorySet.immuneContextIds,
           mode: "any",
-        });
-        if (!result.available) throw new Error("Prepared SCREEN context data are unavailable.");
-        result.matching_keys.forEach((key) => matching.add(key));
-      }
-      if (active) setRegulatoryMatches(matching);
+        }), (matches, tested, total) => {
+          setRegulatoryMatches(matches);
+          setRegulatoryFilterProgress(`Screened ${tested.toLocaleString()} of ${total.toLocaleString()} unique variants · ${matches.size.toLocaleString()} matches so far`);
+        }, () => active);
     })().catch((reason: unknown) => {
-      if (active) setRegulatoryFilterError(reason instanceof Error ? reason.message : "SCREEN context filtering failed.");
+      if (active) {
+        setRegulatoryMatches(null);
+        setRegulatoryFilterError(reason instanceof Error ? reason.message : "SCREEN context filtering failed.");
+      }
     }).finally(() => {
       if (active) {
         setRegulatoryFilterLoading(false);
@@ -1189,22 +1202,25 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
       }
     });
     return () => { active = false; };
-  }, [reviewAnalysisScope, regulatoryFilterEnabled, selectedRegulatorySet, screenCatalog?.available, eligibleRows]);
+  }, [reviewAnalysisScope, regulatoryFilterEnabled, selectedRegulatorySet, screenCatalog?.available, eligibleRows, regulatoryInput]);
+
+  const regulatoryCurrentMatches = regulatoryResultInput === regulatoryInput.token ? regulatoryMatches : null;
+  const regulatoryCurrentError = regulatoryResultInput === regulatoryInput.token ? regulatoryFilterError : "";
+  const regulatoryScreenPending = reviewAnalysisScope === "whole_genome" && regulatoryFilterEnabled
+    && !regulatoryCurrentError && (regulatoryResultInput !== regulatoryInput.token || regulatoryFilterLoading);
+  const regulatoryScreenError = reviewAnalysisScope === "whole_genome" && regulatoryFilterEnabled ? regulatoryCurrentError : "";
 
   const screenFilteredRows = useMemo(
     () => {
       if (reviewAnalysisScope !== "whole_genome" || !regulatoryFilterEnabled) {
         return eligibleRows;
       }
-      // While the chunked screen is loading — and permanently after a service
-      // failure — matches are null. Passing every row through with the
-      // "require positive SCREEN evidence" box checked reads as "all of
-      // these have evidence"; the honest state is an empty set until real
-      // matches arrive, with the loading/error banners explaining why.
-      if (!regulatoryMatches) return [];
-      return eligibleRows.filter((row) => regulatoryMatches.has(regulatoryVariantKey(row)));
+      // Only show confirmed matches for this exact input/context selection.
+      // The results panel labels partial results and errors explicitly.
+      if (!regulatoryCurrentMatches) return [];
+      return eligibleRows.filter((row) => regulatoryCurrentMatches.has(regulatoryVariantKey(row)));
     },
-    [eligibleRows, reviewAnalysisScope, regulatoryFilterEnabled, regulatoryMatches],
+    [eligibleRows, reviewAnalysisScope, regulatoryFilterEnabled, regulatoryCurrentMatches],
   );
 
   const qcFailingCalls = useMemo(
@@ -1549,7 +1565,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
     setIuisCategory(""); setOmimAssociatedOnly(false); setGeniaGeiOnly(false);
     setSelectedCustomListIds(new Set());
     setRegulatoryFilterEnabled(false); setRegulatoryMatches(null);
-    setZygosity("all"); setAlphaMin(null); setCaddMin(null); setSpliceMin(null); setPromoterAbsMin(null); setLoGoFuncClass("all"); setLoGoFuncMin(null);
+    setZygosity("all"); setAlphaMin(null); setCaddMin(null); setAviMin(null); setSpliceMin(null); setPromoterAbsMin(null); setLoGoFuncClass("all"); setLoGoFuncMin(null);
   }
 
   function selectPopmax(value: number | null) {
@@ -1625,8 +1641,8 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
           </FilterSection>
           <FilterSection title="Gene sets" count={Number(ieiOnly) + Number(hiOnly) + Number(dominantOnly) + Number(lofConstrainedOnly) + Number(Boolean(iuisCategory)) + Number(omimAssociatedOnly) + Number(geniaGeiOnly) + selectedCustomListIds.size}>
             <Check label="IUIS 2024 IEI" checked={ieiOnly} onChange={setIeiOnly} disabled={!ieiOnly && referenceUnavailable("iei")} note={referenceNote("iei", `${ieiGenes.size} genes · bundled/custom`)} />
-            <Check label="Haploinsufficiency" checked={hiOnly} onChange={setHiOnly} disabled={!hiOnly && referenceUnavailable("hi")} note={referenceNote("hi", `${hiGenes.size} genes · curated/custom`)} />
-            <Check label="Dominant IEI" checked={dominantOnly} onChange={setDominantOnly} disabled={!dominantOnly && referenceUnavailable("dominant")} note={referenceNote("dominant", `${dominantGenes.size} genes · bundled/custom`)} />
+            <Check label="IEI autosomal-dominant" checked={dominantOnly} onChange={setDominantOnly} disabled={!dominantOnly && referenceUnavailable("dominant")} note={referenceNote("dominant", `${dominantGenes.size} genes · bundled/custom`)} />
+            <Check label="IEI haploinsufficiency" checked={hiOnly} onChange={setHiOnly} disabled={!hiOnly && referenceUnavailable("hi")} note={referenceNote("hi", `${hiGenes.size} genes · curated/custom`)} />
             <Check label="LoF constrained" checked={lofConstrainedOnly} onChange={setLofConstrainedOnly} disabled={!lofConstrainedOnly && referenceUnavailable("constraints")} note={referenceNote("constraints", `${lofConstrainedGenes.size} genes · pLI ≥0.9 or LOEUF <0.6`)} />
             <label className="field-label">IUIS category</label><select value={iuisCategory} onChange={(event) => setIuisCategory(event.target.value)}><option value="">No IUIS category filter</option>{geneKnowledgeFilters?.iuis_categories.map((item) => <option key={item.category} value={item.category}>{item.category} ({item.genes})</option>)}</select>
             <Check label="OMIM-associated gene" checked={omimAssociatedOnly} onChange={setOmimAssociatedOnly} disabled={!omimGenes.size} note={omimGenes.size ? `${omimGenes.size} genes · locally licensed data` : "OMIM is not installed"} />
@@ -1663,6 +1679,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
             <p className="microcopy" id="prediction-threshold-help">A threshold keeps only variants that <em>have</em> that score at or above it: variants with no value for the predictor are excluded while the threshold is set, unlike the frequency filter, where a missing value is retained. Coverage differs by predictor — AlphaMissense scores missense SNVs only, dbNSFP CADD covers SNVs (the optional CADD dataset adds indels), SpliceAI covers SNVs and short indels near splice sites, PromoterAI scores promoter SNVs. Leave a threshold empty to keep unscored variants.</p>
             <Threshold label="AlphaMissense ≥" value={alphaMin} placeholder="optional" onChange={setAlphaMin} />
             <Threshold label="CADD phred ≥" value={caddMin} placeholder="optional" onChange={setCaddMin} />
+            {reviewAnalysisScope === "whole_genome" && <><Threshold label="AlphaGenome AVI Phred ≥" value={aviMin} placeholder="optional" onChange={setAviMin} min={0} /><p className="microcopy">Genome-wide SNV score. A threshold excludes unscored variants, including indels; leave empty for no AVI filter.</p></>}
             <Threshold label="SpliceAI max ≥" value={spliceMin} placeholder="optional" onChange={setSpliceMin} />
             <Threshold label="PromoterAI |score| ≥" value={promoterAbsMin} placeholder={hasPromoterAi ? "e.g. 0.8" : "not annotated"} onChange={setPromoterAbsMin} disabled={!hasPromoterAi} />
             <p className="microcopy">{hasPromoterAi ? "Uses the absolute score, so both strong positive and negative effects qualify." : "PromoterAI annotations are unavailable in the imported VCF."}</p>
@@ -1690,7 +1707,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
             <Check label="Exclude RepeatMasker" checked={excludeRepeat} onChange={setExcludeRepeat} />
             <Check label="Exclude SegDup" checked={excludeSegdup} onChange={setExcludeSegdup} />
           </FilterSection>
-          {reviewAnalysisScope === "whole_genome" && <FilterSection title="Regulatory context" count={regulatoryFilterEnabled && regulatoryMatches ? regulatoryMatches.size : undefined}>
+          {reviewAnalysisScope === "whole_genome" && <FilterSection title="Regulatory context" count={regulatoryFilterEnabled && regulatoryCurrentMatches ? regulatoryCurrentMatches.size : undefined}>
             <RegulatoryFilterControl
               catalog={screenCatalog}
               activeSetId={activeRegulatorySetId}
@@ -1709,9 +1726,9 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
                   setRegulatoryFilterError("");
                 }
               }}
-              loading={regulatoryFilterLoading}
+              loading={regulatoryScreenPending}
               progress={regulatoryFilterProgress}
-              error={regulatoryFilterError}
+              error={regulatoryScreenError}
             />
           </FilterSection>}
         </aside>
@@ -1750,6 +1767,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
               setSelectedCustomListIds(new Set());
               setAlphaMin(null);
               setCaddMin(null);
+              setAviMin(null);
               setSpliceMin(null);
               setPromoterAbsMin(null);
               setZygosity("all");
@@ -1839,11 +1857,13 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
             <>
               {view === "saved" && <p className="alert" role="note">Candidate stars are session-only. Export TSV to keep a record before loading another dataset, refreshing, or closing this tab.</p>}
               <div className="content-header">
-                <div><p className="eyebrow">{summary ? `${summary.files} imported file${summary.files === 1 ? "" : "s"}` : "No VCF imported"}</p><h1>{view === "compound" ? "Candidate compound heterozygotes" : view === "saved" ? "Saved candidates" : "Prioritized variants"}</h1><p className="subtitle">{filtered.length} transcript-level rows · {new Set(filtered.map((row) => row.gene)).size} genes · {(() => { const count = summary?.cohortMode ? summary.samples : new Set(filtered.map((row) => row.sample)).size; return `${count} sample${count === 1 ? "" : "s"}`; })()}</p></div>
-                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} oneRowPerVariant={oneRowPerVariant} setOneRowPerVariant={setOneRowPerVariant} /><button className="secondary-button" onClick={() => { if (confirmResearchUseExport()) downloadTsv(filtered, qcSettings); }}>Export TSV</button></div>
+                <div><p className="eyebrow">{summary ? `${summary.files} imported file${summary.files === 1 ? "" : "s"}` : "No VCF imported"}</p><h1>{view === "compound" ? "Candidate compound heterozygotes" : view === "saved" ? "Saved candidates" : "Prioritized variants"}</h1><p className="subtitle">{regulatoryScreenPending ? "Partial results · " : regulatoryScreenError ? "SCREEN unavailable · " : ""}{filtered.length} transcript-level rows · {new Set(filtered.map((row) => row.gene)).size} genes · {(() => { const count = summary?.cohortMode ? summary.samples : new Set(filtered.map((row) => row.sample)).size; return `${count} sample${count === 1 ? "" : "s"}`; })()}</p></div>
+                <div className="header-controls"><DisplaySettingsButton open={settingsOpen} setOpen={setSettingsOpen} visibleInfo={visibleInfo} setVisibleInfo={setVisibleInfo} availableDbnsfpPredictors={availableDbnsfpPredictors} visibleDbnsfpPredictors={visibleDbnsfpPredictors} setVisibleDbnsfpPredictors={setVisibleDbnsfpPredictors} oneRowPerVariant={oneRowPerVariant} setOneRowPerVariant={setOneRowPerVariant} /><button className="secondary-button" disabled={regulatoryScreenPending || Boolean(regulatoryScreenError)} onClick={() => { if (confirmResearchUseExport()) downloadTsv(filtered, qcSettings); }}>Export TSV</button></div>
               </div>
               {summary && <div className="qc-strip"><span><strong>{summary.samples}</strong> sample{summary.samples === 1 ? "" : "s"}</span><span><strong>{summary.intakeQc.filter((check) => check.status === "pass").length}</strong> intake checks passed</span><span><strong>{qcFailingCalls}</strong> calls {includeQcFailing ? "flagged" : "hidden by QC"}</span>{(summary.warnings.length > 0 || summary.intakeQc.some((check) => check.status === "warning")) && <button onClick={() => setView("import")}>Review intake QC</button>}</div>}
-              <VariantTable rows={prioritizedRows} hasImportedData={Boolean(summary)} saved={saved} setSaved={setSaved} setSelected={setSelected} compoundKeys={compoundKeys} visibleInfo={visibleInfo} trio={trio} trioThresholds={trioThresholds} trioCompoundVariantKeys={trioCompoundVariantKeys} qcSettings={qcSettings} />
+              {regulatoryScreenPending && <div className="alert" role="status" aria-live="polite"><strong>SCREEN filtering in progress — results are incomplete.</strong><p>{regulatoryFilterProgress || "Starting SCREEN regulatory-activity checks…"}</p><p>Confirmed matches appear as screening finishes each batch. A blank list during screening does not mean that no variants qualify.</p></div>}
+              {regulatoryScreenError && <div className="alert error" role="alert"><strong>SCREEN filtering could not finish.</strong><p>{regulatoryScreenError}</p><p>No final filtered result is available. Turn off the SCREEN filter to see the other results.</p></div>}
+              {!regulatoryScreenError && (!regulatoryScreenPending || prioritizedRows.length > 0) && <VariantTable rows={prioritizedRows} hasImportedData={Boolean(summary)} saved={saved} setSaved={setSaved} setSelected={setSelected} compoundKeys={compoundKeys} visibleInfo={visibleInfo} trio={trio} trioThresholds={trioThresholds} trioCompoundVariantKeys={trioCompoundVariantKeys} qcSettings={qcSettings} />}
             </>
           )}
         </section>
@@ -1873,8 +1893,8 @@ function Check({ label, checked, onChange, note, disabled = false }: { label: st
   return <label className={`check-row ${disabled ? "disabled" : ""}`}><input type="checkbox" checked={checked} disabled={disabled} onChange={(event) => onChange(event.target.checked)} /><span className="custom-check" /><span>{label}{note && <small>{note}</small>}</span></label>;
 }
 
-function Threshold({ label, value, placeholder, onChange, disabled = false }: { label: string; value: number | null; placeholder: string; onChange: (value: number | null) => void; disabled?: boolean }) {
-  return <label className="threshold"><span>{label}</span><input type="number" step="0.01" value={value ?? ""} placeholder={placeholder} disabled={disabled} onChange={(event) => onChange(event.target.value === "" ? null : Number(event.target.value))} /></label>;
+function Threshold({ label, value, placeholder, onChange, disabled = false, min }: { label: string; value: number | null; placeholder: string; onChange: (value: number | null) => void; disabled?: boolean; min?: number }) {
+  return <label className="threshold"><span>{label}</span><input type="number" min={min} step="0.01" value={value ?? ""} placeholder={placeholder} disabled={disabled} onChange={(event) => { const input = event.target; if (input.value === "") onChange(null); else if (Number.isFinite(input.valueAsNumber) && (min === undefined || input.valueAsNumber >= min)) onChange(input.valueAsNumber); }} /></label>;
 }
 
 function carrierQcFailures(
@@ -2057,7 +2077,7 @@ const FUNCVEP_MODEL_DISPLAY: Array<{
 ];
 
 function funcVepMissingScoreNote(observation?: PredictorObservation) {
-  if (!observation) return "No FuncVEP score for this variant. Missing is not evidence that the variant is benign.";
+  if (!observation) return "No FuncVEP score for this variant.";
   const sourceGenes = (observation.target?.ensembl_gene || "").split("&").filter(Boolean);
   const matchReason = observation?.provenance?.match;
   const reason = matchReason === "query_target_unavailable"
@@ -2068,7 +2088,7 @@ function funcVepMissingScoreNote(observation?: PredictorObservation) {
         ? "The source match was ambiguous"
         : "The allele was found, but the Ensembl gene did not match exactly";
   const source = sourceGenes.length ? ` Source gene${sourceGenes.length === 1 ? "" : "s"}: ${sourceGenes.join(", ")}.` : "";
-  return `${reason}; no score was transferred.${source} Missing is not evidence that the variant is benign.`;
+  return `${reason}; no score was transferred.${source}`;
 }
 
 type PredictorCardItem = {
@@ -2226,7 +2246,7 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
         value: funcVepExactMatch ? score : null,
         note: funcVepExactMatch
           ? score === null || score === undefined
-            ? `${model.label} score unavailable. Missing is not evidence that the variant is benign.`
+            ? `${model.label} score unavailable.`
             : classification?.label
           : funcVepMissingScoreNote(funcVepObservation),
         noteTitle: classification
@@ -2369,10 +2389,10 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
         {visibleInfo.has("clinvar") && <GeniaVariantEvidence evidence={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidence : null} loading={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidenceLoading : true} error={geniaEvidenceKey === selectedGeniaEvidenceKey ? geniaEvidenceError : ""} compact={selected.genia ?? []} proteinMatch={selected.geniaProteinMatch} selectedTranscript={selected.transcript}/>}
         {visibleInfo.has("transcript") && <EvidenceSection eyebrow="Molecular consequence" title="Transcript"><EvidenceGrid items={[
           ["HGVSc", selected.hgvsC || "—"], ["HGVSp", selected.hgvsP || "—"], ["Transcript", selected.transcript || "—"], ["Gene ID", selected.geneId || "—"], ["Biotype", cleanLabel(selected.biotype)], ["Transcript warning", isReferenceDisruptedTranscript(selected) ? "Reference ORF disrupted; not a conventional pLoF baseline" : "None"], ["Exon", selected.exon || "—"], ["Consequence", cleanLabel(selected.consequence)], ["MANE", selected.mane ? "Yes" : "No"], ["VEP PICK", selected.picked ? "Yes" : "No"],
-        ]} />{selected.transcriptDetailStatus === "loading" ? <p className="constraint-note">Loading the complete transcript table from the managed VCF…</p> : null}{selected.transcriptDetailStatus === "unavailable" ? <p className="constraint-note">{selected.transcriptDetailError}</p> : null}{selected.collapsedTranscriptRows?.length ? <div className="alt-transcripts"><h4>{selected.transcriptDetailStatus === "loading" ? "Clinical transcript annotations shown while the complete table loads" : "All transcript and gene annotations of this variant"}</h4><table><thead><tr><th>Gene</th><th>Transcript</th><th>Consequence</th><th>HGVSc</th><th>HGVSp</th><th>Designation</th></tr></thead><tbody>
+        ]} />{selected.transcriptDetailStatus === "loading" ? <p className="constraint-note">Loading the complete transcript table from the managed VCF…</p> : null}{selected.transcriptDetailStatus === "unavailable" ? <p className="constraint-note">{selected.transcriptDetailError}</p> : null}{selected.collapsedTranscriptRows?.length ? <div className="alt-transcripts"><h4>{selected.transcriptDetailStatus === "loading" ? "Clinical transcript annotations shown while the complete table loads" : "All transcript and gene annotations of this variant"}</h4><div className="transcript-table-scroll" role="region" aria-label="All transcript and gene annotations" tabIndex={0}><table><thead><tr><th scope="col">Gene</th><th scope="col">Transcript</th><th scope="col">Consequence</th><th scope="col">HGVSc</th><th scope="col">HGVSp</th><th scope="col">Designation</th></tr></thead><tbody>
           <tr className="current"><td>{selected.gene}</td><td className="mono">{selected.transcript || "—"}</td><td>{cleanLabel(selected.consequence)}</td><td className="mono">{selected.hgvsC || "—"}</td><td className="mono">{selected.hgvsP || "—"}</td><td>{selected.maneSelect ? "MANE Select" : selected.mane ? "MANE Plus Clinical" : selected.picked ? "VEP PICK" : "—"} (shown)</td></tr>
           {selected.collapsedTranscriptRows.map((other) => <tr key={other.key}><td>{other.gene}</td><td className="mono">{other.transcript || "—"}</td><td>{cleanLabel(other.consequence)}</td><td className="mono">{other.hgvsC || "—"}</td><td className="mono">{other.hgvsP || "—"}</td><td>{other.maneSelect ? "MANE Select" : other.mane ? "MANE Plus Clinical" : other.picked ? "VEP PICK" : "—"}</td></tr>)}
-        </tbody></table></div> : null}</EvidenceSection>}
+        </tbody></table></div></div> : null}</EvidenceSection>}
         {visibleInfo.has("population") && <EvidenceSection eyebrow="Population & regions" title="Frequency context"><EvidenceGrid items={[
           [frequencySourceLabel(selectedFrequencySource), compactNumber(selected.gnomadPopmax)], ["Popmax population", cleanLabel(selected.gnomadPopmaxPopulation)], ["RepeatMasker", selected.repeat ? "Overlap" : "No overlap"], ["Segmental duplication", selected.segdup ? "Overlap" : "No overlap"], ["Unscored indel flag", selected.unscoredIndelReasons?.map(unscoredIndelReasonLabel).join("; ") || "None"], ["Variant ID", fullVariantId(selected)], ["Source VCF", selected.source],
           ["Input assembly", selected.liftedFromGrch37 ? "GRCh37 (lifted to GRCh38)" : "GRCh38"], ["Original locus", selected.liftedFromGrch37 && selected.originalChrom ? `${selected.originalChrom}:${selected.originalPos} ${selected.originalRef}›${selected.originalAlt}` : "—"],
@@ -3611,9 +3631,9 @@ function GeneListsPanel({
       {referenceManifest && <p className="resource-release">IUIS {referenceManifest.iuis.release}: {referenceManifest.iuis.unique_genes} IEI genes, {referenceManifest.iuis.dominant_genes} dominant · Curated haploinsufficiency {referenceManifest.haploinsufficiency.release}: {referenceManifest.haploinsufficiency.genes} genes · gnomAD constraint v{referenceManifest.gnomad.release}</p>}
       <div className="built-in-gene-lists">
         <GeneSet label="IUIS 2024 IEI" genes={geneSets.iei} defaultGenes={bundledGeneSets.iei} detail="bundled default" setter={(genes) => setGeneSet("iei", genes)} reset={() => resetGeneSet("iei")}/>
-        <GeneSet label="IEI haploinsufficiency" genes={geneSets.hi} defaultGenes={bundledGeneSets.hi} detail="manually curated default" setter={(genes) => setGeneSet("hi", genes)} reset={() => resetGeneSet("hi")}/>
-        <GeneSet label="IEI dominant" genes={geneSets.dominant} defaultGenes={bundledGeneSets.dominant} detail="bundled from AD inheritance" setter={(genes) => setGeneSet("dominant", genes)} reset={() => resetGeneSet("dominant")}/>
-        <div className="derived-gene-set"><span className="file-badge"><Icon name="dna" /></span><div><strong>LoF constrained</strong><span>{lofConstrainedGenes.size.toLocaleString()} genes · derived from bundled gnomAD constraint</span><small>pLI ≥ 0.9 or LOEUF &lt; 0.6. This is a sensitive prioritization filter, not evidence that a particular variant is pathogenic.</small></div><span className="read-only-badge">Automatic</span></div>
+        <GeneSet label="IEI autosomal-dominant" genes={geneSets.dominant} defaultGenes={bundledGeneSets.dominant} detail="IUIS 2024 · autosomal-dominant (AD) inheritance" setter={(genes) => setGeneSet("dominant", genes)} reset={() => resetGeneSet("dominant")}/>
+        <GeneSet label="IEI haploinsufficiency" genes={geneSets.hi} defaultGenes={bundledGeneSets.hi} detail="manually curated from IUIS 2024 · default" setter={(genes) => setGeneSet("hi", genes)} reset={() => resetGeneSet("hi")}/>
+        <div className="derived-gene-set"><span className="file-badge"><Icon name="dna" /></span><div><strong>LoF constrained</strong><span>{lofConstrainedGenes.size.toLocaleString()} genes · derived from bundled gnomAD constraint</span><small>pLI ≥ 0.9 or LOEUF &lt; 0.6.</small></div><span className="read-only-badge">Automatic</span></div>
       </div>
     </section>
 
@@ -3725,8 +3745,7 @@ function AboutPanel() {
       {check?.ok && check.update_available && <article className="software-update-card">
         <div className="section-title"><div><p className="eyebrow">New release</p><h2>GUIDE-IEI {check.latest_version}</h2></div><span className="mini-badge teal">{check.published_at ? new Date(check.published_at).toLocaleDateString() : "available"}</span></div>
         {check.notes && <pre className="release-notes">{check.notes}</pre>}
-        <button className="primary-button dark" disabled={Boolean(working)} onClick={() => void runInstall()}>{working === "install" ? "Downloading and installing…" : `Install ${check.latest_version}`}</button>
-        <p className="constraint-note">Installation replaces only the software&apos;s own files. Annotation datasets, the sample library, review data, and your edited configuration are never touched, and the current version is kept for rollback.</p>
+        {status?.desktop_app || check.desktop_app ? <><a className="primary-button dark" href="https://github.com/yimingluo-md/guide-iei/releases/latest" target="_blank" rel="noreferrer">Open Mac app downloads</a><p className="constraint-note">Download the new Mac app, quit GUIDE-IEI, and replace the app in Applications. Your databases, Sample Library and settings remain separate.</p></> : <><button className="primary-button dark" disabled={Boolean(working)} onClick={() => void runInstall()}>{working === "install" ? "Downloading and installing…" : `Install ${check.latest_version}`}</button><p className="constraint-note">Installation replaces only the software&apos;s own files. Annotation datasets, the sample library, review data, and your edited configuration are never touched, and the current version is kept for rollback.</p></>}
       </article>}
       {installResult && <div className="alert software-update-done">
         <div>
@@ -4919,7 +4938,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
         if (initial) {
           setProfile(nextCapabilities.profiles[0]?.id ?? "local");
           setInputAssembly(nextCapabilities.defaults.input_assembly);
-          setOutputDirectory(`${nextCapabilities.pipeline_root}/results`);
+          setOutputDirectory(nextCapabilities.defaults.output_directory ?? `${nextCapabilities.pipeline_root}/results`);
           setFork(nextCapabilities.hardware.recommended_vep_workers);
           setWorkerMode("automatic");
         }

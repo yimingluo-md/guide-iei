@@ -424,6 +424,9 @@ install_node() {
 }
 
 NODE_BIN=""
+if [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
+    ok "prebuilt desktop interface (Node/npm not required)"
+else
 if NODE_BIN="$(resolve_node)"; then
     ok "node $("$NODE_BIN" --version) at $NODE_BIN (>= ${NODE_MIN_MAJOR}.${NODE_MIN_MINOR})"
 elif [ "$MODE" = "install" ]; then
@@ -461,6 +464,7 @@ elif [ "$MODE" = "install" ] && [ -n "$NPM_BIN" ]; then
     fi
 else
     fix "webui dependencies not installed" "rerun with --install, or: cd webui && npm ci"
+fi
 fi
 
 # ------------------------------------------------- native htslib tools (optional)
@@ -764,7 +768,13 @@ if [ -n "$free_gb" ]; then
 fi
 
 # ---------------------------------------------------------------- smoke test
-if [ "$PYYAML_OK" = 1 ]; then
+if [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
+    if "$PYTHON_BIN" -s -B -c 'import yaml, sqlite3, ssl' >/dev/null 2>&1; then
+        ok "bundled Python dependency check passed"
+    else
+        fix "bundled Python dependency check failed" "download a fresh copy of the Mac app"
+    fi
+elif [ "$PYYAML_OK" = 1 ]; then
     if (cd "$ROOT" && PATH="$(dirname "$PYTHON_BIN"):$PATH" bash test/test_dry_run.sh >/dev/null 2>&1); then
         ok "pipeline smoke test passed (test/test_dry_run.sh — no container or references needed)"
     else
