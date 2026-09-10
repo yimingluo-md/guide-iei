@@ -20,6 +20,14 @@ def main():
     app = Path(sys.argv[1]).resolve()
     python = app / "Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
     root = app / "Contents/Resources/application"
+    existing_engine = os.environ.get("IEI_TEST_EXISTING_ENGINE") == "1"
+    if existing_engine:
+        # Refuse to run the automatic path unless the existing image matches;
+        # this test must not install tools or rebuild a user's container.
+        expected = subprocess.check_output(["bash", str(root / "docker/image_fingerprint.sh")], text=True).strip()
+        actual = subprocess.check_output(["docker", "image", "inspect", "--format",
+            '{{ index .Config.Labels "org.guide-iei.source-fingerprint" }}', "vep-annotate:latest"], text=True).strip()
+        assert actual == expected, "Existing engine test needs a matching running Docker image"
     with (app / "Contents/Info.plist").open("rb") as handle:
         assert plistlib.load(handle)["CFBundleIdentifier"] == "org.guide-iei.desktop"
     subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
@@ -41,7 +49,14 @@ def main():
             "IEI_TOOLS_DIR": str(state / "empty-tools"),
             "IEI_DESKTOP_NO_BROWSER": "1", "PYTHONDONTWRITEBYTECODE": "1",
             "IEI_AUTO_START_DOCKER": "0", "IEI_MAC_TOOL_DISCOVERY": "0",
+            "IEI_DESKTOP_SETUP": "0",  # Offline review smoke; setup has separate tests.
         }
+        if existing_engine:
+            env.update(IEI_DESKTOP_SETUP="1", IEI_MAC_TOOL_DISCOVERY="1", PATH=os.environ["PATH"])
+            env["DOCKER_CONFIG"] = os.environ.get("DOCKER_CONFIG", str(Path.home() / ".docker"))
+            for name in ("DOCKER_HOST", "DOCKER_CONTEXT"):
+                if name in os.environ:
+                    env[name] = os.environ[name]
         log = (state / "service.log").open("w+")
         command = ([str(app / "Contents/MacOS/GUIDE-IEI")]
                    if os.environ.get("IEI_TEST_NATIVE_APP") == "1"
@@ -70,7 +85,20 @@ def main():
             assert manifest["haploinsufficiency"]["genes"] == 48
             assert get("/api/software-update/status")["desktop_app"]
             capabilities = get("/api/capabilities")
-            assert not capabilities["container_runtimes"]
+            if existing_engine:
+                assert capabilities["container_runtimes"]
+                for _ in range(100):
+                    states = list((state / "Application Support/logs").glob("startup-*.json"))
+                    if states and json.loads(states[0].read_text()).get("phase") == "ready":
+                        break
+                    time.sleep(.1)
+                else:
+                    raise AssertionError("Native automatic startup did not reuse the ready engine: " +
+                                         repr([path.read_text() for path in states]))
+                assert not get("/api/resource-downloads")["jobs"], "Ready engine was unnecessarily reinstalled"
+                print("AUTOMATIC STARTUP PASSED: matching engine reused without any setup job")
+            else:
+                assert not capabilities["container_runtimes"]
             assert capabilities["defaults"]["output_directory"].startswith(str(state))
             get("/api/gene-knowledge/status")
             get("/api/gene-knowledge/filters")
@@ -135,6 +163,8 @@ def main():
         except BaseException:
             log.flush()
             print((state / "service.log").read_text(), file=sys.stderr)
+            for path in (state / "Application Support/logs").glob("desktop-*.log"):
+                print(path.read_text()[-8000:], file=sys.stderr)
             raise
         finally:
             # In native mode, terminating only the Cocoa parent would orphan

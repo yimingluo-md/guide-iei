@@ -90,6 +90,52 @@ class EngineSetupTests(unittest.TestCase):
         finally:
             server.shutdown(); server.server_close(); thread.join(timeout=5)
 
+    def test_cancel_stops_only_setup_and_releases_reservation_before_review(self):
+        self._write_script("setup_environment.sh", '#!/bin/sh\necho "=== Downloading container tools ==="\necho "raw noisy compiler output"\nexec sleep 60\n')
+        with patch("local_service.workbench_service.platform.system", return_value="Darwin"):
+            job = self.service.start_engine_setup({"confirm": True})
+            for _ in range(100):
+                current = self.service.resource_downloads()[0]
+                if "raw noisy" in current["log"]:
+                    break
+                time.sleep(.02)
+            self.assertEqual(current["message"], "Downloading container tools…")
+            with self.assertRaises(ValueError):
+                self.service.cancel_engine_setup({"job_id": job["id"]})
+            self.service.cancel_engine_setup({"job_id": job["id"], "confirm": True})
+            result = self.wait_setup(job)
+        self.assertEqual(result["status"], "interrupted", result)
+        self.assertNotIn(job["id"], self.service._resource_processes)
+        self.assertNotIn("_cancel_requested", result)
+        self.service.begin_storage_mutation()
+        self.service.end_storage_mutation()
+
+    def test_native_coordinator_over_http_waits_for_real_worker_cleanup(self):
+        from local_service.desktop_setup import prepare_engine
+        self._write_script("setup_environment.sh", '#!/bin/sh\necho "=== Preparing test engine ==="\nexec sleep 60\n')
+        server = create_server(self.service, port=0)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        status_path, control_path = self.root / "startup.json", self.root / "control.json"
+        ticks = []
+        def tick(_seconds):
+            ticks.append(1)
+            self.assertLess(len(ticks), 100)
+            if len(ticks) == 1:
+                control_path.write_text(json.dumps({"action": "skip"}))
+            time.sleep(.02)
+        try:
+            with patch("local_service.workbench_service.platform.system", return_value="Darwin"), patch.object(self.service, "_container_image_status", return_value={"available": False}):
+                self.assertTrue(prepare_engine(f"http://127.0.0.1:{server.server_port}", self.root,
+                    status_path, control_path, lambda: True, pause=tick))
+            self.assertFalse(self.service._engine_setup_reserved)
+            self.assertFalse(self.service._resource_processes)
+            self.assertEqual(json.loads(status_path.read_text())["phase"], "skipped")
+            self.service.begin_storage_mutation()
+            self.service.end_storage_mutation()
+        finally:
+            server.shutdown(); server.server_close(); thread.join(timeout=5)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -74,10 +74,20 @@ Double-click **GUIDE-IEI.app** wherever you placed it.
 
 - **Self-contained app:** the review interface and Python runtime are already
   included; no Terminal window or separate Python/Node installation is needed.
-  For annotation, open **Import & QC → Set up annotation datasets**. If shown,
-  click **Set up annotation engine**, then select datasets on the same page.
-  Engine setup has its own progress, log, and retry; it reuses compatible tools
-  and does not download the annotation databases. Use **Quit GUIDE-IEI** to stop
+  Before opening the browser, a native startup window checks the annotation
+  engine and automatically prepares missing container tools and VEP. On a clean
+  Mac, allow roughly **10–30 minutes or longer** depending on network and hardware
+  (an estimate, not a guaranteed duration). Named stages and **Open Log** show
+  progress; compatible existing components are reused. Later launches perform
+  readiness checks, not a full reinstall. Engine changes may require preparation
+  again; interface-only updates do not rebuild VEP.
+  Choose **Retry preparation** after a failure, or **Open without annotation**
+  for offline/already-annotated VCF review. Skipping stops any active preparation
+  before opening review and remembers that choice. You can enable annotation
+  later using **Import & QC → Set up annotation datasets → Set up annotation
+  engine**; that card remains available for repair. Large annotation databases
+  are never downloaded by startup setup: select them inside Import & QC.
+  Use **Quit GUIDE-IEI** to stop
   the app; closing its browser tab does not stop it.
 
 The self-contained Mac app has a small control window with **Open Workbench**,

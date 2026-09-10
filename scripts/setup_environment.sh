@@ -566,6 +566,7 @@ else
     done
 
     install_macos_container_stack() {
+        echo "=== Downloading container tools ==="
         local lima_sha colima_sha docker_sha lima_arch colima_arch docker_arch
         case "$ARCH" in
             arm64)  lima_arch="arm64";  lima_sha="$LIMA_SHA_ARM64";  colima_arch="arm64";  colima_sha="$COLIMA_SHA_ARM64"; docker_arch="aarch64"; docker_sha="$DOCKER_CLI_SHA_MAC_ARM64" ;;
@@ -666,6 +667,7 @@ else
         fi
     fi
 
+    echo "=== Starting the container runtime ==="
     # ---- daemon / VM health
     if [ -n "$CONTAINER_BIN" ]; then
         case "$CONTAINER_RUNTIME" in
@@ -769,6 +771,7 @@ else
             if [[ "$IMAGE_TAIL" == *:* ]]; then
                 BUILD_NAME="${IMAGE%:*}"; BUILD_TAG="${IMAGE##*:}"
             fi
+            echo "=== Downloading and building the VEP engine ==="
             if (cd "$ROOT" && RUNTIME="$CONTAINER_RUNTIME" IMAGE_NAME="$BUILD_NAME" IMAGE_TAG="$BUILD_TAG" PATH="$(dirname "$CONTAINER_BIN"):$PATH" bash docker/build.sh "$CONFIG"); then
                 ACTUAL_IMAGE_FINGERPRINT="$(
                     "$CONTAINER_BIN" image inspect --format \
@@ -793,6 +796,7 @@ else
         fi
 
         if [ "$IMAGE_CURRENT" = 1 ]; then
+            echo "=== Verifying the annotation engine ==="
             if "$CONTAINER_BIN" run --rm -v "$ROOT":/probe:ro --entrypoint sh "$IMAGE" -c 'test -d /probe/scripts' >/dev/null 2>&1; then
                 ok "repo directory is mountable inside the container"
             else

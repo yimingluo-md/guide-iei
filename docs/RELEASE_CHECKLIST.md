@@ -15,6 +15,9 @@ databases to simulate a clean machine.
 - Python/shell/UI suites, type checking, lint (no errors), documentation checks.
 - Packaged runtime/browser smoke with empty temporary state, host tools hidden,
   engine discovery disabled, duplicate launch and confirmed Quit/closed port.
+- Native first-launch setup: named stages, existing-engine reuse, failed setup
+  and Retry, skip during setup (child reaped before review), remembered skip,
+  immediate Quit/reopen; no dataset downloads during engine preparation.
 - Real container plugin verification and public annotation regression, then
   import its output into an isolated Sample Library/cohort and reopen it.
   Compare every indexed record with the sequential VCF, including chromosome X;

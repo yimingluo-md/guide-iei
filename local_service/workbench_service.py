@@ -2287,6 +2287,24 @@ class AnnotationJobService:
             self._migration_reservation_reason = ""
             self._storage_transition.notify_all()
 
+    def cancel_engine_setup(self, payload: dict) -> dict:
+        if payload.get("confirm") is not True:
+            raise ValueError("Confirm stopping annotation-engine preparation.")
+        job_id = str(payload.get("job_id") or "")
+        with self._resource_lock:
+            job = self._resource_jobs.get(job_id)
+            if not job or job.get("resource_id") != "annotation_engine":
+                raise ValueError("annotation-engine setup job not found")
+            if job["status"] in {"queued", "running"}:
+                job["_cancel_requested"] = True
+                process = self._resource_processes.get(job_id)
+            else:
+                process = None
+        if process is not None:
+            threading.Thread(target=self._stop_resource_process, args=(process, job_id),
+                             name="stop-engine-setup", daemon=True).start()
+        return {"stopping": True}
+
     def start_resource_download(self, resource_id: str) -> dict:
         self._ensure_active_storage_available(require_annotation_root=True)
         if resource_id not in RESOURCE_DOWNLOAD_COMMANDS:
@@ -3296,6 +3314,7 @@ class AnnotationJobService:
         result.pop("_command", None)
         result.pop("_runner", None)
         result.pop("_sensitive_paths", None)
+        result.pop("_cancel_requested", None)
         path = Path(result["log_path"])
         if path.exists():
             with path.open("rb") as handle:
@@ -3451,16 +3470,14 @@ class AnnotationJobService:
         try:
             with log_path.open("a", encoding="utf-8", buffering=1) as log:
                 log.write("$ " + " ".join(json.dumps(item) for item in command) + "\n")
-                process = subprocess.Popen(
-                    command,
-                    cwd=self.pipeline_root,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    bufsize=1,
-                    start_new_session=(os.name == "posix"),
-                )
                 with self._resource_lock:
+                    if job.get("_cancel_requested"):
+                        raise RuntimeError("Annotation-engine preparation stopped by the user.")
+                    process = subprocess.Popen(
+                        command, cwd=self.pipeline_root, stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT, text=True, bufsize=1,
+                        start_new_session=(os.name == "posix"),
+                    )
                     self._resource_processes[job_id] = process
                 if os.name == "posix":
                     self._record_active_resource_pid(job_id, process.pid)
@@ -3472,11 +3489,15 @@ class AnnotationJobService:
                         stage_label, updates = self._resource_progress_update(
                             stage_label, line
                         )
+                        if resource_id == "annotation_engine" and not self._RESOURCE_STAGE_LINE.search(line):
+                            updates = None  # Keep named stages visible; raw build output stays in Log.
                         if updates:
                             if updates.get("message"):
                                 last_line = updates["message"]
                             self._update_resource_job(job_id, **updates)
                 exit_code = process.wait()
+            if job.get("_cancel_requested"):
+                raise RuntimeError("Annotation-engine preparation stopped by the user.")
             if exit_code:
                 raise RuntimeError(last_line or f"download exited with code {exit_code}")
             if resource_id == "annotation_engine":
@@ -3517,7 +3538,7 @@ class AnnotationJobService:
         except Exception as exc:
             self._update_resource_job(
                 job_id,
-                status="failed",
+                status="interrupted" if job.get("_cancel_requested") else "failed",
                 message=last_line or f"{operation.capitalize()} failed.",
                 finished_at=utc_now(),
                 exit_code=exit_code,
@@ -5915,6 +5936,11 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/service/status":
             self._json(self.service.lifecycle_status())
             return
+        if path == "/api/annotation-engine/status":
+            config = self.service._load_config(self.service.pipeline_root / "config/annotation.config.yaml")
+            self._json({**self.service._container_image_status(config),
+                        "busy": self.service._engine_setup_reserved})
+            return
         if path == "/api/health":
             worker = self.service.worker_health()
             self._json({
@@ -6256,6 +6282,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/annotation-engine/setup":
                 self._json(self.service.start_engine_setup(self._body()), HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/annotation-engine/cancel":
+                self._json(self.service.cancel_engine_setup(self._body()), HTTPStatus.ACCEPTED)
                 return
             if path == "/api/resource-preparations/promoterai":
                 self._json(

@@ -116,13 +116,23 @@ def main() -> int:
                     try:
                         with urllib.request.urlopen(url + "/api/health", timeout=1) as response:
                             if json.load(response).get("ok"):
+                                # The native window remains visible while the service
+                                # prepares the engine. Browser launch is the final step.
+                                status_file = env.get("IEI_DESKTOP_STARTUP_STATUS")
+                                if status_file and env.get("IEI_DESKTOP_SETUP", "1") != "0":
+                                    from local_service.desktop_setup import prepare_engine
+                                    if not prepare_engine(url, support, Path(status_file),
+                                            Path(env["IEI_DESKTOP_STARTUP_CONTROL"]),
+                                            lambda: not stopping and child.poll() is None):
+                                        stop(signal.SIGTERM, None)
+                                        break
                                 if env.get("IEI_DESKTOP_NO_BROWSER") != "1":
                                     subprocess.run(["/usr/bin/open", url], check=True)
                                 opened = True
                                 break
                     except (OSError, ValueError):
                         time.sleep(.25)
-                if not opened and child.poll() is None:
+                if not opened and child.poll() is None and not stopping:
                     child.terminate()
                     raise RuntimeError("The workbench did not become ready. See the startup log.")
             while child.poll() is None:

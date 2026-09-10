@@ -20,9 +20,11 @@ Apple Silicon beta release candidate. Publication remains gated on the
   GUIDE-IEI without stopping Docker. Busy imports, storage moves and engine
   preparation must finish first. Old source-launcher Dock shortcuts should be
   replaced with the installed self-contained app.
-- Annotation-engine setup, progress, logs and retry now live in Import & QC.
-  A compatible installed local Docker engine can start automatically; installing
-  missing engine tools still requires confirmation.
+- The native startup window automatically checks/prepares container tools and
+  VEP before opening the browser, with named stages, logs, Retry and Open without
+  annotation. Compatible installations are reused; skipping stops preparation
+  safely and remembers the choice. Import & QC retains engine repair controls
+  and all large-dataset selection/downloads.
 - Cohort rsID searches resolve exact identifiers through indexes before joining
   annotations, avoiding a full annotation-index scan on affected SQLite versions.
 - Fixed immediate reopening after webpage Quit: recently closed TCP connections

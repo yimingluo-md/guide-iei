@@ -10,6 +10,12 @@
 @property(nonatomic, strong) NSWindow *window;
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSButton *openButton;
+@property(nonatomic, strong) NSButton *retryButton;
+@property(nonatomic, strong) NSButton *skipButton;
+@property(nonatomic, strong) NSProgressIndicator *progress;
+@property(nonatomic, copy) NSString *startupPath;
+@property(nonatomic, copy) NSString *controlPath;
+@property BOOL preparing;
 @property(nonatomic, strong) NSTimer *timer;
 @property BOOL polling;
 @property BOOL ownsService;
@@ -17,6 +23,21 @@
 @end
 
 @implementation GuideApp
+- (NSDictionary *)startupStatus {
+    NSData *data = [NSData dataWithContentsOfFile:self.startupPath];
+    id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    return [value isKindOfClass:NSDictionary.class] ? value : @{};
+}
+- (void)startupAction:(NSString *)action {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"action": action} options:0 error:nil];
+    NSError *error = nil;
+    if (![data writeToFile:self.controlPath options:NSDataWritingAtomic error:&error]) [self alert:error.localizedDescription];
+}
+- (void)retrySetup:(id)sender { [self startupAction:@"retry"]; self.retryButton.enabled = NO; }
+- (void)skipSetup:(id)sender {
+    [self startupAction:@"skip"]; self.skipButton.enabled = NO;
+    self.statusLabel.stringValue = @"Stopping preparation before opening the workbench…";
+}
 - (NSURL *)baseURL {
     NSInteger port = [NSProcessInfo.processInfo.environment[@"IEI_UI_PORT"] ?: @"3000" integerValue];
     return [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld", (long)port]];
@@ -53,6 +74,21 @@
             return;
         }
         self.ownsService = YES;
+        NSDictionary *startup = [self startupStatus];
+        NSString *phase = startup[@"phase"];
+        if (self.preparing && ![phase isEqual:@"ready"] && ![phase isEqual:@"skipped"]) {
+            self.statusLabel.stringValue = startup[@"message"] ?: @"Preparing GUIDE-IEI for first use. Checking installed components…";
+            self.retryButton.hidden = ![phase isEqual:@"failed"];
+            self.retryButton.enabled = YES;
+            self.skipButton.hidden = NO;
+            self.skipButton.enabled = ![phase isEqual:@"stopping"];
+            self.progress.hidden = [phase isEqual:@"failed"];
+            if (!self.progress.hidden) [self.progress startAnimation:nil];
+            return;
+        }
+        self.preparing = NO;
+        self.retryButton.hidden = YES; self.skipButton.hidden = YES;
+        [self.progress stopAnimation:nil]; self.progress.hidden = YES;
         self.openButton.enabled = YES;
         NSArray *blockers = [value[@"blockers"] isKindOfClass:NSArray.class] ? value[@"blockers"] : @[];
         NSInteger jobs = [value[@"annotations"] integerValue], downloads = [value[@"downloads"] integerValue];
@@ -61,27 +97,40 @@
     }];
 }
 - (void)buildControls {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 510, 240)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 580, 440)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
         backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"GUIDE-IEI"; self.window.delegate = self; self.window.releasedWhenClosed = NO;
     NSTextField *heading = [NSTextField labelWithString:@"GUIDE-IEI Workbench"]; heading.font = [NSFont boldSystemFontOfSize:22];
     self.statusLabel = [NSTextField wrappingLabelWithString:@"Starting the workbench…"];
+    self.statusLabel.maximumNumberOfLines = 5;
     self.statusLabel.accessibilityLabel = @"Workbench status";
-    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Closing the browser leaves GUIDE-IEI running. Use Quit here or in the web interface to stop it. Docker remains available to other applications."];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:@"First use may take 10–30 minutes or longer to prepare VEP. Large datasets are selected later inside the workbench. Existing compatible components are reused.\n\nClosing the browser leaves GUIDE-IEI running. Use Quit to stop it; Docker remains available to other applications."];
     hint.textColor = NSColor.secondaryLabelColor;
     self.openButton = [NSButton buttonWithTitle:@"Open Workbench" target:self action:@selector(openReview:)]; self.openButton.enabled = NO;
     NSButton *quit = [NSButton buttonWithTitle:@"Quit GUIDE-IEI" target:NSApp action:@selector(terminate:)];
     NSButton *log = [NSButton buttonWithTitle:@"Open Log" target:self action:@selector(openLog:)];
     NSStackView *buttons = [NSStackView stackViewWithViews:@[self.openButton, log, quit]];
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal; buttons.spacing = 12;
-    NSStackView *stack = [NSStackView stackViewWithViews:@[heading, self.statusLabel, hint, buttons]];
+    self.retryButton = [NSButton buttonWithTitle:@"Retry preparation" target:self action:@selector(retrySetup:)]; self.retryButton.hidden = YES;
+    self.skipButton = [NSButton buttonWithTitle:@"Open without annotation" target:self action:@selector(skipSetup:)];
+    self.skipButton.hidden = !self.preparing;
+    NSStackView *setupButtons = [NSStackView stackViewWithViews:@[self.skipButton, self.retryButton]];
+    setupButtons.orientation = NSUserInterfaceLayoutOrientationHorizontal; setupButtons.spacing = 12;
+    self.progress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0, 0, 510, 12)];
+    self.progress.indeterminate = YES; self.progress.style = NSProgressIndicatorStyleBar;
+    [self.progress.widthAnchor constraintEqualToConstant:510].active = YES;
+    self.progress.hidden = !self.preparing;
+    if (self.preparing) [self.progress startAnimation:nil];
+    NSStackView *stack = [NSStackView stackViewWithViews:@[heading, self.statusLabel, self.progress, hint, setupButtons, buttons]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical; stack.alignment = NSLayoutAttributeLeading; stack.spacing = 18;
     stack.translatesAutoresizingMaskIntoConstraints = NO; [self.window.contentView addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
         [stack.leadingAnchor constraintEqualToAnchor:self.window.contentView.leadingAnchor constant:24],
         [stack.trailingAnchor constraintEqualToAnchor:self.window.contentView.trailingAnchor constant:-24],
         [stack.topAnchor constraintEqualToAnchor:self.window.contentView.topAnchor constant:24],
+        [self.statusLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [hint.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
         [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.window.contentView.bottomAnchor constant:-20]]];
     [self.window center]; [self showControls:nil];
 }
@@ -93,11 +142,14 @@
     [alert runModal];
 }
 - (void)openReview:(id)sender {
+    if (self.preparing && self.worker.running) { [self showControls:nil]; return; }
     if (self.worker.running && !self.ownsService) { [self showControls:nil]; return; }
     [NSWorkspace.sharedWorkspace openURL:self.baseURL];
 }
 - (void)openLog:(id)sender {
-    [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:self.logPath]];
+    NSString *setupLog = [self startupStatus][@"log_path"];
+    NSString *path = setupLog.length && [NSFileManager.defaultManager fileExistsAtPath:setupLog] ? setupLog : self.logPath;
+    [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:path]];
 }
 - (NSTask *)task:(NSString *)program arguments:(NSArray *)arguments {
     NSTask *task = [NSTask new];
@@ -112,6 +164,8 @@
     env[@"IEI_DESKTOP_APP"] = @"1";
     env[@"IEI_PYTHON_BIN"] = self.python;
     env[@"IEI_DESKTOP_INSTANCE_ID"] = self.instanceID;
+    env[@"IEI_DESKTOP_STARTUP_STATUS"] = self.startupPath;
+    env[@"IEI_DESKTOP_STARTUP_CONTROL"] = self.controlPath;
     env[@"PATH"] = [NSString stringWithFormat:@"%@:%@/.iei-variant-review/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin:%@/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin", self.python.stringByDeletingLastPathComponent, NSHomeDirectory(), NSHomeDirectory()];
     task.environment = env;
     NSFileHandle *log = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
@@ -132,6 +186,9 @@
         [self alert:error.localizedDescription]; [NSApp terminate:nil]; return;
     }
     self.logPath = [logs stringByAppendingPathComponent:[NSString stringWithFormat:@"desktop-%@.log", NSUUID.UUID.UUIDString]];
+    self.startupPath = [logs stringByAppendingPathComponent:[NSString stringWithFormat:@"startup-%@.json", self.instanceID]];
+    self.controlPath = [logs stringByAppendingPathComponent:[NSString stringWithFormat:@"startup-%@.control.json", self.instanceID]];
+    self.preparing = ![NSProcessInfo.processInfo.environment[@"IEI_DESKTOP_SETUP"] isEqual:@"0"];
     [NSFileManager.defaultManager createFileAtPath:self.logPath contents:nil attributes:@{NSFilePosixPermissions:@0600}];
     NSMenu *bar = [NSMenu new];
     NSMenuItem *top = [NSMenuItem new];
@@ -190,6 +247,7 @@
             if ([confirm runModal] != NSAlertFirstButtonReturn) return NSTerminateCancel;
         }
         self.quitting = YES; self.statusLabel.stringValue = @"Stopping GUIDE-IEI…";
+        if (self.preparing) { [self startupAction:@"quit"]; return NSTerminateLater; }
         if (!self.ownsService) { [self.worker terminate]; return NSTerminateLater; }
         [self request:@"/api/service/quit" body:@{@"confirm": @YES, @"instance_id": self.instanceID} done:^(NSDictionary *value, NSString *failure) {
             (void)value;
@@ -202,7 +260,11 @@
     }
     self.quitting = YES; return NSTerminateNow;
 }
-- (void)applicationWillTerminate:(NSNotification *)notification { [self.timer invalidate]; }
+- (void)applicationWillTerminate:(NSNotification *)notification {
+    [self.timer invalidate];
+    [NSFileManager.defaultManager removeItemAtPath:self.startupPath error:nil];
+    [NSFileManager.defaultManager removeItemAtPath:self.controlPath error:nil];
+}
 @end
 
 int main(int argc, const char *argv[]) {
