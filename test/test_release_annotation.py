@@ -71,6 +71,24 @@ def main():
     final = scratch / "regression.vep.aamatch.vcf.gz"
     if not final.exists():
         final = output
+    # A sequential scan can pass even when tabix silently indexed a stale
+    # prefix (observed missing both chrX records after ClinGen replacement).
+    # Compare the complete indexed record text, not just one hit/count/contig.
+    with gzip.open(final, "rt") as stream:
+        expected_records = sorted(line.rstrip("\n") for line in stream if not line.startswith("#"))
+    regions = scratch / "all-regression-regions.tsv"
+    regions.write_text("".join("\t".join([fields[0], fields[1], fields[1]]) + "\n"
+                               for fields in (line.split("\t") for line in expected_records)))
+    from local_service.cohort_store import HtsBackend
+    backend = HtsBackend.discover()
+    assert backend is not None, "Indexed retrieval test needs the configured HTS backend"
+    # Reuse the runner's backend/mount mapper and keep source/reference paths
+    # out of the command text. Only public scratch data are queried.
+    indexed = subprocess.check_output(["bash", "-c",
+        'source "$1"; RUNTIME="$2"; IMAGE="$3"; hts bcftools view -H -R "$4" "$5"',
+        "index-check", str(code / "scripts/lib.sh"), config["container"]["runtime"],
+        config["container"]["image"], str(regions), str(final)], env=env, text=True)
+    assert sorted(indexed.splitlines()) == expected_records, "Index does not return every final VCF record exactly"
     subprocess.run([sys.executable, str(code / "pipeline/validate_regression_annotations.py"),
                     "--config", str(config_path), "--expected", str(ROOT / "test/regression/expected.yaml"),
                     "--vcf", str(final), "--json", str(scratch / "regression.report.json")], check=True, env=env)
@@ -108,7 +126,7 @@ def main():
     assert len(reopened.list()) == len(result["datasets"]), duplicate
     (scratch / "persistence.report.json").write_text(json.dumps({
         "status": "PASS", "datasets": len(result["datasets"]),
-        "checks": ["library import", "cohort query", "reopen", "managed VCF", "duplicate import"],
+        "checks": ["all indexed records match", "library import", "cohort query", "reopen", "managed VCF", "duplicate import"],
         "scope": "Configured host; existing references; synthetic quality; not clean-machine installation",
     }, indent=2) + "\n")
     print(f"ANNOTATION + LIBRARY RELEASE TEST PASSED: {scratch}")

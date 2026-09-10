@@ -28,6 +28,10 @@ Apple Silicon beta release candidate. Publication remains gated on the
 - Fixed immediate reopening after webpage Quit: recently closed TCP connections
   no longer produce a false “port already in use” error. Genuine running services
   and unrelated applications remain protected; nothing is killed to free a port.
+- Post-processing now indexes uniquely named temporary VCFs before replacing
+  final files. This avoids indexing a stale container view of a replaced file;
+  tabix truncation warnings are failures even when tabix returns zero. The real
+  release regression checks every indexed record against the full output.
 - Initial standalone distribution targets Apple Silicon on macOS 13 or newer.
   Intel packaging CI is a smoke test, not full Intel annotation certification.
   Windows/WSL and Linux source workflows remain available with their documented

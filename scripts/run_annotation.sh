@@ -733,9 +733,7 @@ if [[ "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.enabled)" == "true" 
         --config "$CONFIG" --input "$OUTPUT" --output "$PTC_TMP" \
         --reported-output "$OUTPUT" --audit-json "$PTC_AUDIT"; then
         if [[ "$OUTPUT" == *.gz ]]; then
-            hts bgzip -f "$PTC_TMP" || die "PTC 50-bp bgzip failed"
-            mv "${PTC_TMP}.gz" "$OUTPUT"
-            hts tabix -p vcf -f "$OUTPUT" || die "PTC 50-bp tabix index failed"
+            publish_bgzf "$PTC_TMP" "$OUTPUT" vcf || die "PTC 50-bp indexed publication failed"
         else
             mv "$PTC_TMP" "$OUTPUT"
         fi
@@ -855,9 +853,7 @@ if [[ "$(yaml_get "$CONFIG" post_processing.haplotype_consequences.enabled)" == 
         --haplosaurus-json "$HAPLO_JSON" --output "$HAPLO_TMP" \
         --audit-json "$HAPLO_AUDIT"; then
         if [[ "$OUTPUT" == *.gz ]]; then
-            hts bgzip -f "$HAPLO_TMP" || die "haplotype post-processing bgzip failed"
-            mv "${HAPLO_TMP}.gz" "$OUTPUT"
-            hts tabix -p vcf -f "$OUTPUT" || die "haplotype post-processing tabix failed"
+            publish_bgzf "$HAPLO_TMP" "$OUTPUT" vcf || die "haplotype indexed publication failed"
         else
             mv "$HAPLO_TMP" "$OUTPUT"
         fi
@@ -933,16 +929,11 @@ if [[ "$PROTEIN_MATCH_ENABLED" != "false" ]]; then
         FINAL_OUTPUT="$OUTPUT"
     else
         if [[ "$FINAL" == *.gz ]]; then
-            hts bgzip -f "$MATCH_INPUT" || die "protein-match post-processing bgzip failed"
-            mv "${MATCH_INPUT}.gz" "$FINAL"
+            publish_bgzf "$MATCH_INPUT" "$FINAL" vcf || die "protein-match indexed publication failed"
         else
             mv "$MATCH_INPUT" "$FINAL"
         fi
         log "clinical protein-match post-processing done -> $FINAL"
-        # index final if bgzipped
-        if [[ "$FINAL" == *.gz ]]; then
-            hts tabix -p vcf -f "$FINAL" || die "post-processing tabix index failed"
-        fi
         FINAL_OUTPUT="$FINAL"
     fi
 else
@@ -967,9 +958,7 @@ if [[ "$(yaml_get "$CONFIG" clingen_erepo.enabled)" == "true" ]]; then
     [[ -n "$CLINGEN_FASTA" && -s "$CLINGEN_FASTA" ]] && CLINGEN_ARGS+=(--reference "$CLINGEN_FASTA")
     if [[ -s "$CLINGEN_DB" ]] && python3 "${ROOT}/pipeline/clingen_erepo_annotate.py" "${CLINGEN_ARGS[@]}"; then
         if [[ "$FINAL_OUTPUT" == *.gz ]]; then
-            hts bgzip -f "$CLINGEN_TMP" || die "ClinGen annotation bgzip failed"
-            mv "${CLINGEN_TMP}.gz" "$FINAL_OUTPUT"
-            hts tabix -p vcf -f "$FINAL_OUTPUT" || die "ClinGen annotation tabix failed"
+            publish_bgzf "$CLINGEN_TMP" "$FINAL_OUTPUT" vcf || die "ClinGen indexed publication failed"
         else
             mv "$CLINGEN_TMP" "$FINAL_OUTPUT"
         fi
@@ -1002,9 +991,7 @@ if [[ "$(yaml_get "$CONFIG" genia.enabled)" == "true" ]]; then
     [[ "$GENIA_REQUIRED" == "true" ]] || GENIA_ARGS+=(--allow-unavailable)
     if python3 "${ROOT}/pipeline/genia_annotate.py" "${GENIA_ARGS[@]}"; then
         if [[ "$FINAL_OUTPUT" == *.gz ]]; then
-            hts bgzip -f "$GENIA_TMP" || die "GenIA annotation bgzip failed"
-            mv "${GENIA_TMP}.gz" "$FINAL_OUTPUT"
-            hts tabix -p vcf -f "$FINAL_OUTPUT" || die "GenIA annotation tabix failed"
+            publish_bgzf "$GENIA_TMP" "$FINAL_OUTPUT" vcf || die "GenIA indexed publication failed"
         else
             mv "$GENIA_TMP" "$FINAL_OUTPUT"
         fi
@@ -1047,7 +1034,8 @@ if [[ "${NOTICE_PRESENT:-0}" -eq 0 ]]; then
     printf '%s' "$NOTICE_HEADER_LINE" > "$NOTICE_HDR"
     if [[ "$FINAL_OUTPUT" == *.gz ]]; then
         if hts bcftools annotate -h "$NOTICE_HDR" -O z -o "$NOTICE_TMP" "$FINAL_OUTPUT" \
-            && mv "$NOTICE_TMP" "$FINAL_OUTPUT" && hts tabix -p vcf -f "$FINAL_OUTPUT"; then
+            && bgzf_complete "$NOTICE_TMP" && hts tabix -p vcf -f "$NOTICE_TMP" \
+            && mv "${NOTICE_TMP}.tbi" "${FINAL_OUTPUT}.tbi" && mv "$NOTICE_TMP" "$FINAL_OUTPUT"; then
             log "research-use notice added to the VCF header"
         else
             warn "could not add the research-use notice header (the annotated VCF itself is complete)"

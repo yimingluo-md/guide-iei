@@ -17,6 +17,8 @@ databases to simulate a clean machine.
   engine discovery disabled, duplicate launch and confirmed Quit/closed port.
 - Real container plugin verification and public annotation regression, then
   import its output into an isolated Sample Library/cohort and reopen it.
+  Compare every indexed record with the sequential VCF, including chromosome X;
+  a passing annotation report alone does not prove the index is complete.
   This tests a configured host; it does not substitute for clean-machine setup.
 - Final clean-source app/ZIP/DMG signed, notarized and stapled; distribution
   verifier checks the actual contents of both archives against the commit.

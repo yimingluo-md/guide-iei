@@ -35,11 +35,12 @@ bgzf_complete() { # bgzf_complete <file.gz>  -> 0 when the EOF marker is present
 #   publish_bgzf <plain> <final.gz> [tabix preset: vcf|bed|gff|sam]
 publish_bgzf() {
     local plain="$1" final="$2" preset="${3:-}"
-    local dir base tmp
+    local dir base tmp index_log
     [[ -s "$plain" ]] || { warn "nothing to publish as $(basename "$final"): $plain is missing or empty"; return 1; }
     dir="$(dirname "$final")"; base="$(basename "$final")"
-    tmp="${dir}/.${base}.publish.$$"
-    rm -f "$tmp" "$tmp.gz" "$tmp.gz.tbi"
+    # Several annotation passes replace the same final path in one process.
+    # A PID-only temporary name can also be stale in a container bind cache.
+    tmp="$(mktemp "${dir}/.${base}.publish.XXXXXX")" || return 1
     mv -f "$plain" "$tmp" || return 1
     ( cd "$dir" && hts bgzip -f "$(basename "$tmp")" ) || { rm -f "$tmp" "$tmp.gz"; return 1; }
     if ! bgzf_complete "$tmp.gz"; then
@@ -48,8 +49,22 @@ publish_bgzf() {
         return 1
     fi
     if [[ -n "$preset" ]]; then
-        ( cd "$dir" && hts tabix -f -p "$preset" "$(basename "$tmp.gz")" ) \
-            || { rm -f "$tmp.gz" "$tmp.gz.tbi"; return 1; }
+        index_log="${tmp}.index.log"
+        if ! ( cd "$dir" && hts tabix -f -p "$preset" "$(basename "$tmp.gz")" ) 2>"$index_log"; then
+            cat "$index_log" >&2
+            rm -f "$tmp.gz" "$tmp.gz.tbi" "$index_log"
+            return 1
+        fi
+        cat "$index_log" >&2
+        # tabix can return zero after indexing only the visible prefix of a
+        # stale/truncated container view. Never publish that successful-looking
+        # index; preserve the old file/index and report a retryable failure.
+        if grep -Eiq 'EOF marker is absent|\[E::|input is probably truncated' "$index_log"; then
+            rm -f "$tmp.gz" "$tmp.gz.tbi" "$index_log"
+            warn "tabix reported an incomplete input for $base; not publishing its index"
+            return 1
+        fi
+        rm -f "$index_log"
         mv -f "$tmp.gz.tbi" "$final.tbi" || { rm -f "$tmp.gz" "$tmp.gz.tbi"; return 1; }
     fi
     mv -f "$tmp.gz" "$final" || { rm -f "$tmp.gz" "$final.tbi"; return 1; }
