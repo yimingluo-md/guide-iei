@@ -9,7 +9,7 @@ GUIDE-IEI annotates exome and genome VCFs with a curated annotation stack
 [AlphaGenome AVI](docs/ALPHAGENOME_AVI.md), ENCODE SCREEN
 regulatory data, and more) and can add optional, user-supplied GenIA gene,
 phenotype, and exact-allele evidence. It presents the results in a local review
-workbench designed for clinicians and wet-lab scientists. All analysis is
+workbench designed for clinician-researchers and wet-lab scientists. All analysis is
 performed on the user's own computer. Network access occurs only when the
 user initiates a dataset download, an update check, or an optional
 per-variant SpliceAI lookup for indels ([FAQ](docs/FAQ.md)). GUIDE-IEI is a
