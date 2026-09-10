@@ -3,6 +3,7 @@ import io
 from pathlib import Path
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -13,6 +14,7 @@ from local_service.workbench_service import WorkbenchRequestHandler
 class HttpBoundaryTests(unittest.TestCase):
     def handler(self):
         handler = object.__new__(WorkbenchRequestHandler)
+        handler.server = SimpleNamespace(web_root=None)
         handler.headers = {"Host": "127.0.0.1:43117"}
         handler.service = Mock()
         handler._json = Mock()
@@ -65,6 +67,7 @@ class ErrorPropagationTests(unittest.TestCase):
     def handler(self, method="GET", body=b"{}"):
         import json as json_module
         handler = object.__new__(WorkbenchRequestHandler)
+        handler.server = SimpleNamespace(web_root=None)
         handler.headers = {
             "Host": "127.0.0.1:43117",
             "Content-Length": str(len(body)),
