@@ -1,5 +1,6 @@
 """Supervise the bundled, offline-capable workbench without Terminal/Node."""
 import json
+import errno
 import os
 from pathlib import Path
 import signal
@@ -12,6 +13,63 @@ import urllib.request
 from local_service.container_startup import mac_tool_path
 
 
+EXISTING_BUILD = 42
+OTHER_BUILD = 43
+OCCUPIED_PORT = 44
+
+
+def existing_instance(url, root):
+    """Identify without modifying or signalling the process on this port."""
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, headers, newurl):
+            return None
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    def read(route):
+        try:
+            with opener.open(url + route, timeout=3) as response:
+                # A local HTTP redirect is not an instance-identification reply.
+                if response.geturl() != url + route:
+                    return {}
+                data = json.loads(response.read(256 * 1024))
+                return data if isinstance(data, dict) else {}
+        except (OSError, ValueError):
+            return {}
+    status = read("/api/service/status")
+    if status.get("service") == "GUIDE-IEI":
+        try:
+            build = json.loads((root / "desktop-build.json").read_text())
+        except (OSError, ValueError):
+            build = {}
+        if isinstance(build, dict) and build.get("build_id") and status.get("build_id") == build["build_id"]:
+            return EXISTING_BUILD
+        return OTHER_BUILD
+    # Older standalone builds predate the lifecycle endpoint. Recognize their
+    # API identity, but never treat their matching version number as proof
+    # that they contain the same code.
+    if read("/api/capabilities").get("service") == "IEI Variant Review local service":
+        return OTHER_BUILD
+    return OCCUPIED_PORT
+
+
+def instance_on_port(root, port):
+    """Match HTTPServer's bind policy, including recently closed connections.
+
+    Without SO_REUSEADDR, a clean shutdown's TIME_WAIT sockets can make this
+    probe fail even though HTTPServer could restart and no process is listening.
+    This does not permit binding over a live listener (no SO_REUSEPORT).
+    """
+    with socket.socket() as probe:
+        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            probe.bind(("127.0.0.1", port))
+        except OSError as exc:
+            if exc.errno != errno.EADDRINUSE:
+                raise
+            return existing_instance(f"http://127.0.0.1:{port}", root)
+    return None
+
+
 def main() -> int:
     root = Path(__file__).resolve().parents[1]
     support = Path(os.environ.get("IEI_APP_SUPPORT_DIR", str(Path.home() / "Library/Application Support/GUIDE-IEI")))
@@ -19,12 +77,13 @@ def main() -> int:
     os.umask(0o077)
     port = int(os.environ.get("IEI_UI_PORT", "3000"))
     url = f"http://127.0.0.1:{port}"
-    # Never attach this app to an unrelated/older service on an occupied port.
-    with socket.socket() as probe:
-        try:
-            probe.bind(("127.0.0.1", port))
-        except OSError as exc:
-            raise RuntimeError(f"Port {port} is occupied. Quit the other workbench before opening this app.") from exc
+    # Reopen only an identified instance of this exact packaged build.
+    result = instance_on_port(root, port)
+    if result is not None:
+        if result == EXISTING_BUILD and os.environ.get("IEI_DESKTOP_NO_BROWSER") != "1":
+            subprocess.run(["/usr/bin/open", url], check=True)
+        print(f"Another process is using port {port}; startup result {result}. No process was stopped.", flush=True)
+        return result
     env = dict(os.environ)
     env.update(IEI_DESKTOP_APP="1", PYTHONDONTWRITEBYTECODE="1", PYTHONNOUSERSITE="1")
     env.setdefault("IEI_DEFAULT_ANNOTATION_ROOT", str(support / "references"))

@@ -6,10 +6,10 @@ nav_order: 2
 
 # Install it on your computer
 
-On a Mac, GUIDE-IEI is distributed as a standalone application. On first use,
-it installs its writable application payload and prepares a local working
-environment, then verifies that the annotation and review components can
-communicate correctly. Later launches open the workbench directly.
+On a Mac, open the GUIDE-IEI application to use the local review workbench.
+The self-contained edition includes its Python runtime and prebuilt interface;
+older source-payload packages prepare a writable working environment on first
+use. Annotation datasets are installed separately through the workbench.
 
 Most Mac and Windows users can follow the graphical instructions below.
 Linux users and users comfortable with a terminal can use the command-line
@@ -24,9 +24,11 @@ route in the appendix.
   separately ([the next chapter](03-datasets.md) provides
   the planning table). Datasets may reside on an external SSD when the
   internal drive is small.
-- **The managed Mac installation needs no administrator rights**: application files go under
-  `~/Library/Application Support/GUIDE-IEI/`, while runtimes and workbench
-  state live under `~/.iei-variant-review/`. On a clean Windows computer,
+- **The managed Mac installation needs no administrator rights** when installed
+  in your own `~/Applications` folder. The self-contained app includes its
+  runtime; workbench state defaults to `~/.iei-variant-review/`. Older
+  source-payload packages also keep writable application files under
+  `~/Library/Application Support/GUIDE-IEI/`. On a clean Windows computer,
   installing WSL2/Ubuntu is a one-time administrator-approved Windows change.
   Annotation also needs a working Linux container runtime. Docker Desktop with
   WSL integration is the simplest Windows option. Optional native tools added
@@ -34,11 +36,15 @@ route in the appendix.
 
 ## Get the software
 
-**Mac:** open the [latest GUIDE-IEI release](https://github.com/yimingluo-md/guide-iei/releases/latest)
-and download `GUIDE-IEI-macOS-<version>.zip`. Unzip it and drag
-`GUIDE-IEI.app` to Applications if desired. A standard account can instead
-put it in its own `~/Applications` folder or open it from the unzipped folder;
-do this before the first-open approval below.
+**Mac:** open the [GUIDE-IEI releases page](https://github.com/yimingluo-md/guide-iei/releases)
+(the initial self-contained beta is Apple Silicon only; prereleases do not
+appear at GitHub's “latest stable” link). Choose the signed/notarized
+`GUIDE-IEI-macOS-<version>-arm64.dmg` when available. For a `.dmg`, open it
+and drag **GUIDE-IEI** into **Applications**; for a `.zip`, unzip it first,
+then move **GUIDE-IEI.app** into Applications. A standard account can instead
+use its own `~/Applications` folder. `arm64` means Apple Silicon; it does not
+run on Intel. Intel users can use the source workflow below; Intel CI previews
+are test artifacts, not supported standalone installers.
 
 **Windows:** on the [GUIDE-IEI GitHub page](https://github.com/yimingluo-md/guide-iei),
 use the green **Code** button → **Download ZIP**, then choose **Extract All**
@@ -50,7 +56,7 @@ launcher from inside the ZIP preview. Avoid cloud-synced locations
 
 | Installation | Start here |
 |---|---|
-| Standalone Mac release ZIP | Double-click `GUIDE-IEI.app` |
+| Standalone Mac DMG or ZIP | Install it as described above, then double-click `GUIDE-IEI.app` |
 | Mac source ZIP or Git checkout | Open `desktop/macos/GUIDE-IEI-Workbench.command` inside the complete extracted repository |
 | Windows source ZIP | Open `desktop/windows/GUIDE-IEI.bat`, or use [Start directly in WSL](#windows-start-directly-in-wsl) |
 | Linux | Run `bash scripts/start_workbench.sh` after environment setup |
@@ -66,21 +72,38 @@ neither entry point bypasses institutional security policy.
 
 Double-click **GUIDE-IEI.app** wherever you placed it.
 
-- **The first time only**, macOS refuses the app with *"GUIDE-IEI" Not
-  Opened — Apple could not verify…*, offering only **Move to Trash** and
-  **Done**. This is macOS's expected treatment of this unsigned and
-  unnotarized release, and the resolution is one time only:
-  1. Click **Done** (not Move to Trash).
-  2. Open **System Settings → Privacy & Security** and scroll down to
-     the **Security** section, which now says *"GUIDE-IEI" was blocked to
-     protect your Mac*.
-  3. Click **Open Anyway**, authenticate with your login password or Touch ID,
-     and confirm **Open** in the final warning.
+- **Self-contained app:** the review interface and Python runtime are already
+  included; no Terminal window or separate Python/Node installation is needed.
+  For annotation, open **Import & QC → Set up annotation datasets**. If shown,
+  click **Set up annotation engine**, then select datasets on the same page.
+  Engine setup has its own progress, log, and retry; it reuses compatible tools
+  and does not download the annotation databases. Use **Quit GUIDE-IEI** to stop
+  the app; closing its browser tab does not stop it.
 
-  This approval is required once for each newly downloaded unsigned release.
-  The **Open Anyway** button is available for about an hour after the blocked
-  launch attempt.
-- **The first launch prepares the environment**: a Terminal window opens
+The self-contained Mac app has a small control window with **Open Workbench**,
+**Open Log**, and **Quit GUIDE-IEI**. Click its Dock icon to bring the controls
+back. You can also use **Quit GUIDE-IEI** at the top of the web interface.
+Quitting asks for confirmation: save or export any **Review once** work in all
+tabs first. Running annotation jobs and dataset downloads are interrupted;
+queued annotation jobs resume on the next launch. Retry interrupted work from
+the workbench. Imports, storage moves, and annotation-environment preparation
+must finish before quitting. Docker is left running for other applications.
+The browser tab itself stays open with a shutdown message; close that tab.
+To start again, open the installed GUIDE-IEI app, not the old browser tab.
+
+Opening the same packaged build again reopens its running workbench. If an
+older or different build is already running, the app offers to open that
+workbench instead. Quit the old copy before launching the new one; GUIDE-IEI
+does not stop an unknown process just because it occupies the same port.
+
+If an alert says **“This source-tree app was separated from its repository”**,
+you opened the old source launcher, not the self-contained app. Open the app
+installed from the latest standalone DMG directly from Applications. Replace
+any old Dock shortcut with that app. This is a launcher-selection/translocation
+issue, not a failed Quit operation.
+
+- **Older source-payload ZIP or source checkout:** the first launch prepares
+  the environment. A Terminal window opens
   and reports progress while native Python, Node.js, interface dependencies,
   and the container runtime are installed into managed user folders and a
   smoke test verifies the wiring. No administrator password, Xcode, Homebrew,
@@ -89,13 +112,12 @@ Double-click **GUIDE-IEI.app** wherever you placed it.
 - The browser then opens the workbench at **`http://127.0.0.1:3000`** — a
   local address; the workbench runs on your machine and uses the browser
   as its display.
-- **Keep the Terminal window open while using GUIDE-IEI.** Closing it stops
-  the local workbench service. Later launches skip the preparation and open
-  in seconds.
+- **For Terminal-based launchers, keep the Terminal window open.** Closing
+  it stops the local workbench service. Later launches skip the preparation.
 
-If a personally or institutionally managed Mac does not offer **Open Anyway**,
-its security policy may prohibit unsigned software. An administrator must
-allow the app; there is no safe application-side bypass for that policy.
+Signed and notarized builds do not require a manual security override.
+If macOS blocks an app, verify the download and its signing status; on a
+managed computer, ask your administrator. Do not disable security controls.
 
 ## Windows: double-click GUIDE-IEI and follow the one-time WSL2 prompt
 
@@ -318,8 +340,8 @@ until the restored library, Linux user, permissions, and Docker integration work
 
 | Symptom | Cause and remedy |
 |---|---|
-| macOS: *"GUIDE-IEI" Not Opened* with only Move to Trash / Done | Expected for the unsigned release: **Done** → System Settings → Privacy & Security → Security → **Open Anyway** → authenticate → **Open**. Repeat for each newly downloaded release. |
-| The workbench page does not load | The launcher window must remain open — it *is* the application. Start it again and watch for error lines. |
+| macOS blocks GUIDE-IEI | Verify the download and whether that build is signed and notarized. Use a verified build; on a managed computer, consult your administrator rather than disabling security controls. |
+| The workbench page does not load | Keep the self-contained app running and check **Open Log** in its menu. For a Terminal-based launcher, keep its Terminal window open and check for error lines. |
 | A `[FIX]` line about the container daemon | The runtime is installed but not running. On macOS, opening the workbench or running setup with `--install` attempts to start the selected local Docker Desktop or existing Colima engine; review remains available. If startup fails, follow the displayed instructions and startup-log path. Doctor-only `--check` never starts it. On Windows/Linux, follow the printed start command. |
 | Import or annotation is unexpectedly slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
 | Windows: the launcher reports that WSL2/Ubuntu is not set up | Accept its installation offer, or run `wsl --install -d Ubuntu` in Administrator PowerShell (step 2 above), restart, finish Ubuntu's first-run setup, and launch again. |

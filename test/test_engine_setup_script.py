@@ -1,0 +1,51 @@
+"""Run engine-only setup with a fake ready Docker; no downloads or installs."""
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class EngineScriptTests(unittest.TestCase):
+    def test_engine_only_reuses_runtime_and_skips_ui_and_native_package_managers(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            (root / "scripts").mkdir()
+            for name in ("setup_environment.sh", "macos_container_dependencies.sh"):
+                shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
+            shutil.copytree(ROOT / "docker", root / "docker")
+            config = root / "engine.yaml"
+            config.write_text("container:\n  runtime: docker\n  image: test-engine:custom\n")
+            fingerprint = subprocess.check_output(["bash", str(root / "docker/image_fingerprint.sh")], text=True).strip()
+            binaries = root / "bin"
+            binaries.mkdir()
+            docker = binaries / "docker"
+            docker.write_text('#!/bin/bash\n'
+                'case "$*" in\n'
+                f'  "image inspect --format "*) echo "{fingerprint}";;\n'
+                '  "info --format "*) echo 8;;\n'
+                '  info*|"image inspect "*|"run "*) exit 0;;\n'
+                '  *) echo "unexpected Docker call: $*" >&2; exit 91;;\n'
+                'esac\n')
+            docker.chmod(0o755)
+            for name in ("node", "npm", "brew", "conda", "sudo"):
+                path = binaries / name
+                path.write_text('#!/bin/sh\necho "unexpected package manager/tool" >&2\nexit 92\n')
+                path.chmod(0o755)
+            result = subprocess.run(["bash", str(root / "scripts/setup_environment.sh"), "--install", "--yes", "--engine-only", "--config", str(config)],
+                env={**os.environ, "PATH": str(binaries) + ":/usr/bin:/bin:/usr/sbin:/sbin",
+                     "IEI_PYTHON_BIN": sys.executable, "IEI_TOOLS_DIR": str(root / "tools")},
+                capture_output=True, text=True, timeout=30)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("test-engine:custom matches", result.stdout)
+            self.assertIn("engine-only setup", result.stdout)
+            self.assertNotIn("unexpected", result.stdout + result.stderr)
+            self.assertFalse((root / "webui").exists())
+
+
+if __name__ == "__main__":
+    unittest.main()

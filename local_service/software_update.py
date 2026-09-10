@@ -180,7 +180,7 @@ class SoftwareUpdater:
         return {
             "current_version": self.current_version(),
             "desktop_app": self.is_desktop_app(),
-            "release_page": f"https://github.com/{GITHUB_REPO}/releases/latest",
+            "release_page": f"https://github.com/{GITHUB_REPO}/releases" if self.is_desktop_app() else f"https://github.com/{GITHUB_REPO}/releases/latest",
             "repo": GITHUB_REPO,
             "rollback_available": rollback_version is not None and not self.is_desktop_app(),
             "rollback_version": rollback_version,
@@ -231,7 +231,7 @@ class SoftwareUpdater:
         }
         if self.is_desktop_app():
             result["desktop_app"] = True
-            result["release_page"] = f"https://github.com/{GITHUB_REPO}/releases/latest"
+            result["release_page"] = f"https://github.com/{GITHUB_REPO}/releases"
         elif zip_asset and sums_asset:
             result["assets"] = {
                 "zip_name": zip_asset.get("name"),

@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Build and inspect the actual standalone app on a macOS CI runner.
 set -euo pipefail
+# Keep the legacy dry-run smoke independent of a running user/test workbench.
+export IEI_UI_PORT=0
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
     echo "SKIP: native macOS release test requires macOS"

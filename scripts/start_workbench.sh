@@ -211,12 +211,24 @@ cd "$ROOT"
     done
 ) &
 SERVICE_PID=$!
+UI_PID=""
+BROWSER_PID=""
 
 stop_service() {
+    if [[ -n "$UI_PID" ]]; then
+        kill "$UI_PID" 2>/dev/null || true
+        wait "$UI_PID" 2>/dev/null || true
+    fi
+    if [[ -n "$BROWSER_PID" ]]; then
+        kill "$BROWSER_PID" 2>/dev/null || true
+        wait "$BROWSER_PID" 2>/dev/null || true
+    fi
     kill "$SERVICE_PID" 2>/dev/null || true
     wait "$SERVICE_PID" 2>/dev/null || true
 }
-trap stop_service EXIT INT TERM
+trap stop_service EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 SERVICE_READY=0
 SERVICE_START_DEADLINE=$((SECONDS + SERVICE_START_TIMEOUT))
@@ -304,7 +316,7 @@ if [[ "${IEI_WEB_MODE:-production}" != "dev" && "$WEB_BUILD_REQUIRED" == "1" ]];
     fi
 fi
 # Open the browser once the UI answers; the poller waits in the background
-# while Next.js occupies the foreground below.
+# while the paired service and Next.js processes run below.
 if [[ "$BOOTSTRAP" == "1" ]]; then
     (
         for _ in $(seq 1 240); do
@@ -315,13 +327,24 @@ if [[ "$BOOTSTRAP" == "1" ]]; then
             fi
         done
     ) &
+    BROWSER_PID=$!
 fi
 
 if [[ "${IEI_WEB_MODE:-production}" == "dev" ]]; then
-    npm run dev -- -p "$UI_PORT"
-elif command -v npm >/dev/null 2>&1; then
-    npm run start -- -p "$UI_PORT"
+    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" dev --hostname 127.0.0.1 -p "$UI_PORT" &
 else
-    echo "npm is not on PATH; starting the production interface with ${NODE_BIN}."
-    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" start --hostname 127.0.0.1 -p "$UI_PORT"
+    "$NODE_BIN" "${ROOT}/webui/node_modules/next/dist/bin/next" start --hostname 127.0.0.1 -p "$UI_PORT" &
 fi
+UI_PID=$!
+# An explicit in-app Quit exits the service with zero. Stop its paired UI
+# too, instead of leaving Next.js occupying the port after the backend ends.
+while kill -0 "$SERVICE_PID" 2>/dev/null && kill -0 "$UI_PID" 2>/dev/null; do
+    sleep 0.25
+done
+rc=0
+if ! kill -0 "$UI_PID" 2>/dev/null; then
+    wait "$UI_PID" || rc=$?
+else
+    wait "$SERVICE_PID" || rc=$?
+fi
+exit "$rc"

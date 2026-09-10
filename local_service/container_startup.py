@@ -121,7 +121,7 @@ class DockerStartup:
                 return
             selected = selected_start_command(docker, env)
             if selected is None:
-                self._set("unavailable", "Docker could not be started automatically. Start the engine selected in your Docker context; for first-time setup, use Prepare Annotation Environment.")
+                self._set("unavailable", "Docker could not be started automatically. Start the engine selected in your Docker context, or use Set up annotation engine under Import & QC → Set up annotation datasets.")
                 return
             label, command = selected
             self._set("starting", f"Starting {label}… Review remains available.")

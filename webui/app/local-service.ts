@@ -138,7 +138,7 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "alphagenome_avi" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "genia" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
+  resource_id: "annotation_engine" | "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "alphagenome_avi" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "genia" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
   operation?: "download" | "preparation" | "installation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;
@@ -1716,6 +1716,29 @@ export async function setStorageLocation(payload: {
 
 export async function getServiceHealth() {
   return request<{ ok: boolean; version: string }>("/api/health");
+}
+
+export type WorkbenchStatus = {
+  instance_id: string;
+  annotations: number;
+  downloads: number;
+  blockers: string[];
+};
+
+export function getWorkbenchStatus() {
+  return request<WorkbenchStatus>("/api/service/status");
+}
+
+export function setupAnnotationEngine() {
+  return request<ResourceDownloadJob>("/api/annotation-engine/setup", {
+    method: "POST", body: JSON.stringify({ confirm: true }),
+  });
+}
+
+export function quitWorkbench(instanceId: string) {
+  return request<{ quitting: boolean; message: string }>("/api/service/quit", {
+    method: "POST", body: JSON.stringify({ confirm: true, instance_id: instanceId }),
+  });
 }
 
 export async function restartWorkbenchService() {

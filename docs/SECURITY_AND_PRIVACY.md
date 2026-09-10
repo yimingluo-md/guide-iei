@@ -15,7 +15,12 @@ code; where a limit is a design choice rather than an oversight, it says so.
 
 ## The deployment it is built for
 
-GUIDE-IEI is a **single-user workstation application**. It assumes one
+GUIDE-IEI is a **single-user workstation application** — a local service on
+the loopback address with no login, not a shared server. Its port must never
+be forwarded or shared. The sections below explain what this design does
+and does not protect.
+
+It assumes one
 person's operating-system account on one computer that they control, with
 the software, the annotation datasets, and the patient files all local to
 that machine. It is not a server, not a multi-user system, and not designed

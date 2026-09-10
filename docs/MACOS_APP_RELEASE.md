@@ -1,14 +1,19 @@
 # Self-contained macOS app builds
 
 The self-contained edition is currently a **release candidate packaging path**,
-separate from the existing source-payload release workflow. Describe an artifact
+for the initial Apple Silicon beta. Release automation creates drafts only and
+no longer builds the legacy source-payload Mac installer. Describe an artifact
 as Developer ID signed or notarized only after verifying that actual artifact;
 the preview label alone does not establish its signing status.
 
 ## Contents and operation
 
 - Native Apple Silicon or Intel application launcher with Open Workbench,
-  Prepare Annotation Environment, Open Log and Quit menu items.
+  Open Log and Quit menu items, plus a visible
+  control window that can be recalled from the Dock. The browser also has a
+  Quit button; both paths require confirmation and share the service's
+  busy-operation guards. Closing the native window requests Quit rather than
+  hiding a running service.
 - Pinned relocatable Python and PyYAML; no user-installed Python or Node needed.
 - Prebuilt static workbench served by the local Python service on loopback.
 - Small public reference tables and public gene knowledge, documentation and
@@ -16,6 +21,13 @@ the preview label alone does not establish its signing status.
   libraries, credentials or results are copied into the application.
 - The app opens the existing browser interface; it is not a native variant-table
   rewrite. Closing the browser does not stop the app; use Quit GUIDE-IEI.
+
+Each package has a unique build ID in `desktop-build.json`. A second launch
+reopens an identified instance of the same package; different/older builds
+receive an explanatory dialog. An unrecognized occupied port never causes
+process termination. Lifecycle status exposes job counts, not patient names.
+The instance ID on a Quit request prevents accidentally stopping a replacement
+instance; it is not authentication (see the single-user security model).
 
 Review of an annotated VCF needs neither a container nor a dataset download.
 On macOS, opening the workbench also makes one background attempt to start an
@@ -29,12 +41,22 @@ state directory. Restart the workbench to retry automatically. Developers can
 disable startup with `IEI_AUTO_START_DOCKER=0`. Quitting GUIDE-IEI does not stop
 the Docker daemon or Colima VM, which may be used by other applications.
 
-For annotation, choose **Prepare Annotation Environment** in the Mac app menu;
-this explicitly downloads/prepares the container environment. Progress is in
-Open Log. Choose data locations in Storage and then install datasets through
-the workbench. Large databases and registration-restricted exports remain
+For annotation, open **Import & QC → Set up annotation datasets**. If the
+engine is missing or outdated, **Set up annotation engine** installs missing
+Mac user-space container tools and prepares the VEP image after confirmation.
+Progress, logs, and retry are on the same page; quit and conflicting data
+changes are blocked until setup finishes. It does not install Node or change
+an existing conda/Homebrew environment. Choose data locations in Storage and
+then install datasets through the workbench. Large databases and registration-restricted exports remain
 separate from the app. Container file-sharing checks still apply, including
 access to the app under Applications and to selected data directories.
+
+The self-contained app uses bundle identifier `org.guide-iei.desktop`, distinct
+from the source-tree launcher's `org.guide-iei.workbench`. This keeps macOS
+Launch Services from treating the development shim as another copy of the
+standalone app. Old Dock shortcuts may still point at the old source launcher;
+remove that shortcut and add the installed standalone app instead. Do not
+delete reference or patient-library folders when replacing the app.
 
 Existing Storage selections and Sample Library paths are retained. On a fresh
 machine the annotation default is
@@ -118,7 +140,9 @@ the app. Data and settings are not part of that replacement. Keep an older
 app if needed, but do not assume downgrading its code is compatible with a
 newer patient-library schema.
 
-Before switching the public release workflow to this package:
+Before publishing this package, complete [the release checklist](RELEASE_CHECKLIST.md).
+The initial supported standalone scope is Apple Silicon; Intel's equivalent
+checks are required before expanding that scope:
 
 1. Test native arm64 and x86_64 builds on supported clean macOS installations.
 2. Test actual quarantined DMG downloads, offline first launch and annotated-VCF
@@ -127,7 +151,22 @@ Before switching the public release workflow to this package:
    paths, file sharing, retry and repair.
 4. Test existing-user migration, replacing the app, restart after Storage
    changes and orderly quit during active work, using synthetic data.
-5. Verify Developer ID/notarization on the final artifacts, then deliberately
-   replace the legacy release workflow. Until then it remains unchanged.
+5. Verify Developer ID/notarization on the final artifacts and ensure the draft
+   contains the self-contained installer, not the legacy source-payload ZIP.
+
+After a clean committed distribution build, assemble source/update and Mac
+archives with matching source identity and a combined checksum file:
+
+```bash
+bash scripts/make_release.sh --macos-artifacts dist/macos-app
+```
+
+The assembler verifies the actual ZIP and mounted DMG (signature, notarization
+ticket, build ID, architecture, clean-source flag and commit). `--draft` also
+creates a GitHub draft prerelease; it never publishes. A bare version tag runs
+CI and creates only a source-archive draft. Attach the verified signed assets
+and replace its checksum file with the combined file before publication.
+Do not overwrite assets on an already published release; use a new version.
+`--source-only` is for the CI/source archive, not an end-user Mac installer.
 
 Apple notarization checks software security; it is not clinical validation.

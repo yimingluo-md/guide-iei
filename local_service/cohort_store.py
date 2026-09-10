@@ -7169,7 +7169,13 @@ class CohortStore:
                 variant_parameters.extend(values)
             else:
                 variant_conditions.append(
-                    "(v.rsid = ? COLLATE NOCASE OR v.variant_key = ? COLLATE NOCASE)"
+                    # Resolve each exact identifier through its own index before
+                    # joining annotations. Some SQLite planners reverse the
+                    # windowed join for an OR here and scan every annotation.
+                    "v.id IN ("
+                    "SELECT id FROM cohort_variants WHERE rsid = ? COLLATE NOCASE "
+                    "UNION SELECT id FROM cohort_variants "
+                    "WHERE variant_key = ? COLLATE NOCASE)"
                 )
                 variant_parameters.extend([query, query])
         elif mode == "region":

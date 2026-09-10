@@ -31,6 +31,8 @@ button { color: inherit; }
 .workbench-recovery h1 { font-size: 24px; }
 .topbar { position: sticky; top: 0; z-index: 60; height: 58px; background: #12383d; color: white; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid #2d5559; }
 .brand, .top-actions { display: flex; align-items: center; gap: 11px; }
+.workbench-quit { position: relative; }
+.workbench-quit > .alert { position: absolute; right: 0; top: 100%; z-index: 20; width: min(420px, 85vw); font-size: 13px; }
 .brand { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
 .brand-mark { width: 30px; height: 30px; border: 1px solid #4e7476; border-radius: 7px; display: grid; place-items: center; color: #8dd0c5; }
 .version { margin-left: 3px; color: #acc1c0; font: 10px var(--font-geist-mono); border: 1px solid #43666a; border-radius: 999px; padding: 3px 7px; }

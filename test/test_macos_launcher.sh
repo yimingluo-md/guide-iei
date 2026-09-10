@@ -2,6 +2,9 @@
 # Regression coverage for the unsigned macOS launcher. Runs on Linux too: the
 # resource script is plain Bash and dry-run mode never opens Finder/Terminal.
 set -euo pipefail
+# Dry-run path tests must not attach to a real workbench or another test's
+# listener on port 3000. No TCP server can listen on destination port zero.
+export IEI_UI_PORT=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 LAUNCHER="${ROOT}/desktop/macos/GUIDE-IEI.app/Contents/Resources/launcher.sh"

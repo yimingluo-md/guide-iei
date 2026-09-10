@@ -717,6 +717,12 @@ class JobStore:
             ).fetchall()
         return [row["id"] for row in rows]
 
+    def active_count(self) -> int:
+        with self._session() as connection:
+            return connection.execute(
+                "SELECT COUNT(*) FROM annotation_jobs WHERE status IN ('queued', 'running')"
+            ).fetchone()[0]
+
     @staticmethod
     def _serialize(row: sqlite3.Row) -> dict:
         result = dict(row)
@@ -888,6 +894,9 @@ class AnnotationJobService:
         self._storage_usage_cache: dict[str, tuple[float, int]] = {}
         self._storage_usage_lock = threading.Lock()
         self._restart_requested = False
+        self._quit_requested = False
+        self._engine_setup_reserved = False
+        self._instance_id = os.environ.get("IEI_DESKTOP_INSTANCE_ID") or uuid.uuid4().hex
         self._stop = threading.Event()
         self._recover_stale_storage_migrations()
         self._terminate_orphaned_resource_jobs()
@@ -1695,6 +1704,56 @@ class AnnotationJobService:
             "message": "The workbench service is restarting; pending storage locations become active.",
         }
 
+    def lifecycle_status(self) -> dict:
+        """Small, patient-identifier-free status for desktop and browser controls."""
+        annotations = self.store.active_count()
+        with self._resource_lock:
+            downloads = sum(job["status"] in {"queued", "running"} for job in self._resource_jobs.values())
+        blockers = []
+        if self._engine_setup_reserved:
+            blockers.append("annotation-engine setup")
+        elif (self._migration_reserved and not self._quit_requested) or self.storage_migration_active():
+            blockers.append("a storage migration or software update")
+        if self._active_storage_mutations:
+            blockers.append("an import or data change")
+        with self._wgs_review_lock:
+            if any(job["status"] in {"queued", "running"} for job in self._wgs_review_jobs.values()):
+                blockers.append("a whole-genome prefilter")
+        if self.cohort.has_active_import() or self._bulk_intake_active():
+            blockers.append("a sample or cohort import")
+        setup_marker = os.environ.get("IEI_DESKTOP_SETUP_MARKER")
+        if setup_marker and Path(setup_marker).is_file():
+            blockers.append("annotation-environment preparation")
+        try:
+            build = json.loads((self.pipeline_root / "desktop-build.json").read_text())
+        except (OSError, ValueError):
+            build = {}
+        if not isinstance(build, dict):
+            build = {}
+        return {"service": "GUIDE-IEI", "instance_id": self._instance_id,
+                "build_id": build.get("build_id"), "version": SERVICE_VERSION,
+                "desktop_app": bool(build), "quitting": self._quit_requested,
+                "annotations": annotations, "downloads": downloads,
+                "blockers": blockers}
+
+    def request_service_quit(self, payload: dict) -> dict:
+        if payload.get("confirm") is not True:
+            raise ValueError("Confirm quitting GUIDE-IEI before stopping the workbench.")
+        if payload.get("instance_id") != self._instance_id:
+            raise ValueError("The running workbench changed. Refresh before quitting.")
+        with self._storage_transition:
+            status = self.lifecycle_status()
+            if status["blockers"]:
+                raise ValueError("Wait for " + ", ".join(status["blockers"]) + " to finish before quitting.")
+            # Serialize against new imports/downloads/updates while shutdown
+            # runs. Active annotation and download processes use shutdown's
+            # existing interruption/cleanup path, not an unscoped kill.
+            self._migration_reserved = True
+            self._migration_reservation_reason = "the workbench is shutting down"
+            self._quit_requested = True
+            self._restart_requested = False
+        return {"quitting": True, "message": "Quit accepted. GUIDE-IEI is shutting down; this browser tab stays open. You can close it now. To start again, open the GUIDE-IEI app from Applications (or your original launcher)."}
+
     def start_storage_migration(self, payload: dict) -> dict:
         with self._storage_transition:
             if self._migration_reserved or self.storage_migration_active():
@@ -2191,7 +2250,42 @@ class AnnotationJobService:
                 self._resource_job_copy(job)
                 for job in self._resource_jobs.values()
             ]
-        return sorted(jobs, key=lambda job: job["created_at"], reverse=True)
+        # Timestamps have second precision. A fast retry in that same second
+        # must sort ahead of its failed predecessor in the setup UI.
+        return sorted(reversed(jobs), key=lambda job: job["created_at"], reverse=True)
+
+    def start_engine_setup(self, payload: dict) -> dict:
+        if payload.get("confirm") is not True:
+            raise ValueError("Confirm annotation-engine setup before installing tools.")
+        if platform.system() != "Darwin":
+            raise ValueError("On Windows, start Docker Desktop and enable WSL integration. On Linux, install/start your configured container runtime, then retry recommended dataset setup.")
+        # This endpoint owns the reservation itself, just like migration. It
+        # must not race annotation, imports, another setup, or an update.
+        with self._storage_transition:
+            if self._active_storage_mutations or self.storage_restart_required():
+                raise ValueError("Finish the active data change or pending storage restart before setting up the annotation engine.")
+            self._ensure_storage_idle()
+            if self.store.active_count():
+                raise ValueError("Wait for queued and running annotations before setting up the engine.")
+            self._migration_reserved = True
+            self._engine_setup_reserved = True
+            self._migration_reservation_reason = "annotation-engine setup is running"
+        try:
+            config_path = self._write_resource_config("annotation_engine")
+            command = ["env", f"IEI_PYTHON_BIN={sys.executable}", "PYTHONUNBUFFERED=1",
+                       "bash", str(self.pipeline_root / "scripts/setup_environment.sh"),
+                       "--install", "--yes", "--engine-only", "--config", str(config_path)]
+            return self._start_resource_job("annotation_engine", command, "installation", (config_path,))
+        except BaseException:
+            self._finish_engine_setup()
+            raise
+
+    def _finish_engine_setup(self) -> None:
+        with self._storage_transition:
+            self._engine_setup_reserved = False
+            self._migration_reserved = False
+            self._migration_reservation_reason = ""
+            self._storage_transition.notify_all()
 
     def start_resource_download(self, resource_id: str) -> dict:
         self._ensure_active_storage_available(require_annotation_root=True)
@@ -3330,6 +3424,13 @@ class AnnotationJobService:
         return stage, {"message": cls._RESOURCE_TIMESTAMP.sub("", stripped)}
 
     def _run_resource_download(self, job_id: str) -> None:
+        try:
+            self._run_resource_download_impl(job_id)
+        finally:
+            if (self._resource_jobs.get(job_id) or {}).get("resource_id") == "annotation_engine":
+                self._finish_engine_setup()
+
+    def _run_resource_download_impl(self, job_id: str) -> None:
         with self._resource_lock:
             job = self._resource_jobs.get(job_id)
             if not job:
@@ -3378,7 +3479,12 @@ class AnnotationJobService:
                 exit_code = process.wait()
             if exit_code:
                 raise RuntimeError(last_line or f"download exited with code {exit_code}")
-            if resource_id == "gene_knowledge":
+            if resource_id == "annotation_engine":
+                config = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
+                status = self._container_image_status(config)
+                if not status["available"]:
+                    raise RuntimeError(status.get("message") or "Annotation-engine validation failed; see the setup log.")
+            elif resource_id == "gene_knowledge":
                 updated = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
                 if not updated.is_file():
                     raise RuntimeError("gene-knowledge update did not create its database")
@@ -4827,7 +4933,7 @@ class AnnotationJobService:
                         "image": image,
                         "message": (
                             "The annotation engine is from an older GUIDE-IEI version. "
-                            "Close the launcher window and open GUIDE-IEI again to rebuild it automatically, "
+                            "Use Set up annotation engine in Import & QC (Mac), or retry recommended dataset setup, "
                             "or run: bash docker/build.sh"
                         ),
                     }
@@ -5797,6 +5903,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             from local_service.static_site import serve_static
             serve_static(self, self.server.web_root)
             return
+        if path == "/api/service/status":
+            self._json(self.service.lifecycle_status())
+            return
         if path == "/api/health":
             worker = self.service.worker_health()
             self._json({
@@ -6125,6 +6234,19 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     server.shutdown()
 
                 threading.Thread(target=_shutdown_after_response, daemon=True).start()
+                return
+            if path == "/api/service/quit":
+                result = self.service.request_service_quit(self._body())
+                def _quit_after_response(server=self.server):
+                    time.sleep(0.3)
+                    server.shutdown()
+                try:
+                    self._json(result, HTTPStatus.ACCEPTED)
+                finally:
+                    threading.Thread(target=_quit_after_response, daemon=True).start()
+                return
+            if path == "/api/annotation-engine/setup":
+                self._json(self.service.start_engine_setup(self._body()), HTTPStatus.ACCEPTED)
                 return
             if path == "/api/resource-preparations/promoterai":
                 self._json(

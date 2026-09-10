@@ -19,6 +19,7 @@ import subprocess
 import tarfile
 import tempfile
 import zipfile
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 WHEELS = {
@@ -191,6 +192,7 @@ def main():
                 notices.append(f"\n--- {license_file.relative_to(web / 'node_modules')} ---\n" + license_file.read_text(errors="replace"))
         (resources / "THIRD-PARTY-NOTICES.txt").write_text("Build dependency notices; Python and PyYAML licenses are also retained in Frameworks/Python.\n" + "\n".join(notices))
         metadata = {
+            "build_id": uuid.uuid4().hex,
             "version": version, "architecture": arch, "preview": args.preview,
             "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip(),
             "uncommitted_source": bool(dirty), "python_sha256": py_hash,
@@ -199,7 +201,10 @@ def main():
         (application / "desktop-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
         template = ROOT / "desktop/macos/GUIDE-IEI.app/Contents"
         info = plistlib.loads((template / "Info.plist").read_bytes())
-        info.update(CFBundleVersion=version, CFBundleShortVersionString=version, LSArchitecturePriority=[arch])
+        # Never share Launch Services identity with the source-tree shim.
+        info.update(CFBundleIdentifier="org.guide-iei.desktop", CFBundleName="GUIDE-IEI",
+                    CFBundleDisplayName="GUIDE-IEI", CFBundleVersion=version,
+                    CFBundleShortVersionString=version, LSArchitecturePriority=[arch])
         (contents / "Info.plist").write_bytes(plistlib.dumps(info))
         for icon in (template / "Resources").glob("*.icns"):
             shutil.copy2(icon, resources / icon.name)
@@ -224,7 +229,9 @@ def main():
             run("spctl", "--assess", "--type", "execute", "--verbose", app)
         destination = output / (stem + ".app")
         run("ditto", app, destination)
-        run("ditto", "-c", "-k", "--keepParent", destination, output / (stem + ".zip"))
+        # Keep the installed app name stable, just like the DMG. The output
+        # directory's architecture/version label belongs to the archive only.
+        run("ditto", "-c", "-k", "--keepParent", app, output / (stem + ".zip"))
         dmg_root = stage / "dmg"
         dmg_root.mkdir()
         run("ditto", destination, dmg_root / "GUIDE-IEI.app")

@@ -35,6 +35,8 @@
 #                      asking — for unattended provisioning you control
 #   --skip-container   skip every container-runtime check/install (used by CI)
 #   --tools-dir DIR    override the managed tools directory
+#   --engine-only      skip UI/native-HTS installation; used by the workbench
+#   --config FILE      annotation engine configuration
 set -u -o pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -74,6 +76,8 @@ MODE="check"
 ASSUME_YES=0
 ASSUME_YES_PRIVILEGED=0
 SKIP_CONTAINER=0
+ENGINE_ONLY=0
+CONFIG="$ROOT/config/annotation.config.yaml"
 TOOLS_DIR="${IEI_TOOLS_DIR:-$HOME/.iei-variant-review/tools}"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -82,6 +86,8 @@ while [ $# -gt 0 ]; do
         --yes) ASSUME_YES=1 ;;
         --yes-privileged) ASSUME_YES_PRIVILEGED=1 ;;
         --skip-container) SKIP_CONTAINER=1 ;;
+        --engine-only) ENGINE_ONLY=1 ;;
+        --config) shift; CONFIG="${1:?--config needs a file}" ;;
         --tools-dir) shift; TOOLS_DIR="${1:?--tools-dir needs a value}" ;;
         -h|--help)
             sed -n '2,38p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -427,7 +433,9 @@ install_node() {
 }
 
 NODE_BIN=""
-if [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
+if [ "$ENGINE_ONLY" = 1 ]; then
+    ok "workbench components already available; setting up the annotation engine only"
+elif [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
     ok "prebuilt desktop interface (Node/npm not required)"
 else
 if NODE_BIN="$(resolve_node)"; then
@@ -488,7 +496,9 @@ find_conda() {
     done
     return 1
 }
-if command -v bcftools >/dev/null 2>&1 && command -v tabix >/dev/null 2>&1 \
+if [ "$ENGINE_ONLY" = 1 ]; then
+    note "optional native HTS installation skipped; the annotation image supplies these tools"
+elif command -v bcftools >/dev/null 2>&1 && command -v tabix >/dev/null 2>&1 \
    && command -v bgzip >/dev/null 2>&1; then
     ok "native bcftools/tabix/bgzip found — htslib I/O runs without container overhead"
 elif [ "$MODE" = "install" ]; then
@@ -520,7 +530,7 @@ fi
 # ---------------------------------------------------------------- container runtime
 read_config_scalar() { # best-effort: needs python3 + pyyaml, else prints nothing
     [ "$PYYAML_OK" = 1 ] || return 0
-    "$PYTHON_BIN" - "$ROOT/config/annotation.config.yaml" "$1" <<'PYEOF' 2>/dev/null
+    "$PYTHON_BIN" - "$CONFIG" "$1" <<'PYEOF' 2>/dev/null
 import sys, yaml
 try:
     with open(sys.argv[1]) as handle:
@@ -543,7 +553,9 @@ if [ "$SKIP_CONTAINER" = 1 ]; then
 else
     CONFIG_RUNTIME="$(read_config_scalar container.runtime)"
     [ -z "$CONFIG_RUNTIME" ] && CONFIG_RUNTIME="docker"
-    for candidate in "$CONFIG_RUNTIME" docker podman singularity apptainer; do
+    RUNTIME_CANDIDATES="$CONFIG_RUNTIME docker podman singularity apptainer"
+    [ "$ENGINE_ONLY" = 1 ] && RUNTIME_CANDIDATES="$CONFIG_RUNTIME"
+    for candidate in $RUNTIME_CANDIDATES; do
         bin_path="$(command -v "$candidate" 2>/dev/null || true)"
         [ -z "$bin_path" ] && [ -x "$TOOLS_DIR/bin/$candidate" ] && bin_path="$TOOLS_DIR/bin/$candidate"
         if [ -n "$bin_path" ]; then
@@ -586,7 +598,7 @@ else
     }
 
     if [ -z "$CONTAINER_BIN" ]; then
-        if [ "$OS" = "Darwin" ] && [ "$MODE" = "install" ]; then
+        if [ "$OS" = "Darwin" ] && [ "$MODE" = "install" ] && { [ "$ENGINE_ONLY" = 0 ] || [ "$CONFIG_RUNTIME" = docker ]; }; then
             echo "  installing user-space container stack (Lima ${LIMA_VERSION} + Colima ${COLIMA_VERSION} + Docker CLI ${DOCKER_CLI_VERSION}) ..."
             if install_macos_container_stack; then
                 MAC_STACK_INSTALLED=1
@@ -748,7 +760,16 @@ else
         if [ "$IMAGE_CURRENT" = 1 ]; then
             ok "container image $IMAGE matches this GUIDE-IEI version"
         elif [ "$MODE" = "install" ] && confirm "$([ "$IMAGE_PRESENT" = 1 ] && echo 'Rebuild the outdated VEP container image now?' || echo 'Build the VEP container image now (downloads the ~2 GB base image)?')"; then
-            if (cd "$ROOT" && RUNTIME="$CONTAINER_RUNTIME" PATH="$(dirname "$CONTAINER_BIN"):$PATH" bash docker/build.sh); then
+            BUILD_NAME="$IMAGE"
+            BUILD_TAG="latest"
+            IMAGE_TAIL="${IMAGE##*/}"
+            if [[ "$IMAGE" == *@* ]]; then
+                fix "cannot rebuild a digest-pinned image" "provide the configured image, or configure a writable image tag"
+            else
+            if [[ "$IMAGE_TAIL" == *:* ]]; then
+                BUILD_NAME="${IMAGE%:*}"; BUILD_TAG="${IMAGE##*:}"
+            fi
+            if (cd "$ROOT" && RUNTIME="$CONTAINER_RUNTIME" IMAGE_NAME="$BUILD_NAME" IMAGE_TAG="$BUILD_TAG" PATH="$(dirname "$CONTAINER_BIN"):$PATH" bash docker/build.sh "$CONFIG"); then
                 ACTUAL_IMAGE_FINGERPRINT="$(
                     "$CONTAINER_BIN" image inspect --format \
                         '{{ index .Config.Labels "org.guide-iei.source-fingerprint" }}' \
@@ -763,6 +784,7 @@ else
                 fi
             else
                 fix "image build failed" "bash docker/build.sh"
+            fi
             fi
         elif [ "$IMAGE_PRESENT" = 1 ]; then
             fix "container image $IMAGE is from an older GUIDE-IEI version" "restart GUIDE-IEI to rebuild it automatically, or run: bash docker/build.sh"
@@ -791,7 +813,9 @@ if [ -n "$free_gb" ]; then
 fi
 
 # ---------------------------------------------------------------- smoke test
-if [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
+if [ "$ENGINE_ONLY" = 1 ]; then
+    note "engine-only setup; workbench smoke test is not rerun"
+elif [ "${IEI_DESKTOP_APP:-0}" = "1" ]; then
     if "$PYTHON_BIN" -s -B -c 'import yaml, sqlite3, ssl' >/dev/null 2>&1; then
         ok "bundled Python dependency check passed"
     else
@@ -816,6 +840,10 @@ if [ "$FIX_COUNT" -gt 0 ]; then
         echo "Run with --install to fix the user-space items automatically."
     fi
     exit 2
+fi
+if [ "$ENGINE_ONLY" = 1 ]; then
+    echo "Annotation engine ready. Choose annotation datasets in Import & QC."
+    exit 0
 fi
 echo "Environment ready. Next steps:"
 echo "  bash scripts/start_workbench.sh            # launch the review workbench"

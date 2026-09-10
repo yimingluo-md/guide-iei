@@ -3,6 +3,37 @@
 Each entry describes what changed for the people using GUIDE-IEI. The
 version here, in the `VERSION` file, and in the release tag always agree.
 
+## 0.6.2 — 2026-09-10
+
+Apple Silicon beta release candidate. Publication remains gated on the
+[release checklist](docs/RELEASE_CHECKLIST.md); a build is not a public release.
+
+- The self-contained macOS app bundles Python and a prebuilt interface. Review
+  of an annotated VCF needs no Python, Node, Homebrew, or Docker installation.
+  Large annotation databases remain separate and are installed in the workbench.
+- Distribution builds require a clean source commit, Developer ID signing and
+  Apple notarization. The release assembler verifies the signed app and DMG,
+  source identity and checksums. Release automation creates drafts only; it no
+  longer publishes the legacy unsigned source-payload Mac installer.
+- A native control window and browser Quit button make the service lifecycle
+  explicit. Closing the browser leaves work running; confirmed Quit stops
+  GUIDE-IEI without stopping Docker. Busy imports, storage moves and engine
+  preparation must finish first. Old source-launcher Dock shortcuts should be
+  replaced with the installed self-contained app.
+- Annotation-engine setup, progress, logs and retry now live in Import & QC.
+  A compatible installed local Docker engine can start automatically; installing
+  missing engine tools still requires confirmation.
+- Cohort rsID searches resolve exact identifiers through indexes before joining
+  annotations, avoiding a full annotation-index scan on affected SQLite versions.
+- Fixed immediate reopening after webpage Quit: recently closed TCP connections
+  no longer produce a false “port already in use” error. Genuine running services
+  and unrelated applications remain protected; nothing is killed to free a port.
+- Initial standalone distribution targets Apple Silicon on macOS 13 or newer.
+  Intel packaging CI is a smoke test, not full Intel annotation certification.
+  Windows/WSL and Linux source workflows remain available with their documented
+  prerequisites; they are not standalone installers in this beta.
+- Research-use-only scope is unchanged. Notarization is not clinical validation.
+
 ## 0.6.1 — 2026-08-25
 
 The Mac release now starts reliably on a factory-fresh Intel or Apple-silicon

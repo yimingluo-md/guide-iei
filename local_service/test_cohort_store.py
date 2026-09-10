@@ -604,6 +604,16 @@ class CohortStoreTests(unittest.TestCase):
             "SpliceAI_intronic",
         )
 
+    def test_rsid_index_union_preserves_multiple_alleles_and_case_insensitivity(self):
+        self.store.import_paths([str(self.vcf)])
+        with self.store._connect() as connection:
+            connection.execute("UPDATE cohort_variants SET rsid = 'rsExact' WHERE pos = 300")
+        rows = self.store.query({"mode": "variant", "query": "RSEXACT"})["rows"]
+        self.assertEqual({row["variant_key"] for row in rows},
+                         {"1:100:A:G", "1:300:G:A", "1:300:G:C"})
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(self.store.query({"mode": "variant", "query": "rsAbsent"})["total"], 0)
+
     def test_cohort_review_reports_compact_fallback_when_tabix_is_unavailable(self):
         self.store.import_paths([str(self.vcf)])
         row = self.store.query({"mode": "variant", "query": "rsExact"})["rows"][0]

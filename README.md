@@ -12,12 +12,7 @@ phenotype, and exact-allele evidence. It presents the results in a local review
 workbench designed for clinician-researchers and wet-lab scientists. All analysis is
 performed on the user's own computer. Network access occurs only when the
 user initiates a dataset download, an update check, or an optional
-per-variant SpliceAI lookup for indels ([FAQ](docs/FAQ.md)). GUIDE-IEI is a
-single-user workstation application — a local service on the loopback
-address with no login — not a server; the
-[security & privacy model](docs/SECURITY_AND_PRIVACY.md) spells out what that
-does and does not protect, and why its port must never be forwarded or
-shared.
+per-variant SpliceAI lookup for indels ([FAQ](docs/FAQ.md)).
 
 ## Motivation
 
@@ -33,7 +28,7 @@ reporting variants of uncertain significance (VUS), and this is a particular
 challenge in IEI, whose diverse manifestations may not be well captured by a
 standard HPO-based workflow. At the same time, carefully selected VUS can be
 re-classified through in vitro functional studies or inform clinical
-management. Clinicians and scientists therefore need a practical way to
+management. Clinician-researchers and wet lab scientists therefore need a practical way to
 re-analyze genomic data as knowledge evolves, to ask, for example, "Could this patient have a
 condition described in the literature two weeks ago?", and to identify
 plausible VUS that warrant functional investigation or could influence
@@ -53,7 +48,7 @@ discovering monogenic etiologies in the non-coding genome.
 
 - **Local and open source** — Patient data are analyzed entirely on the
   user's workstation, with no subscriptions or per-sample fees.
-- **Designed for clinicians and laboratory scientists** — A web-based user
+- **Designed for clinician-researchers and laboratory scientists** — A web-based user
   interface, guided dataset setup, and plain-language explanations make
   analysis accessible.
 - **In-depth annotation** — More than 30 computational predictors,
@@ -105,14 +100,16 @@ laboratory framework in the user's jurisdiction.
 
 ## Quickstart
 
-**Mac one-click:** open the [latest release](https://github.com/yimingluo-md/guide-iei/releases/latest),
-download `GUIDE-IEI-macOS-<version>.zip`, unzip it, move
-`GUIDE-IEI.app` to Applications if desired (a standard account can use its
-own `~/Applications` folder), and double-click it. This standalone app works
-on macOS 13 or newer on Intel and Apple-silicon Macs and installs its writable
-application files and verified user-space runtimes on first launch; no Python, Node,
-Docker Desktop, Homebrew, Git, Xcode, or bioinformatics software needs to be
-installed first.
+**Mac beta:** the self-contained Apple Silicon release candidate targets
+macOS 13 or newer. When published on the [releases page](https://github.com/yimingluo-md/guide-iei/releases),
+choose `GUIDE-IEI-macOS-<version>-arm64.dmg`, open it, and drag **GUIDE-IEI**
+to Applications (a standard account can use `~/Applications`). Python and the
+review interface are bundled; annotated-VCF review needs no Docker or large
+databases. For new annotation, set up the engine and datasets in Import & QC.
+Only artifacts explicitly identified as signed and notarized in their release
+notes are end-user installers; CI previews and the source-tree `.app` are not.
+Intel packaging is tested in CI, but the initial standalone beta is Apple
+Silicon only. See the [release checklist](docs/RELEASE_CHECKLIST.md).
 
 **Windows one-click:** download and fully extract the repository ZIP, then
 double-click `desktop/windows/GUIDE-IEI.bat`. The launcher checks for a real
@@ -122,13 +119,6 @@ annotation backend; advanced users can use a Linux container engine instead.
 If Windows security blocks the unsigned launcher, [start directly in Ubuntu/WSL](docs/guide/02-install.md#windows-start-directly-in-wsl)
 without disabling security controls. The
 [installation chapter](docs/guide/02-install.md) walks through both platforms.
-
-> **Mac, first open:** the current release is unsigned, so macOS blocks it —
-> a dialog says *"GUIDE-IEI" Not Opened* with only **Move to Trash** and
-> **Done**. Click **Done** (not Move to Trash), open **System Settings →
-> Privacy & Security**, scroll to the Security section where it says
-> *"GUIDE-IEI" was blocked*, click **Open Anyway**, authenticate, and confirm
-> **Open**. This is required once for each newly downloaded unsigned release.
 
 **Mac source ZIP/checkout:** open `desktop/macos/GUIDE-IEI-Workbench.command`
 inside the complete repository. It also prepares the environment automatically;

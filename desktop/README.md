@@ -3,7 +3,8 @@
 The new self-contained macOS packaging path (bundled Python, prebuilt UI,
 native app lifecycle and Developer ID/notarization support) is documented in
 [macOS app release builds](../docs/MACOS_APP_RELEASE.md). It is currently a
-preview path; the legacy source-payload release described below is unchanged.
+release-candidate path for the Apple Silicon beta. Release automation now
+creates drafts only and no longer packages the legacy source-payload app below.
 
 Double-click entry points for clinicians and wet-lab scientists — no
 terminal commands. Both routes call `scripts/start_workbench.sh
@@ -21,9 +22,9 @@ the workbench is already running — simply opens the browser tab.
   ad-hoc seals the bundle. On first launch the payload is installed under
   `~/Library/Application Support/GUIDE-IEI/application`, so Gatekeeper App
   Translocation cannot break paths and software updates remain writable.
-  The app is intentionally unsigned by Developer ID for now: on current
-  macOS, first open requires System Settings → Privacy & Security → Open
-  Anyway. `scripts/build_macos_release.sh` produces the standalone ZIP.
+  This legacy builder uses an ad-hoc signature, not Developer ID signing.
+  Use the self-contained packaging path above for Developer ID signing and
+  notarization. `scripts/build_macos_release.sh` produces the legacy ZIP.
 - `windows/GUIDE-IEI.bat` → `GUIDE-IEI.ps1` — keeps a visible status window,
   checks for a genuine WSL2 distribution with Bash, and offers or explains
   the supported Ubuntu installation when one is absent. It copies a clean

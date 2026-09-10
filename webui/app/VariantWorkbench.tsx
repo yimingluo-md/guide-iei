@@ -4,6 +4,7 @@ import { passesMinimumScore, screenVariantBatches } from "./review-filters";
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { WorkbenchErrorBoundary } from "./WorkbenchErrorBoundary";
+import { WorkbenchQuit } from "./WorkbenchQuit";
 import { clearLegacySavedCandidates } from "./session-privacy";
 import {
   cancelJob,
@@ -75,6 +76,7 @@ import {
   savePhenotypeIndividual,
   stageAnnotationFile,
   startResourceDownload,
+  setupAnnotationEngine,
   startDbnsfpDownload,
   startLoGoFuncPreparation,
   startFuncVepPreparation,
@@ -730,6 +732,7 @@ function storeCustomGeneLists(lists: CustomGeneList[]) {
 }
 
 export default function VariantWorkbench() {
+  const [quitMessage, setQuitMessage] = useState("");
   const [rows, setRows] = useState<VariantRow[]>([]);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [saved, setSaved] = useState<Set<string>>(new Set());
@@ -749,16 +752,18 @@ export default function VariantWorkbench() {
     setRows(next);
     setSaved(new Set());
   }, []);
+  if (quitMessage) return <main className="app-shell"><h1>GUIDE-IEI</h1><p role="status">{quitMessage}</p></main>;
   return <>
     {privacyWarning && <div className="alert error" role="alert">Legacy saved-candidate browser data could not be removed. Clear this site’s browser data to remove earlier patient-derived bookmarks. New stars are session-only.</div>}
     <WorkbenchErrorBoundary>
-      <WorkbenchSession rows={rows} setRows={replaceRows} summary={summary} setSummary={setSummary}
+      <WorkbenchSession onQuit={setQuitMessage} rows={rows} setRows={replaceRows} summary={summary} setSummary={setSummary}
         saved={saved} setSaved={setSaved} reviewAnalysisScope={reviewAnalysisScope} setReviewAnalysisScope={setReviewAnalysisScope} />
     </WorkbenchErrorBoundary>
   </>;
 }
 
-function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved, reviewAnalysisScope, setReviewAnalysisScope }: {
+function WorkbenchSession({ onQuit, rows, setRows, summary, setSummary, saved, setSaved, reviewAnalysisScope, setReviewAnalysisScope }: {
+  onQuit: (message: string) => void;
   rows: VariantRow[]; setRows: Dispatch<SetStateAction<VariantRow[]>>;
   summary: ImportSummary | null; setSummary: Dispatch<SetStateAction<ImportSummary | null>>;
   saved: Set<string>; setSaved: Dispatch<SetStateAction<Set<string>>>;
@@ -1600,6 +1605,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
         <div className="top-actions">
           <span className="research-use-label">Research use only</span>
           <button className="primary-button" onClick={() => { setView("import"); setSelected(null); }}><Icon name="upload" />Import VCF</button>
+          <WorkbenchQuit onQuit={onQuit} />
         </div>
       </header>
 
@@ -5053,6 +5059,17 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     }
   }
 
+  async function prepareEngine() {
+    if (!window.confirm("Set up the annotation engine?\n\nGUIDE-IEI will install missing user-space container tools on this Mac and prepare or update the VEP image. This can download several GB. Existing compatible tools are reused. No annotation datasets or patient files are downloaded or uploaded.\n\nWait for setup to finish before quitting. Dataset selection remains on this page.")) return;
+    setServiceError("");
+    try {
+      const job = await setupAnnotationEngine();
+      setResourceJobs((current) => [job, ...current.filter((item) => item.id !== job.id)]);
+    } catch (error) {
+      setServiceError(error instanceof Error ? error.message : "Could not start annotation-engine setup.");
+    }
+  }
+
   async function choosePreparationSource(resourceId: "promoterai" | "logofunc" | "funcvep") {
     setServiceError("");
     setChoosingResourceSource(resourceId);
@@ -5190,6 +5207,8 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     (job) => job.resource_id !== "omim"
       && (job.status === "queued" || job.status === "running"),
   );
+  const engineJob = latestResourceJobs.get("annotation_engine");
+  const engineBusy = engineJob?.status === "queued" || engineJob?.status === "running";
   const quickSetupResourceIds = ["recommended_exome", "recommended_wgs", "refresh_updates"];
   const latestQuickSetupJob = resourceJobs.find((job) => quickSetupResourceIds.includes(job.resource_id));
   const quickSetupJob = latestQuickSetupJob
@@ -5254,6 +5273,14 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       <section className="settings-section"><div className="settings-section-head"><div><h3>Annotation datasets</h3><p>Availability and indexes are checked automatically. Open each dataset for sources and setup instructions.</p></div><span className={`readiness ${profileReady || datasetsReady ? "ready" : "missing"}`}>{readinessLabel}</span></div>
         {capabilities?.annotation_profile.error && <div className="alert error">{capabilities.annotation_profile.error}</div>}
         {capabilities?.annotation_profile.foundations.map((item) => <div className="foundation-row" key={item.id} title={item.description || undefined}><span className={`availability-dot ${item.available ? "ready" : "missing"}`} /><strong>{item.label}</strong><span>{item.available ? `Available${item.version ? ` · release ${item.version}` : ""}` : item.message || "Missing"}</span></div>)}
+        {containerFoundation && (!containerFoundation.available || engineJob) && <div className="dataset-quick-setup">
+          <div><h4>Annotation engine</h4><p>The workbench itself is ready. Raw-VCF annotation also needs a working container engine and the GUIDE-IEI VEP image. Already-annotated VCFs can be reviewed without this setup.</p></div>
+          {!containerFoundation.available && (capabilities?.platform === "darwin"
+            ? <button type="button" className="secondary-button" disabled={resourceSetupBusy || containerFoundation.state === "runtime_starting"} onClick={() => void prepareEngine()}>{engineBusy ? "Setting up annotation engine…" : engineJob?.status === "failed" || engineJob?.status === "interrupted" ? "Retry annotation-engine setup" : "Set up annotation engine"}</button>
+            : <p>Windows: start Docker Desktop and enable WSL integration for your Ubuntu distribution. Linux: install/start the configured container runtime. Then use recommended dataset setup below to build the VEP image if needed.</p>)}
+          {engineBusy && <div className="resource-progress"><progress/><span role="status" aria-live="polite">{engineJob.message || "Preparing the annotation engine…"}</span></div>}
+          {engineJob && <><p role="status">{engineJob.status === "succeeded" ? "Annotation engine setup completed. Choose your datasets below." : engineJob.error}</p><details><summary>Annotation-engine setup log</summary><pre>{engineJob.log || "No log output yet."}</pre></details></>}
+        </div>}
         <div className="dataset-quick-setup">
           <div><p className="eyebrow">One-click setup</p><h4>Download recommended public datasets</h4><p>Choose the analysis profile you expect to use. Complete installations are skipped immediately without rereading large files. Registration- and license-gated datasets are handled separately below.</p></div>
           <div className="dataset-quick-actions">
