@@ -20,6 +20,7 @@ import tarfile
 import tempfile
 import zipfile
 import uuid
+from bundled_engine import ARCHES, export_bundle, fingerprint
 
 ROOT = Path(__file__).resolve().parents[1]
 WHEELS = {
@@ -29,7 +30,7 @@ WHEELS = {
 CODE_DIRS = {"local_service", "pipeline", "scripts", "config", "docker", "docs"}
 ROOT_FILES = {"VERSION", "LICENSE", "README.md", "requirements.txt"}
 # Explicit new runtime files also support local previews before they are committed.
-EXTRA_FILES = {"local_service/static_site.py", "local_service/desktop_app.py", "local_service/container_startup.py", "docs/MACOS_APP_RELEASE.md"}
+EXTRA_FILES = {"local_service/static_site.py", "local_service/desktop_app.py", "local_service/container_startup.py", "local_service/colima_sharing.py", "docs/MACOS_APP_RELEASE.md", "scripts/bundled_engine.py"}
 
 
 def run(*args, **kwargs):
@@ -104,10 +105,13 @@ def main():
     parser.add_argument("--cache", type=Path, default=ROOT / "dist/macos-build-cache")
     parser.add_argument("--identity", default=os.environ.get("IEI_MAC_SIGN_IDENTITY"))
     parser.add_argument("--notary-profile", default=os.environ.get("IEI_MAC_NOTARY_PROFILE"))
+    parser.add_argument("--without-engine", action="store_true", help="preview-only UI test build; never for distribution")
     args = parser.parse_args()
     arch = platform.machine()
     if platform.system() != "Darwin" or arch not in WHEELS:
         parser.error("build natively on an arm64 or x86_64 Mac")
+    if args.without_engine and not args.preview:
+        parser.error("--without-engine is only allowed for local preview/CI tests")
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip()
     if not args.preview and (dirty or not args.identity or not args.notary_profile):
         parser.error("release needs a clean tree, --identity and --notary-profile; use --preview for local testing")
@@ -122,6 +126,10 @@ def main():
             parser.error(f"{stem + suffix} already exists; choose a new output directory")
     cache = args.cache.resolve()
     cache.mkdir(parents=True, exist_ok=True)
+    engine_manifest = None
+    engine_directory = cache / ("engine-" + ARCHES[arch] + "-" + fingerprint(ROOT))
+    if not args.without_engine:
+        engine_manifest = export_bundle(ROOT, engine_directory, "docker", "vep-annotate:latest", ARCHES[arch])
     # Reuse the bootstrapper's audited Python pin rather than duplicate it.
     pins = dict(re.findall(r'^([A-Z0-9_]+)="([^"\n]+)"$', (ROOT / "scripts/setup_environment.sh").read_text(), re.M))
     triple = "aarch64-apple-darwin" if arch == "arm64" else "x86_64-apple-darwin"
@@ -162,6 +170,8 @@ def main():
         run(python, "-s", "-B", "-m", "pip", "install", "--no-index", "--no-deps", "--no-compile", wheel)
         run(python, "-s", "-B", "-c", "import yaml,ssl,sqlite3; print('Bundled Python dependency check passed')")
         copy_source(application)
+        if engine_manifest:
+            shutil.copytree(engine_directory, application / "bundled-engine")
 
         # Build from a temporary source snapshot. Never overwrite the running
         # developer workbench's .next bundle or package local uploads/state.
@@ -197,6 +207,7 @@ def main():
             "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip(),
             "uncommitted_source": bool(dirty), "python_sha256": py_hash,
             "pyyaml_version": "6.0.2", "pyyaml_sha256": wheel_hash,
+            "bundled_engine": engine_manifest,
         }
         (application / "desktop-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
         template = ROOT / "desktop/macos/GUIDE-IEI.app/Contents"

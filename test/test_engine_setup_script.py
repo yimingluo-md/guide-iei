@@ -11,22 +11,47 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class EngineScriptTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "macOS connection recovery")
+    def test_recovered_connection_is_inherited_by_all_following_docker_calls(self):
+        self.run_scenario("recovered")
+
     def test_engine_only_reuses_runtime_and_skips_ui_and_native_package_managers(self):
+        self.run_scenario("ready")
+
+    def test_packaged_app_missing_bundle_never_builds_on_user_machine(self):
+        self.run_scenario("missing_bundle")
+
+    def test_packaged_app_corrupt_bundle_never_builds_or_pulls(self):
+        self.run_scenario("corrupt_bundle")
+
+    def run_scenario(self, scenario):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
             (root / "scripts").mkdir()
-            for name in ("setup_environment.sh", "macos_container_dependencies.sh"):
+            for name in ("setup_environment.sh", "macos_container_dependencies.sh", "bundled_engine.py"):
                 shutil.copy2(ROOT / "scripts" / name, root / "scripts" / name)
             shutil.copytree(ROOT / "docker", root / "docker")
             config = root / "engine.yaml"
             config.write_text("container:\n  runtime: docker\n  image: test-engine:custom\n")
+            if scenario not in ("ready", "recovered"):
+                (root / "desktop-build.json").write_text('{}')
+                if scenario == "corrupt_bundle":
+                    (root / "bundled-engine").mkdir()
+                    (root / "bundled-engine/manifest.json").write_text('not json')
             fingerprint = subprocess.check_output(["bash", str(root / "docker/image_fingerprint.sh")], text=True).strip()
             binaries = root / "bin"
             binaries.mkdir()
             docker = binaries / "docker"
+            if scenario == "recovered":
+                (root / "local_service").mkdir()
+                (root / "local_service/container_startup.py").write_text(
+                    'import sys\nassert sys.argv[1:] == ["--resolve-managed-host"]\nprint("unix:///synthetic-colima/docker.sock")\n')
             docker.write_text('#!/bin/bash\n'
+                + ('[ "${DOCKER_HOST:-}" = "unix:///synthetic-colima/docker.sock" ] || { echo "unexpected Docker connection" >&2; exit 93; }\n' if scenario == "recovered" else '')
+                +
                 'case "$*" in\n'
-                f'  "image inspect --format "*) echo "{fingerprint}";;\n'
+                f'  "image inspect --format "*) echo "{fingerprint if scenario in ("ready", "recovered") else "old"}";;\n'
+                '  "info --format {{.Architecture}}") echo arm64;;\n'
                 '  "info --format "*) echo 8;;\n'
                 '  info*|"image inspect "*|"run "*) exit 0;;\n'
                 '  *) echo "unexpected Docker call: $*" >&2; exit 91;;\n'
@@ -40,8 +65,13 @@ class EngineScriptTests(unittest.TestCase):
                 env={**os.environ, "PATH": str(binaries) + ":/usr/bin:/bin:/usr/sbin:/sbin",
                      "IEI_PYTHON_BIN": sys.executable, "IEI_TOOLS_DIR": str(root / "tools")},
                 capture_output=True, text=True, timeout=30)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertIn("test-engine:custom matches", result.stdout)
+            if scenario in ("ready", "recovered"):
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("test-engine:custom matches", result.stdout)
+            else:
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("missing its bundled" if scenario == "missing_bundle" else "bundled engine could not be installed", result.stdout)
+                self.assertNotIn("Downloading and building", result.stdout)
             self.assertIn("engine-only setup", result.stdout)
             self.assertNotIn("unexpected", result.stdout + result.stderr)
             self.assertFalse((root / "webui").exists())

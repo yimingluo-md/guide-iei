@@ -34,7 +34,7 @@ button { color: inherit; }
 .workbench-quit { position: relative; }
 .workbench-quit > .alert { position: absolute; right: 0; top: 100%; z-index: 20; width: min(420px, 85vw); font-size: 13px; }
 .brand { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
-.brand-mark { width: 30px; height: 30px; border: 1px solid #4e7476; border-radius: 7px; display: grid; place-items: center; color: #8dd0c5; }
+.brand-mark { width: 36px; height: 36px; flex-shrink: 0; display: block; }
 .version { margin-left: 3px; color: #acc1c0; font: 10px var(--font-geist-mono); border: 1px solid #43666a; border-radius: 999px; padding: 3px 7px; }
 .research-use-label { color: #f0d8a5; font-size: 11px; font-weight: 650; white-space: nowrap; }
 .primary-button, .secondary-button { border: 0; border-radius: 6px; display: inline-flex; align-items: center; justify-content: center; gap: 7px; cursor: pointer; font-weight: 600; }

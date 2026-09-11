@@ -41,7 +41,7 @@ import urllib.request
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from local_service.ccre_context import CcreContextStore
-from local_service.container_startup import DockerStartup, mac_tool_path
+from local_service.container_startup import DockerStartup, mac_tool_path, managed_colima_environment
 from local_service.clingen_erepo import ClinGenErepoStore
 from local_service import cohort_store as cohort_module
 from local_service.cohort_store import CohortStore
@@ -3490,7 +3490,11 @@ class AnnotationJobService:
                             stage_label, line
                         )
                         if resource_id == "annotation_engine" and not self._RESOURCE_STAGE_LINE.search(line):
-                            updates = None  # Keep named stages visible; raw build output stays in Log.
+                            # Structured installer guidance must reach the
+                            # native startup window, not disappear into Log.
+                            prefix = "GUIDE_IEI_SETUP_ERROR: "
+                            updates = ({"message": line.strip()[len(prefix):], "progress": None}
+                                       if line.startswith(prefix) else None)
                         if updates:
                             if updates.get("message"):
                                 last_line = updates["message"]
@@ -3501,6 +3505,11 @@ class AnnotationJobService:
             if exit_code:
                 raise RuntimeError(last_line or f"download exited with code {exit_code}")
             if resource_id == "annotation_engine":
+                # A profile may have been created after this service started
+                # (e.g. first setup failed, then Retry recovered it). Carry the
+                # same process-local connection into validation and later jobs.
+                if platform.system() == "Darwin":
+                    os.environ.update(managed_colima_environment(dict(os.environ)))
                 config = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
                 status = self._container_image_status(config)
                 if not status["available"]:
@@ -4873,6 +4882,37 @@ class AnnotationJobService:
             )
         return config
 
+    def annotation_engine_status(self, config: dict) -> dict:
+        """Native readiness includes app sharing, not just an image label.
+
+        A failed first setup may have built/loaded a valid image. Reopening
+        must not mistake that for successful setup while the app is unshared.
+        Keep the cheaper image-only check for general capabilities polling.
+        """
+        status = self._container_image_status(config)
+        status = {**status, "busy": self._engine_setup_reserved}
+        if not status.get("available") or status["busy"]:
+            return status
+        container = config.get("container") or {}
+        runtime = str(container.get("runtime") or "docker")
+        if runtime not in {"docker", "podman"}:
+            return status
+        image = str(container.get("image") or "vep-annotate:latest")
+        try:
+            result = subprocess.run([runtime, "run", "--rm", "--pull=never", "--network=none",
+                "--mount", f"type=bind,source={self.pipeline_root},target=/probe,readonly",
+                "--entrypoint", "sh", image, "-c", "test -r /probe/scripts/setup_environment.sh"],
+                capture_output=True, text=True, timeout=10, check=False)
+            if result.returncode == 0:
+                return status
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+        return {**status, "available": False, "state": "sharing_required",
+                "message": f"The container cannot read {self.pipeline_root}. "
+                "Choose Retry preparation to repair Colima sharing automatically. "
+                "Other running containers must finish first. Docker Desktop users: allow this folder "
+                "in Settings → Resources → File sharing, then retry."}
+
     def _container_image_status(self, config: dict) -> dict:
         container = config.get("container") or {}
         runtime = str(container.get("runtime") or "docker")
@@ -5938,8 +5978,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/annotation-engine/status":
             config = self.service._load_config(self.service.pipeline_root / "config/annotation.config.yaml")
-            self._json({**self.service._container_image_status(config),
-                        "busy": self.service._engine_setup_reserved})
+            self._json(self.service.annotation_engine_status(config))
             return
         if path == "/api/health":
             worker = self.service.worker_health()
@@ -6719,6 +6758,9 @@ def main() -> None:
     args = parser.parse_args()
     if platform.system() == "Darwin":
         os.environ["PATH"] = mac_tool_path()
+        # Process-local selection is inherited by status probes, dataset jobs
+        # and annotation children, without changing the user's Docker context.
+        os.environ.update(managed_colima_environment(dict(os.environ)))
     if args.host not in {"127.0.0.1", "localhost", "::1"}:
         parser.error("this workstation service may bind only to a loopback address")
 

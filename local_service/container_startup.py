@@ -8,6 +8,57 @@ import shutil
 import subprocess
 import threading
 import time
+import sys
+
+
+def docker_desktop_installed(home):
+    return any(app.is_dir() for app in (home / "Applications/Docker.app", Path("/Applications/Docker.app")))
+
+
+def managed_colima_environment(env):
+    """Resolve an orphaned managed VM for this process, without changing Docker config.
+
+    Only an unreachable built-in default connection and a single existing
+    profile qualify. Explicit overrides, other providers and working engines
+    remain authoritative. Re-evaluated on each service launch/setup retry.
+    """
+    result = dict(env)
+    if env.get("DOCKER_HOST") or env.get("DOCKER_CONTEXT"):
+        return result
+    home = Path.home()
+    tools = Path(env.get("IEI_TOOLS_DIR", str(home / ".iei-variant-review/tools")))
+    docker = shutil.which("docker", path=env.get("PATH", ""))
+    if (not docker or Path(docker).resolve() != (tools / "bin/docker").resolve()
+            or not os.access(tools / "bin/colima", os.X_OK)
+            or docker_desktop_installed(home)):
+        return result
+    try:
+        context = subprocess.run([docker, "context", "show"], env=env,
+            capture_output=True, text=True, timeout=5, check=True).stdout.strip()
+        if context != "default":
+            return result
+        info = subprocess.run([docker, "context", "inspect", context], env=env,
+            capture_output=True, text=True, timeout=5, check=True)
+        endpoint = json.loads(info.stdout)[0]["Endpoints"]["docker"]["Host"]
+        if not endpoint.startswith("unix://") or Path(endpoint[7:]).resolve() != Path("/var/run/docker.sock").absolute().resolve():
+            return result
+        # A default socket redirected to another provider is not ours to repair.
+        if str(Path(endpoint[7:]).resolve()) not in ("/var/run/docker.sock", "/private/var/run/docker.sock"):
+            return result
+        if subprocess.run([docker, "info"], env=env, capture_output=True, timeout=5).returncode == 0:
+            return result
+        colima_home = Path(env.get("COLIMA_HOME", str(home / ".colima"))).expanduser().resolve()
+        profiles = [path for path in colima_home.glob("*/colima.yaml")
+                    if path.is_file() and not path.is_symlink() and not path.parent.is_symlink()
+                    and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", path.parent.name)]
+        if len(profiles) != 1:
+            return result
+        result["DOCKER_HOST"] = "unix://" + str(profiles[0].parent / "docker.sock")
+        result["IEI_RECOVERED_COLIMA_PROFILE"] = profiles[0].parent.name
+    except (OSError, ValueError, KeyError, IndexError, TypeError, subprocess.SubprocessError):
+        # Selection failure must not prevent opening the native Retry/Log UI.
+        return dict(env)
+    return result
 
 
 def mac_tool_path(path=None):
@@ -91,9 +142,9 @@ class DockerStartup:
         except (OSError, subprocess.TimeoutExpired):
             return False
 
-    def _launch(self, command, env, log):
+    def _launch(self, command, env, log, timeout=120):
         child = subprocess.Popen(command, env=env, stdout=log, stderr=log)
-        deadline = time.monotonic() + 120
+        deadline = time.monotonic() + timeout
         try:
             while child.poll() is None:
                 if self._cancel.wait(.25) or time.monotonic() >= deadline:
@@ -119,9 +170,19 @@ class DockerStartup:
             if self._ready(docker, env):
                 self._set("ready", "Docker is running.")
                 return
+            env = managed_colima_environment(env)
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "w") as log:
+                # Never dump Docker config or endpoint credentials into logs.
+                log.write("Checking selected engine; explicit host/context override: " +
+                          str(bool(os.environ.get("DOCKER_HOST") or os.environ.get("DOCKER_CONTEXT"))) + "\n")
+                log.write("Recovered managed profile: " + env.get("IEI_RECOVERED_COLIMA_PROFILE", "none") + "\n")
             selected = selected_start_command(docker, env)
             if selected is None:
-                self._set("unavailable", "Docker could not be started automatically. Start the engine selected in your Docker context, or use Set up annotation engine under Import & QC → Set up annotation datasets.")
+                with self.log_path.open("a") as log:
+                    log.write("No recognized selected local engine. Automatic fallback requires the managed Docker CLI, no Docker Desktop, an unused default connection and exactly one existing Colima profile. No engine or context was changed.\n")
+                self._set("unavailable", "The Docker connection could not be matched to a local engine safely. Open Log for the startup details. If you use Docker Desktop, open it and choose Retry preparation; otherwise share the log with GUIDE-IEI support. No engine settings were changed.")
                 return
             label, command = selected
             self._set("starting", f"Starting {label}… Review remains available.")
@@ -130,7 +191,7 @@ class DockerStartup:
             with os.fdopen(fd, "w") as log:
                 log.write(f"Starting {label}\n")
                 log.flush()
-                if not self._launch(command, env, log):
+                if not self._launch(command, env, log, timeout=600 if label == "Colima" else 120):
                     raise RuntimeError("startup command did not complete successfully")
                 deadline = time.monotonic() + 120
                 while not self._cancel.is_set():
@@ -148,9 +209,21 @@ class DockerStartup:
 
 
 if __name__ == "__main__":
+    if sys.argv[1:] == ["--resolve-managed-host"]:
+        if platform.system() == "Darwin":
+            original = dict(os.environ)
+            recovered = managed_colima_environment(original)
+            if recovered.get("DOCKER_HOST") != original.get("DOCKER_HOST"):
+                print(recovered["DOCKER_HOST"])
+        raise SystemExit(0)
     startup = DockerStartup(Path.home() / ".iei-variant-review/logs/docker-startup.log")
     if platform.system() != "Darwin":
         raise SystemExit("Automatic engine startup is supported only on macOS.")
     startup.run()
     print(startup.status["message"])
+    if startup.status["state"] != "ready":
+        if startup.log_path.is_file():
+            print("--- Container startup details ---")
+            print(startup.log_path.read_text(errors="replace")[-16000:])
+        print("GUIDE_IEI_SETUP_ERROR: " + startup.status["message"])
     raise SystemExit(0 if startup.status["state"] == "ready" else 1)

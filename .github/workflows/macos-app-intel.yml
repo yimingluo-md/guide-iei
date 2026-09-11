@@ -36,7 +36,7 @@ jobs:
         run: npm ci --no-fund --no-audit
 
       - name: Build self-contained Intel preview (ad-hoc signed, no secrets)
-        run: python3 scripts/build_macos_app.py --preview --output dist/macos-intel-ci
+        run: python3 scripts/build_macos_app.py --preview --without-engine --output dist/macos-intel-ci
 
       - name: Check packaged architecture and exercise isolated app and browser
         env:

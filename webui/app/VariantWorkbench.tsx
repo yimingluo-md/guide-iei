@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import { passesMinimumScore, screenVariantBatches } from "./review-filters";
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
@@ -1601,7 +1602,7 @@ function WorkbenchSession({ onQuit, rows, setRows, summary, setSummary, saved, s
   return (
     <main className="app-shell">
       <header className="topbar">
-        <div className="brand"><span className="brand-mark"><Icon name="dna" /></span><span>GUIDE-IEI</span><span className="version">MVP 0.6</span></div>
+        <div className="brand"><Image className="brand-mark" src="/favicon.svg" width={36} height={36} alt="" unoptimized /><span>GUIDE-IEI</span><span className="version">MVP 0.6</span></div>
         <div className="top-actions">
           <span className="research-use-label">Research use only</span>
           <button className="primary-button" onClick={() => { setView("import"); setSelected(null); }}><Icon name="upload" />Import VCF</button>

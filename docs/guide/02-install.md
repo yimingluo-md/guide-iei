@@ -75,17 +75,18 @@ Double-click **GUIDE-IEI.app** wherever you placed it.
 - **Self-contained app:** the review interface and Python runtime are already
   included; no Terminal window or separate Python/Node installation is needed.
   Before opening the browser, a native startup window checks the annotation
-  engine and automatically prepares missing container tools and VEP. On a clean
-  Mac, allow roughly **10–30 minutes or longer** depending on network and hardware
-  (an estimate, not a guaranteed duration). Named stages and **Open Log** show
+  engine, prepares missing container tools, and loads the bundled prebuilt VEP
+  image. VEP is not compiled or downloaded separately. A clean Mac still needs
+  internet access to download the container tools and Linux virtual machine;
+  setup time depends on network and hardware. Named stages and **Open Log** show
   progress; compatible existing components are reused. Later launches perform
   readiness checks, not a full reinstall. Engine changes may require preparation
-  again; interface-only updates do not rebuild VEP.
-  Choose **Retry preparation** after a failure, or **Open without annotation**
-  for offline/already-annotated VCF review. Skipping stops any active preparation
-  before opening review and remembers that choice. You can enable annotation
-  later using **Import & QC → Set up annotation datasets → Set up annotation
-  engine**; that card remains available for repair. Large annotation databases
+  again; interface-only updates do not reload VEP.
+  Choose **Retry preparation** after correcting a failure, or **Quit GUIDE-IEI**
+  to cancel preparation safely. The app opens the workbench only after engine
+  readiness checks pass; there is no skip option. **Import & QC → Set up
+  annotation datasets → Set up annotation engine** remains available for repair.
+  Large annotation databases
   are never downloaded by startup setup: select them inside Import & QC.
   Use **Quit GUIDE-IEI** to stop
   the app; closing its browser tab does not stop it.
@@ -255,6 +256,12 @@ software, ask IT for approval. See
 
 ## What the first launch prepares
 
+For the self-contained Mac app, Python, the built review interface and a
+compressed VEP engine image are already bundled. The startup window installs
+missing container tools/VM and loads that engine; it does not install Node,
+compile VEP, or download annotation databases. The details below describe the
+source-tree/command launchers, which also support other platforms.
+
 The preparation step is a **setup check with an installer attached**. It
 reports a green `[ OK ]` line for everything already present and installs
 supported missing prerequisites. A Mac needs no administrator rights;
@@ -352,7 +359,8 @@ until the restored library, Linux user, permissions, and Docker integration work
 |---|---|
 | macOS blocks GUIDE-IEI | Verify the download and whether that build is signed and notarized. Use a verified build; on a managed computer, consult your administrator rather than disabling security controls. |
 | The workbench page does not load | Keep the self-contained app running and check **Open Log** in its menu. For a Terminal-based launcher, keep its Terminal window open and check for error lines. |
-| A `[FIX]` line about the container daemon | The runtime is installed but not running. On macOS, opening the workbench or running setup with `--install` attempts to start the selected local Docker Desktop or existing Colima engine; review remains available. If startup fails, follow the displayed instructions and startup-log path. Doctor-only `--check` never starts it. On Windows/Linux, follow the printed start command. |
+| A `[FIX]` line about the container daemon | The runtime is installed but not running. On macOS, opening the app or running setup with `--install` attempts to start the selected local Docker Desktop or existing Colima engine. The standalone app waits for readiness before opening review. If startup fails, follow the displayed instructions and startup-log path. Doctor-only `--check` never starts it. On Windows/Linux, follow the printed start command. |
+| Application sharing needs attention | The engine may already be installed, but the container cannot see the app. Setup automatically backs up and repairs the selected Colima profile's sharing while preserving existing settings. If other containers are running, finish those workloads in the container manager, then choose **Retry preparation**. Docker Desktop users may need to allow Applications in **Settings → Resources → File sharing**. No Terminal command, dataset deletion or VEP rebuild is needed. |
 | Import or annotation is unexpectedly slow | Check the setup summary's note about native bcftools/tabix; without them, file operations run through the container at 5–20× cost. |
 | Windows: the launcher reports that WSL2/Ubuntu is not set up | Accept its installation offer, or run `wsl --install -d Ubuntu` in Administrator PowerShell (step 2 above), restart, finish Ubuntu's first-run setup, and launch again. |
 | Windows: Docker Desktop is installed but annotation is unavailable | Start Docker Desktop and enable Settings → Resources → WSL Integration for the Ubuntu distribution named by the launcher. Import and review of already annotated VCFs still works without Docker. |

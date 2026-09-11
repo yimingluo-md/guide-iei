@@ -11,7 +11,6 @@
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSButton *openButton;
 @property(nonatomic, strong) NSButton *retryButton;
-@property(nonatomic, strong) NSButton *skipButton;
 @property(nonatomic, strong) NSProgressIndicator *progress;
 @property(nonatomic, copy) NSString *startupPath;
 @property(nonatomic, copy) NSString *controlPath;
@@ -34,10 +33,6 @@
     if (![data writeToFile:self.controlPath options:NSDataWritingAtomic error:&error]) [self alert:error.localizedDescription];
 }
 - (void)retrySetup:(id)sender { [self startupAction:@"retry"]; self.retryButton.enabled = NO; }
-- (void)skipSetup:(id)sender {
-    [self startupAction:@"skip"]; self.skipButton.enabled = NO;
-    self.statusLabel.stringValue = @"Stopping preparation before opening the workbench…";
-}
 - (NSURL *)baseURL {
     NSInteger port = [NSProcessInfo.processInfo.environment[@"IEI_UI_PORT"] ?: @"3000" integerValue];
     return [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld", (long)port]];
@@ -76,18 +71,16 @@
         self.ownsService = YES;
         NSDictionary *startup = [self startupStatus];
         NSString *phase = startup[@"phase"];
-        if (self.preparing && ![phase isEqual:@"ready"] && ![phase isEqual:@"skipped"]) {
+        if (self.preparing && ![phase isEqual:@"ready"]) {
             self.statusLabel.stringValue = startup[@"message"] ?: @"Preparing GUIDE-IEI for first use. Checking installed components…";
             self.retryButton.hidden = ![phase isEqual:@"failed"];
             self.retryButton.enabled = YES;
-            self.skipButton.hidden = NO;
-            self.skipButton.enabled = ![phase isEqual:@"stopping"];
             self.progress.hidden = [phase isEqual:@"failed"];
             if (!self.progress.hidden) [self.progress startAnimation:nil];
             return;
         }
         self.preparing = NO;
-        self.retryButton.hidden = YES; self.skipButton.hidden = YES;
+        self.retryButton.hidden = YES;
         [self.progress stopAnimation:nil]; self.progress.hidden = YES;
         self.openButton.enabled = YES;
         NSArray *blockers = [value[@"blockers"] isKindOfClass:NSArray.class] ? value[@"blockers"] : @[];
@@ -105,7 +98,7 @@
     self.statusLabel = [NSTextField wrappingLabelWithString:@"Starting the workbench…"];
     self.statusLabel.maximumNumberOfLines = 5;
     self.statusLabel.accessibilityLabel = @"Workbench status";
-    NSTextField *hint = [NSTextField wrappingLabelWithString:@"First use may take 10–30 minutes or longer to prepare VEP. Large datasets are selected later inside the workbench. Existing compatible components are reused.\n\nClosing the browser leaves GUIDE-IEI running. Use Quit to stop it; Docker remains available to other applications."];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:@"First use installs the bundled VEP engine. Missing container tools and the virtual machine still need an internet connection. Large datasets are selected later inside the workbench. Compatible components are reused.\n\nClosing the browser leaves GUIDE-IEI running. Use Quit to stop it; Docker remains available to other applications."];
     hint.textColor = NSColor.secondaryLabelColor;
     self.openButton = [NSButton buttonWithTitle:@"Open Workbench" target:self action:@selector(openReview:)]; self.openButton.enabled = NO;
     NSButton *quit = [NSButton buttonWithTitle:@"Quit GUIDE-IEI" target:NSApp action:@selector(terminate:)];
@@ -113,9 +106,7 @@
     NSStackView *buttons = [NSStackView stackViewWithViews:@[self.openButton, log, quit]];
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal; buttons.spacing = 12;
     self.retryButton = [NSButton buttonWithTitle:@"Retry preparation" target:self action:@selector(retrySetup:)]; self.retryButton.hidden = YES;
-    self.skipButton = [NSButton buttonWithTitle:@"Open without annotation" target:self action:@selector(skipSetup:)];
-    self.skipButton.hidden = !self.preparing;
-    NSStackView *setupButtons = [NSStackView stackViewWithViews:@[self.skipButton, self.retryButton]];
+    NSStackView *setupButtons = [NSStackView stackViewWithViews:@[self.retryButton]];
     setupButtons.orientation = NSUserInterfaceLayoutOrientationHorizontal; setupButtons.spacing = 12;
     self.progress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0, 0, 510, 12)];
     self.progress.indeterminate = YES; self.progress.style = NSProgressIndicatorStyleBar;

@@ -31,6 +31,14 @@ try {
   });
   await page.setViewport({ width: 1440, height: 1000 });
   await page.goto(base, { waitUntil: "networkidle0" });
+  await page.waitForFunction(() => {
+    const mark = document.querySelector(".brand img.brand-mark");
+    return mark?.complete && mark.naturalWidth > 0 && mark.getAttribute("src") === "/favicon.svg";
+  });
+  assert((await fetch(base + "/favicon.svg").then((response) => response.text())).includes("DNA and immune receptor"));
+  if (process.env.IEI_PACKAGED_BRAND_SCREENSHOT) {
+    await (await page.$(".brand")).screenshot({ path: process.env.IEI_PACKAGED_BRAND_SCREENSHOT });
+  }
   const clickText = (text) => page.evaluate((text) => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === text).click(), text);
   await page.waitForFunction(() => [...document.querySelectorAll("button")].some((button) => button.textContent.trim() === "Set up annotation datasets"));
   await clickText("Set up annotation datasets");

@@ -38,6 +38,8 @@
 #   --engine-only      skip UI/native-HTS installation; used by the workbench
 #   --config FILE      annotation engine configuration
 set -u -o pipefail
+# Direct invocations also use signed bundled Python: never mutate its resources.
+export PYTHONDONTWRITEBYTECODE=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
@@ -667,6 +669,16 @@ else
         fi
     fi
 
+    # Resolve existing managed profiles even after an interrupted first start
+    # left Docker on its unused default connection. Export for every following
+    # image load/probe; never persist a global Docker context change.
+    if [ "$OS" = Darwin ] && [ "$CONTAINER_RUNTIME" = docker ] && [ -f "$ROOT/local_service/container_startup.py" ]; then
+        recovered_host="$(PATH="$TOOLS_DIR/bin:$PATH" IEI_TOOLS_DIR="$TOOLS_DIR" "$PYTHON_BIN" "$ROOT/local_service/container_startup.py" --resolve-managed-host)"
+        if [ -n "$recovered_host" ]; then
+            export DOCKER_HOST="$recovered_host"
+            note "Recovered the existing managed Colima connection for this setup (global Docker context unchanged)"
+        fi
+    fi
     echo "=== Starting the container runtime ==="
     # ---- daemon / VM health
     if [ -n "$CONTAINER_BIN" ]; then
@@ -681,7 +693,10 @@ else
                         host_mem_gb="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) / 1073741824 ))"
                         vm_cpus=$(( host_cpus > 8 ? 8 : (host_cpus > 2 ? host_cpus - 1 : 2) ))
                         vm_mem=$(( host_mem_gb / 2 )); [ "$vm_mem" -gt 12 ] && vm_mem=12; [ "$vm_mem" -lt 4 ] && vm_mem=4
-                        if PATH="$TOOLS_DIR/bin:$PATH" "$TOOLS_DIR/bin/colima" start --cpu "$vm_cpus" --memory "$vm_mem" --disk 120; then
+                        # Explicit mounts replace Colima defaults. Retain home
+                        # and temporary access and share app code read-only;
+                        # /Applications is not included in the default mounts.
+                        if PATH="$TOOLS_DIR/bin:$PATH" start_managed_colima "$TOOLS_DIR/bin/colima" "$ROOT" "$vm_cpus" "$vm_mem"; then
                             DAEMON_UP=1
                             ok "Colima VM started (${vm_cpus} CPU, ${vm_mem} GiB RAM, 120 GiB disk)"
                         else
@@ -696,7 +711,7 @@ else
                         DAEMON_UP=1
                         ok "Docker engine started"
                     else
-                        fix "Docker could not be started automatically" "open Docker Desktop or start the selected Colima profile; see ~/.iei-variant-review/logs/docker-startup.log"
+                        fix "Docker could not be started automatically" "follow the startup message above, then choose Retry preparation; Open Log includes the failure details"
                     fi
                 elif [ "$OS" = "Darwin" ]; then
                     fix "$CONTAINER_RUNTIME daemon not running" "start Docker Desktop (or rerun with --install for the no-admin Colima stack)"
@@ -732,9 +747,6 @@ else
         if [ -n "$engine_mem" ] && [ "$engine_mem" -lt 8000000000 ] 2>/dev/null; then
             wrn "container engine has < 8 GiB RAM; large tabix references (dbNSFP, SpliceAI) need memory — resize the VM (colima: --memory 8+; Docker Desktop: Settings -> Resources)"
         fi
-        if [ "$OS" = "Darwin" ] && [ "$ARCH" = "arm64" ] && echo "$engine_arch" | grep -qi "aarch64\|arm64"; then
-            note "Apple Silicon: the amd64 VEP image runs through Colima's default binfmt emulation (works, but slower); advanced users may enable Rosetta with 'colima stop && colima start --vm-type vz --vz-rosetta'"
-        fi
 
         # ---- image identity + reference mount reachability
         # A tag such as vep-annotate:latest is mutable. Match a deterministic
@@ -761,6 +773,16 @@ else
 
         if [ "$IMAGE_CURRENT" = 1 ]; then
             ok "container image $IMAGE matches this GUIDE-IEI version"
+        elif [ "$MODE" = "install" ] && [ -d "$ROOT/bundled-engine" ]; then
+            if "$PYTHON_BIN" "$ROOT/scripts/bundled_engine.py" load --root "$ROOT" \
+                --directory "$ROOT/bundled-engine" --runtime "$CONTAINER_BIN" --image "$IMAGE"; then
+                IMAGE_CURRENT=1
+                ok "bundled container image installed and verified"
+            else
+                fix "bundled engine could not be installed" "see the error above; retry or reinstall the correct GUIDE-IEI app (no source build was attempted)"
+            fi
+        elif [ "$MODE" = "install" ] && [ -f "$ROOT/desktop-build.json" ]; then
+            fix "this app is missing its bundled annotation engine" "install a complete GUIDE-IEI release; preview-only UI test builds cannot prepare annotation"
         elif [ "$MODE" = "install" ] && confirm "$([ "$IMAGE_PRESENT" = 1 ] && echo 'Rebuild the outdated VEP container image now?' || echo 'Build the VEP container image now (downloads the ~2 GB base image)?')"; then
             BUILD_NAME="$IMAGE"
             BUILD_TAG="latest"
@@ -797,10 +819,17 @@ else
 
         if [ "$IMAGE_CURRENT" = 1 ]; then
             echo "=== Verifying the annotation engine ==="
-            if "$CONTAINER_BIN" run --rm -v "$ROOT":/probe:ro --entrypoint sh "$IMAGE" -c 'test -d /probe/scripts' >/dev/null 2>&1; then
+            if "$CONTAINER_BIN" run --rm --pull=never --network=none --mount "type=bind,source=$ROOT,target=/probe,readonly" --entrypoint sh "$IMAGE" -c 'test -r /probe/scripts/setup_environment.sh' >/dev/null 2>&1; then
                 ok "repo directory is mountable inside the container"
+            elif [ "$MODE" = "install" ] && [ "$OS" = "Darwin" ] && [ "$CONTAINER_RUNTIME" = "docker" ]; then
+                if PATH="$TOOLS_DIR/bin:$PATH" "$PYTHON_BIN" "$ROOT/local_service/colima_sharing.py" \
+                    --docker "$CONTAINER_BIN" --image "$IMAGE" --root "$ROOT"; then
+                    ok "application sharing repaired and verified"
+                else
+                    fix "application sharing needs attention" "follow the message above, then choose Retry preparation; no VEP rebuild or dataset removal is needed"
+                fi
             else
-                fix "cannot bind-mount $ROOT into the container" "colima: restart with --mount \"\$HOME:w\" covering your data; Docker Desktop: add the folder under Settings -> Resources -> File sharing"
+                fix "cannot bind-mount $ROOT into the container" "open GUIDE-IEI and choose Retry preparation for automatic Colima repair; for other runtimes, allow this folder in the container manager's file-sharing settings"
             fi
         fi
     fi

@@ -1,5 +1,7 @@
 """Engine setup uses disposable fixtures, never installs workstation tools."""
 import json
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -34,6 +36,27 @@ class EngineSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Windows"):
                 self.service.start_engine_setup({"confirm": True})
 
+    def test_ready_image_without_app_mount_is_not_ready_on_reopen(self):
+        import subprocess
+        with patch.object(self.service, "_container_image_status", return_value={"available": True}), \
+                patch("local_service.workbench_service.subprocess.run", return_value=subprocess.CompletedProcess([], 1)) as run:
+            result = self.service.annotation_engine_status({})
+        self.assertFalse(result["available"])
+        self.assertEqual(result["state"], "sharing_required")
+        self.assertIn(str(self.service.pipeline_root), result["message"])
+        self.assertIn("repair Colima sharing automatically", result["message"])
+        self.assertIn("--pull=never", run.call_args.args[0])
+
+    def test_mountable_image_is_ready_and_busy_setup_does_not_probe(self):
+        import subprocess
+        with patch.object(self.service, "_container_image_status", return_value={"available": True}), \
+                patch("local_service.workbench_service.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertTrue(self.service.annotation_engine_status({})["available"])
+            run.reset_mock()
+            with patch.object(self.service, "_engine_setup_reserved", True):
+                self.assertTrue(self.service.annotation_engine_status({})["busy"])
+            run.assert_not_called()
+
     def test_conflicts_block_setup(self):
         for name, value in (("_active_storage_mutations", 1), ("_migration_reserved", True)):
             with patch.object(self.service, name, value), patch("local_service.workbench_service.platform.system", return_value="Darwin"):
@@ -62,6 +85,22 @@ class EngineSetupTests(unittest.TestCase):
         self.service.begin_storage_mutation()
         self.service.end_storage_mutation()
 
+    def test_successful_retry_adopts_recovered_host_before_validation_and_later_jobs(self):
+        self._write_script("setup_environment.sh", "#!/bin/sh\nexit 0\n")
+        recovered_host = "unix:///synthetic-recovered-colima/docker.sock"
+        def validate(config):
+            self.assertEqual(os.environ.get("DOCKER_HOST"), recovered_host)
+            return {"available": True}
+        with patch.dict(os.environ), \
+                patch("local_service.workbench_service.platform.system", return_value="Darwin"), \
+                patch("local_service.workbench_service.managed_colima_environment", side_effect=lambda env: dict(env, DOCKER_HOST=recovered_host)) as recover, \
+                patch.object(self.service, "_container_image_status", side_effect=validate):
+            result = self.wait_setup(self.service.start_engine_setup({"confirm": True}))
+            self.assertEqual(result["status"], "succeeded", result)
+            recover.assert_called_once()
+            inherited = subprocess.check_output([sys.executable, "-c", "import os; print(os.environ.get('DOCKER_HOST', ''))"], text=True).strip()
+            self.assertEqual(inherited, recovered_host)
+
     def test_failed_setup_can_be_retried_and_false_success_is_rejected(self):
         self._write_script("setup_environment.sh", "#!/bin/sh\necho test-build-failed\nexit 17\n")
         with patch("local_service.workbench_service.platform.system", return_value="Darwin"):
@@ -74,6 +113,15 @@ class EngineSetupTests(unittest.TestCase):
             self.assertEqual(second["status"], "failed")
             self.assertIn("engine still missing", second["error"])
             self.assertNotEqual(first["id"], second["id"])
+
+    def test_sharing_repair_guidance_reaches_startup_window(self):
+        message = "Other containers are running. Finish those workloads, then choose Retry preparation."
+        self._write_script("setup_environment.sh", '#!/bin/sh\necho "=== Repairing container file sharing ==="\necho "GUIDE_IEI_SETUP_ERROR: ' + message + '"\necho "summary: one issue"\nexit 1\n')
+        with patch("local_service.workbench_service.platform.system", return_value="Darwin"):
+            result = self.wait_setup(self.service.start_engine_setup({"confirm": True}))
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["message"], message)
+        self.assertEqual(result["error"], message)
 
     def test_http_route_requires_consent_and_rejects_cross_site(self):
         server = create_server(self.service, port=0)
@@ -122,15 +170,15 @@ class EngineSetupTests(unittest.TestCase):
             ticks.append(1)
             self.assertLess(len(ticks), 100)
             if len(ticks) == 1:
-                control_path.write_text(json.dumps({"action": "skip"}))
+                control_path.write_text(json.dumps({"action": "quit"}))
             time.sleep(.02)
         try:
             with patch("local_service.workbench_service.platform.system", return_value="Darwin"), patch.object(self.service, "_container_image_status", return_value={"available": False}):
-                self.assertTrue(prepare_engine(f"http://127.0.0.1:{server.server_port}", self.root,
+                self.assertFalse(prepare_engine(f"http://127.0.0.1:{server.server_port}", self.root,
                     status_path, control_path, lambda: True, pause=tick))
             self.assertFalse(self.service._engine_setup_reserved)
             self.assertFalse(self.service._resource_processes)
-            self.assertEqual(json.loads(status_path.read_text())["phase"], "skipped")
+            self.assertEqual(json.loads(status_path.read_text())["phase"], "stopped")
             self.service.begin_storage_mutation()
             self.service.end_storage_mutation()
         finally:

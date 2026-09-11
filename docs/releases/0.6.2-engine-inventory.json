@@ -1,0 +1,4335 @@
+{
+  "binary_package_count": 378,
+  "cpan_distributions": [
+    {
+      "cpan_path": "N/NE/NEILB/AppConfig-1.71.tar.gz",
+      "distribution": "AppConfig-1.71",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/AppConfig-1.71/install.json",
+      "version": 1.71
+    },
+    {
+      "cpan_path": "R/RU/RURBAN/B-Keywords-1.27.tar.gz",
+      "distribution": "B-Keywords-1.27",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/B-Keywords-1.27/install.json",
+      "version": 1.27
+    },
+    {
+      "cpan_path": "L/LD/LDS/Bio-BigFile-1.07.tar.gz",
+      "distribution": "Bio-BigFile-1.07",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Bio-BigFile-1.07/install.json",
+      "version": "1.07"
+    },
+    {
+      "cpan_path": "C/CF/CFRANKS/Browser-Open-0.04.tar.gz",
+      "distribution": "Browser-Open-0.04",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Browser-Open-0.04/install.json",
+      "version": 0.04
+    },
+    {
+      "cpan_path": "R/RJ/RJBS/CPAN-Meta-Requirements-2.143.tar.gz",
+      "distribution": "CPAN-Meta-Requirements-2.143",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/CPAN-Meta-Requirements-2.143/install.json",
+      "version": "2.143"
+    },
+    {
+      "cpan_path": "L/LE/LEONT/CPAN-Requirements-Dynamic-0.001.tar.gz",
+      "distribution": "CPAN-Requirements-Dynamic-0.001",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/CPAN-Requirements-Dynamic-0.001/install.json",
+      "version": "0.001"
+    },
+    {
+      "cpan_path": "C/CH/CHORNY/CSS-Tiny-1.20.tar.gz",
+      "distribution": "CSS-Tiny-1.20",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/CSS-Tiny-1.20/install.json",
+      "version": "1.20"
+    },
+    {
+      "cpan_path": "M/ML/MLEHMANN/Canary-Stability-2013.tar.gz",
+      "distribution": "Canary-Stability-2013",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Canary-Stability-2013/install.json",
+      "version": 2013
+    },
+    {
+      "cpan_path": "D/DA/DAGOLDEN/Capture-Tiny-0.50.tar.gz",
+      "distribution": "Capture-Tiny-0.50",
+      "license": [
+        "apache_2_0"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Capture-Tiny-0.50/install.json",
+      "version": "0.50"
+    },
+    {
+      "cpan_path": "R/RS/RSHERER/Class-Data-Inheritable-0.10.tar.gz",
+      "distribution": "Class-Data-Inheritable-0.10",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Class-Data-Inheritable-0.10/install.json",
+      "version": "0.10"
+    },
+    {
+      "cpan_path": "P/PL/PLICEASE/Class-Inspector-1.36.tar.gz",
+      "distribution": "Class-Inspector-1.36",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Class-Inspector-1.36/install.json",
+      "version": "1.36"
+    },
+    {
+      "cpan_path": "D/DA/DAGOLDEN/Class-Tiny-1.008.tar.gz",
+      "distribution": "Class-Tiny-1.008",
+      "license": [
+        "apache_2_0"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Class-Tiny-1.008/install.json",
+      "version": "1.008"
+    },
+    {
+      "cpan_path": "S/SH/SHLOMIF/Config-IniFiles-3.000003.tar.gz",
+      "distribution": "Config-IniFiles-3.000003",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Config-IniFiles-3.000003/install.json",
+      "version": "3.000003"
+    },
+    {
+      "cpan_path": "R/RS/RSAVAGE/Config-Tiny-2.30.tgz",
+      "distribution": "Config-Tiny-2.30",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Config-Tiny-2.30/install.json",
+      "version": "2.30"
+    },
+    {
+      "cpan_path": "R/RU/RURBAN/Cpanel-JSON-XS-4.39.tar.gz",
+      "distribution": "Cpanel-JSON-XS-4.39",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Cpanel-JSON-XS-4.39/install.json",
+      "version": 4.39
+    },
+    {
+      "cpan_path": "I/IS/ISHIGAKI/DBD-SQLite-1.74.tar.gz",
+      "distribution": "DBD-SQLite-1.74",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/DBD-SQLite-1.74/install.json",
+      "version": 1.74
+    },
+    {
+      "cpan_path": "I/IS/ISHIGAKI/DBD-SQLite-1.76.tar.gz",
+      "distribution": "DBD-SQLite-1.76",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/DBD-SQLite-1.76/install.json",
+      "version": 1.76
+    },
+    {
+      "cpan_path": "M/MA/MATTN/Devel-CheckLib-1.16.tar.gz",
+      "distribution": "Devel-CheckLib-1.16",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Devel-CheckLib-1.16/install.json",
+      "version": 1.16
+    },
+    {
+      "cpan_path": "P/PJ/PJCJ/Devel-Cover-1.44.tar.gz",
+      "distribution": "Devel-Cover-1.44",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Devel-Cover-1.44/install.json",
+      "version": "1.44"
+    },
+    {
+      "cpan_path": "M/MI/MIKIHOSHI/Devel-Cover-Report-Coveralls-0.32.tar.gz",
+      "distribution": "Devel-Cover-Report-Coveralls-0.32",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Devel-Cover-Report-Coveralls-0.32/install.json",
+      "version": "0.32"
+    },
+    {
+      "cpan_path": "L/LD/LDS/Devel-Cycle-1.12.tar.gz",
+      "distribution": "Devel-Cycle-1.12",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Devel-Cycle-1.12/install.json",
+      "version": 1.12
+    },
+    {
+      "cpan_path": "D/DR/DROLSKY/Devel-StackTrace-2.05.tar.gz",
+      "distribution": "Devel-StackTrace-2.05",
+      "license": [
+        "artistic_2"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Devel-StackTrace-2.05/install.json",
+      "version": "2.05"
+    },
+    {
+      "cpan_path": "A/AN/ANDK/Devel-Symdump-2.18.tar.gz",
+      "distribution": "Devel-Symdump-2.18",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Devel-Symdump-2.18/install.json",
+      "version": 2.18
+    },
+    {
+      "cpan_path": "D/DA/DANKOGAI/Encode-3.21.tar.gz",
+      "distribution": "Encode-3.21",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Encode-3.21/install.json",
+      "version": 3.21
+    },
+    {
+      "cpan_path": "S/SH/SHLOMIF/Error-0.17030.tar.gz",
+      "distribution": "Error-0.17030",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Error-0.17030/install.json",
+      "version": "0.17030"
+    },
+    {
+      "cpan_path": "D/DR/DROLSKY/Exception-Class-1.45.tar.gz",
+      "distribution": "Exception-Class-1.45",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Exception-Class-1.45/install.json",
+      "version": "1.45"
+    },
+    {
+      "cpan_path": "L/LE/LEONT/ExtUtils-Config-0.010.tar.gz",
+      "distribution": "ExtUtils-Config-0.010",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/ExtUtils-Config-0.010/install.json",
+      "version": "0.010"
+    },
+    {
+      "cpan_path": "E/ET/ETJ/ExtUtils-CppGuess-0.27.tar.gz",
+      "distribution": "ExtUtils-CppGuess-0.27",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/ExtUtils-CppGuess-0.27/install.json",
+      "version": 0.27
+    },
+    {
+      "cpan_path": "L/LE/LEONT/ExtUtils-HasCompiler-0.025.tar.gz",
+      "distribution": "ExtUtils-HasCompiler-0.025",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/ExtUtils-HasCompiler-0.025/install.json",
+      "version": "0.025"
+    },
+    {
+      "cpan_path": "L/LE/LEONT/ExtUtils-Helpers-0.028.tar.gz",
+      "distribution": "ExtUtils-Helpers-0.028",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/ExtUtils-Helpers-0.028/install.json",
+      "version": "0.028"
+    },
+    {
+      "cpan_path": "L/LE/LEONT/ExtUtils-InstallPaths-0.014.tar.gz",
+      "distribution": "ExtUtils-InstallPaths-0.014",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/ExtUtils-InstallPaths-0.014/install.json",
+      "version": "0.014"
+    },
+    {
+      "cpan_path": "B/BI/BINGOS/ExtUtils-MakeMaker-7.72.tar.gz",
+      "distribution": "ExtUtils-MakeMaker-7.72",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/ExtUtils-MakeMaker-7.72/install.json",
+      "version": 7.72
+    },
+    {
+      "cpan_path": "X/XA/XAOC/ExtUtils-PkgConfig-1.16.tar.gz",
+      "distribution": "ExtUtils-PkgConfig-1.16",
+      "license": [
+        "unknown",
+        "lgpl_2_1"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/ExtUtils-PkgConfig-1.16/install.json",
+      "version": 1.16
+    },
+    {
+      "cpan_path": "P/PL/PLICEASE/File-Listing-6.16.tar.gz",
+      "distribution": "File-Listing-6.16",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/File-Listing-6.16/install.json",
+      "version": 6.16
+    },
+    {
+      "cpan_path": "R/RE/REHSACK/File-ShareDir-1.118.tar.gz",
+      "distribution": "File-ShareDir-1.118",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/File-ShareDir-1.118/install.json",
+      "version": 1.118
+    },
+    {
+      "cpan_path": "E/ET/ETHER/File-ShareDir-Install-0.14.tar.gz",
+      "distribution": "File-ShareDir-Install-0.14",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/File-ShareDir-Install-0.14/install.json",
+      "version": "0.14"
+    },
+    {
+      "cpan_path": "P/PL/PLICEASE/File-Which-1.27.tar.gz",
+      "distribution": "File-Which-1.27",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/File-Which-1.27/install.json",
+      "version": 1.27
+    },
+    {
+      "cpan_path": "R/RU/RURBAN/GD-2.83.tar.gz",
+      "distribution": "GD-2.83",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/GD-2.83/install.json",
+      "version": 2.83
+    },
+    {
+      "cpan_path": "B/BK/BKB/Gzip-Faster-0.21.tar.gz",
+      "distribution": "Gzip-Faster-0.21",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Gzip-Faster-0.21/install.json",
+      "version": 0.21
+    },
+    {
+      "cpan_path": "P/PE/PETDANCE/HTML-Lint-2.32.tar.gz",
+      "distribution": "HTML-Lint-2.32",
+      "license": [
+        "artistic_2"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/HTML-Lint-2.32/install.json",
+      "version": 2.32
+    },
+    {
+      "cpan_path": "O/OA/OALDERS/HTTP-Cookies-6.11.tar.gz",
+      "distribution": "HTTP-Cookies-6.11",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/HTTP-Cookies-6.11/install.json",
+      "version": 6.11
+    },
+    {
+      "cpan_path": "G/GA/GAAS/HTTP-Negotiate-6.01.tar.gz",
+      "distribution": "HTTP-Negotiate-6.01",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/HTTP-Negotiate-6.01/install.json",
+      "version": 6.01
+    },
+    {
+      "cpan_path": "S/SU/SULLR/IO-Socket-SSL-2.089.tar.gz",
+      "distribution": "IO-Socket-SSL-2.089",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/IO-Socket-SSL-2.089/install.json",
+      "version": 2.089
+    },
+    {
+      "cpan_path": "G/GA/GAAS/IO-String-1.08.tar.gz",
+      "distribution": "IO-String-1.08",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/IO-String-1.08/install.json",
+      "version": 1.08
+    },
+    {
+      "cpan_path": "I/IS/ISHIGAKI/JSON-4.10.tar.gz",
+      "distribution": "JSON-4.10",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/JSON-4.10/install.json",
+      "version": "4.10"
+    },
+    {
+      "cpan_path": "E/ET/ETHER/JSON-MaybeXS-1.004008.tar.gz",
+      "distribution": "JSON-MaybeXS-1.004008",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/JSON-MaybeXS-1.004008/install.json",
+      "version": 1.004008
+    },
+    {
+      "cpan_path": "M/ML/MLEHMANN/JSON-XS-4.03.tar.gz",
+      "distribution": "JSON-XS-4.03",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/JSON-XS-4.03/install.json",
+      "version": 4.03
+    },
+    {
+      "cpan_path": "D/DC/DCONWAY/Lingua-EN-Inflect-1.905.tar.gz",
+      "distribution": "Lingua-EN-Inflect-1.905",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Lingua-EN-Inflect-1.905/install.json",
+      "version": 1.905
+    },
+    {
+      "cpan_path": "D/DR/DROLSKY/List-SomeUtils-0.59.tar.gz",
+      "distribution": "List-SomeUtils-0.59",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/List-SomeUtils-0.59/install.json",
+      "version": "0.59"
+    },
+    {
+      "cpan_path": "D/DR/DROLSKY/List-SomeUtils-XS-0.58.tar.gz",
+      "distribution": "List-SomeUtils-XS-0.58",
+      "license": [
+        "artistic_2"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/List-SomeUtils-XS-0.58/install.json",
+      "version": "0.58"
+    },
+    {
+      "cpan_path": "M/MA/MARIOROY/MCE-1.901.tar.gz",
+      "distribution": "MCE-1.901",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/MCE-1.901/install.json",
+      "version": "1.901"
+    },
+    {
+      "cpan_path": "C/CA/CALLAHAN/Math-CDF-0.1.tar.gz",
+      "distribution": "Math-CDF-0.1",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Math-CDF-0.1/install.json",
+      "version": 0.1
+    },
+    {
+      "cpan_path": "L/LE/LEONT/Module-Build-Tiny-0.051.tar.gz",
+      "distribution": "Module-Build-Tiny-0.051",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Module-Build-Tiny-0.051/install.json",
+      "version": "0.051"
+    },
+    {
+      "cpan_path": "S/SI/SIMONW/Module-Pluggable-6.3.tar.gz",
+      "distribution": "Module-Pluggable-6.3",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Module-Pluggable-6.3/install.json",
+      "version": 6.3
+    },
+    {
+      "cpan_path": "L/LW/LWP/Mozilla-CA-20250202.tar.gz",
+      "distribution": "Mozilla-CA-20250202",
+      "license": [
+        "open_source"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Mozilla-CA-20250202/install.json",
+      "version": 20250202
+    },
+    {
+      "cpan_path": "O/OA/OALDERS/Net-HTTP-6.23.tar.gz",
+      "distribution": "Net-HTTP-6.23",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Net-HTTP-6.23/install.json",
+      "version": 6.23
+    },
+    {
+      "cpan_path": "C/CH/CHRISN/Net-SSLeay-1.94.tar.gz",
+      "distribution": "Net-SSLeay-1.94",
+      "license": [
+        "artistic_2"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Net-SSLeay-1.94/install.json",
+      "version": 1.94
+    },
+    {
+      "cpan_path": "M/MI/MITHALDU/PPI-1.281.tar.gz",
+      "distribution": "PPI-1.281",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/PPI-1.281/install.json",
+      "version": "1.281"
+    },
+    {
+      "cpan_path": "A/AD/ADAMK/PPI-HTML-1.08.tar.gz",
+      "distribution": "PPI-HTML-1.08",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/PPI-HTML-1.08/install.json",
+      "version": 1.08
+    },
+    {
+      "cpan_path": "W/WY/WYANT/PPIx-QuoteLike-0.023.tar.gz",
+      "distribution": "PPIx-QuoteLike-0.023",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/PPIx-QuoteLike-0.023/install.json",
+      "version": "0.023"
+    },
+    {
+      "cpan_path": "W/WY/WYANT/PPIx-Regexp-0.088.tar.gz",
+      "distribution": "PPIx-Regexp-0.088",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/PPIx-Regexp-0.088/install.json",
+      "version": "0.088"
+    },
+    {
+      "cpan_path": "D/DB/DBOOK/PPIx-Utils-0.003.tar.gz",
+      "distribution": "PPIx-Utils-0.003",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/PPIx-Utils-0.003/install.json",
+      "version": "0.003"
+    },
+    {
+      "cpan_path": "R/RO/ROBIN/PadWalker-2.5.tar.gz",
+      "distribution": "PadWalker-2.5",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/PadWalker-2.5/install.json",
+      "version": 2.5
+    },
+    {
+      "cpan_path": "A/AR/ARISTOTLE/Parallel-Iterator-1.002.tar.gz",
+      "distribution": "Parallel-Iterator-1.002",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Parallel-Iterator-1.002/install.json",
+      "version": 1.002
+    },
+    {
+      "cpan_path": "P/PE/PETDANCE/Perl-Critic-1.156.tar.gz",
+      "distribution": "Perl-Critic-1.156",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Perl-Critic-1.156/install.json",
+      "version": "1.156"
+    },
+    {
+      "cpan_path": "S/SH/SHANCOCK/Perl-Tidy-20250311.tar.gz",
+      "distribution": "Perl-Tidy-20250311",
+      "license": [
+        "gpl_2"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Perl-Tidy-20250311/install.json",
+      "version": 20250311
+    },
+    {
+      "cpan_path": "N/NW/NWCLARK/PerlIO-gzip-0.20.tar.gz",
+      "distribution": "PerlIO-gzip-0.20",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/PerlIO-gzip-0.20/install.json",
+      "version": "0.20"
+    },
+    {
+      "cpan_path": "R/RC/RCLAMP/Pod-Coverage-0.23.tar.gz",
+      "distribution": "Pod-Coverage-0.23",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Pod-Coverage-0.23/install.json",
+      "version": 0.23
+    },
+    {
+      "cpan_path": "M/MA/MAREKR/Pod-Parser-1.67.tar.gz",
+      "distribution": "Pod-Parser-1.67",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Pod-Parser-1.67/install.json",
+      "version": 1.67
+    },
+    {
+      "cpan_path": "H/HA/HAARG/Pod-Spell-1.27.tar.gz",
+      "distribution": "Pod-Spell-1.27",
+      "license": [
+        "artistic_2"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Pod-Spell-1.27/install.json",
+      "version": "1.27"
+    },
+    {
+      "cpan_path": "E/ET/ETHER/Safe-Isa-1.000010.tar.gz",
+      "distribution": "Safe-Isa-1.000010",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Safe-Isa-1.000010/install.json",
+      "version": "1.000010"
+    },
+    {
+      "cpan_path": "Y/YV/YVES/Sereal-5.004.tar.gz",
+      "distribution": "Sereal-5.004",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Sereal-5.004/install.json",
+      "version": 5.004
+    },
+    {
+      "cpan_path": "Y/YV/YVES/Sereal-Decoder-5.004.tar.gz",
+      "distribution": "Sereal-Decoder-5.004",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Sereal-Decoder-5.004/install.json",
+      "version": 5.004
+    },
+    {
+      "cpan_path": "Y/YV/YVES/Sereal-Encoder-5.004.tar.gz",
+      "distribution": "Sereal-Encoder-5.004",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Sereal-Encoder-5.004/install.json",
+      "version": 5.004
+    },
+    {
+      "cpan_path": "S/SL/SLOYD/Set-IntervalTree-0.12.tar.gz",
+      "distribution": "Set-IntervalTree-0.12",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Set-IntervalTree-0.12/install.json",
+      "version": "0.12"
+    },
+    {
+      "cpan_path": "S/SR/SREZIC/String-Format-1.18.tar.gz",
+      "distribution": "String-Format-1.18",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/String-Format-1.18/install.json",
+      "version": 1.18
+    },
+    {
+      "cpan_path": "D/DA/DAGOLDEN/Sub-Uplevel-0.2800.tar.gz",
+      "distribution": "Sub-Uplevel-0.2800",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Sub-Uplevel-0.2800/install.json",
+      "version": "0.2800"
+    },
+    {
+      "cpan_path": "E/ET/ETHER/Task-Weaken-1.06.tar.gz",
+      "distribution": "Task-Weaken-1.06",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Task-Weaken-1.06/install.json",
+      "version": "1.06"
+    },
+    {
+      "cpan_path": "T/TO/TODDR/Template-Toolkit-3.102.tar.gz",
+      "distribution": "Template-Toolkit-3.102",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Template-Toolkit-3.102/install.json",
+      "version": 3.102
+    },
+    {
+      "cpan_path": "R/RJ/RJBS/Test-Deep-1.204.tar.gz",
+      "distribution": "Test-Deep-1.204",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Deep-1.204/install.json",
+      "version": 1.204
+    },
+    {
+      "cpan_path": "D/DC/DCANTRELL/Test-Differences-0.71.tar.gz",
+      "distribution": "Test-Differences-0.71",
+      "license": [
+        "unknown",
+        "artistic_1",
+        "gpl_1"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Differences-0.71/install.json",
+      "version": 0.71
+    },
+    {
+      "cpan_path": "E/EX/EXODIST/Test-Exception-0.43.tar.gz",
+      "distribution": "Test-Exception-0.43",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Exception-0.43/install.json",
+      "version": 0.43
+    },
+    {
+      "cpan_path": "M/MS/MSCHWERN/Test-Fork-0.02.tar.gz",
+      "distribution": "Test-Fork-0.02",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Fork-0.02/install.json",
+      "version": "0.02"
+    },
+    {
+      "cpan_path": "R/RG/RGARCIA/Test-LongString-0.17.tar.gz",
+      "distribution": "Test-LongString-0.17",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-LongString-0.17/install.json",
+      "version": 0.17
+    },
+    {
+      "cpan_path": "C/CH/CHROMATIC/Test-MockObject-1.20200122.tar.gz",
+      "distribution": "Test-MockObject-1.20200122",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-MockObject-1.20200122/install.json",
+      "version": 1.20200122
+    },
+    {
+      "cpan_path": "H/HA/HAARG/Test-NoWarnings-1.06.tar.gz",
+      "distribution": "Test-NoWarnings-1.06",
+      "license": [
+        "lgpl_2_1"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-NoWarnings-1.06/install.json",
+      "version": 1.06
+    },
+    {
+      "cpan_path": "P/PE/PETDANCE/Test-Perl-Critic-1.04.tar.gz",
+      "distribution": "Test-Perl-Critic-1.04",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Perl-Critic-1.04/install.json",
+      "version": "1.04"
+    },
+    {
+      "cpan_path": "N/NE/NEILB/Test-Pod-Coverage-1.10.tar.gz",
+      "distribution": "Test-Pod-Coverage-1.10",
+      "license": [
+        "artistic_2"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Pod-Coverage-1.10/install.json",
+      "version": "1.10"
+    },
+    {
+      "cpan_path": "B/BI/BIGJ/Test-Warn-0.37.tar.gz",
+      "distribution": "Test-Warn-0.37",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Warn-0.37/install.json",
+      "version": "0.37"
+    },
+    {
+      "cpan_path": "E/ET/ETHER/Test-Warnings-0.038.tar.gz",
+      "distribution": "Test-Warnings-0.038",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Test-Warnings-0.038/install.json",
+      "version": "0.038"
+    },
+    {
+      "cpan_path": "I/IS/ISHIGAKI/Text-CSV-2.06.tar.gz",
+      "distribution": "Text-CSV-2.06",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Text-CSV-2.06/install.json",
+      "version": 2.06
+    },
+    {
+      "cpan_path": "H/HM/HMBRAND/Text-CSV_XS-1.60.tgz",
+      "distribution": "Text-CSV_XS-1.60",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Text-CSV_XS-1.60/install.json",
+      "version": "1.60"
+    },
+    {
+      "cpan_path": "N/NE/NEILB/Text-Diff-1.45.tar.gz",
+      "distribution": "Text-Diff-1.45",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Text-Diff-1.45/install.json",
+      "version": 1.45
+    },
+    {
+      "cpan_path": "M/ML/MLEHMANN/Types-Serialiser-1.01.tar.gz",
+      "distribution": "Types-Serialiser-1.01",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/Types-Serialiser-1.01/install.json",
+      "version": 1.01
+    },
+    {
+      "cpan_path": "C/CH/CHROMATIC/UNIVERSAL-can-1.20140328.tar.gz",
+      "distribution": "UNIVERSAL-can-1.20140328",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/UNIVERSAL-can-1.20140328/install.json",
+      "version": 1.20140328
+    },
+    {
+      "cpan_path": "E/ET/ETHER/UNIVERSAL-isa-1.20171012.tar.gz",
+      "distribution": "UNIVERSAL-isa-1.20171012",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/UNIVERSAL-isa-1.20171012/install.json",
+      "version": "1.20171012"
+    },
+    {
+      "cpan_path": "G/GA/GAAS/WWW-RobotRules-6.02.tar.gz",
+      "distribution": "WWW-RobotRules-6.02",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/WWW-RobotRules-6.02/install.json",
+      "version": 6.02
+    },
+    {
+      "cpan_path": "I/IN/INGY/YAML-1.31.tar.gz",
+      "distribution": "YAML-1.31",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/YAML-1.31/install.json",
+      "version": 1.31
+    },
+    {
+      "cpan_path": "T/TI/TINITA/YAML-PP-v0.39.0.tar.gz",
+      "distribution": "YAML-PP-v0.39.0",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/YAML-PP-v0.39.0/install.json",
+      "version": "v0.39.0"
+    },
+    {
+      "cpan_path": "M/ML/MLEHMANN/common-sense-3.75.tar.gz",
+      "distribution": "common-sense-3.75",
+      "license": [
+        "unknown"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/common-sense-3.75/install.json",
+      "version": 3.75
+    },
+    {
+      "cpan_path": "D/DA/DAGOLDEN/inc-latest-0.500.tar.gz",
+      "distribution": "inc-latest-0.500",
+      "license": [
+        "apache_2_0"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/inc-latest-0.500/install.json",
+      "version": "0.500"
+    },
+    {
+      "cpan_path": "O/OA/OALDERS/libwww-perl-6.78.tar.gz",
+      "distribution": "libwww-perl-6.78",
+      "license": [
+        "perl_5"
+      ],
+      "metadata": "/usr/local/share/perl/5.34.0/aarch64-linux-gnu-thread-multi/.meta/libwww-perl-6.78/install.json",
+      "version": "6.78"
+    }
+  ],
+  "image_created": "2026-09-02T13:02:38.455905547Z",
+  "image_id": "sha256:1b470d951fe3391cf1671a1310bd5b9e92f00130c7378dd0bb1bd4e4596f75e1",
+  "license_evidence": [
+    {
+      "bytes": 11478,
+      "first_lines": [
+        "                                Apache License",
+        "                           Version 2.0, January 2004",
+        "                        http://www.apache.org/licenses/",
+        "",
+        "   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION",
+        "",
+        "   1. Definitions.",
+        ""
+      ],
+      "path": "/opt/vep/src/ensembl-vep/LICENSE",
+      "sha256": "536c1e06b51e1b872234999250527147e1bb0b8b72d850cac8cfbbedac69df89"
+    },
+    {
+      "bytes": 586,
+      "first_lines": [
+        "Copyright 2014, Konrad J. Karczewski and Daniel G. MacArthur",
+        "",
+        "Licensed under the Apache License, Version 2.0 (the \"License\");",
+        "you may not use this file except in compliance with the License.",
+        "You may obtain a copy of the License at",
+        "",
+        "    http://www.apache.org/licenses/LICENSE-2.0",
+        ""
+      ],
+      "path": "/opt/vep/src/loftee/LICENSE",
+      "sha256": "45000b94c75dff9ad8e6f757df748a2d176e5e9b482018f8400712279d60effb"
+    },
+    {
+      "bytes": 11374,
+      "first_lines": [
+        "                                Apache License",
+        "                           Version 2.0, January 2004",
+        "                        http://www.apache.org/licenses/",
+        "",
+        "   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION",
+        "",
+        "   1. Definitions.",
+        ""
+      ],
+      "path": "/opt/vep/src/Bio-HTS/LICENSE",
+      "sha256": "988eaaeca169ae18f23faada42b587103b13f7adb76a3978dbe78f04adde7e5f"
+    },
+    {
+      "bytes": 3540,
+      "first_lines": [
+        "[Files in this distribution outwith the cram/ subdirectory are distributed",
+        "according to the terms of the following MIT/Expat license.]",
+        "",
+        "The MIT/Expat License",
+        "",
+        "Copyright (C) 2012-2018 Genome Research Ltd.",
+        "",
+        "Permission is hereby granted, free of charge, to any person obtaining a copy"
+      ],
+      "path": "/opt/vep/src/htslib/LICENSE",
+      "sha256": "927b4d48e8e9ecd82f534c2b31b894b728bc09eee3c473170727538f5b2b5b75"
+    },
+    {
+      "bytes": 620,
+      "first_lines": [
+        "This directory contains general purpose, web oriented,",
+        "and computational biology oriented modules,  as well",
+        "as some less general stuff associated with the Intronerator",
+        "web site.  Initially this library was created by Jim",
+        "Kent from 1999 to 2001.  Since then other programmers have",
+        "also added to it.  Jim continues to make substantial",
+        "contributions.",
+        ""
+      ],
+      "path": "/opt/vep/src/kent-335_base/src/lib/README",
+      "sha256": "23db9313e27476a38b3bab86c58c62282469173840234bb63a2066a65e8a7c9c"
+    },
+    {
+      "bytes": 1368,
+      "first_lines": [
+        "/*****************************************************************************",
+        " * Copyright (C) 2000 Jim Kent.  This source code may be freely used         *",
+        " * for personal, academic, and non-profit purposes.  Commercial use          *",
+        " * permitted only by explicit agreement with Jim Kent (jim_kent@pacbell.net) *",
+        " *****************************************************************************/",
+        "struct gif_header",
+        "\t{",
+        "\tchar giftype[6];"
+      ],
+      "path": "/opt/vep/src/kent-335_base/src/lib/gifcodes.h",
+      "sha256": "2d4ff48f52f6df6f19f873d3ed887c9806acd494fd1b81dd65846df765e0c12e"
+    },
+    {
+      "bytes": 2713,
+      "first_lines": [
+        "/*****************************************************************************",
+        " * Copyright (C) 2000 Jim Kent.  This source code may be freely used         *",
+        " * for personal, academic, and non-profit purposes.  Commercial use          *",
+        " * permitted only by explicit agreement with Jim Kent (jim_kent@pacbell.net) *",
+        " *****************************************************************************/",
+        "#ifndef GEMFONT_H",
+        "#define GEMFONT_H",
+        ""
+      ],
+      "path": "/opt/vep/src/kent-335_base/src/lib/gemfont.h",
+      "sha256": "976721fb86fa4e50862086b22c218cfc32b2467ac98acf4049a6046353f8ee34"
+    },
+    {
+      "bytes": 1232,
+      "first_lines": [
+        "/*****************************************************************************",
+        " * Copyright (C) 2002 Ryan Weber.  This source code may be freely used       *",
+        " * for personal, academic, and non-profit purposes.  Commercial use          *",
+        " * permitted only by explicit agreement with Ryan Weber (weber@cse.ucsc.edu) *",
+        " *****************************************************************************/",
+        "/* jointalign.h - routines for printing a joint alignment in html. */",
+        "",
+        "#ifndef JOINTALIGN_H"
+      ],
+      "path": "/opt/vep/src/kent-335_base/src/inc/jointalign.h",
+      "sha256": "311e97e5bc1c63a06ca288f4b01ba54438fc6851ac83503a13d27eb1c4f1a0ec"
+    },
+    {
+      "bytes": 14408,
+      "first_lines": [
+        "/* bandExt - banded Smith-Waterman extension of alignments. ",
+        " * An aligner might first find perfectly matching hits of",
+        " * a small size, then extend these hits as far as possible",
+        " * while the sequences perfectly match, then call on routines",
+        " * in this module to do further extensions allowing small",
+        " * gaps and mismatches. ",
+        " *",
+        " * This version of the algorithm uses affine gap scorea and"
+      ],
+      "path": "/opt/vep/src/kent-335_base/src/jkOwnLib/bandExt.c",
+      "sha256": "5771b6e67507e7761c3286933657e8bce81594000f457be39957fa26324478d2"
+    },
+    {
+      "bytes": 10173,
+      "first_lines": [
+        "=head1 LICENSE",
+        "",
+        "Copyright [1999-2015] Wellcome Trust Sanger Institute and the EMBL-European Bioinformatics Institute",
+        "Copyright [2016-2024] EMBL-European Bioinformatics Institute",
+        "",
+        "Licensed under the Apache License, Version 2.0 (the \"License\");",
+        "you may not use this file except in compliance with the License.",
+        "You may obtain a copy of the License at"
+      ],
+      "path": "/plugins/SpliceAI.pm",
+      "sha256": "179c19f9f71a5883e764ea8fa8ed3f4ab67b27f2f07a8f0b16b2aeff01c6026b"
+    }
+  ],
+  "limitations": [
+    "Does not retrieve corresponding source archives.",
+    "Does not establish permission for legacy Kent jkOwnLib or every dependency.",
+    "Inventories the merged filesystem; docker save also contains historical layers."
+  ],
+  "os_release": "PRETTY_NAME=\"Ubuntu 22.04.5 LTS\"\nNAME=\"Ubuntu\"\nVERSION_ID=\"22.04\"\nVERSION=\"22.04.5 LTS (Jammy Jellyfish)\"\nVERSION_CODENAME=jammy\nID=ubuntu\nID_LIKE=debian\nHOME_URL=\"https://www.ubuntu.com/\"\nSUPPORT_URL=\"https://help.ubuntu.com/\"\nBUG_REPORT_URL=\"https://bugs.launchpad.net/ubuntu/\"\nPRIVACY_POLICY_URL=\"https://www.ubuntu.com/legal/terms-and-policies/privacy-policy\"\nUBUNTU_CODENAME=jammy\n",
+  "packages": [
+    {
+      "binary": "adduser",
+      "source": "adduser",
+      "source_version": "3.118ubuntu5",
+      "version": "3.118ubuntu5"
+    },
+    {
+      "binary": "apt",
+      "source": "apt",
+      "source_version": "2.4.13",
+      "version": "2.4.13"
+    },
+    {
+      "binary": "autoconf",
+      "source": "autoconf",
+      "source_version": "2.71-2",
+      "version": "2.71-2"
+    },
+    {
+      "binary": "automake",
+      "source": "automake-1.16",
+      "source_version": "1:1.16.5-1.3",
+      "version": "1:1.16.5-1.3"
+    },
+    {
+      "binary": "autotools-dev",
+      "source": "autotools-dev",
+      "source_version": "20220109.1",
+      "version": "20220109.1"
+    },
+    {
+      "binary": "base-files",
+      "source": "base-files",
+      "source_version": "12ubuntu4.7",
+      "version": "12ubuntu4.7"
+    },
+    {
+      "binary": "base-passwd",
+      "source": "base-passwd",
+      "source_version": "3.5.52build1",
+      "version": "3.5.52build1"
+    },
+    {
+      "binary": "bash",
+      "source": "bash",
+      "source_version": "5.1-6ubuntu1.1",
+      "version": "5.1-6ubuntu1.1"
+    },
+    {
+      "binary": "binutils",
+      "source": "binutils",
+      "source_version": "2.38-4ubuntu2.7",
+      "version": "2.38-4ubuntu2.7"
+    },
+    {
+      "binary": "binutils-aarch64-linux-gnu",
+      "source": "binutils",
+      "source_version": "2.38-4ubuntu2.7",
+      "version": "2.38-4ubuntu2.7"
+    },
+    {
+      "binary": "binutils-common:arm64",
+      "source": "binutils",
+      "source_version": "2.38-4ubuntu2.7",
+      "version": "2.38-4ubuntu2.7"
+    },
+    {
+      "binary": "bsdutils",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "1:2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "build-essential",
+      "source": "build-essential",
+      "source_version": "12.9ubuntu3",
+      "version": "12.9ubuntu3"
+    },
+    {
+      "binary": "bzip2",
+      "source": "bzip2",
+      "source_version": "1.0.8-5build1",
+      "version": "1.0.8-5build1"
+    },
+    {
+      "binary": "bzip2-doc",
+      "source": "bzip2",
+      "source_version": "1.0.8-5build1",
+      "version": "1.0.8-5build1"
+    },
+    {
+      "binary": "ca-certificates",
+      "source": "ca-certificates",
+      "source_version": "20260601~22.04.1",
+      "version": "20260601~22.04.1"
+    },
+    {
+      "binary": "coreutils",
+      "source": "coreutils",
+      "source_version": "8.32-4.1ubuntu1.2",
+      "version": "8.32-4.1ubuntu1.2"
+    },
+    {
+      "binary": "cpanminus",
+      "source": "cpanminus",
+      "source_version": "1.7045-1",
+      "version": "1.7045-1"
+    },
+    {
+      "binary": "cpp",
+      "source": "gcc-defaults",
+      "source_version": "1.193ubuntu1",
+      "version": "4:11.2.0-1ubuntu1"
+    },
+    {
+      "binary": "cpp-11",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "curl",
+      "source": "curl",
+      "source_version": "7.81.0-1ubuntu1.27",
+      "version": "7.81.0-1ubuntu1.27"
+    },
+    {
+      "binary": "dash",
+      "source": "dash",
+      "source_version": "0.5.11+git20210903+057cd650a4ed-3build1",
+      "version": "0.5.11+git20210903+057cd650a4ed-3build1"
+    },
+    {
+      "binary": "debconf",
+      "source": "debconf",
+      "source_version": "1.5.79ubuntu1",
+      "version": "1.5.79ubuntu1"
+    },
+    {
+      "binary": "debianutils",
+      "source": "debianutils",
+      "source_version": "5.5-1ubuntu2",
+      "version": "5.5-1ubuntu2"
+    },
+    {
+      "binary": "diffutils",
+      "source": "diffutils",
+      "source_version": "1:3.8-0ubuntu2",
+      "version": "1:3.8-0ubuntu2"
+    },
+    {
+      "binary": "dirmngr",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "dpkg",
+      "source": "dpkg",
+      "source_version": "1.21.1ubuntu2.3",
+      "version": "1.21.1ubuntu2.3"
+    },
+    {
+      "binary": "dpkg-dev",
+      "source": "dpkg",
+      "source_version": "1.21.1ubuntu2.3",
+      "version": "1.21.1ubuntu2.3"
+    },
+    {
+      "binary": "e2fsprogs",
+      "source": "e2fsprogs",
+      "source_version": "1.46.5-2ubuntu1.2",
+      "version": "1.46.5-2ubuntu1.2"
+    },
+    {
+      "binary": "fakeroot",
+      "source": "fakeroot",
+      "source_version": "1.28-1ubuntu1",
+      "version": "1.28-1ubuntu1"
+    },
+    {
+      "binary": "findutils",
+      "source": "findutils",
+      "source_version": "4.8.0-1ubuntu3",
+      "version": "4.8.0-1ubuntu3"
+    },
+    {
+      "binary": "fontconfig-config",
+      "source": "fontconfig",
+      "source_version": "2.13.1-4.2ubuntu5",
+      "version": "2.13.1-4.2ubuntu5"
+    },
+    {
+      "binary": "fonts-dejavu-core",
+      "source": "fonts-dejavu",
+      "source_version": "2.37-2build1",
+      "version": "2.37-2build1"
+    },
+    {
+      "binary": "g++",
+      "source": "gcc-defaults",
+      "source_version": "1.193ubuntu1",
+      "version": "4:11.2.0-1ubuntu1"
+    },
+    {
+      "binary": "g++-11",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "gcc",
+      "source": "gcc-defaults",
+      "source_version": "1.193ubuntu1",
+      "version": "4:11.2.0-1ubuntu1"
+    },
+    {
+      "binary": "gcc-11",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "gcc-11-base:arm64",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "gcc-12-base:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "git",
+      "source": "git",
+      "source_version": "1:2.34.1-1ubuntu1.17",
+      "version": "1:2.34.1-1ubuntu1.17"
+    },
+    {
+      "binary": "git-man",
+      "source": "git",
+      "source_version": "1:2.34.1-1ubuntu1.17",
+      "version": "1:2.34.1-1ubuntu1.17"
+    },
+    {
+      "binary": "gnupg",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gnupg-l10n",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gnupg-utils",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gpg",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gpg-agent",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gpg-wks-client",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gpg-wks-server",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gpgconf",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gpgsm",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "gpgv",
+      "source": "gnupg2",
+      "source_version": "2.2.27-3ubuntu2.1",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "binary": "grep",
+      "source": "grep",
+      "source_version": "3.7-1build1",
+      "version": "3.7-1build1"
+    },
+    {
+      "binary": "gzip",
+      "source": "gzip",
+      "source_version": "1.10-4ubuntu4.1",
+      "version": "1.10-4ubuntu4.1"
+    },
+    {
+      "binary": "hostname",
+      "source": "hostname",
+      "source_version": "3.23ubuntu2",
+      "version": "3.23ubuntu2"
+    },
+    {
+      "binary": "init-system-helpers",
+      "source": "init-system-helpers",
+      "source_version": "1.62",
+      "version": "1.62"
+    },
+    {
+      "binary": "libacl1:arm64",
+      "source": "acl",
+      "source_version": "2.3.1-1",
+      "version": "2.3.1-1"
+    },
+    {
+      "binary": "libalgorithm-c3-perl",
+      "source": "libalgorithm-c3-perl",
+      "source_version": "0.11-1",
+      "version": "0.11-1"
+    },
+    {
+      "binary": "libalgorithm-diff-perl",
+      "source": "libalgorithm-diff-perl",
+      "source_version": "1.201-1",
+      "version": "1.201-1"
+    },
+    {
+      "binary": "libalgorithm-diff-xs-perl",
+      "source": "libalgorithm-diff-xs-perl",
+      "source_version": "0.04-6build3",
+      "version": "0.04-6build3"
+    },
+    {
+      "binary": "libalgorithm-merge-perl",
+      "source": "libalgorithm-merge-perl",
+      "source_version": "0.08-3",
+      "version": "0.08-3"
+    },
+    {
+      "binary": "libany-uri-escape-perl",
+      "source": "libany-uri-escape-perl",
+      "source_version": "0.01-3",
+      "version": "0.01-3"
+    },
+    {
+      "binary": "libapt-pkg6.0:arm64",
+      "source": "apt",
+      "source_version": "2.4.13",
+      "version": "2.4.13"
+    },
+    {
+      "binary": "libasan6:arm64",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libassuan0:arm64",
+      "source": "libassuan",
+      "source_version": "2.5.5-1build1",
+      "version": "2.5.5-1build1"
+    },
+    {
+      "binary": "libatomic1:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libattr1:arm64",
+      "source": "attr",
+      "source_version": "1:2.5.1-1build1",
+      "version": "1:2.5.1-1build1"
+    },
+    {
+      "binary": "libaudit-common",
+      "source": "audit",
+      "source_version": "1:3.0.7-1build1",
+      "version": "1:3.0.7-1build1"
+    },
+    {
+      "binary": "libaudit1:arm64",
+      "source": "audit",
+      "source_version": "1:3.0.7-1build1",
+      "version": "1:3.0.7-1build1"
+    },
+    {
+      "binary": "libb-hooks-endofscope-perl",
+      "source": "libb-hooks-endofscope-perl",
+      "source_version": "0.25-1",
+      "version": "0.25-1"
+    },
+    {
+      "binary": "libb-hooks-op-check-perl",
+      "source": "libb-hooks-op-check-perl",
+      "source_version": "0.22-1build5",
+      "version": "0.22-1build5"
+    },
+    {
+      "binary": "libbinutils:arm64",
+      "source": "binutils",
+      "source_version": "2.38-4ubuntu2.7",
+      "version": "2.38-4ubuntu2.7"
+    },
+    {
+      "binary": "libblkid1:arm64",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "libbrotli-dev:arm64",
+      "source": "brotli",
+      "source_version": "1.0.9-2build6",
+      "version": "1.0.9-2build6"
+    },
+    {
+      "binary": "libbrotli1:arm64",
+      "source": "brotli",
+      "source_version": "1.0.9-2build6",
+      "version": "1.0.9-2build6"
+    },
+    {
+      "binary": "libbsd0:arm64",
+      "source": "libbsd",
+      "source_version": "0.11.5-1",
+      "version": "0.11.5-1"
+    },
+    {
+      "binary": "libbz2-1.0:arm64",
+      "source": "bzip2",
+      "source_version": "1.0.8-5build1",
+      "version": "1.0.8-5build1"
+    },
+    {
+      "binary": "libbz2-dev:arm64",
+      "source": "bzip2",
+      "source_version": "1.0.8-5build1",
+      "version": "1.0.8-5build1"
+    },
+    {
+      "binary": "libc-bin",
+      "source": "glibc",
+      "source_version": "2.35-0ubuntu3.8",
+      "version": "2.35-0ubuntu3.8"
+    },
+    {
+      "binary": "libc-dev-bin",
+      "source": "glibc",
+      "source_version": "2.35-0ubuntu3.9",
+      "version": "2.35-0ubuntu3.9"
+    },
+    {
+      "binary": "libc-devtools",
+      "source": "glibc",
+      "source_version": "2.35-0ubuntu3.9",
+      "version": "2.35-0ubuntu3.9"
+    },
+    {
+      "binary": "libc6:arm64",
+      "source": "glibc",
+      "source_version": "2.35-0ubuntu3.9",
+      "version": "2.35-0ubuntu3.9"
+    },
+    {
+      "binary": "libc6-dev:arm64",
+      "source": "glibc",
+      "source_version": "2.35-0ubuntu3.9",
+      "version": "2.35-0ubuntu3.9"
+    },
+    {
+      "binary": "libcap-ng0:arm64",
+      "source": "libcap-ng",
+      "source_version": "0.7.9-2.2build3",
+      "version": "0.7.9-2.2build3"
+    },
+    {
+      "binary": "libcap2:arm64",
+      "source": "libcap2",
+      "source_version": "1:2.44-1ubuntu0.22.04.1",
+      "version": "1:2.44-1ubuntu0.22.04.1"
+    },
+    {
+      "binary": "libcc1-0:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libclass-c3-perl",
+      "source": "libclass-c3-perl",
+      "source_version": "0.35-1",
+      "version": "0.35-1"
+    },
+    {
+      "binary": "libclass-c3-xs-perl",
+      "source": "libclass-c3-xs-perl",
+      "source_version": "0.15-1build2",
+      "version": "0.15-1build2"
+    },
+    {
+      "binary": "libclass-method-modifiers-perl",
+      "source": "libclass-method-modifiers-perl",
+      "source_version": "2.13-1",
+      "version": "2.13-1"
+    },
+    {
+      "binary": "libclass-xsaccessor-perl",
+      "source": "libclass-xsaccessor-perl",
+      "source_version": "1.19-3build9",
+      "version": "1.19-3build9"
+    },
+    {
+      "binary": "libclone-perl",
+      "source": "libclone-perl",
+      "source_version": "0.45-1build3",
+      "version": "0.45-1build3"
+    },
+    {
+      "binary": "libcom-err2:arm64",
+      "source": "e2fsprogs",
+      "source_version": "1.46.5-2ubuntu1.2",
+      "version": "1.46.5-2ubuntu1.2"
+    },
+    {
+      "binary": "libcpan-changes-perl",
+      "source": "libcpan-changes-perl",
+      "source_version": "0.400002-1.1",
+      "version": "0.400002-1.1"
+    },
+    {
+      "binary": "libcpan-distnameinfo-perl",
+      "source": "libcpan-distnameinfo-perl",
+      "source_version": "0.12-2.1",
+      "version": "0.12-2.1"
+    },
+    {
+      "binary": "libcpan-meta-check-perl",
+      "source": "libcpan-meta-check-perl",
+      "source_version": "0.014-1",
+      "version": "0.014-1"
+    },
+    {
+      "binary": "libcrypt-dev:arm64",
+      "source": "libxcrypt",
+      "source_version": "1:4.4.27-1",
+      "version": "1:4.4.27-1"
+    },
+    {
+      "binary": "libcrypt1:arm64",
+      "source": "libxcrypt",
+      "source_version": "1:4.4.27-1",
+      "version": "1:4.4.27-1"
+    },
+    {
+      "binary": "libctf-nobfd0:arm64",
+      "source": "binutils",
+      "source_version": "2.38-4ubuntu2.7",
+      "version": "2.38-4ubuntu2.7"
+    },
+    {
+      "binary": "libctf0:arm64",
+      "source": "binutils",
+      "source_version": "2.38-4ubuntu2.7",
+      "version": "2.38-4ubuntu2.7"
+    },
+    {
+      "binary": "libcurl3-gnutls:arm64",
+      "source": "curl",
+      "source_version": "7.81.0-1ubuntu1.27",
+      "version": "7.81.0-1ubuntu1.27"
+    },
+    {
+      "binary": "libcurl4:arm64",
+      "source": "curl",
+      "source_version": "7.81.0-1ubuntu1.27",
+      "version": "7.81.0-1ubuntu1.27"
+    },
+    {
+      "binary": "libcurl4-openssl-dev:arm64",
+      "source": "curl",
+      "source_version": "7.81.0-1ubuntu1.27",
+      "version": "7.81.0-1ubuntu1.27"
+    },
+    {
+      "binary": "libdata-optlist-perl",
+      "source": "libdata-optlist-perl",
+      "source_version": "0.112-1",
+      "version": "0.112-1"
+    },
+    {
+      "binary": "libdata-perl-perl",
+      "source": "libdata-perl-perl",
+      "source_version": "0.002011-1",
+      "version": "0.002011-1"
+    },
+    {
+      "binary": "libdata-section-perl",
+      "source": "libdata-section-perl",
+      "source_version": "0.200007-1",
+      "version": "0.200007-1"
+    },
+    {
+      "binary": "libdb5.3:arm64",
+      "source": "db5.3",
+      "source_version": "5.3.28+dfsg1-0.8ubuntu3",
+      "version": "5.3.28+dfsg1-0.8ubuntu3"
+    },
+    {
+      "binary": "libdbd-mysql-perl:arm64",
+      "source": "libdbd-mysql-perl",
+      "source_version": "4.050-5ubuntu0.22.04.1",
+      "version": "4.050-5ubuntu0.22.04.1"
+    },
+    {
+      "binary": "libdbi-perl:arm64",
+      "source": "libdbi-perl",
+      "source_version": "1.643-3build3",
+      "version": "1.643-3build3"
+    },
+    {
+      "binary": "libdebconfclient0:arm64",
+      "source": "cdebconf",
+      "source_version": "0.261ubuntu1",
+      "version": "0.261ubuntu1"
+    },
+    {
+      "binary": "libdeflate-dev:arm64",
+      "source": "libdeflate",
+      "source_version": "1.10-2",
+      "version": "1.10-2"
+    },
+    {
+      "binary": "libdeflate0:arm64",
+      "source": "libdeflate",
+      "source_version": "1.10-2",
+      "version": "1.10-2"
+    },
+    {
+      "binary": "libdevel-callchecker-perl",
+      "source": "libdevel-callchecker-perl",
+      "source_version": "0.008-1ubuntu4",
+      "version": "0.008-1ubuntu4"
+    },
+    {
+      "binary": "libdpkg-perl",
+      "source": "dpkg",
+      "source_version": "1.21.1ubuntu2.3",
+      "version": "1.21.1ubuntu2.3"
+    },
+    {
+      "binary": "libdynaloader-functions-perl",
+      "source": "libdynaloader-functions-perl",
+      "source_version": "0.003-1.1",
+      "version": "0.003-1.1"
+    },
+    {
+      "binary": "libencode-locale-perl",
+      "source": "libencode-locale-perl",
+      "source_version": "1.05-1.1",
+      "version": "1.05-1.1"
+    },
+    {
+      "binary": "liberror-perl",
+      "source": "liberror-perl",
+      "source_version": "0.17029-1",
+      "version": "0.17029-1"
+    },
+    {
+      "binary": "libexpat1:arm64",
+      "source": "expat",
+      "source_version": "2.4.7-1ubuntu0.5",
+      "version": "2.4.7-1ubuntu0.5"
+    },
+    {
+      "binary": "libexpat1-dev:arm64",
+      "source": "expat",
+      "source_version": "2.4.7-1ubuntu0.5",
+      "version": "2.4.7-1ubuntu0.5"
+    },
+    {
+      "binary": "libexporter-tiny-perl",
+      "source": "libexporter-tiny-perl",
+      "source_version": "1.002002-1",
+      "version": "1.002002-1"
+    },
+    {
+      "binary": "libext2fs2:arm64",
+      "source": "e2fsprogs",
+      "source_version": "1.46.5-2ubuntu1.2",
+      "version": "1.46.5-2ubuntu1.2"
+    },
+    {
+      "binary": "libfakeroot:arm64",
+      "source": "fakeroot",
+      "source_version": "1.28-1ubuntu1",
+      "version": "1.28-1ubuntu1"
+    },
+    {
+      "binary": "libffi8:arm64",
+      "source": "libffi",
+      "source_version": "3.4.2-4",
+      "version": "3.4.2-4"
+    },
+    {
+      "binary": "libfile-fcntllock-perl",
+      "source": "libfile-fcntllock-perl",
+      "source_version": "0.22-3build7",
+      "version": "0.22-3build7"
+    },
+    {
+      "binary": "libfile-pushd-perl",
+      "source": "libfile-pushd-perl",
+      "source_version": "1.016-1",
+      "version": "1.016-1"
+    },
+    {
+      "binary": "libfile-slurp-perl",
+      "source": "libfile-slurp-perl",
+      "source_version": "9999.32-1",
+      "version": "9999.32-1"
+    },
+    {
+      "binary": "libfontconfig-dev:arm64",
+      "source": "fontconfig",
+      "source_version": "2.13.1-4.2ubuntu5",
+      "version": "2.13.1-4.2ubuntu5"
+    },
+    {
+      "binary": "libfontconfig1:arm64",
+      "source": "fontconfig",
+      "source_version": "2.13.1-4.2ubuntu5",
+      "version": "2.13.1-4.2ubuntu5"
+    },
+    {
+      "binary": "libfreetype-dev:arm64",
+      "source": "freetype",
+      "source_version": "2.11.1+dfsg-1ubuntu0.3",
+      "version": "2.11.1+dfsg-1ubuntu0.3"
+    },
+    {
+      "binary": "libfreetype6:arm64",
+      "source": "freetype",
+      "source_version": "2.11.1+dfsg-1ubuntu0.3",
+      "version": "2.11.1+dfsg-1ubuntu0.3"
+    },
+    {
+      "binary": "libfreetype6-dev:arm64",
+      "source": "freetype",
+      "source_version": "2.11.1+dfsg-1ubuntu0.3",
+      "version": "2.11.1+dfsg-1ubuntu0.3"
+    },
+    {
+      "binary": "libgcc-11-dev:arm64",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libgcc-s1:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libgcrypt20:arm64",
+      "source": "libgcrypt20",
+      "source_version": "1.9.4-3ubuntu3",
+      "version": "1.9.4-3ubuntu3"
+    },
+    {
+      "binary": "libgd-dev:arm64",
+      "source": "libgd2",
+      "source_version": "2.3.0-2ubuntu2.3",
+      "version": "2.3.0-2ubuntu2.3"
+    },
+    {
+      "binary": "libgd3:arm64",
+      "source": "libgd2",
+      "source_version": "2.3.0-2ubuntu2.3",
+      "version": "2.3.0-2ubuntu2.3"
+    },
+    {
+      "binary": "libgdbm-compat4:arm64",
+      "source": "gdbm",
+      "source_version": "1.23-1",
+      "version": "1.23-1"
+    },
+    {
+      "binary": "libgdbm6:arm64",
+      "source": "gdbm",
+      "source_version": "1.23-1",
+      "version": "1.23-1"
+    },
+    {
+      "binary": "libgetopt-long-descriptive-perl",
+      "source": "libgetopt-long-descriptive-perl",
+      "source_version": "0.109-2",
+      "version": "0.109-2"
+    },
+    {
+      "binary": "libglib2.0-0:arm64",
+      "source": "glib2.0",
+      "source_version": "2.72.4-0ubuntu2.4",
+      "version": "2.72.4-0ubuntu2.4"
+    },
+    {
+      "binary": "libgmp10:arm64",
+      "source": "gmp",
+      "source_version": "2:6.2.1+dfsg-3ubuntu1",
+      "version": "2:6.2.1+dfsg-3ubuntu1"
+    },
+    {
+      "binary": "libgnutls30:arm64",
+      "source": "gnutls28",
+      "source_version": "3.7.3-4ubuntu1.5",
+      "version": "3.7.3-4ubuntu1.5"
+    },
+    {
+      "binary": "libgomp1:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libgpg-error0:arm64",
+      "source": "libgpg-error",
+      "source_version": "1.43-3",
+      "version": "1.43-3"
+    },
+    {
+      "binary": "libgpm2:arm64",
+      "source": "gpm",
+      "source_version": "1.20.7-10build1",
+      "version": "1.20.7-10build1"
+    },
+    {
+      "binary": "libgssapi-krb5-2:arm64",
+      "source": "krb5",
+      "source_version": "1.19.2-2ubuntu0.4",
+      "version": "1.19.2-2ubuntu0.4"
+    },
+    {
+      "binary": "libhogweed6:arm64",
+      "source": "nettle",
+      "source_version": "3.7.3-1build2",
+      "version": "3.7.3-1build2"
+    },
+    {
+      "binary": "libhtml-parser-perl:arm64",
+      "source": "libhtml-parser-perl",
+      "source_version": "3.76-1build2",
+      "version": "3.76-1build2"
+    },
+    {
+      "binary": "libhtml-tagset-perl",
+      "source": "libhtml-tagset-perl",
+      "source_version": "3.20-4",
+      "version": "3.20-4"
+    },
+    {
+      "binary": "libhts3:arm64",
+      "source": "htslib",
+      "source_version": "1.13+ds-2build1",
+      "version": "1.13+ds-2build1"
+    },
+    {
+      "binary": "libhtscodecs2:arm64",
+      "source": "htscodecs",
+      "source_version": "1.1.1-3",
+      "version": "1.1.1-3"
+    },
+    {
+      "binary": "libhttp-date-perl",
+      "source": "libhttp-date-perl",
+      "source_version": "6.05-1",
+      "version": "6.05-1"
+    },
+    {
+      "binary": "libhttp-message-perl",
+      "source": "libhttp-message-perl",
+      "source_version": "6.36-1",
+      "version": "6.36-1"
+    },
+    {
+      "binary": "libhwasan0:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libice-dev:arm64",
+      "source": "libice",
+      "source_version": "2:1.0.10-1build2",
+      "version": "2:1.0.10-1build2"
+    },
+    {
+      "binary": "libice6:arm64",
+      "source": "libice",
+      "source_version": "2:1.0.10-1build2",
+      "version": "2:1.0.10-1build2"
+    },
+    {
+      "binary": "libidn12:arm64",
+      "source": "libidn",
+      "source_version": "1.38-4ubuntu1",
+      "version": "1.38-4ubuntu1"
+    },
+    {
+      "binary": "libidn2-0:arm64",
+      "source": "libidn2",
+      "source_version": "2.3.2-2build1",
+      "version": "2.3.2-2build1"
+    },
+    {
+      "binary": "libimport-into-perl",
+      "source": "libimport-into-perl",
+      "source_version": "1.002005-1",
+      "version": "1.002005-1"
+    },
+    {
+      "binary": "libio-html-perl",
+      "source": "libio-html-perl",
+      "source_version": "1.004-2",
+      "version": "1.004-2"
+    },
+    {
+      "binary": "libio-stringy-perl",
+      "source": "io-stringy",
+      "source_version": "2.111-3",
+      "version": "2.111-3"
+    },
+    {
+      "binary": "libisl23:arm64",
+      "source": "isl",
+      "source_version": "0.24-2build1",
+      "version": "0.24-2build1"
+    },
+    {
+      "binary": "libitm1:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libjbig-dev:arm64",
+      "source": "jbigkit",
+      "source_version": "2.1-3.1ubuntu0.22.04.1",
+      "version": "2.1-3.1ubuntu0.22.04.1"
+    },
+    {
+      "binary": "libjbig0:arm64",
+      "source": "jbigkit",
+      "source_version": "2.1-3.1ubuntu0.22.04.1",
+      "version": "2.1-3.1ubuntu0.22.04.1"
+    },
+    {
+      "binary": "libjpeg-dev:arm64",
+      "source": "libjpeg8-empty",
+      "source_version": "8c-2ubuntu10",
+      "version": "8c-2ubuntu10"
+    },
+    {
+      "binary": "libjpeg-turbo8:arm64",
+      "source": "libjpeg-turbo",
+      "source_version": "2.1.2-0ubuntu1",
+      "version": "2.1.2-0ubuntu1"
+    },
+    {
+      "binary": "libjpeg-turbo8-dev:arm64",
+      "source": "libjpeg-turbo",
+      "source_version": "2.1.2-0ubuntu1",
+      "version": "2.1.2-0ubuntu1"
+    },
+    {
+      "binary": "libjpeg8:arm64",
+      "source": "libjpeg8-empty",
+      "source_version": "8c-2ubuntu10",
+      "version": "8c-2ubuntu10"
+    },
+    {
+      "binary": "libjpeg8-dev:arm64",
+      "source": "libjpeg8-empty",
+      "source_version": "8c-2ubuntu10",
+      "version": "8c-2ubuntu10"
+    },
+    {
+      "binary": "libk5crypto3:arm64",
+      "source": "krb5",
+      "source_version": "1.19.2-2ubuntu0.4",
+      "version": "1.19.2-2ubuntu0.4"
+    },
+    {
+      "binary": "libkeyutils1:arm64",
+      "source": "keyutils",
+      "source_version": "1.6.1-2ubuntu3",
+      "version": "1.6.1-2ubuntu3"
+    },
+    {
+      "binary": "libkrb5-3:arm64",
+      "source": "krb5",
+      "source_version": "1.19.2-2ubuntu0.4",
+      "version": "1.19.2-2ubuntu0.4"
+    },
+    {
+      "binary": "libkrb5support0:arm64",
+      "source": "krb5",
+      "source_version": "1.19.2-2ubuntu0.4",
+      "version": "1.19.2-2ubuntu0.4"
+    },
+    {
+      "binary": "libksba8:arm64",
+      "source": "libksba",
+      "source_version": "1.6.0-2ubuntu0.2",
+      "version": "1.6.0-2ubuntu0.2"
+    },
+    {
+      "binary": "libldap-2.5-0:arm64",
+      "source": "openldap",
+      "source_version": "2.5.18+dfsg-0ubuntu0.22.04.3",
+      "version": "2.5.18+dfsg-0ubuntu0.22.04.3"
+    },
+    {
+      "binary": "libldap-common",
+      "source": "openldap",
+      "source_version": "2.5.18+dfsg-0ubuntu0.22.04.3",
+      "version": "2.5.18+dfsg-0ubuntu0.22.04.3"
+    },
+    {
+      "binary": "liblist-moreutils-perl",
+      "source": "liblist-moreutils-perl",
+      "source_version": "0.430-2",
+      "version": "0.430-2"
+    },
+    {
+      "binary": "liblist-moreutils-xs-perl",
+      "source": "liblist-moreutils-xs-perl",
+      "source_version": "0.430-2build2",
+      "version": "0.430-2build2"
+    },
+    {
+      "binary": "liblocal-lib-perl",
+      "source": "liblocal-lib-perl",
+      "source_version": "2.000028-1",
+      "version": "2.000028-1"
+    },
+    {
+      "binary": "liblocale-gettext-perl",
+      "source": "liblocale-gettext-perl",
+      "source_version": "1.07-4build3",
+      "version": "1.07-4build3"
+    },
+    {
+      "binary": "liblsan0:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "liblwp-mediatypes-perl",
+      "source": "liblwp-mediatypes-perl",
+      "source_version": "6.04-1",
+      "version": "6.04-1"
+    },
+    {
+      "binary": "liblz4-1:arm64",
+      "source": "lz4",
+      "source_version": "1.9.3-2build2",
+      "version": "1.9.3-2build2"
+    },
+    {
+      "binary": "liblzma-dev:arm64",
+      "source": "xz-utils",
+      "source_version": "5.2.5-2ubuntu1.1",
+      "version": "5.2.5-2ubuntu1.1"
+    },
+    {
+      "binary": "liblzma5:arm64",
+      "source": "xz-utils",
+      "source_version": "5.2.5-2ubuntu1.1",
+      "version": "5.2.5-2ubuntu1.1"
+    },
+    {
+      "binary": "libmd0:arm64",
+      "source": "libmd",
+      "source_version": "1.0.4-1build1",
+      "version": "1.0.4-1build1"
+    },
+    {
+      "binary": "libmodule-build-perl",
+      "source": "libmodule-build-perl",
+      "source_version": "0.423100-1",
+      "version": "0.423100-1"
+    },
+    {
+      "binary": "libmodule-cpanfile-perl",
+      "source": "libmodule-cpanfile-perl",
+      "source_version": "1.1004-1",
+      "version": "1.1004-1"
+    },
+    {
+      "binary": "libmodule-implementation-perl",
+      "source": "libmodule-implementation-perl",
+      "source_version": "0.09-1.1",
+      "version": "0.09-1.1"
+    },
+    {
+      "binary": "libmodule-runtime-perl",
+      "source": "libmodule-runtime-perl",
+      "source_version": "0.016-1",
+      "version": "0.016-1"
+    },
+    {
+      "binary": "libmodule-signature-perl",
+      "source": "libmodule-signature-perl",
+      "source_version": "0.88-1",
+      "version": "0.88-1"
+    },
+    {
+      "binary": "libmoo-perl",
+      "source": "libmoo-perl",
+      "source_version": "2.005004-3",
+      "version": "2.005004-3"
+    },
+    {
+      "binary": "libmoox-handlesvia-perl",
+      "source": "libmoox-handlesvia-perl",
+      "source_version": "0.001009-1",
+      "version": "0.001009-1"
+    },
+    {
+      "binary": "libmount1:arm64",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "libmpc3:arm64",
+      "source": "mpclib3",
+      "source_version": "1.2.1-2build1",
+      "version": "1.2.1-2build1"
+    },
+    {
+      "binary": "libmpdec3:arm64",
+      "source": "mpdecimal",
+      "source_version": "2.5.1-2build2",
+      "version": "2.5.1-2build2"
+    },
+    {
+      "binary": "libmpfr6:arm64",
+      "source": "mpfr4",
+      "source_version": "4.1.0-3build3",
+      "version": "4.1.0-3build3"
+    },
+    {
+      "binary": "libmro-compat-perl",
+      "source": "libmro-compat-perl",
+      "source_version": "0.15-1",
+      "version": "0.15-1"
+    },
+    {
+      "binary": "libmysqlclient-dev",
+      "source": "mysql-8.0",
+      "source_version": "8.0.41-0ubuntu0.22.04.1",
+      "version": "8.0.41-0ubuntu0.22.04.1"
+    },
+    {
+      "binary": "libmysqlclient21:arm64",
+      "source": "mysql-8.0",
+      "source_version": "8.0.41-0ubuntu0.22.04.1",
+      "version": "8.0.41-0ubuntu0.22.04.1"
+    },
+    {
+      "binary": "libnamespace-autoclean-perl",
+      "source": "libnamespace-autoclean-perl",
+      "source_version": "0.29-1",
+      "version": "0.29-1"
+    },
+    {
+      "binary": "libnamespace-clean-perl",
+      "source": "libnamespace-clean-perl",
+      "source_version": "0.27-1",
+      "version": "0.27-1"
+    },
+    {
+      "binary": "libncurses6:arm64",
+      "source": "ncurses",
+      "source_version": "6.3-2ubuntu0.1",
+      "version": "6.3-2ubuntu0.1"
+    },
+    {
+      "binary": "libncursesw6:arm64",
+      "source": "ncurses",
+      "source_version": "6.3-2ubuntu0.1",
+      "version": "6.3-2ubuntu0.1"
+    },
+    {
+      "binary": "libnet-libidn-perl",
+      "source": "libnet-libidn-perl",
+      "source_version": "0.12.ds-3build6",
+      "version": "0.12.ds-3build6"
+    },
+    {
+      "binary": "libnettle8:arm64",
+      "source": "nettle",
+      "source_version": "3.7.3-1build2",
+      "version": "3.7.3-1build2"
+    },
+    {
+      "binary": "libnghttp2-14:arm64",
+      "source": "nghttp2",
+      "source_version": "1.43.0-1ubuntu0.2",
+      "version": "1.43.0-1ubuntu0.2"
+    },
+    {
+      "binary": "libnpth0:arm64",
+      "source": "npth",
+      "source_version": "1.6-3build2",
+      "version": "1.6-3build2"
+    },
+    {
+      "binary": "libnsl-dev:arm64",
+      "source": "libnsl",
+      "source_version": "1.3.0-2build2",
+      "version": "1.3.0-2build2"
+    },
+    {
+      "binary": "libnsl2:arm64",
+      "source": "libnsl",
+      "source_version": "1.3.0-2build2",
+      "version": "1.3.0-2build2"
+    },
+    {
+      "binary": "libp11-kit0:arm64",
+      "source": "p11-kit",
+      "source_version": "0.24.0-6build1",
+      "version": "0.24.0-6build1"
+    },
+    {
+      "binary": "libpackage-stash-perl",
+      "source": "libpackage-stash-perl",
+      "source_version": "0.39-1",
+      "version": "0.39-1"
+    },
+    {
+      "binary": "libpackage-stash-xs-perl",
+      "source": "libpackage-stash-xs-perl",
+      "source_version": "0.29-1build5",
+      "version": "0.29-1build5"
+    },
+    {
+      "binary": "libpam-modules:arm64",
+      "source": "pam",
+      "source_version": "1.4.0-11ubuntu2.5",
+      "version": "1.4.0-11ubuntu2.5"
+    },
+    {
+      "binary": "libpam-modules-bin",
+      "source": "pam",
+      "source_version": "1.4.0-11ubuntu2.5",
+      "version": "1.4.0-11ubuntu2.5"
+    },
+    {
+      "binary": "libpam-runtime",
+      "source": "pam",
+      "source_version": "1.4.0-11ubuntu2.5",
+      "version": "1.4.0-11ubuntu2.5"
+    },
+    {
+      "binary": "libpam0g:arm64",
+      "source": "pam",
+      "source_version": "1.4.0-11ubuntu2.5",
+      "version": "1.4.0-11ubuntu2.5"
+    },
+    {
+      "binary": "libparams-classify-perl",
+      "source": "libparams-classify-perl",
+      "source_version": "0.015-1build5",
+      "version": "0.015-1build5"
+    },
+    {
+      "binary": "libparams-util-perl",
+      "source": "libparams-util-perl",
+      "source_version": "1.102-1build3",
+      "version": "1.102-1build3"
+    },
+    {
+      "binary": "libparams-validate-perl:arm64",
+      "source": "libparams-validate-perl",
+      "source_version": "1.30-1build3",
+      "version": "1.30-1build3"
+    },
+    {
+      "binary": "libparse-pmfile-perl",
+      "source": "libparse-pmfile-perl",
+      "source_version": "0.43-1",
+      "version": "0.43-1"
+    },
+    {
+      "binary": "libpath-tiny-perl",
+      "source": "libpath-tiny-perl",
+      "source_version": "0.122-1",
+      "version": "0.122-1"
+    },
+    {
+      "binary": "libpcre2-8-0:arm64",
+      "source": "pcre2",
+      "source_version": "10.39-3ubuntu0.1",
+      "version": "10.39-3ubuntu0.1"
+    },
+    {
+      "binary": "libpcre3:arm64",
+      "source": "pcre3",
+      "source_version": "2:8.39-13ubuntu0.22.04.1",
+      "version": "2:8.39-13ubuntu0.22.04.1"
+    },
+    {
+      "binary": "libperl5.34:arm64",
+      "source": "perl",
+      "source_version": "5.34.0-3ubuntu1.3",
+      "version": "5.34.0-3ubuntu1.3"
+    },
+    {
+      "binary": "libpng-dev:arm64",
+      "source": "libpng1.6",
+      "source_version": "1.6.37-3build5",
+      "version": "1.6.37-3build5"
+    },
+    {
+      "binary": "libpng-tools",
+      "source": "libpng1.6",
+      "source_version": "1.6.37-3build5",
+      "version": "1.6.37-3build5"
+    },
+    {
+      "binary": "libpng16-16:arm64",
+      "source": "libpng1.6",
+      "source_version": "1.6.37-3build5",
+      "version": "1.6.37-3build5"
+    },
+    {
+      "binary": "libpod-markdown-perl",
+      "source": "libpod-markdown-perl",
+      "source_version": "3.300000-1",
+      "version": "3.300000-1"
+    },
+    {
+      "binary": "libpod-readme-perl",
+      "source": "libpod-readme-perl",
+      "source_version": "1.2.3-1",
+      "version": "1.2.3-1"
+    },
+    {
+      "binary": "libprocps8:arm64",
+      "source": "procps",
+      "source_version": "2:3.3.17-6ubuntu2.1",
+      "version": "2:3.3.17-6ubuntu2.1"
+    },
+    {
+      "binary": "libpsl5:arm64",
+      "source": "libpsl",
+      "source_version": "0.21.0-1.2build2",
+      "version": "0.21.0-1.2build2"
+    },
+    {
+      "binary": "libpthread-stubs0-dev:arm64",
+      "source": "libpthread-stubs",
+      "source_version": "0.4-1build2",
+      "version": "0.4-1build2"
+    },
+    {
+      "binary": "libpython2-dev:arm64",
+      "source": "python-defaults",
+      "source_version": "2.7.18-3",
+      "version": "2.7.18-3"
+    },
+    {
+      "binary": "libpython2-stdlib:arm64",
+      "source": "python-defaults",
+      "source_version": "2.7.18-3",
+      "version": "2.7.18-3"
+    },
+    {
+      "binary": "libpython2.7:arm64",
+      "source": "python2.7",
+      "source_version": "2.7.18-13ubuntu1.5",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "binary": "libpython2.7-dev:arm64",
+      "source": "python2.7",
+      "source_version": "2.7.18-13ubuntu1.5",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "binary": "libpython2.7-minimal:arm64",
+      "source": "python2.7",
+      "source_version": "2.7.18-13ubuntu1.5",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "binary": "libpython2.7-stdlib:arm64",
+      "source": "python2.7",
+      "source_version": "2.7.18-13ubuntu1.5",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "binary": "libpython3.10:arm64",
+      "source": "python3.10",
+      "source_version": "3.10.12-1~22.04.9",
+      "version": "3.10.12-1~22.04.9"
+    },
+    {
+      "binary": "libpython3.10-minimal:arm64",
+      "source": "python3.10",
+      "source_version": "3.10.12-1~22.04.9",
+      "version": "3.10.12-1~22.04.9"
+    },
+    {
+      "binary": "libpython3.10-stdlib:arm64",
+      "source": "python3.10",
+      "source_version": "3.10.12-1~22.04.9",
+      "version": "3.10.12-1~22.04.9"
+    },
+    {
+      "binary": "libreadline8:arm64",
+      "source": "readline",
+      "source_version": "8.1.2-1",
+      "version": "8.1.2-1"
+    },
+    {
+      "binary": "libreadonly-perl",
+      "source": "libreadonly-perl",
+      "source_version": "2.050-3",
+      "version": "2.050-3"
+    },
+    {
+      "binary": "libref-util-perl",
+      "source": "libref-util-perl",
+      "source_version": "0.204-1",
+      "version": "0.204-1"
+    },
+    {
+      "binary": "libref-util-xs-perl",
+      "source": "libref-util-xs-perl",
+      "source_version": "0.117-1build5",
+      "version": "0.117-1build5"
+    },
+    {
+      "binary": "librole-tiny-perl",
+      "source": "librole-tiny-perl",
+      "source_version": "2.002004-1",
+      "version": "2.002004-1"
+    },
+    {
+      "binary": "librtmp1:arm64",
+      "source": "rtmpdump",
+      "source_version": "2.4+20151223.gitfa8646d.1-2build4",
+      "version": "2.4+20151223.gitfa8646d.1-2build4"
+    },
+    {
+      "binary": "libsasl2-2:arm64",
+      "source": "cyrus-sasl2",
+      "source_version": "2.1.27+dfsg2-3ubuntu1.2",
+      "version": "2.1.27+dfsg2-3ubuntu1.2"
+    },
+    {
+      "binary": "libsasl2-modules:arm64",
+      "source": "cyrus-sasl2",
+      "source_version": "2.1.27+dfsg2-3ubuntu1.2",
+      "version": "2.1.27+dfsg2-3ubuntu1.2"
+    },
+    {
+      "binary": "libsasl2-modules-db:arm64",
+      "source": "cyrus-sasl2",
+      "source_version": "2.1.27+dfsg2-3ubuntu1.2",
+      "version": "2.1.27+dfsg2-3ubuntu1.2"
+    },
+    {
+      "binary": "libseccomp2:arm64",
+      "source": "libseccomp",
+      "source_version": "2.5.3-2ubuntu2",
+      "version": "2.5.3-2ubuntu2"
+    },
+    {
+      "binary": "libselinux1:arm64",
+      "source": "libselinux",
+      "source_version": "3.3-1build2",
+      "version": "3.3-1build2"
+    },
+    {
+      "binary": "libsemanage-common",
+      "source": "libsemanage",
+      "source_version": "3.3-1build2",
+      "version": "3.3-1build2"
+    },
+    {
+      "binary": "libsemanage2:arm64",
+      "source": "libsemanage",
+      "source_version": "3.3-1build2",
+      "version": "3.3-1build2"
+    },
+    {
+      "binary": "libsepol2:arm64",
+      "source": "libsepol",
+      "source_version": "3.3-1build1",
+      "version": "3.3-1build1"
+    },
+    {
+      "binary": "libsigsegv2:arm64",
+      "source": "libsigsegv",
+      "source_version": "2.13-1ubuntu3",
+      "version": "2.13-1ubuntu3"
+    },
+    {
+      "binary": "libsm-dev:arm64",
+      "source": "libsm",
+      "source_version": "2:1.2.3-1build2",
+      "version": "2:1.2.3-1build2"
+    },
+    {
+      "binary": "libsm6:arm64",
+      "source": "libsm",
+      "source_version": "2:1.2.3-1build2",
+      "version": "2:1.2.3-1build2"
+    },
+    {
+      "binary": "libsmartcols1:arm64",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "libsodium23:arm64",
+      "source": "libsodium",
+      "source_version": "1.0.18-1build2",
+      "version": "1.0.18-1build2"
+    },
+    {
+      "binary": "libsoftware-license-perl",
+      "source": "libsoftware-license-perl",
+      "source_version": "0.104001-1",
+      "version": "0.104001-1"
+    },
+    {
+      "binary": "libsqlite3-0:arm64",
+      "source": "sqlite3",
+      "source_version": "3.37.2-2ubuntu0.3",
+      "version": "3.37.2-2ubuntu0.3"
+    },
+    {
+      "binary": "libss2:arm64",
+      "source": "e2fsprogs",
+      "source_version": "1.46.5-2ubuntu1.2",
+      "version": "1.46.5-2ubuntu1.2"
+    },
+    {
+      "binary": "libssh-4:arm64",
+      "source": "libssh",
+      "source_version": "0.9.6-2ubuntu0.22.04.3",
+      "version": "0.9.6-2ubuntu0.22.04.3"
+    },
+    {
+      "binary": "libssl-dev:arm64",
+      "source": "openssl",
+      "source_version": "3.0.2-0ubuntu1.29",
+      "version": "3.0.2-0ubuntu1.29"
+    },
+    {
+      "binary": "libssl3:arm64",
+      "source": "openssl",
+      "source_version": "3.0.2-0ubuntu1.29",
+      "version": "3.0.2-0ubuntu1.29"
+    },
+    {
+      "binary": "libstdc++-11-dev:arm64",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libstdc++6:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libstrictures-perl",
+      "source": "libstrictures-perl",
+      "source_version": "2.000006-1",
+      "version": "2.000006-1"
+    },
+    {
+      "binary": "libstring-shellquote-perl",
+      "source": "libstring-shellquote-perl",
+      "source_version": "1.04-1",
+      "version": "1.04-1"
+    },
+    {
+      "binary": "libsub-exporter-perl",
+      "source": "libsub-exporter-perl",
+      "source_version": "0.988-1",
+      "version": "0.988-1"
+    },
+    {
+      "binary": "libsub-exporter-progressive-perl",
+      "source": "libsub-exporter-progressive-perl",
+      "source_version": "0.001013-1",
+      "version": "0.001013-1"
+    },
+    {
+      "binary": "libsub-identify-perl",
+      "source": "libsub-identify-perl",
+      "source_version": "0.14-1build5",
+      "version": "0.14-1build5"
+    },
+    {
+      "binary": "libsub-install-perl",
+      "source": "libsub-install-perl",
+      "source_version": "0.928-1.1",
+      "version": "0.928-1.1"
+    },
+    {
+      "binary": "libsub-name-perl",
+      "source": "libsub-name-perl",
+      "source_version": "0.26-1build3",
+      "version": "0.26-1build3"
+    },
+    {
+      "binary": "libsub-quote-perl",
+      "source": "libsub-quote-perl",
+      "source_version": "2.006006-1",
+      "version": "2.006006-1"
+    },
+    {
+      "binary": "libsystemd0:arm64",
+      "source": "systemd",
+      "source_version": "249.11-0ubuntu3.12",
+      "version": "249.11-0ubuntu3.12"
+    },
+    {
+      "binary": "libtasn1-6:arm64",
+      "source": "libtasn1-6",
+      "source_version": "4.18.0-4build1",
+      "version": "4.18.0-4build1"
+    },
+    {
+      "binary": "libtext-template-perl",
+      "source": "libtext-template-perl",
+      "source_version": "1.60-1",
+      "version": "1.60-1"
+    },
+    {
+      "binary": "libtiff-dev:arm64",
+      "source": "tiff",
+      "source_version": "4.3.0-6ubuntu0.10",
+      "version": "4.3.0-6ubuntu0.10"
+    },
+    {
+      "binary": "libtiff5:arm64",
+      "source": "tiff",
+      "source_version": "4.3.0-6ubuntu0.10",
+      "version": "4.3.0-6ubuntu0.10"
+    },
+    {
+      "binary": "libtiffxx5:arm64",
+      "source": "tiff",
+      "source_version": "4.3.0-6ubuntu0.10",
+      "version": "4.3.0-6ubuntu0.10"
+    },
+    {
+      "binary": "libtimedate-perl",
+      "source": "libtimedate-perl",
+      "source_version": "2.3300-2",
+      "version": "2.3300-2"
+    },
+    {
+      "binary": "libtinfo6:arm64",
+      "source": "ncurses",
+      "source_version": "6.3-2ubuntu0.1",
+      "version": "6.3-2ubuntu0.1"
+    },
+    {
+      "binary": "libtirpc-common",
+      "source": "libtirpc",
+      "source_version": "1.3.2-2ubuntu0.1",
+      "version": "1.3.2-2ubuntu0.1"
+    },
+    {
+      "binary": "libtirpc-dev:arm64",
+      "source": "libtirpc",
+      "source_version": "1.3.2-2ubuntu0.1",
+      "version": "1.3.2-2ubuntu0.1"
+    },
+    {
+      "binary": "libtirpc3:arm64",
+      "source": "libtirpc",
+      "source_version": "1.3.2-2ubuntu0.1",
+      "version": "1.3.2-2ubuntu0.1"
+    },
+    {
+      "binary": "libtry-tiny-perl",
+      "source": "libtry-tiny-perl",
+      "source_version": "0.31-1",
+      "version": "0.31-1"
+    },
+    {
+      "binary": "libtsan0:arm64",
+      "source": "gcc-11",
+      "source_version": "11.4.0-1ubuntu1~22.04",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libtype-tiny-perl",
+      "source": "libtype-tiny-perl",
+      "source_version": "1.012004-1",
+      "version": "1.012004-1"
+    },
+    {
+      "binary": "libtype-tiny-xs-perl",
+      "source": "libtype-tiny-xs-perl",
+      "source_version": "0.022-1build2",
+      "version": "0.022-1build2"
+    },
+    {
+      "binary": "libubsan1:arm64",
+      "source": "gcc-12",
+      "source_version": "12.3.0-1ubuntu1~22.04",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "binary": "libudev1:arm64",
+      "source": "systemd",
+      "source_version": "249.11-0ubuntu3.12",
+      "version": "249.11-0ubuntu3.12"
+    },
+    {
+      "binary": "libunicode-utf8-perl",
+      "source": "libunicode-utf8-perl",
+      "source_version": "0.62-1build4",
+      "version": "0.62-1build4"
+    },
+    {
+      "binary": "libunistring2:arm64",
+      "source": "libunistring",
+      "source_version": "1.0-1",
+      "version": "1.0-1"
+    },
+    {
+      "binary": "liburi-escape-xs-perl",
+      "source": "liburi-escape-xs-perl",
+      "source_version": "0.14-1build6",
+      "version": "0.14-1build6"
+    },
+    {
+      "binary": "liburi-perl",
+      "source": "liburi-perl",
+      "source_version": "5.10-1",
+      "version": "5.10-1"
+    },
+    {
+      "binary": "libuuid1:arm64",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "libvariable-magic-perl",
+      "source": "libvariable-magic-perl",
+      "source_version": "0.62-1build5",
+      "version": "0.62-1build5"
+    },
+    {
+      "binary": "libvpx-dev:arm64",
+      "source": "libvpx",
+      "source_version": "1.11.0-2ubuntu2.3",
+      "version": "1.11.0-2ubuntu2.3"
+    },
+    {
+      "binary": "libvpx7:arm64",
+      "source": "libvpx",
+      "source_version": "1.11.0-2ubuntu2.3",
+      "version": "1.11.0-2ubuntu2.3"
+    },
+    {
+      "binary": "libwebp7:arm64",
+      "source": "libwebp",
+      "source_version": "1.2.2-2ubuntu0.22.04.2",
+      "version": "1.2.2-2ubuntu0.22.04.2"
+    },
+    {
+      "binary": "libx11-6:arm64",
+      "source": "libx11",
+      "source_version": "2:1.7.5-1ubuntu0.3",
+      "version": "2:1.7.5-1ubuntu0.3"
+    },
+    {
+      "binary": "libx11-data",
+      "source": "libx11",
+      "source_version": "2:1.7.5-1ubuntu0.3",
+      "version": "2:1.7.5-1ubuntu0.3"
+    },
+    {
+      "binary": "libx11-dev:arm64",
+      "source": "libx11",
+      "source_version": "2:1.7.5-1ubuntu0.3",
+      "version": "2:1.7.5-1ubuntu0.3"
+    },
+    {
+      "binary": "libxau-dev:arm64",
+      "source": "libxau",
+      "source_version": "1:1.0.9-1build5",
+      "version": "1:1.0.9-1build5"
+    },
+    {
+      "binary": "libxau6:arm64",
+      "source": "libxau",
+      "source_version": "1:1.0.9-1build5",
+      "version": "1:1.0.9-1build5"
+    },
+    {
+      "binary": "libxcb1:arm64",
+      "source": "libxcb",
+      "source_version": "1.14-3ubuntu3",
+      "version": "1.14-3ubuntu3"
+    },
+    {
+      "binary": "libxcb1-dev:arm64",
+      "source": "libxcb",
+      "source_version": "1.14-3ubuntu3",
+      "version": "1.14-3ubuntu3"
+    },
+    {
+      "binary": "libxdmcp-dev:arm64",
+      "source": "libxdmcp",
+      "source_version": "1:1.1.3-0ubuntu5",
+      "version": "1:1.1.3-0ubuntu5"
+    },
+    {
+      "binary": "libxdmcp6:arm64",
+      "source": "libxdmcp",
+      "source_version": "1:1.1.3-0ubuntu5",
+      "version": "1:1.1.3-0ubuntu5"
+    },
+    {
+      "binary": "libxpm-dev:arm64",
+      "source": "libxpm",
+      "source_version": "1:3.5.12-1ubuntu0.22.04.2",
+      "version": "1:3.5.12-1ubuntu0.22.04.2"
+    },
+    {
+      "binary": "libxpm4:arm64",
+      "source": "libxpm",
+      "source_version": "1:3.5.12-1ubuntu0.22.04.2",
+      "version": "1:3.5.12-1ubuntu0.22.04.2"
+    },
+    {
+      "binary": "libxt-dev:arm64",
+      "source": "libxt",
+      "source_version": "1:1.2.1-1",
+      "version": "1:1.2.1-1"
+    },
+    {
+      "binary": "libxt6:arm64",
+      "source": "libxt",
+      "source_version": "1:1.2.1-1",
+      "version": "1:1.2.1-1"
+    },
+    {
+      "binary": "libxxhash0:arm64",
+      "source": "xxhash",
+      "source_version": "0.8.1-1",
+      "version": "0.8.1-1"
+    },
+    {
+      "binary": "libzstd-dev:arm64",
+      "source": "libzstd",
+      "source_version": "1.4.8+dfsg-3build1",
+      "version": "1.4.8+dfsg-3build1"
+    },
+    {
+      "binary": "libzstd1:arm64",
+      "source": "libzstd",
+      "source_version": "1.4.8+dfsg-3build1",
+      "version": "1.4.8+dfsg-3build1"
+    },
+    {
+      "binary": "linux-libc-dev:arm64",
+      "source": "linux",
+      "source_version": "5.15.0-134.145",
+      "version": "5.15.0-134.145"
+    },
+    {
+      "binary": "locales",
+      "source": "glibc",
+      "source_version": "2.35-0ubuntu3.9",
+      "version": "2.35-0ubuntu3.9"
+    },
+    {
+      "binary": "login",
+      "source": "shadow",
+      "source_version": "1:4.8.1-2ubuntu2.2",
+      "version": "1:4.8.1-2ubuntu2.2"
+    },
+    {
+      "binary": "logsave",
+      "source": "e2fsprogs",
+      "source_version": "1.46.5-2ubuntu1.2",
+      "version": "1.46.5-2ubuntu1.2"
+    },
+    {
+      "binary": "lsb-base",
+      "source": "lsb",
+      "source_version": "11.1.0ubuntu4",
+      "version": "11.1.0ubuntu4"
+    },
+    {
+      "binary": "lto-disabled-list",
+      "source": "lto-disabled-list",
+      "source_version": "24",
+      "version": "24"
+    },
+    {
+      "binary": "m4",
+      "source": "m4",
+      "source_version": "1.4.18-5ubuntu2",
+      "version": "1.4.18-5ubuntu2"
+    },
+    {
+      "binary": "make",
+      "source": "make-dfsg",
+      "source_version": "4.3-4.1build1",
+      "version": "4.3-4.1build1"
+    },
+    {
+      "binary": "manpages",
+      "source": "manpages",
+      "source_version": "5.10-1ubuntu1",
+      "version": "5.10-1ubuntu1"
+    },
+    {
+      "binary": "mawk",
+      "source": "mawk",
+      "source_version": "1.3.4.20200120-3",
+      "version": "1.3.4.20200120-3"
+    },
+    {
+      "binary": "media-types",
+      "source": "media-types",
+      "source_version": "7.0.0",
+      "version": "7.0.0"
+    },
+    {
+      "binary": "mount",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "mysql-common",
+      "source": "mysql-defaults",
+      "source_version": "1.0.8",
+      "version": "5.8+1.0.8"
+    },
+    {
+      "binary": "ncurses-base",
+      "source": "ncurses",
+      "source_version": "6.3-2ubuntu0.1",
+      "version": "6.3-2ubuntu0.1"
+    },
+    {
+      "binary": "ncurses-bin",
+      "source": "ncurses",
+      "source_version": "6.3-2ubuntu0.1",
+      "version": "6.3-2ubuntu0.1"
+    },
+    {
+      "binary": "netbase",
+      "source": "netbase",
+      "source_version": "6.3",
+      "version": "6.3"
+    },
+    {
+      "binary": "openssl",
+      "source": "openssl",
+      "source_version": "3.0.2-0ubuntu1.19",
+      "version": "3.0.2-0ubuntu1.19"
+    },
+    {
+      "binary": "passwd",
+      "source": "shadow",
+      "source_version": "1:4.8.1-2ubuntu2.2",
+      "version": "1:4.8.1-2ubuntu2.2"
+    },
+    {
+      "binary": "patch",
+      "source": "patch",
+      "source_version": "2.7.6-7build2",
+      "version": "2.7.6-7build2"
+    },
+    {
+      "binary": "perl",
+      "source": "perl",
+      "source_version": "5.34.0-3ubuntu1.3",
+      "version": "5.34.0-3ubuntu1.3"
+    },
+    {
+      "binary": "perl-base",
+      "source": "perl",
+      "source_version": "5.34.0-3ubuntu1.3",
+      "version": "5.34.0-3ubuntu1.3"
+    },
+    {
+      "binary": "perl-modules-5.34",
+      "source": "perl",
+      "source_version": "5.34.0-3ubuntu1.3",
+      "version": "5.34.0-3ubuntu1.3"
+    },
+    {
+      "binary": "pinentry-curses",
+      "source": "pinentry",
+      "source_version": "1.1.1-1build2",
+      "version": "1.1.1-1build2"
+    },
+    {
+      "binary": "pkg-config",
+      "source": "pkg-config",
+      "source_version": "0.29.2-1ubuntu3",
+      "version": "0.29.2-1ubuntu3"
+    },
+    {
+      "binary": "procps",
+      "source": "procps",
+      "source_version": "2:3.3.17-6ubuntu2.1",
+      "version": "2:3.3.17-6ubuntu2.1"
+    },
+    {
+      "binary": "publicsuffix",
+      "source": "publicsuffix",
+      "source_version": "20211207.1025-1",
+      "version": "20211207.1025-1"
+    },
+    {
+      "binary": "python-pip",
+      "source": "python2-pip",
+      "source_version": "20.3.4+dfsg-4",
+      "version": "20.3.4+dfsg-4"
+    },
+    {
+      "binary": "python-pkg-resources",
+      "source": "python-setuptools",
+      "source_version": "44.1.1-1.2ubuntu0.22.04.1",
+      "version": "44.1.1-1.2ubuntu0.22.04.1"
+    },
+    {
+      "binary": "python-setuptools",
+      "source": "python-setuptools",
+      "source_version": "44.1.1-1.2ubuntu0.22.04.1",
+      "version": "44.1.1-1.2ubuntu0.22.04.1"
+    },
+    {
+      "binary": "python2",
+      "source": "python-defaults",
+      "source_version": "2.7.18-3",
+      "version": "2.7.18-3"
+    },
+    {
+      "binary": "python2-dev",
+      "source": "python-defaults",
+      "source_version": "2.7.18-3",
+      "version": "2.7.18-3"
+    },
+    {
+      "binary": "python2-minimal",
+      "source": "python-defaults",
+      "source_version": "2.7.18-3",
+      "version": "2.7.18-3"
+    },
+    {
+      "binary": "python2.7",
+      "source": "python2.7",
+      "source_version": "2.7.18-13ubuntu1.5",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "binary": "python2.7-dev",
+      "source": "python2.7",
+      "source_version": "2.7.18-13ubuntu1.5",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "binary": "python2.7-minimal",
+      "source": "python2.7",
+      "source_version": "2.7.18-13ubuntu1.5",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "binary": "readline-common",
+      "source": "readline",
+      "source_version": "8.1.2-1",
+      "version": "8.1.2-1"
+    },
+    {
+      "binary": "rpcsvc-proto",
+      "source": "rpcsvc-proto",
+      "source_version": "1.4.2-0ubuntu6",
+      "version": "1.4.2-0ubuntu6"
+    },
+    {
+      "binary": "samtools",
+      "source": "samtools",
+      "source_version": "1.13-4",
+      "version": "1.13-4"
+    },
+    {
+      "binary": "sed",
+      "source": "sed",
+      "source_version": "4.8-1ubuntu2",
+      "version": "4.8-1ubuntu2"
+    },
+    {
+      "binary": "sensible-utils",
+      "source": "sensible-utils",
+      "source_version": "0.0.17",
+      "version": "0.0.17"
+    },
+    {
+      "binary": "sqlite3",
+      "source": "sqlite3",
+      "source_version": "3.37.2-2ubuntu0.3",
+      "version": "3.37.2-2ubuntu0.3"
+    },
+    {
+      "binary": "sysvinit-utils",
+      "source": "sysvinit",
+      "source_version": "3.01-1ubuntu1",
+      "version": "3.01-1ubuntu1"
+    },
+    {
+      "binary": "tar",
+      "source": "tar",
+      "source_version": "1.34+dfsg-1ubuntu0.1.22.04.2",
+      "version": "1.34+dfsg-1ubuntu0.1.22.04.2"
+    },
+    {
+      "binary": "ubuntu-keyring",
+      "source": "ubuntu-keyring",
+      "source_version": "2021.03.26",
+      "version": "2021.03.26"
+    },
+    {
+      "binary": "ucf",
+      "source": "ucf",
+      "source_version": "3.0043",
+      "version": "3.0043"
+    },
+    {
+      "binary": "unzip",
+      "source": "unzip",
+      "source_version": "6.0-26ubuntu3.2",
+      "version": "6.0-26ubuntu3.2"
+    },
+    {
+      "binary": "usrmerge",
+      "source": "usrmerge",
+      "source_version": "25ubuntu2",
+      "version": "25ubuntu2"
+    },
+    {
+      "binary": "util-linux",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "uuid-dev:arm64",
+      "source": "util-linux",
+      "source_version": "2.37.2-4ubuntu3.4",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "binary": "vim",
+      "source": "vim",
+      "source_version": "2:8.2.3995-1ubuntu2.23",
+      "version": "2:8.2.3995-1ubuntu2.23"
+    },
+    {
+      "binary": "vim-common",
+      "source": "vim",
+      "source_version": "2:8.2.3995-1ubuntu2.23",
+      "version": "2:8.2.3995-1ubuntu2.23"
+    },
+    {
+      "binary": "vim-runtime",
+      "source": "vim",
+      "source_version": "2:8.2.3995-1ubuntu2.23",
+      "version": "2:8.2.3995-1ubuntu2.23"
+    },
+    {
+      "binary": "x11-common",
+      "source": "xorg",
+      "source_version": "1:7.7+23ubuntu2",
+      "version": "1:7.7+23ubuntu2"
+    },
+    {
+      "binary": "x11proto-dev",
+      "source": "xorgproto",
+      "source_version": "2021.5-1",
+      "version": "2021.5-1"
+    },
+    {
+      "binary": "xorg-sgml-doctools",
+      "source": "xorg-sgml-doctools",
+      "source_version": "1:1.11-1.1",
+      "version": "1:1.11-1.1"
+    },
+    {
+      "binary": "xtrans-dev",
+      "source": "xtrans",
+      "source_version": "1.4.0-1",
+      "version": "1.4.0-1"
+    },
+    {
+      "binary": "xxd",
+      "source": "vim",
+      "source_version": "2:8.2.3995-1ubuntu2.23",
+      "version": "2:8.2.3995-1ubuntu2.23"
+    },
+    {
+      "binary": "xz-utils",
+      "source": "xz-utils",
+      "source_version": "5.2.5-2ubuntu1",
+      "version": "5.2.5-2ubuntu1"
+    },
+    {
+      "binary": "zlib1g:arm64",
+      "source": "zlib",
+      "source_version": "1:1.2.11.dfsg-2ubuntu9.2",
+      "version": "1:1.2.11.dfsg-2ubuntu9.2"
+    },
+    {
+      "binary": "zlib1g-dev:arm64",
+      "source": "zlib",
+      "source_version": "1:1.2.11.dfsg-2ubuntu9.2",
+      "version": "1:1.2.11.dfsg-2ubuntu9.2"
+    }
+  ],
+  "platform": "linux/arm64",
+  "review_status": "inventory_not_redistribution_clearance",
+  "schema_version": 1,
+  "source_fingerprint": "8e9a5e7c37f0baa60bc620b2944efa7c355570453daf1bd8c1c35596b8d81c74",
+  "source_package_count": 243,
+  "source_packages": [
+    {
+      "name": "acl",
+      "version": "2.3.1-1"
+    },
+    {
+      "name": "adduser",
+      "version": "3.118ubuntu5"
+    },
+    {
+      "name": "apt",
+      "version": "2.4.13"
+    },
+    {
+      "name": "attr",
+      "version": "1:2.5.1-1build1"
+    },
+    {
+      "name": "audit",
+      "version": "1:3.0.7-1build1"
+    },
+    {
+      "name": "autoconf",
+      "version": "2.71-2"
+    },
+    {
+      "name": "automake-1.16",
+      "version": "1:1.16.5-1.3"
+    },
+    {
+      "name": "autotools-dev",
+      "version": "20220109.1"
+    },
+    {
+      "name": "base-files",
+      "version": "12ubuntu4.7"
+    },
+    {
+      "name": "base-passwd",
+      "version": "3.5.52build1"
+    },
+    {
+      "name": "bash",
+      "version": "5.1-6ubuntu1.1"
+    },
+    {
+      "name": "binutils",
+      "version": "2.38-4ubuntu2.7"
+    },
+    {
+      "name": "brotli",
+      "version": "1.0.9-2build6"
+    },
+    {
+      "name": "build-essential",
+      "version": "12.9ubuntu3"
+    },
+    {
+      "name": "bzip2",
+      "version": "1.0.8-5build1"
+    },
+    {
+      "name": "ca-certificates",
+      "version": "20260601~22.04.1"
+    },
+    {
+      "name": "cdebconf",
+      "version": "0.261ubuntu1"
+    },
+    {
+      "name": "coreutils",
+      "version": "8.32-4.1ubuntu1.2"
+    },
+    {
+      "name": "cpanminus",
+      "version": "1.7045-1"
+    },
+    {
+      "name": "curl",
+      "version": "7.81.0-1ubuntu1.27"
+    },
+    {
+      "name": "cyrus-sasl2",
+      "version": "2.1.27+dfsg2-3ubuntu1.2"
+    },
+    {
+      "name": "dash",
+      "version": "0.5.11+git20210903+057cd650a4ed-3build1"
+    },
+    {
+      "name": "db5.3",
+      "version": "5.3.28+dfsg1-0.8ubuntu3"
+    },
+    {
+      "name": "debconf",
+      "version": "1.5.79ubuntu1"
+    },
+    {
+      "name": "debianutils",
+      "version": "5.5-1ubuntu2"
+    },
+    {
+      "name": "diffutils",
+      "version": "1:3.8-0ubuntu2"
+    },
+    {
+      "name": "dpkg",
+      "version": "1.21.1ubuntu2.3"
+    },
+    {
+      "name": "e2fsprogs",
+      "version": "1.46.5-2ubuntu1.2"
+    },
+    {
+      "name": "expat",
+      "version": "2.4.7-1ubuntu0.5"
+    },
+    {
+      "name": "fakeroot",
+      "version": "1.28-1ubuntu1"
+    },
+    {
+      "name": "findutils",
+      "version": "4.8.0-1ubuntu3"
+    },
+    {
+      "name": "fontconfig",
+      "version": "2.13.1-4.2ubuntu5"
+    },
+    {
+      "name": "fonts-dejavu",
+      "version": "2.37-2build1"
+    },
+    {
+      "name": "freetype",
+      "version": "2.11.1+dfsg-1ubuntu0.3"
+    },
+    {
+      "name": "gcc-11",
+      "version": "11.4.0-1ubuntu1~22.04"
+    },
+    {
+      "name": "gcc-12",
+      "version": "12.3.0-1ubuntu1~22.04"
+    },
+    {
+      "name": "gcc-defaults",
+      "version": "1.193ubuntu1"
+    },
+    {
+      "name": "gdbm",
+      "version": "1.23-1"
+    },
+    {
+      "name": "git",
+      "version": "1:2.34.1-1ubuntu1.17"
+    },
+    {
+      "name": "glib2.0",
+      "version": "2.72.4-0ubuntu2.4"
+    },
+    {
+      "name": "glibc",
+      "version": "2.35-0ubuntu3.8"
+    },
+    {
+      "name": "glibc",
+      "version": "2.35-0ubuntu3.9"
+    },
+    {
+      "name": "gmp",
+      "version": "2:6.2.1+dfsg-3ubuntu1"
+    },
+    {
+      "name": "gnupg2",
+      "version": "2.2.27-3ubuntu2.1"
+    },
+    {
+      "name": "gnutls28",
+      "version": "3.7.3-4ubuntu1.5"
+    },
+    {
+      "name": "gpm",
+      "version": "1.20.7-10build1"
+    },
+    {
+      "name": "grep",
+      "version": "3.7-1build1"
+    },
+    {
+      "name": "gzip",
+      "version": "1.10-4ubuntu4.1"
+    },
+    {
+      "name": "hostname",
+      "version": "3.23ubuntu2"
+    },
+    {
+      "name": "htscodecs",
+      "version": "1.1.1-3"
+    },
+    {
+      "name": "htslib",
+      "version": "1.13+ds-2build1"
+    },
+    {
+      "name": "init-system-helpers",
+      "version": "1.62"
+    },
+    {
+      "name": "io-stringy",
+      "version": "2.111-3"
+    },
+    {
+      "name": "isl",
+      "version": "0.24-2build1"
+    },
+    {
+      "name": "jbigkit",
+      "version": "2.1-3.1ubuntu0.22.04.1"
+    },
+    {
+      "name": "keyutils",
+      "version": "1.6.1-2ubuntu3"
+    },
+    {
+      "name": "krb5",
+      "version": "1.19.2-2ubuntu0.4"
+    },
+    {
+      "name": "libalgorithm-c3-perl",
+      "version": "0.11-1"
+    },
+    {
+      "name": "libalgorithm-diff-perl",
+      "version": "1.201-1"
+    },
+    {
+      "name": "libalgorithm-diff-xs-perl",
+      "version": "0.04-6build3"
+    },
+    {
+      "name": "libalgorithm-merge-perl",
+      "version": "0.08-3"
+    },
+    {
+      "name": "libany-uri-escape-perl",
+      "version": "0.01-3"
+    },
+    {
+      "name": "libassuan",
+      "version": "2.5.5-1build1"
+    },
+    {
+      "name": "libb-hooks-endofscope-perl",
+      "version": "0.25-1"
+    },
+    {
+      "name": "libb-hooks-op-check-perl",
+      "version": "0.22-1build5"
+    },
+    {
+      "name": "libbsd",
+      "version": "0.11.5-1"
+    },
+    {
+      "name": "libcap-ng",
+      "version": "0.7.9-2.2build3"
+    },
+    {
+      "name": "libcap2",
+      "version": "1:2.44-1ubuntu0.22.04.1"
+    },
+    {
+      "name": "libclass-c3-perl",
+      "version": "0.35-1"
+    },
+    {
+      "name": "libclass-c3-xs-perl",
+      "version": "0.15-1build2"
+    },
+    {
+      "name": "libclass-method-modifiers-perl",
+      "version": "2.13-1"
+    },
+    {
+      "name": "libclass-xsaccessor-perl",
+      "version": "1.19-3build9"
+    },
+    {
+      "name": "libclone-perl",
+      "version": "0.45-1build3"
+    },
+    {
+      "name": "libcpan-changes-perl",
+      "version": "0.400002-1.1"
+    },
+    {
+      "name": "libcpan-distnameinfo-perl",
+      "version": "0.12-2.1"
+    },
+    {
+      "name": "libcpan-meta-check-perl",
+      "version": "0.014-1"
+    },
+    {
+      "name": "libdata-optlist-perl",
+      "version": "0.112-1"
+    },
+    {
+      "name": "libdata-perl-perl",
+      "version": "0.002011-1"
+    },
+    {
+      "name": "libdata-section-perl",
+      "version": "0.200007-1"
+    },
+    {
+      "name": "libdbd-mysql-perl",
+      "version": "4.050-5ubuntu0.22.04.1"
+    },
+    {
+      "name": "libdbi-perl",
+      "version": "1.643-3build3"
+    },
+    {
+      "name": "libdeflate",
+      "version": "1.10-2"
+    },
+    {
+      "name": "libdevel-callchecker-perl",
+      "version": "0.008-1ubuntu4"
+    },
+    {
+      "name": "libdynaloader-functions-perl",
+      "version": "0.003-1.1"
+    },
+    {
+      "name": "libencode-locale-perl",
+      "version": "1.05-1.1"
+    },
+    {
+      "name": "liberror-perl",
+      "version": "0.17029-1"
+    },
+    {
+      "name": "libexporter-tiny-perl",
+      "version": "1.002002-1"
+    },
+    {
+      "name": "libffi",
+      "version": "3.4.2-4"
+    },
+    {
+      "name": "libfile-fcntllock-perl",
+      "version": "0.22-3build7"
+    },
+    {
+      "name": "libfile-pushd-perl",
+      "version": "1.016-1"
+    },
+    {
+      "name": "libfile-slurp-perl",
+      "version": "9999.32-1"
+    },
+    {
+      "name": "libgcrypt20",
+      "version": "1.9.4-3ubuntu3"
+    },
+    {
+      "name": "libgd2",
+      "version": "2.3.0-2ubuntu2.3"
+    },
+    {
+      "name": "libgetopt-long-descriptive-perl",
+      "version": "0.109-2"
+    },
+    {
+      "name": "libgpg-error",
+      "version": "1.43-3"
+    },
+    {
+      "name": "libhtml-parser-perl",
+      "version": "3.76-1build2"
+    },
+    {
+      "name": "libhtml-tagset-perl",
+      "version": "3.20-4"
+    },
+    {
+      "name": "libhttp-date-perl",
+      "version": "6.05-1"
+    },
+    {
+      "name": "libhttp-message-perl",
+      "version": "6.36-1"
+    },
+    {
+      "name": "libice",
+      "version": "2:1.0.10-1build2"
+    },
+    {
+      "name": "libidn",
+      "version": "1.38-4ubuntu1"
+    },
+    {
+      "name": "libidn2",
+      "version": "2.3.2-2build1"
+    },
+    {
+      "name": "libimport-into-perl",
+      "version": "1.002005-1"
+    },
+    {
+      "name": "libio-html-perl",
+      "version": "1.004-2"
+    },
+    {
+      "name": "libjpeg-turbo",
+      "version": "2.1.2-0ubuntu1"
+    },
+    {
+      "name": "libjpeg8-empty",
+      "version": "8c-2ubuntu10"
+    },
+    {
+      "name": "libksba",
+      "version": "1.6.0-2ubuntu0.2"
+    },
+    {
+      "name": "liblist-moreutils-perl",
+      "version": "0.430-2"
+    },
+    {
+      "name": "liblist-moreutils-xs-perl",
+      "version": "0.430-2build2"
+    },
+    {
+      "name": "liblocal-lib-perl",
+      "version": "2.000028-1"
+    },
+    {
+      "name": "liblocale-gettext-perl",
+      "version": "1.07-4build3"
+    },
+    {
+      "name": "liblwp-mediatypes-perl",
+      "version": "6.04-1"
+    },
+    {
+      "name": "libmd",
+      "version": "1.0.4-1build1"
+    },
+    {
+      "name": "libmodule-build-perl",
+      "version": "0.423100-1"
+    },
+    {
+      "name": "libmodule-cpanfile-perl",
+      "version": "1.1004-1"
+    },
+    {
+      "name": "libmodule-implementation-perl",
+      "version": "0.09-1.1"
+    },
+    {
+      "name": "libmodule-runtime-perl",
+      "version": "0.016-1"
+    },
+    {
+      "name": "libmodule-signature-perl",
+      "version": "0.88-1"
+    },
+    {
+      "name": "libmoo-perl",
+      "version": "2.005004-3"
+    },
+    {
+      "name": "libmoox-handlesvia-perl",
+      "version": "0.001009-1"
+    },
+    {
+      "name": "libmro-compat-perl",
+      "version": "0.15-1"
+    },
+    {
+      "name": "libnamespace-autoclean-perl",
+      "version": "0.29-1"
+    },
+    {
+      "name": "libnamespace-clean-perl",
+      "version": "0.27-1"
+    },
+    {
+      "name": "libnet-libidn-perl",
+      "version": "0.12.ds-3build6"
+    },
+    {
+      "name": "libnsl",
+      "version": "1.3.0-2build2"
+    },
+    {
+      "name": "libpackage-stash-perl",
+      "version": "0.39-1"
+    },
+    {
+      "name": "libpackage-stash-xs-perl",
+      "version": "0.29-1build5"
+    },
+    {
+      "name": "libparams-classify-perl",
+      "version": "0.015-1build5"
+    },
+    {
+      "name": "libparams-util-perl",
+      "version": "1.102-1build3"
+    },
+    {
+      "name": "libparams-validate-perl",
+      "version": "1.30-1build3"
+    },
+    {
+      "name": "libparse-pmfile-perl",
+      "version": "0.43-1"
+    },
+    {
+      "name": "libpath-tiny-perl",
+      "version": "0.122-1"
+    },
+    {
+      "name": "libpng1.6",
+      "version": "1.6.37-3build5"
+    },
+    {
+      "name": "libpod-markdown-perl",
+      "version": "3.300000-1"
+    },
+    {
+      "name": "libpod-readme-perl",
+      "version": "1.2.3-1"
+    },
+    {
+      "name": "libpsl",
+      "version": "0.21.0-1.2build2"
+    },
+    {
+      "name": "libpthread-stubs",
+      "version": "0.4-1build2"
+    },
+    {
+      "name": "libreadonly-perl",
+      "version": "2.050-3"
+    },
+    {
+      "name": "libref-util-perl",
+      "version": "0.204-1"
+    },
+    {
+      "name": "libref-util-xs-perl",
+      "version": "0.117-1build5"
+    },
+    {
+      "name": "librole-tiny-perl",
+      "version": "2.002004-1"
+    },
+    {
+      "name": "libseccomp",
+      "version": "2.5.3-2ubuntu2"
+    },
+    {
+      "name": "libselinux",
+      "version": "3.3-1build2"
+    },
+    {
+      "name": "libsemanage",
+      "version": "3.3-1build2"
+    },
+    {
+      "name": "libsepol",
+      "version": "3.3-1build1"
+    },
+    {
+      "name": "libsigsegv",
+      "version": "2.13-1ubuntu3"
+    },
+    {
+      "name": "libsm",
+      "version": "2:1.2.3-1build2"
+    },
+    {
+      "name": "libsodium",
+      "version": "1.0.18-1build2"
+    },
+    {
+      "name": "libsoftware-license-perl",
+      "version": "0.104001-1"
+    },
+    {
+      "name": "libssh",
+      "version": "0.9.6-2ubuntu0.22.04.3"
+    },
+    {
+      "name": "libstrictures-perl",
+      "version": "2.000006-1"
+    },
+    {
+      "name": "libstring-shellquote-perl",
+      "version": "1.04-1"
+    },
+    {
+      "name": "libsub-exporter-perl",
+      "version": "0.988-1"
+    },
+    {
+      "name": "libsub-exporter-progressive-perl",
+      "version": "0.001013-1"
+    },
+    {
+      "name": "libsub-identify-perl",
+      "version": "0.14-1build5"
+    },
+    {
+      "name": "libsub-install-perl",
+      "version": "0.928-1.1"
+    },
+    {
+      "name": "libsub-name-perl",
+      "version": "0.26-1build3"
+    },
+    {
+      "name": "libsub-quote-perl",
+      "version": "2.006006-1"
+    },
+    {
+      "name": "libtasn1-6",
+      "version": "4.18.0-4build1"
+    },
+    {
+      "name": "libtext-template-perl",
+      "version": "1.60-1"
+    },
+    {
+      "name": "libtimedate-perl",
+      "version": "2.3300-2"
+    },
+    {
+      "name": "libtirpc",
+      "version": "1.3.2-2ubuntu0.1"
+    },
+    {
+      "name": "libtry-tiny-perl",
+      "version": "0.31-1"
+    },
+    {
+      "name": "libtype-tiny-perl",
+      "version": "1.012004-1"
+    },
+    {
+      "name": "libtype-tiny-xs-perl",
+      "version": "0.022-1build2"
+    },
+    {
+      "name": "libunicode-utf8-perl",
+      "version": "0.62-1build4"
+    },
+    {
+      "name": "libunistring",
+      "version": "1.0-1"
+    },
+    {
+      "name": "liburi-escape-xs-perl",
+      "version": "0.14-1build6"
+    },
+    {
+      "name": "liburi-perl",
+      "version": "5.10-1"
+    },
+    {
+      "name": "libvariable-magic-perl",
+      "version": "0.62-1build5"
+    },
+    {
+      "name": "libvpx",
+      "version": "1.11.0-2ubuntu2.3"
+    },
+    {
+      "name": "libwebp",
+      "version": "1.2.2-2ubuntu0.22.04.2"
+    },
+    {
+      "name": "libx11",
+      "version": "2:1.7.5-1ubuntu0.3"
+    },
+    {
+      "name": "libxau",
+      "version": "1:1.0.9-1build5"
+    },
+    {
+      "name": "libxcb",
+      "version": "1.14-3ubuntu3"
+    },
+    {
+      "name": "libxcrypt",
+      "version": "1:4.4.27-1"
+    },
+    {
+      "name": "libxdmcp",
+      "version": "1:1.1.3-0ubuntu5"
+    },
+    {
+      "name": "libxpm",
+      "version": "1:3.5.12-1ubuntu0.22.04.2"
+    },
+    {
+      "name": "libxt",
+      "version": "1:1.2.1-1"
+    },
+    {
+      "name": "libzstd",
+      "version": "1.4.8+dfsg-3build1"
+    },
+    {
+      "name": "linux",
+      "version": "5.15.0-134.145"
+    },
+    {
+      "name": "lsb",
+      "version": "11.1.0ubuntu4"
+    },
+    {
+      "name": "lto-disabled-list",
+      "version": "24"
+    },
+    {
+      "name": "lz4",
+      "version": "1.9.3-2build2"
+    },
+    {
+      "name": "m4",
+      "version": "1.4.18-5ubuntu2"
+    },
+    {
+      "name": "make-dfsg",
+      "version": "4.3-4.1build1"
+    },
+    {
+      "name": "manpages",
+      "version": "5.10-1ubuntu1"
+    },
+    {
+      "name": "mawk",
+      "version": "1.3.4.20200120-3"
+    },
+    {
+      "name": "media-types",
+      "version": "7.0.0"
+    },
+    {
+      "name": "mpclib3",
+      "version": "1.2.1-2build1"
+    },
+    {
+      "name": "mpdecimal",
+      "version": "2.5.1-2build2"
+    },
+    {
+      "name": "mpfr4",
+      "version": "4.1.0-3build3"
+    },
+    {
+      "name": "mysql-8.0",
+      "version": "8.0.41-0ubuntu0.22.04.1"
+    },
+    {
+      "name": "mysql-defaults",
+      "version": "1.0.8"
+    },
+    {
+      "name": "ncurses",
+      "version": "6.3-2ubuntu0.1"
+    },
+    {
+      "name": "netbase",
+      "version": "6.3"
+    },
+    {
+      "name": "nettle",
+      "version": "3.7.3-1build2"
+    },
+    {
+      "name": "nghttp2",
+      "version": "1.43.0-1ubuntu0.2"
+    },
+    {
+      "name": "npth",
+      "version": "1.6-3build2"
+    },
+    {
+      "name": "openldap",
+      "version": "2.5.18+dfsg-0ubuntu0.22.04.3"
+    },
+    {
+      "name": "openssl",
+      "version": "3.0.2-0ubuntu1.19"
+    },
+    {
+      "name": "openssl",
+      "version": "3.0.2-0ubuntu1.29"
+    },
+    {
+      "name": "p11-kit",
+      "version": "0.24.0-6build1"
+    },
+    {
+      "name": "pam",
+      "version": "1.4.0-11ubuntu2.5"
+    },
+    {
+      "name": "patch",
+      "version": "2.7.6-7build2"
+    },
+    {
+      "name": "pcre2",
+      "version": "10.39-3ubuntu0.1"
+    },
+    {
+      "name": "pcre3",
+      "version": "2:8.39-13ubuntu0.22.04.1"
+    },
+    {
+      "name": "perl",
+      "version": "5.34.0-3ubuntu1.3"
+    },
+    {
+      "name": "pinentry",
+      "version": "1.1.1-1build2"
+    },
+    {
+      "name": "pkg-config",
+      "version": "0.29.2-1ubuntu3"
+    },
+    {
+      "name": "procps",
+      "version": "2:3.3.17-6ubuntu2.1"
+    },
+    {
+      "name": "publicsuffix",
+      "version": "20211207.1025-1"
+    },
+    {
+      "name": "python-defaults",
+      "version": "2.7.18-3"
+    },
+    {
+      "name": "python-setuptools",
+      "version": "44.1.1-1.2ubuntu0.22.04.1"
+    },
+    {
+      "name": "python2-pip",
+      "version": "20.3.4+dfsg-4"
+    },
+    {
+      "name": "python2.7",
+      "version": "2.7.18-13ubuntu1.5"
+    },
+    {
+      "name": "python3.10",
+      "version": "3.10.12-1~22.04.9"
+    },
+    {
+      "name": "readline",
+      "version": "8.1.2-1"
+    },
+    {
+      "name": "rpcsvc-proto",
+      "version": "1.4.2-0ubuntu6"
+    },
+    {
+      "name": "rtmpdump",
+      "version": "2.4+20151223.gitfa8646d.1-2build4"
+    },
+    {
+      "name": "samtools",
+      "version": "1.13-4"
+    },
+    {
+      "name": "sed",
+      "version": "4.8-1ubuntu2"
+    },
+    {
+      "name": "sensible-utils",
+      "version": "0.0.17"
+    },
+    {
+      "name": "shadow",
+      "version": "1:4.8.1-2ubuntu2.2"
+    },
+    {
+      "name": "sqlite3",
+      "version": "3.37.2-2ubuntu0.3"
+    },
+    {
+      "name": "systemd",
+      "version": "249.11-0ubuntu3.12"
+    },
+    {
+      "name": "sysvinit",
+      "version": "3.01-1ubuntu1"
+    },
+    {
+      "name": "tar",
+      "version": "1.34+dfsg-1ubuntu0.1.22.04.2"
+    },
+    {
+      "name": "tiff",
+      "version": "4.3.0-6ubuntu0.10"
+    },
+    {
+      "name": "ubuntu-keyring",
+      "version": "2021.03.26"
+    },
+    {
+      "name": "ucf",
+      "version": "3.0043"
+    },
+    {
+      "name": "unzip",
+      "version": "6.0-26ubuntu3.2"
+    },
+    {
+      "name": "usrmerge",
+      "version": "25ubuntu2"
+    },
+    {
+      "name": "util-linux",
+      "version": "2.37.2-4ubuntu3.4"
+    },
+    {
+      "name": "vim",
+      "version": "2:8.2.3995-1ubuntu2.23"
+    },
+    {
+      "name": "xorg",
+      "version": "1:7.7+23ubuntu2"
+    },
+    {
+      "name": "xorg-sgml-doctools",
+      "version": "1:1.11-1.1"
+    },
+    {
+      "name": "xorgproto",
+      "version": "2021.5-1"
+    },
+    {
+      "name": "xtrans",
+      "version": "1.4.0-1"
+    },
+    {
+      "name": "xxhash",
+      "version": "0.8.1-1"
+    },
+    {
+      "name": "xz-utils",
+      "version": "5.2.5-2ubuntu1"
+    },
+    {
+      "name": "xz-utils",
+      "version": "5.2.5-2ubuntu1.1"
+    },
+    {
+      "name": "zlib",
+      "version": "1:1.2.11.dfsg-2ubuntu9.2"
+    }
+  ]
+}

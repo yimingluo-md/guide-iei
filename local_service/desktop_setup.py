@@ -30,7 +30,7 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
     """Return True to open review, False to quit; failed installs require Retry."""
     deferred = support / "annotation-setup-deferred.json"
     phase, job, log_path = "checking", None, ""
-    skip = quit_requested = cancellation_sent = False
+    quit_requested = cancellation_sent = False
     attempted = False
     write_status(status_path, phase, "Checking installed annotation components…")
     while alive():
@@ -39,12 +39,12 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
             control_path.unlink(missing_ok=True)
         except (OSError, ValueError, AttributeError):
             action = None
-        if action in {"skip", "quit"}:
-            skip, quit_requested = True, action == "quit"
+        if action == "quit":
+            quit_requested = True
         if action == "retry" and phase == "failed":
             phase, job, cancellation_sent = "checking", None, False
         try:
-            if skip:
+            if quit_requested:
                 # A timed-out POST may still have started a job. Discover it
                 # before allowing review; never abandon an invisible installer.
                 if attempted and job is None:
@@ -57,19 +57,14 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
                 if job and call(base, "/api/annotation-engine/status").get("busy"):
                     write_status(status_path, "stopping", "Stopping annotation preparation safely…", log_path)
                 else:
-                    if not quit_requested:
-                        deferred.write_text(json.dumps({"deferred": True}))
-                    write_status(status_path, "skipped", "Opening without annotation. Engine setup remains available in Import & QC.", log_path)
-                    return not quit_requested
+                    write_status(status_path, "stopped", "Annotation preparation stopped.", log_path)
+                    return False
             elif phase == "checking":
                 write_status(status_path, phase, "Checking installed annotation components…")
                 status = call(base, "/api/annotation-engine/status")
                 if status.get("available"):
                     deferred.unlink(missing_ok=True)
                     write_status(status_path, "ready", "Annotation engine ready. Opening the workbench…")
-                    return True
-                if deferred.exists():
-                    write_status(status_path, "skipped", "Opening without annotation, as previously selected.")
                     return True
                 if status.get("state") == "runtime_starting":
                     write_status(status_path, phase, "Starting the installed container runtime…")
@@ -95,6 +90,6 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
                     write_status(status_path, phase, job.get("message") or "Preparing the annotation engine…", log_path)
         except (OSError, ValueError, RuntimeError, KeyError, StopIteration) as exc:
             phase = "failed"
-            write_status(status_path, phase, str(exc) or "Preparation needs attention. Open Log, Retry, or open without annotation.", log_path)
+            write_status(status_path, phase, str(exc) or "Preparation needs attention. Open Log, Retry, or Quit GUIDE-IEI.", log_path)
         pause(.5)
     return False

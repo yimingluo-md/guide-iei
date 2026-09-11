@@ -3,14 +3,16 @@
 Each entry describes what changed for the people using GUIDE-IEI. The
 version here, in the `VERSION` file, and in the release tag always agree.
 
-## 0.6.2 — 2026-09-10
+## 0.6.2 — 2026-09-11
 
 Apple Silicon beta release candidate. Publication remains gated on the
 [release checklist](docs/RELEASE_CHECKLIST.md); a build is not a public release.
 
-- The self-contained macOS app bundles Python and a prebuilt interface. Review
-  of an annotated VCF needs no Python, Node, Homebrew, or Docker installation.
-  Large annotation databases remain separate and are installed in the workbench.
+- The self-contained macOS app bundles Python, a prebuilt interface and the
+  architecture-matched VEP container image. Users do not need to install Python,
+  Node, Homebrew or Docker Desktop themselves. First launch still needs internet
+  for container tools and a Linux VM; it prepares the engine before opening the
+  workbench, even for annotated-VCF review. Large databases remain separate.
 - Distribution builds require a clean source commit, Developer ID signing and
   Apple notarization. The release assembler verifies the signed app and DMG,
   source identity and checksums. Release automation creates drafts only; it no
@@ -21,10 +23,19 @@ Apple Silicon beta release candidate. Publication remains gated on the
   preparation must finish first. Old source-launcher Dock shortcuts should be
   replaced with the installed self-contained app.
 - The native startup window automatically checks/prepares container tools and
-  VEP before opening the browser, with named stages, logs, Retry and Open without
-  annotation. Compatible installations are reused; skipping stops preparation
-  safely and remembers the choice. Import & QC retains engine repair controls
-  and all large-dataset selection/downloads.
+  VEP before opening the browser, with named stages, logs, Retry and Quit.
+  Compatible installations are reused; there is no skip option and old remembered
+  deferrals are ignored. Import & QC retains engine repair controls and all
+  large-dataset selection/downloads.
+- Existing managed Colima installations recover from an unused default Docker
+  connection without changing the global Docker context. Setup and later jobs
+  use the same recovered connection. Missing app-folder sharing is repaired
+  with a configuration backup; busy containers are not interrupted.
+- The macOS application, browser tab and workbench header now share the
+  DNA/immune-receptor icon.
+- A version-specific bundled-engine redistribution review and dependency
+  inventory record source-delivery and legacy component licensing work still
+  required before public binary publication.
 - Cohort rsID searches resolve exact identifiers through indexes before joining
   annotations, avoiding a full annotation-index scan on affected SQLite versions.
 - Fixed immediate reopening after webpage Quit: recently closed TCP connections

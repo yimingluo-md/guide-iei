@@ -34,6 +34,11 @@ def check_app(app, version, commit, build_id):
     check_metadata(metadata, version, commit)
     if metadata["build_id"] != build_id:
         raise ValueError("ZIP and DMG contain different builds")
+    from bundled_engine import validate_bundle, fingerprint
+    application = app / "Contents/Resources/application"
+    bundled = validate_bundle(application / "bundled-engine", fingerprint(application), "arm64")
+    if metadata.get("bundled_engine") != bundled:
+        raise ValueError("Distribution engine manifest differs from build metadata")
     run("codesign", "--verify", "--deep", "--strict", app)
     signature = run("codesign", "-dv", "--verbose=4", app).decode()
     if "Authority=Developer ID Application:" not in signature or "runtime" not in signature:

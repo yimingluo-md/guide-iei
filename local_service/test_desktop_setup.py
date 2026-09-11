@@ -68,7 +68,7 @@ class DesktopSetupTests(unittest.TestCase):
         self.assertTrue(self.run_setup(call, tick))
         self.assertEqual(state["attempts"], 2)
 
-    def test_skip_cancels_and_waits_for_cleanup_then_remembers_choice(self):
+    def test_quit_cancels_and_waits_for_cleanup(self):
         state = {"cancelled": False}
         def call(route, body):
             if route.endswith("/status"):
@@ -79,19 +79,30 @@ class DesktopSetupTests(unittest.TestCase):
                 state["cancelled"] = True
                 return {"stopping": True}
             self.fail(route)
-        self.assertTrue(self.run_setup(call, lambda: self.action("skip") if self.ticks == 1 else None))
+        self.assertFalse(self.run_setup(call, lambda: self.action("quit") if self.ticks == 1 else None))
         self.assertTrue(state["cancelled"])
         self.assertGreaterEqual(self.ticks, 3)
-        self.calls.clear()
-        self.assertTrue(self.run_setup(lambda *_: {"available": False}))
-        self.assertNotIn("/api/annotation-engine/setup", self.calls)
+        self.assertFalse((self.root / "annotation-setup-deferred.json").exists())
+
+    def test_old_deferral_and_skip_action_cannot_bypass_engine_preparation(self):
+        (self.root / "annotation-setup-deferred.json").write_text('{"deferred": true}')
+        self.action("skip")
+        def call(route, body):
+            if route.endswith("/status"):
+                return {"available": self.ticks > 0}
+            if route.endswith("/setup"):
+                return {"id": "engine"}
+            return {"jobs": [{"id": "engine", "status": "succeeded"}]}
+        self.assertTrue(self.run_setup(call))
+        self.assertIn("/api/annotation-engine/setup", self.calls)
+        self.assertFalse((self.root / "annotation-setup-deferred.json").exists())
 
     def test_quit_does_not_install_or_remember_deferral(self):
         self.action("quit")
         self.assertFalse(self.run_setup(lambda *_: self.fail("Unexpected request")))
         self.assertFalse((self.root / "annotation-setup-deferred.json").exists())
 
-    def test_timed_out_start_is_found_and_cancelled_before_skip(self):
+    def test_timed_out_start_is_found_and_cancelled_before_quit(self):
         def call(route, body):
             if route.endswith("/status"):
                 return {"available": False, "busy": False}
@@ -100,7 +111,7 @@ class DesktopSetupTests(unittest.TestCase):
             if route.endswith("/cancel"):
                 return {"stopping": True}
             return {"jobs": [{"id": "engine", "resource_id": "annotation_engine", "status": "running"}]}
-        self.assertTrue(self.run_setup(call, lambda: self.action("skip")))
+        self.assertFalse(self.run_setup(call, lambda: self.action("quit")))
         self.assertIn("/api/annotation-engine/cancel", self.calls)
 
 

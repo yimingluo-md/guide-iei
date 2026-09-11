@@ -16,6 +16,9 @@ the preview label alone does not establish its signing status.
   hiding a running service.
 - Pinned relocatable Python and PyYAML; no user-installed Python or Node needed.
 - Prebuilt static workbench served by the local Python service on loopback.
+- Prebuilt architecture-specific Linux VEP engine archive, integrity manifest
+  and collected image license notices. No reference databases or volumes are
+  included in the engine archive.
 - Small public reference tables and public gene knowledge, documentation and
   third-party notices. No developer reference folder, private exports, patient
   libraries, credentials or results are copied into the application.
@@ -29,21 +32,50 @@ process termination. Lifecycle status exposes job counts, not patient names.
 The instance ID on a Quit request prevents accidentally stopping a replacement
 instance; it is not authentication (see the single-user security model).
 
-Review of an annotated VCF needs neither a container nor a dataset download.
-On macOS, opening the workbench also makes one background attempt to start an
-already installed, selected local Docker Desktop engine or existing Colima
-profile. The interface shows **Starting Docker…** and review remains usable.
-This does not install an engine, create a new VM, change Docker contexts, or
-start remote engines. Startup is bounded (up to two minutes for the startup
-command, followed by up to two minutes for engine readiness); failure leaves
-manual instructions and a private `logs/docker-startup.log` in the workbench
-state directory. Restart the workbench to retry automatically. Developers can
-disable startup with `IEI_AUTO_START_DOCKER=0`. Quitting GUIDE-IEI does not stop
-the Docker daemon or Colima VM, which may be used by other applications.
+The self-contained app checks and prepares the annotation engine before opening
+the browser, even when the intended task is already-annotated VCF review.
+The native window shows named stages, Open Log, Retry preparation and Quit;
+there is no skip option and old remembered deferrals are ignored. Existing
+compatible images are reused. A missing/stale image is loaded from the app's
+compressed archive after SHA-256, source identity and architecture checks.
+The loaded tools/plugins are tested before the configured image tag is updated.
+A missing or corrupt bundle fails with repair guidance, never a local build.
+
+Existing selected Docker Desktop/Colima engines are started without changing
+their configuration. On a clean Mac, setup installs pinned user-space
+Lima/Colima/Docker CLI tools and creates a VM; Docker Desktop is not required.
+Those runtime/VM downloads still require internet. Existing managed Colima
+installations are recoverable after an interrupted first start: if the managed Docker
+client still points at its unused built-in default connection and exactly one
+Colima profile exists, GUIDE-IEI uses that profile's socket for its service and
+all child jobs. This is a process-local selection, not a change to the user's
+global Docker context. Explicit host/context overrides, working default engines,
+Docker Desktop, unrecognized endpoints and ambiguous profiles are left alone.
+Colima startup can take up to ten minutes while resuming VM preparation. Failed
+startup details appear in the setup log and the native Retry window.
+
+Fresh managed Colima VMs
+share the application code read-only (using the stable `/Applications` parent
+for installed apps) and retain the home/temp mounts. When application access
+fails, setup automatically repairs the selected local Colima profile: it checks
+for active containers, backs up the exact YAML, preserves settings and existing
+mounts, adds missing read-only sharing, restarts that same profile without
+switching contexts, and verifies application access. Failed restart restores
+the prior sharing configuration. A profile running other containers or
+Kubernetes is not restarted; the startup window asks the user to finish those
+workloads and choose Retry preparation. Configuration backups are private files
+beside `colima.yaml`, named `colima.yaml.guide-iei-backup-*`.
+
+Docker Desktop sharing permissions are not edited behind its UI; if necessary,
+the startup window directs users to Settings → Resources → File sharing and
+then Retry preparation. No Terminal command is required. Remote or unknown
+runtime profiles are not reconfigured. An installed image alone is not considered
+ready if the container cannot read the application. Quitting GUIDE-IEI does not
+stop the Docker daemon or VM, which may be used by other applications.
 
 For annotation, open **Import & QC → Set up annotation datasets**. If the
 engine is missing or outdated, **Set up annotation engine** installs missing
-Mac user-space container tools and prepares the VEP image after confirmation.
+Mac user-space container tools and loads the bundled VEP image after confirmation.
 Progress, logs, and retry are on the same page; quit and conflicting data
 changes are blocked until setup finishes. It does not install Node or change
 an existing conda/Homebrew environment. Choose data locations in Storage and
@@ -69,6 +101,11 @@ never inside the app. The source-tree installation is not copied or removed.
 
 Build natively on the target architecture with Python 3.9+, Node/npm 22+ and
 Xcode Command Line Tools. The user receiving the app needs none of these tools.
+The build machine also needs a running Docker engine and a matching native
+`vep-annotate:latest` image, built with `bash docker/build.sh` and validated with
+the container regression suite. The app builder refuses a stale or wrong-
+architecture image, smoke-tests it, and exports it into the build cache. It
+never copies Docker volumes or commits a running container.
 
 ```bash
 python3 scripts/build_macos_app.py --preview
@@ -81,9 +118,27 @@ Python and wheel downloads are SHA-256 verified and cached in
 `dist/macos-build-cache`. The output is architecture-labelled `.app`, `.zip`,
 `.dmg` and checksum files under `dist/macos-app`. Existing output files are not
 overwritten; choose another `--output` directory for a subsequent build.
+The engine archive is cached by architecture and source fingerprint; a cache
+with a different immutable image ID is rejected instead of silently reused.
+For UI-only CI, `--preview --without-engine` deliberately omits the archive;
+these builds cannot prepare annotation and are not distributable. Intel CI's
+UI-only run therefore does not validate the Intel annotation engine.
+
+Before public distribution, review licenses/source-offer obligations for the
+complete Linux image (not just VEP), retain required notices and provide any
+required corresponding source. `bundled-engine/IMAGE-NOTICES.txt` collects
+available package/vendor notices, but is not a substitute for that review.
+See the [version-specific review](BUNDLED_ENGINE_REDISTRIBUTION.md), including
+its open source-delivery and legacy Kent licensing findings.
+The sealed manifest and image archive live inside the app's signed resources;
+changing either requires rebuilding, signing and notarizing the app. The app
+retains the archive after Docker loads its copy, so allow disk space for both.
 
 A preview has only an ad-hoc signature unless an explicit Developer ID identity
 is supplied. It must not be published as the supported end-user installer.
+This does not prohibit public beta releases: build the beta from clean committed
+source without `--preview`, then mark the GitHub release **prerelease**. The
+build's `preview` flag describes development provenance, not product maturity.
 
 Validate the actual artifact without touching the workstation's active library:
 
@@ -145,8 +200,10 @@ The initial supported standalone scope is Apple Silicon; Intel's equivalent
 checks are required before expanding that scope:
 
 1. Test native arm64 and x86_64 builds on supported clean macOS installations.
-2. Test actual quarantined DMG downloads, offline first launch and annotated-VCF
-   review without Python/Node/Homebrew/Docker installed.
+2. Test actual quarantined DMG downloads and online first-launch preparation
+   without preinstalled Python/Node/Homebrew/Docker Desktop. Then verify offline
+   reopening and annotated-VCF review with the prepared engine. Offline first
+   launch on a clean machine must request networking, not bypass setup.
 3. Test full annotation environment setup, dataset installation, external-drive
    paths, file sharing, retry and repair.
 4. Test existing-user migration, replacing the app, restart after Storage
