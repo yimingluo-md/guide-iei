@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "image_id": "sha256:75a4f6d5fd846476c2ce1b057cf33f206a3b0109520e02067f91afee76779ae2",
+  "source_fingerprint": "6fa3d0c4f809cd01871e9f453f84363f3f719751fdb942924a17e005c590a4d0",
+  "version": "0.6.2",
+  "archive": "GUIDE-IEI-engine-sources-0.6.2-linux-arm64.tar.gz",
+  "bytes": 1379552910,
+  "sha256": "8a15c825ba7d5cae7a145fcf747abc65f8a41b9eb186d868bf55c0e7990e51f6",
+  "package_count": 349,
+  "status": "coverage_verified_review_required"
+}

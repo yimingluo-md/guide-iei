@@ -51,7 +51,15 @@ print JSON::PP->new->canonical->encode([sort {$a->{distribution} cmp $b->{distri
 '''
     cpan = json.loads(read("perl", "-e", perl))
     evidence = []
-    for path in EVIDENCE_PATHS:
+    kent_pruned = subprocess.run([runtime, 'run', '--rm', '--pull=never', '--network=none',
+        '--entrypoint', 'test', image_id, '-f', '/usr/share/doc/guide-iei-kent/audit.json'],
+        timeout=30).returncode == 0
+    paths = [path for path in EVIDENCE_PATHS if not kent_pruned or '/kent-335_base/' not in path]
+    if kent_pruned:
+        paths += ['/usr/share/doc/guide-iei-kent/LICENSE-KENT-LIB.txt',
+                  '/usr/share/doc/guide-iei-kent/audit.json',
+                  '/usr/share/doc/guide-iei-engine/UPSTREAM-MODIFICATIONS.txt']
+    for path in paths:
         data = read("cat", path)
         evidence.append({"path": path, "bytes": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                          "first_lines": data.decode(errors="replace").splitlines()[:8]})
@@ -62,6 +70,8 @@ print JSON::PP->new->canonical->encode([sort {$a->{distribution} cmp $b->{distri
         "binary_package_count": len(packages), "source_package_count": len(sources),
         "packages": packages, "source_packages": [{"name": name, "version": version} for name, version in sources],
         "cpan_distributions": cpan, "license_evidence": evidence,
+        "python_distributions": json.loads(read('python2', '-m', 'pip', 'list', '--format=json')),
+        "kent_pruned": kent_pruned, "rootfs_layers": info.get('RootFS', {}).get('Layers', []),
         "limitations": ["Does not retrieve corresponding source archives.",
                          "Does not establish permission for legacy Kent jkOwnLib or every dependency.",
                          "Inventories the merged filesystem; docker save also contains historical layers."]}

@@ -6,6 +6,7 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 cd "$ROOT"
 die() { echo "ERROR: $*" >&2; exit 1; }
 MAC_ARTIFACTS=""
+ENGINE_SOURCES=""
 SOURCE_ONLY=0
 DRAFT=0
 OUTPUT=""
@@ -13,14 +14,17 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --source-only) SOURCE_ONLY=1; shift ;;
         --macos-artifacts) [[ $# -ge 2 ]] || die "--macos-artifacts needs a directory"; MAC_ARTIFACTS="$2"; shift 2 ;;
+        --engine-sources) [[ $# -ge 2 ]] || die "--engine-sources needs a directory"; ENGINE_SOURCES="$2"; shift 2 ;;
         --output) [[ $# -ge 2 ]] || die "--output needs a directory"; OUTPUT="$2"; shift 2 ;;
         --draft) DRAFT=1; shift ;;
-        *) die "usage: make_release.sh (--source-only | --macos-artifacts DIR) [--output DIR] [--draft]; automatic publication is disabled" ;;
+        *) die "usage: make_release.sh (--source-only | --macos-artifacts DIR --engine-sources DIR) [--output DIR] [--draft]; automatic publication is disabled" ;;
     esac
 done
 [[ "$SOURCE_ONLY" == 1 && -z "$MAC_ARTIFACTS" || "$SOURCE_ONLY" == 0 && -n "$MAC_ARTIFACTS" ]] \
     || die "choose --source-only or --macos-artifacts DIR"
 [[ "$DRAFT" == 0 || -n "$MAC_ARTIFACTS" ]] || die "--draft requires verified Mac artifacts"
+[[ -z "$MAC_ARTIFACTS" || -n "$ENGINE_SOURCES" ]] || die "Mac distribution requires matching --engine-sources DIR"
+[[ "$SOURCE_ONLY" == 0 || -z "$ENGINE_SOURCES" ]] || die "--engine-sources is only for Mac distribution"
 [[ -z "$(git status --porcelain)" ]] || die "commit reviewed changes first; the working tree must be clean"
 VERSION="$(tr -d '[:space:]' < VERSION)"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "invalid VERSION"
@@ -30,6 +34,8 @@ OUTPUT="${OUTPUT:-dist/release-${VERSION}}"
 [[ ! -e "$OUTPUT" ]] || die "output already exists; choose a new --output directory"
 if [[ -n "$MAC_ARTIFACTS" ]]; then
     python3 scripts/verify_macos_distribution.py "$MAC_ARTIFACTS"
+    SOURCE_ARCHIVE="$(python3 scripts/package_engine_sources.py --folder "$ENGINE_SOURCES" \
+        --verify-app "${MAC_ARTIFACTS}/GUIDE-IEI-macOS-${VERSION}-arm64.zip")"
 fi
 mkdir -p "$OUTPUT"
 ZIP="${OUTPUT}/guide-iei-${VERSION}.zip"
@@ -41,6 +47,9 @@ with zipfile.ZipFile(sys.argv[1], 'a') as archive:
 PY
 ASSETS=("$ZIP")
 if [[ -n "$MAC_ARTIFACTS" ]]; then
+    cp "$SOURCE_ARCHIVE" "${OUTPUT}/$(basename "$SOURCE_ARCHIVE")"
+    cp "${ENGINE_SOURCES}/engine-sources.json" "${OUTPUT}/engine-sources.json"
+    ASSETS+=("${OUTPUT}/$(basename "$SOURCE_ARCHIVE")" "${OUTPUT}/engine-sources.json")
     for suffix in zip dmg; do
         asset="GUIDE-IEI-macOS-${VERSION}-arm64.${suffix}"
         cp "${MAC_ARTIFACTS}/${asset}" "${OUTPUT}/${asset}"

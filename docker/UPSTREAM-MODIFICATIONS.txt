@@ -1,0 +1,30 @@
+GUIDE-IEI annotation engine modifications (0.6.2, 2026-09-11)
+
+Ensembl VEP plugins, Apache License 2.0:
+  /plugins/SpliceAI.pm is modified by GUIDE-IEI to register the SNV and indel
+  sources only when the corresponding file parameter is nonempty. This permits
+  a configured SNV-only lookup dataset. Original copyright/license headers are
+  retained. The exact substitutions are recorded in docker/Dockerfile.
+  /plugins/LoF.pm is replaced with the entry point from the pinned GRCh38
+  LOFTEE source tree; helper modules remain under /opt/vep/src/loftee.
+
+BCFtools 1.20:
+  The build adds plugins/liftover.c from freeseek/score commit
+  909d23019e19aeadf3bf6fe1407fd6afc094592a. The source code and original notices
+  accompany the corresponding-source materials; build instructions are in
+  docker/Dockerfile.
+
+Kent 335_base:
+  GUIDE-IEI removes the unused original build tree, including jkOwnLib and
+  static/object archives. The BigFile runtime binary is unchanged. The source
+  subset linked into BigFile, permission notice, generated subset Makefile,
+  and symbol audit are retained under /usr/share/doc/guide-iei-kent.
+  The subset Makefile and audit are GUIDE-IEI additions, not upstream files.
+
+The final image copies the cleaned filesystem into a fresh Docker stage so
+removed build-stage files are not present in distributed historical layers.
+The unused upstream Carol plugin and Math::CDF 0.1 module are omitted because
+the latter bundles legacy DCDFLIB/ACM routines with noncommercial conditions.
+GUIDE-IEI does not expose that plugin; precomputed dbNSFP scores are unaffected.
+Original third-party licenses continue to apply; this notice grants no new
+rights. Annotation datasets and patient data are not included in the engine.

@@ -38,7 +38,10 @@
 # Validated bundle pin. Change only as part of a coordinated software release
 # that also updates and regression-tests the cache and annotation resources.
 ARG VEP_TAG=release_113.4
-FROM ensemblorg/ensembl-vep:${VEP_TAG}
+ARG LOFTEE_DIR=/opt/vep/src/loftee
+ARG BCFTOOLS_VERSION=1.20
+ARG BCFTOOLS_LIFTOVER_COMMIT=909d23019e19aeadf3bf6fe1407fd6afc094592a
+FROM ensemblorg/ensembl-vep:${VEP_TAG} AS build
 
 # --- LOFTEE branch: MUST be grch38 for a GRCh38 pipeline -----------------------
 # The branch alone is a moving target: identical GUIDE-IEI source could
@@ -49,9 +52,9 @@ FROM ensemblorg/ensembl-vep:${VEP_TAG}
 ARG LOFTEE_BRANCH=grch38
 ARG LOFTEE_COMMIT=a46b502a68c812c8ae0c5a5721c0603fe81cae8d
 # LOFTEE is cloned here and added to PERL5LIB so `--plugin LoF` resolves LoF.pm.
-ARG LOFTEE_DIR=/opt/vep/src/loftee
-ARG BCFTOOLS_VERSION=1.20
-ARG BCFTOOLS_LIFTOVER_COMMIT=909d23019e19aeadf3bf6fe1407fd6afc094592a
+ARG LOFTEE_DIR
+ARG BCFTOOLS_VERSION
+ARG BCFTOOLS_LIFTOVER_COMMIT
 
 # The base image runs as the unprivileged `vep` user; drop to root to install.
 USER root
@@ -138,6 +141,26 @@ COPY --chown=vep:vep LoGoFunc.pm /plugins/LoGoFunc.pm
 # Neither the FuncVEP ZIP nor its prepared scores are copied into the image.
 COPY --chown=vep:vep IndexedScores.pm /plugins/IndexedScores.pm
 
-# Return to the unprivileged user for runtime.
+# Retain only the Kent source subset actually linked into BigFile, plus its
+# permission notice. Fail if jkOwnLib symbols occur in retained native code.
+COPY prune_kent.py /tmp/guide-iei-prune-kent.py
+RUN python2 /tmp/guide-iei-prune-kent.py && rm /tmp/guide-iei-prune-kent.py
+COPY UPSTREAM-MODIFICATIONS.txt /usr/share/doc/guide-iei-engine/UPSTREAM-MODIFICATIONS.txt
+
+# A fresh filesystem layer is essential: a later RUN rm does NOT remove the
+# old Kent files from historical layers included by docker save. Keep runtime
+# bytes unchanged except the audited cleanup; do not purge OS dependencies.
+FROM scratch AS runtime
+COPY --from=build / /
+ARG LOFTEE_DIR
+ARG BCFTOOLS_VERSION
+ARG BCFTOOLS_LIFTOVER_COMMIT
+ENV PATH=/plugins/GeneSplicer:/opt/vep/src/ensembl-vep:/opt/vep/src/var_c_code:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ENV OPT=/opt/vep OPT_SRC=/opt/vep/src DEPS=/opt/vep/src HTSLIB_DIR=/opt/vep/src/htslib
+ENV PERL5LIB=${LOFTEE_DIR}::/opt/vep/src/ensembl-vep:/opt/vep/src/ensembl-vep/modules:/plugins
+ENV LANG_VAR=en_US.UTF-8 LC_ALL=en_US.UTF-8 LANG=en_US.UTF-8
+ENV VEP_NO_UPDATE=1 VEP_NO_HTSLIB=1 VEP_NO_PLUGINS=1 VEP_DIR_PLUGINS=/plugins VEP_PLUGINSDIR=/plugins
+ENV BCFTOOLS_PLUGINS=/usr/local/libexec/bcftools BCFTOOLS_VERSION=${BCFTOOLS_VERSION} BCFTOOLS_LIFTOVER_COMMIT=${BCFTOOLS_LIFTOVER_COMMIT} LOFTEE_DIR=${LOFTEE_DIR}
 USER vep
 WORKDIR /data
+CMD ["/bin/bash"]

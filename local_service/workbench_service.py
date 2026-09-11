@@ -91,6 +91,8 @@ CONTAINER_FINGERPRINT_FILES = (
     "PromoterAI.pm",
     "LoGoFunc.pm",
     "IndexedScores.pm",
+    "prune_kent.py",
+    "UPSTREAM-MODIFICATIONS.txt",
 )
 # Exit code that asks the launcher (scripts/start_workbench.sh or a packaged
 # supervisor) to start the service again — used to activate pending

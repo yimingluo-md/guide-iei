@@ -60,6 +60,10 @@ databases to simulate a clean machine.
   Publish corresponding source/materials where required, preserve licenses and
   resolve separately licensed retained components. A notices file, signed DMG,
   free price or beta label alone does not satisfy these requirements.
+- Include the matching third-party source companion and `engine-sources.json`.
+  `make_release.sh --engine-sources DIR` checks the image identity and archive
+  hash; keep equivalent no-charge source access beside the binary download.
+  Confirm every saved image layer excludes the removed Kent/Math::CDF material.
 - Review the draft: signed `GUIDE-IEI-macOS-0.6.2-arm64.dmg` is the primary Mac
   download, optional matching ZIP, source/update archive separately labelled,
   combined `sha256sums.txt`, release notes and known limitations.

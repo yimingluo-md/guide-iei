@@ -106,6 +106,7 @@ def main():
     parser.add_argument("--identity", default=os.environ.get("IEI_MAC_SIGN_IDENTITY"))
     parser.add_argument("--notary-profile", default=os.environ.get("IEI_MAC_NOTARY_PROFILE"))
     parser.add_argument("--without-engine", action="store_true", help="preview-only UI test build; never for distribution")
+    parser.add_argument("--engine-image", default="vep-annotate:latest", help="prebuilt image to bundle; does not retag the installed engine")
     args = parser.parse_args()
     arch = platform.machine()
     if platform.system() != "Darwin" or arch not in WHEELS:
@@ -129,7 +130,7 @@ def main():
     engine_manifest = None
     engine_directory = cache / ("engine-" + ARCHES[arch] + "-" + fingerprint(ROOT))
     if not args.without_engine:
-        engine_manifest = export_bundle(ROOT, engine_directory, "docker", "vep-annotate:latest", ARCHES[arch])
+        engine_manifest = export_bundle(ROOT, engine_directory, "docker", args.engine_image, ARCHES[arch])
     # Reuse the bootstrapper's audited Python pin rather than duplicate it.
     pins = dict(re.findall(r'^([A-Z0-9_]+)="([^"\n]+)"$', (ROOT / "scripts/setup_environment.sh").read_text(), re.M))
     triple = "aarch64-apple-darwin" if arch == "arm64" else "x86_64-apple-darwin"

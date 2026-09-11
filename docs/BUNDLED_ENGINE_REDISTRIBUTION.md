@@ -1,81 +1,130 @@
 # Bundled annotation engine: redistribution review
 
-Reviewed 2026-09-11 for the 0.6.2 Apple Silicon beta candidate. This is an
-engineering compliance review, not a legal opinion or a blanket license grant.
-**Review completed; public binary redistribution sign-off is still open.**
-Public beta software is allowed. Beta/preview naming, a free price, open-source
+Updated 2026-09-11 for the 0.6.2 Apple Silicon beta candidate.
+**The identified Kent and source-delivery gaps have been addressed in the
+revised engine and its local source companion.** The companion must accompany
+the binary when published. This is an engineering compliance review, not a
+blanket license grant or legal opinion; no public release has been published.
+
+Public beta software is allowed. Beta naming, a free price, open-source
 application code and Apple notarization do not replace third-party obligations.
 
-## Exact artifact and scope
+## Revised artifact
 
-- Image: `sha256:1b470d951fe3391cf1671a1310bd5b9e92f00130c7378dd0bb1bd4e4596f75e1`.
+- Image: `sha256:75a4f6d5fd846476c2ce1b057cf33f206a3b0109520e02067f91afee76779ae2`.
 - Platform: Linux arm64, Ubuntu 22.04.5 LTS.
-- GUIDE-IEI engine fingerprint:
-  `8e9a5e7c37f0baa60bc620b2944efa7c355570453daf1bd8c1c35596b8d81c74`.
-- Bundled gzip archive SHA-256:
-  `cc544dfbc44fd0f33a10c095a57b093313be8801eef0fe83282b7cc33849a452`.
-- Observed: **378 OS binary packages**, **243 distinct OS source/version pairs**,
-  and **102 manually installed CPAN distributions**.
+- Engine fingerprint: `6fa3d0c4f809cd01871e9f453f84363f3f719751fdb942924a17e005c590a4d0`.
+- Inventory: **378 OS binary packages**, **243 OS source/version pairs**,
+  **101 CPAN distributions** and **5 Python distributions**.
+- Companion: `GUIDE-IEI-engine-sources-0.6.2-linux-arm64.tar.gz`,
+  1,379,552,910 bytes (approximately 1.38 GB); 349 package source downloads,
+  plus native source trees, restored build scripts and local modifications.
+- Companion SHA-256: `8a15c825ba7d5cae7a145fcf747abc65f8a41b9eb186d868bf55c0e7990e51f6`.
+- Full runtime inventory, source-file index, download receipts and layer
+  verification are inside the companion. Its
+  [identity manifest](releases/0.6.2-engine-source-manifest.json) is tracked here.
 
-The [machine-readable inventory](releases/0.6.2-engine-inventory.json) records
-versions, CPAN paths/license declarations and hashes of relevant evidence files.
-Reproduce it with `python3 scripts/audit_bundled_engine.py --output /tmp/engine-inventory.json`.
-The collector reads an immutable image without networking or patient-data mounts.
-It does not download sources or certify licenses. The exported image includes
-historical layers as well as the visible filesystem; a final-filesystem inventory
-alone is not a complete inventory of everything distributed by `docker save`.
+The [earlier inventory](releases/0.6.2-engine-inventory.json) is retained as
+**baseline evidence for the old image**, not the current release inventory.
 
-## Findings
+## What was changed and verified
 
-| Component | Evidence and assessment | Required release action |
-|---|---|---|
-| Ensembl VEP and Bio-HTS | Apache-2.0 license texts retained in the image | Preserve full license and applicable notices. |
-| LOFTEE | Apache-2.0 notice; commit `a46b502a68c812c8ae0c5a5721c0603fe81cae8d` retained | Preserve notices; review embedded third-party material separately. |
-| Ensembl SpliceAI lookup plugin | Apache-2.0 header; GUIDE-IEI changes optional file handling | Preserve license and prominently identify modifications. This is not distribution of the SpliceAI neural-network software or score datasets. |
-| HTSlib, samtools, bcftools and liftover plugin | Mixed source-built and OS-packaged components, not one single version of HTSlib | Retain each component's actual license/version and build inputs; account for linked libraries. |
-| Ubuntu packages | Include bash, coreutils, GCC/binutils, glibc and other GPL/LGPL components | Prepare exact corresponding source and necessary build/patch materials, and provide the required access with binary downloads. The current app's notices are not a source distribution. |
-| CPAN libraries | 102 distributions; most declare Perl terms, with additional Artistic, Apache, GPL and LGPL declarations; some declare `unknown` | Inspect actual POD/license texts for missing declarations. `unknown` metadata does not itself mean unlicensed. Account for native extensions and linked dependencies. |
-| Legacy Kent `335_base` | Image retains `src/lib`, `src/inc` and **`src/jkOwnLib`**. Some headers contain noncommercial-use language; `src/lib/README` broadly permits use of that library | Resolve the precise rights for the pinned files, especially `jkOwnLib`; do not infer that every retained directory is MIT from current general UCSC guidance. Remove unnecessary material via a rebuilt/exported image or obtain appropriate permission if needed. |
+### Kent / BigFile
 
-The licensing review therefore does **not** support advertising the whole
-bundled image as Apache-2.0 or unrestricted. In particular, current UCSC guidance
-explicitly lists `jkOwnLib` among separately licensed exceptions. The older
-retained library README and individual headers must be reconciled at the pinned
-revision; this report does not infer that all legacy headers are current bans,
-or that the general library permission necessarily covers `jkOwnLib`.
+The original image retained Kent `335_base`'s `jkOwnLib`, object archives and
+unused graphics/alignment material. Its `jkOwnLib/README` permits personal,
+academic and nonprofit use but requires agreement for commercial use.
 
-## Before publishing the binary
+The cleanup checks retained native ELF files against the original
+`jkOwnLib` object symbols and fails if it finds a match. No such linked symbols
+were found. It preserves the **60 general-library objects' source files** used
+by Bio::DB::BigFile, their compiler-resolved header dependencies and the original
+`src/lib/README` permission notice. That notice permits public, private and
+commercial use. The selected source subset contains none of the flagged
+noncommercial/explicit-commercial-agreement text from unused headers.
 
-1. Produce a source-delivery package for the actual image, not merely links to
-   moving upstream branches. Cover exact OS source versions, local patches/build
-   scripts and native components. Offer equivalent download access with the
-   binary wherever the applicable license requires it. A list of package names,
-   Dockerfile, notices file or source for GUIDE-IEI alone is insufficient.
-2. Resolve legacy Kent/embedded third-party permissions and any missing license
-   texts. If removing unneeded files, remember that deleting them in a later
-   Docker layer does not remove them from a saved layered image. Rebuild an
-   appropriate runtime image and retest the real annotation pipeline.
-3. Clearly identify GUIDE-IEI's changes to upstream files and retain applicable
-   NOTICE/COPYING/copyright texts (not only files named LICENSE). The current
-   notices collector is supporting evidence, not proof of completeness.
-4. Re-inventory any changed image, attach source/notices materials to the release,
-   and record explicit sign-off tied to its immutable digest. Do not silently
-   mark this review approved because CI or notarization succeeded.
+The original Kent tree is removed. The final Docker stage starts from scratch
+and copies the cleaned filesystem, so a saved image cannot carry the removed
+tree in an older layer. The saved-layer verifier confirmed absence of the
+removed components in every layer.
 
-No source-offer commitment has been made on the maintainer's behalf, no third
-party has been contacted, and no commercial license has been purchased. Those
-would require the maintainer's decision. A lean runtime-image rebuild may reduce
-both download size and the amount of unrelated legacy code requiring review;
-it is a separate implementation step, not something this audit has performed.
+The BigFile runtime binary is unchanged. The preserved source subset compiled
+successfully, and a real GERP BigWig query returned the same interval and score
+before and after cleanup. The full public annotation regression passed on the
+final engine: **8 checks passed, 0 failed, 4 optional-resource checks skipped**.
+The skipped checks concern disabled LoGoFunc/PromoterAI resources, not Kent.
 
-## Primary references
+This narrowly resolves the retained `jkOwnLib` problem for this image; it does
+not declare all UCSC/Kent software MIT or grant rights to separately downloaded
+UCSC data.
 
-- [GNU GPL FAQ: source availability and binary distribution](https://www.gnu.org/licenses/gpl-faq.en.html).
-- [Apache License 2.0, redistribution conditions](https://www.apache.org/licenses/LICENSE-2.0.html).
-- [Ensembl software licensing](https://www.ensembl.org/info/about/legal/code_licence.html).
-- [UCSC licensing, including separately licensed directories](https://www.genome.ucsc.edu/license/).
+### Additional unused dependency
+
+Source inspection found that Math::CDF 0.1 includes DCDFLIB/ACM material with
+noncommercial conditions. Its only identified upstream plugin consumer was
+Carol, which GUIDE-IEI does not expose. Both are removed from the runtime and
+excluded from the published source companion. The build fails if another Perl
+consumer imports Math::CDF. Precomputed dbNSFP score lookups are unaffected.
+
+### Corresponding source and notices
+
+The source companion includes exact Ubuntu source versions (.dsc descriptors,
+original archives and packaging patches), CPAN/Python source distributions,
+native source trees, BCFtools/HTSlib/HTScodecs pins and build instructions.
+Ubuntu source components and PyPI archives were checked against upstream
+SHA-256 declarations. Additional archives have HTTPS provenance and recorded
+SHA-256 receipts. Recovered BioPerl, Bio-HTS, ensembl-xs and HTSlib source files
+were compared with surviving image files; differences fail collection.
+
+The original upstream image removed some source/build files after compilation.
+Those are restored separately; the companion does not mistake installed
+binaries for complete source. The original image history and upstream build
+scripts document inherited commands and the BioPerl -fPIC modification.
+
+Vague CPAN metadata was checked against actual license/POD text. Most
+`unknown` entries grant Perl's terms; String::Format specifies GPLv2,
+ExtUtils::PkgConfig provides LGPL terms, and Mozilla::CA specifies MPL 2.0.
+Full originals are retained, rather than replaced with guessed SPDX labels.
+Math::CDF was handled by removal as described above.
+
+The image notices collector now includes NOTICE files and explicit GUIDE-IEI
+modification notices. The latter identify the SpliceAI lookup-plugin change,
+pinned LOFTEE replacement, BCFtools liftover addition and runtime cleanup.
+Ensembl VEP/Bio-HTS and LOFTEE retain their Apache-2.0 texts. Original licenses
+continue to apply to each component; the whole image is not relicensed Apache.
+
+## Repeat for each engine revision
+
+1. Build a separate candidate tag with `docker/build.sh`; do not replace a
+   user's running production image during review.
+2. Run `scripts/audit_bundled_engine.py` and
+   `scripts/verify_engine_layers.py` against the exact candidate.
+3. Collect package sources with `scripts/collect_engine_sources.py`, using the
+   audit's Python package list, then native sources with
+   `scripts/collect_engine_native_sources.py`. Inspect vague declarations with
+   `scripts/review_engine_source_licenses.py`.
+4. Run real annotation regression and native-source rebuild/query checks.
+5. Create the companion with `scripts/package_engine_sources.py`. It rejects
+   incomplete coverage, changed downloads and mismatched image identities.
+6. Build/sign/notarize from clean committed source. Pass `--engine-image` to
+   the Mac builder when using an isolated candidate tag.
+7. Assemble with `scripts/make_release.sh --macos-artifacts DIR --engine-sources DIR`.
+   The assembler verifies that the source companion matches the app's engine
+   and includes it in the release assets/checksums. Keep equivalent, no-charge
+   source access alongside the binary. Users need not download the sources.
+
+Source availability must be maintained with distributed binaries. No paid
+license was purchased, no rights holder was contacted, and no written
+source-offer commitment was made on the maintainer's behalf.
+
+## Scope and references
+
+- [GNU GPL FAQ: source access and binary distribution](https://www.gnu.org/licenses/gpl-faq.en.html).
+- [Apache License 2.0 redistribution conditions](https://www.apache.org/licenses/LICENSE-2.0.html).
+- [UCSC licensing and separately licensed directories](https://www.genome.ucsc.edu/license/).
 - [Pinned LOFTEE source](https://github.com/konradjk/loftee/tree/a46b502a68c812c8ae0c5a5721c0603fe81cae8d).
 
-The macOS Python runtime and UI dependencies are separate bundled components;
-their retained licenses also remain applicable. Installed annotation datasets
-have their own terms. This engine review does not waive either set of terms.
+The macOS Python runtime, UI dependencies and downloaded container/VM tools
+are separate components with their own notices. Annotation datasets also have
+separate terms. This review does not replace the remaining clean-machine,
+security or clinical/research-use checks in the release checklist.

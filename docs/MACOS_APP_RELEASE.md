@@ -19,6 +19,9 @@ the preview label alone does not establish its signing status.
 - Prebuilt architecture-specific Linux VEP engine archive, integrity manifest
   and collected image license notices. No reference databases or volumes are
   included in the engine archive.
+- A separate third-party source companion accompanies public binary releases.
+  It is not needed for installation and is not bundled into the app. See the
+  [engine redistribution review](BUNDLED_ENGINE_REDISTRIBUTION.md).
 - Small public reference tables and public gene knowledge, documentation and
   third-party notices. No developer reference folder, private exports, patient
   libraries, credentials or results are copied into the application.
@@ -187,6 +190,10 @@ then builds/signs/notarizes/staples the DMG. A failed signing/notarization step
 stops the build. Developer ID builds use secure timestamps. The build script
 does not publish or replace an installed app.
 
+For an isolated release-engine tag, add `--engine-image YOUR_TESTED_IMAGE`;
+the builder checks its source fingerprint without retagging the workstation's
+installed engine. The companion sources must match that exact image identity.
+
 ## Updates and release gates
 
 The standalone edition blocks source-tree install and rollback operations.
@@ -215,7 +222,8 @@ After a clean committed distribution build, assemble source/update and Mac
 archives with matching source identity and a combined checksum file:
 
 ```bash
-bash scripts/make_release.sh --macos-artifacts dist/macos-app
+bash scripts/make_release.sh --macos-artifacts dist/macos-app \
+  --engine-sources dist/engine-source-companion-0.6.2
 ```
 
 The assembler verifies the actual ZIP and mounted DMG (signature, notarization
@@ -225,5 +233,11 @@ CI and creates only a source-archive draft. Attach the verified signed assets
 and replace its checksum file with the combined file before publication.
 Do not overwrite assets on an already published release; use a new version.
 `--source-only` is for the CI/source archive, not an end-user Mac installer.
+
+Mac assembly requires `--engine-sources`: it verifies the companion archive's
+SHA-256, image identity and source fingerprint against the packaged app, then
+includes the archive and `engine-sources.json` in release assets/checksums.
+Publish both with the matching installer. The user's app download remains
+small; the approximately 1.38 GB source companion is an optional download.
 
 Apple notarization checks software security; it is not clinical validation.

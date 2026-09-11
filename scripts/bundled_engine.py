@@ -111,7 +111,7 @@ def export_bundle(root, directory, runtime, image, architecture):
         with (stage / "IMAGE-NOTICES.txt").open("wb") as output:
             output.write(b"Notices collected from the bundled Linux image. See docs/MACOS_APP_RELEASE.md for release obligations.\n")
             subprocess.run([runtime, "run", "--rm", "--pull=never", "--network=none", "--entrypoint", "sh", image_id, "-c",
-                "find /usr/share/doc /opt/vep /plugins -type f \\( -iname copyright -o -iname 'LICENSE*' -o -iname 'COPYING*' \\) -exec sh -c 'for f; do printf \"\\n--- %s ---\\n\" \"$f\"; cat \"$f\"; done' sh {} +"],
+                "find /usr/share/doc /opt/vep /plugins -type f \\( -iname copyright -o -iname 'LICENSE*' -o -iname 'COPYING*' -o -iname 'NOTICE*' -o -name UPSTREAM-MODIFICATIONS.txt \\) -exec sh -c 'for f; do printf \"\\n--- %s ---\\n\" \"$f\"; cat \"$f\"; done' sh {} +"],
                 stdout=output, check=True, timeout=120)
         stage.rename(directory)
     return manifest

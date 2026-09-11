@@ -33,9 +33,11 @@ Apple Silicon beta release candidate. Publication remains gated on the
   with a configuration backup; busy containers are not interrupted.
 - The macOS application, browser tab and workbench header now share the
   DNA/immune-receptor icon.
-- A version-specific bundled-engine redistribution review and dependency
-  inventory record source-delivery and legacy component licensing work still
-  required before public binary publication.
+- The bundled engine omits unused legacy Kent/jkOwnLib and Carol/Math::CDF
+  material without changing the BigWig reader. A matching third-party source
+  companion (separate from the installer) covers OS, Perl, Python and native
+  dependencies. Release assembly requires the matching companion and verifies
+  its checksum; original notices and modification notices are retained.
 - Cohort rsID searches resolve exact identifiers through indexes before joining
   annotations, avoiding a full annotation-index scan on affected SQLite versions.
 - Fixed immediate reopening after webpage Quit: recently closed TCP connections

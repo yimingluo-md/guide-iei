@@ -30,6 +30,8 @@ class ReleaseTests(unittest.TestCase):
 
     def test_unsafe_release_modes_fail_before_any_mutation(self):
         for args in ([], ["--publish"], ["--draft", "--source-only"],
+                     ["--macos-artifacts", "/absent"],
+                     ["--source-only", "--engine-sources", "/absent"],
                      ["--source-only", "--macos-artifacts", "/absent"]):
             result = subprocess.run(["bash", str(ROOT / "scripts/make_release.sh"), *args],
                                     text=True, capture_output=True)

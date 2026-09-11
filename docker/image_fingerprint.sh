@@ -13,6 +13,8 @@ INPUTS=(
   "PromoterAI.pm"
   "LoGoFunc.pm"
   "IndexedScores.pm"
+  "prune_kent.py"
+  "UPSTREAM-MODIFICATIONS.txt"
 )
 
 sha256_file() {
