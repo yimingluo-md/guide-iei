@@ -256,6 +256,15 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(service, /license_accepted: licenseAccepted/);
 });
 
+test("shows engine setup only while unavailable or busy, with a separate collapsed log", async () => {
+  const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
+  assert.match(source, /containerFoundation && \(!containerFoundation\.available \|\| engineBusy\)/);
+  assert.doesNotMatch(source, /!containerFoundation\.available \|\| engineJob/);
+  assert.match(source, /engineJob && <details className="advanced-paths annotation-engine-diagnostics"><summary>Annotation-engine diagnostics<\/summary>/);
+  assert.match(source, /Current availability is shown in the Ensembl VEP row above/);
+  assert.doesNotMatch(source, /The workbench itself is ready|Annotation engine setup completed\. Choose your datasets below\./);
+});
+
 test("supports explicit subset repair for an unreadable GenIA index", async () => {
   const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
   const service = await readFile(new URL("app/local-service.ts", root), "utf8");

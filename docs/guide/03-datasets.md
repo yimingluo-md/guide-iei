@@ -52,12 +52,19 @@ official-source fallback; other resources use their documented upstream
 source or a user-supplied file/link. Supported interrupted downloads resume.
 Schema validation and indexing may continue after downloading finishes.
 
+The standalone Mac app bundles the VEP engine image and prepares its container
+runtime and workspace before opening the workbench. Once ready, the
+**Ensembl VEP (annotation engine)** row shows **Available**; no additional
+engine setup is needed on this page. Setup controls appear only when preparation
+is running or the engine needs attention. The latest setup log, when present,
+is available under the collapsed **Annotation-engine diagnostics** section.
+
 Before a large first-time transfer, GUIDE-IEI checks that the annotation and
-indexing tools are ready. On a clean machine it builds the configured local
-tool image at this point. After a software update, it also detects and rebuilds
-an image from an older GUIDE-IEI version. This preparation happens before any
-multi-hour downloads; no separate installation of bioinformatics command-line
-tools is required.
+indexing tools are ready. Source-checkout installations build the configured
+local image if it is missing or outdated; the standalone Mac app imports its
+bundled image instead. Compatible images are reused. No separate installation
+of bioinformatics command-line tools is required. Large reference datasets
+are still installed separately using the choices below.
 
 ## Step 1 — One click for the public datasets
 

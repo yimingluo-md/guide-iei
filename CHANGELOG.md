@@ -27,6 +27,9 @@ Apple Silicon beta release candidate. Publication remains gated on the
   Compatible installations are reused; there is no skip option and old remembered
   deferrals are ignored. Import & QC retains engine repair controls and all
   large-dataset selection/downloads.
+- A ready annotation engine is shown only in the existing Ensembl VEP status
+  row, without a redundant setup card. Active preparation and unavailable-engine
+  repair remain visible; previous setup logs are collapsed under diagnostics.
 - Existing managed Colima installations recover from an unused default Docker
   connection without changing the global Docker context. Setup and later jobs
   use the same recovered connection. Missing working-folder sharing is repaired

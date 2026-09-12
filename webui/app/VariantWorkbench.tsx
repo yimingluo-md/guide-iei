@@ -5274,14 +5274,15 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       <section className="settings-section"><div className="settings-section-head"><div><h3>Annotation datasets</h3><p>Availability and indexes are checked automatically. Open each dataset for sources and setup instructions.</p></div><span className={`readiness ${profileReady || datasetsReady ? "ready" : "missing"}`}>{readinessLabel}</span></div>
         {capabilities?.annotation_profile.error && <div className="alert error">{capabilities.annotation_profile.error}</div>}
         {capabilities?.annotation_profile.foundations.map((item) => <div className="foundation-row" key={item.id} title={item.description || undefined}><span className={`availability-dot ${item.available ? "ready" : "missing"}`} /><strong>{item.label}</strong><span>{item.available ? `Available${item.version ? ` · release ${item.version}` : ""}` : item.message || "Missing"}</span></div>)}
-        {containerFoundation && (!containerFoundation.available || engineJob) && <div className="dataset-quick-setup">
-          <div><h4>Annotation engine</h4><p>The workbench itself is ready. Raw-VCF annotation also needs a working container engine and the GUIDE-IEI VEP image. Already-annotated VCFs can be reviewed without this setup.</p></div>
+        {containerFoundation && (!containerFoundation.available || engineBusy) && <div className="dataset-quick-setup annotation-engine-setup">
+          <div><h4>Annotation engine</h4><p>Prepare or repair the annotation engine before annotating raw VCFs. Existing compatible components are reused.</p></div>
           {!containerFoundation.available && (capabilities?.platform === "darwin"
             ? <button type="button" className="secondary-button" disabled={resourceSetupBusy || containerFoundation.state === "runtime_starting"} onClick={() => void prepareEngine()}>{engineBusy ? "Setting up annotation engine…" : engineJob?.status === "failed" || engineJob?.status === "interrupted" ? "Retry annotation-engine setup" : "Set up annotation engine"}</button>
             : <p>Windows: start Docker Desktop and enable WSL integration for your Ubuntu distribution. Linux: install/start the configured container runtime. Then use recommended dataset setup below to build the VEP image if needed.</p>)}
           {engineBusy && <div className="resource-progress"><progress/><span role="status" aria-live="polite">{engineJob.message || "Preparing the annotation engine…"}</span></div>}
-          {engineJob && <><p role="status">{engineJob.status === "succeeded" ? "Annotation engine setup completed. Choose your datasets below." : engineJob.error}</p><details><summary>Annotation-engine setup log</summary><pre>{engineJob.log || "No log output yet."}</pre></details></>}
+          {engineJob?.error && <p role="status">{engineJob.error}</p>}
         </div>}
+        {engineJob && <details className="advanced-paths annotation-engine-diagnostics"><summary>Annotation-engine diagnostics</summary><p>Latest setup: {engineJob.status === "succeeded" ? "completed" : engineJob.status}. Current availability is shown in the Ensembl VEP row above.</p><h4>Annotation-engine setup log</h4><pre>{engineJob.log || "No log output yet."}</pre></details>}
         <div className="dataset-quick-setup">
           <div><p className="eyebrow">One-click setup</p><h4>Download recommended public datasets</h4><p>Choose the analysis profile you expect to use. Complete installations are skipped immediately without rereading large files. Registration- and license-gated datasets are handled separately below.</p></div>
           <div className="dataset-quick-actions">
