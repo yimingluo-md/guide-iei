@@ -36,10 +36,12 @@ route in the appendix.
 
 ## Get the software
 
-**Mac:** open the [GUIDE-IEI releases page](https://github.com/yimingluo-md/guide-iei/releases)
-(the initial self-contained beta is Apple Silicon only; prereleases do not
-appear at GitHub's “latest stable” link). Choose the signed/notarized
-`GUIDE-IEI-macOS-<version>-arm64.dmg` when available. For a `.dmg`, open it
+**Mac:** [download the signed and notarized 0.6.2 installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.2/GUIDE-IEI-macOS-0.6.2-arm64.dmg),
+or open the [GUIDE-IEI releases page](https://github.com/yimingluo-md/guide-iei/releases)
+for release notes and checksums. The initial self-contained beta is Apple
+Silicon only; prereleases do not appear at GitHub's “latest stable” link.
+Choose `GUIDE-IEI-macOS-<version>-arm64.dmg`, not **Source code** or the
+engine-source companion (those are not installers). For a `.dmg`, open it
 and drag **GUIDE-IEI** into **Applications**; for a `.zip`, unzip it first,
 then move **GUIDE-IEI.app** into Applications. A standard account can instead
 use its own `~/Applications` folder. `arm64` means Apple Silicon; it does not

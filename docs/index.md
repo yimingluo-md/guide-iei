@@ -11,6 +11,10 @@ a clinician-developed, locally run, open-source WES/WGS analysis platform.
 
 ## Where to start
 
+- **Install the Mac beta:** [download the ready-to-run Apple Silicon installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.2/GUIDE-IEI-macOS-0.6.2-arm64.dmg)
+  for macOS 13 or newer, then follow the [installation chapter](guide/02-install.md).
+  No separate Python/Node installation is needed; first-launch environment setup
+  needs internet, and large annotation datasets are installed afterward.
 - **New to GUIDE-IEI?** Start with the
   [User Guide](guide.md): what the software does, how to install it, and a
   complete walkthrough of your first exome analysis. (The chapter list is

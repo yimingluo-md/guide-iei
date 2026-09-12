@@ -100,16 +100,22 @@ laboratory framework in the user's jurisdiction.
 
 ## Quickstart
 
-**Mac beta:** the self-contained Apple Silicon release candidate targets
-macOS 13 or newer. When published on the [releases page](https://github.com/yimingluo-md/guide-iei/releases),
-choose `GUIDE-IEI-macOS-<version>-arm64.dmg`, open it, and drag **GUIDE-IEI**
-to Applications (a standard account can use `~/Applications`). Python and the
-review interface are bundled; annotated-VCF review needs no Docker or large
-databases. For new annotation, set up the engine and datasets in Import & QC.
-Only artifacts explicitly identified as signed and notarized in their release
-notes are end-user installers; CI previews and the source-tree `.app` are not.
-Intel packaging is tested in CI, but the initial standalone beta is Apple
-Silicon only. See the [release checklist](docs/RELEASE_CHECKLIST.md).
+**Mac beta — [Download the ready-to-run installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.2/GUIDE-IEI-macOS-0.6.2-arm64.dmg).**
+For **Apple Silicon (M-series), macOS 13 or newer**. Open the DMG and drag
+**GUIDE-IEI** to Applications (a standard account can use `~/Applications`).
+The 0.6.2 app is Developer ID signed, notarized and stapled. Python, the review
+interface and the VEP engine image are bundled. First launch needs internet
+to prepare missing container tools and a Linux VM before opening the browser;
+Python, Node, Homebrew and Docker Desktop need not be installed separately.
+Choose data locations in **Storage**, then install large annotation datasets
+in **Import & QC**. They are not included in the installer.
+
+Use the [release page](https://github.com/yimingluo-md/guide-iei/releases/tag/v0.6.2)
+for installation notes, checksums and source materials. Choose the **DMG**, not
+GitHub's **Source code** links. This is a public beta, not a claim of testing
+every Mac/dataset combination; start with test data and keep backups. Intel
+packaging CI is a compatibility check, not a supported Intel standalone release.
+See the [release checklist](docs/RELEASE_CHECKLIST.md).
 
 **Windows one-click:** download and fully extract the repository ZIP, then
 double-click `desktop/windows/GUIDE-IEI.bat`. The launcher checks for a real
