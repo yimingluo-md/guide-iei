@@ -195,7 +195,7 @@ outside the published guide:
 ## Development disclosure
 
 This software has been developed with AI-assisted coding using **OpenAI Codex
-(GPT-5.6 Sol)** and **Anthropic Claude Code (Claude Fable 5 and Opus 5)**, under human
+(GPT-5.6 Sol and GPT-6 Astra)** and **Anthropic Claude Code (Claude Fable 5, Fable 5.1, and Opus 5)**, under human
 direction and review. AI assistance does not constitute independent software
 validation; users remain responsible for validating the pipeline for their
 intended research or clinical-laboratory context.
