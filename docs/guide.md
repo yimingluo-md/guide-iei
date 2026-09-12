@@ -7,7 +7,7 @@ has_toc: false
 
 # User Guide
 
-Practical guidance for clinicians and wet-lab scientists. The guide assumes
+Practical guidance for clinician-researchers and wet-lab scientists. The guide assumes
 familiarity with clinical genetics — candidate genes, variant classes,
 population frequencies — and assumes **no** software or bioinformatics
 experience beyond a download and a double-click. Chapters follow the order in
