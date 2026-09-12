@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { getWorkbenchStatus, quitWorkbench } from "./local-service";
 
-export function WorkbenchQuit({ onQuit }: { onQuit: (message: string) => void }) {
+export function WorkbenchQuit({ onQuit, unavailable = false }: { onQuit: (instanceId: string) => void; unavailable?: boolean }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   async function quit() {
@@ -21,8 +21,8 @@ export function WorkbenchQuit({ onQuit }: { onQuit: (message: string) => void })
         + "Running jobs will be interrupted; queued annotation jobs can resume on the next launch. "
         + "Docker will remain running.\n\nClosing the browser alone does not stop GUIDE-IEI.",
       )) return;
-      const result = await quitWorkbench(status.instance_id);
-      onQuit(result.message);
+      await quitWorkbench(status.instance_id);
+      onQuit(status.instance_id);
     } catch (cause) {
       setError(`${cause instanceof Error ? cause.message : "Could not contact the workbench"}. If using an older app, quit from its Dock menu; for a Terminal launcher, press Control-C in that Terminal.`);
     } finally {
@@ -30,7 +30,7 @@ export function WorkbenchQuit({ onQuit }: { onQuit: (message: string) => void })
     }
   }
   return <div className="workbench-quit">
-    <button className="secondary-button" disabled={busy} onClick={() => void quit()}>{busy ? "Checking…" : "Quit GUIDE-IEI"}</button>
+    <button className="secondary-button" disabled={busy || unavailable} onClick={() => void quit()}>{busy ? "Checking…" : "Quit GUIDE-IEI"}</button>
     {error && <div className="alert error" role="alert">{error}</div>}
   </div>;
 }

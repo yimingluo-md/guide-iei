@@ -1,3 +1,5 @@
+import type { WorkbenchLifecycle } from "./workbench-connection";
+
 export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
 
 export function downloadFilename(disposition: string, fallbackName: string): string {
@@ -1718,15 +1720,25 @@ export async function getServiceHealth() {
   return request<{ ok: boolean; version: string }>("/api/health");
 }
 
-export type WorkbenchStatus = {
-  instance_id: string;
+export type WorkbenchStatus = WorkbenchLifecycle & {
   annotations: number;
   downloads: number;
   blockers: string[];
 };
 
-export function getWorkbenchStatus() {
-  return request<WorkbenchStatus>("/api/service/status");
+export function getWorkbenchStatus(signal?: AbortSignal) {
+  return request<WorkbenchStatus>("/api/service/status", { signal, cache: "no-store" });
+}
+
+export async function watchWorkbenchLifecycle(instanceId: string, signal: AbortSignal): Promise<WorkbenchLifecycle> {
+  const response = await fetch(`${SERVICE_URL}/api/service/watch?instance_id=${encodeURIComponent(instanceId)}`, {
+    signal, cache: "no-store",
+  });
+  // Support a newer source UI while an older backend is still running. Poll
+  // slowly there; a missed Quit signal remains an honest connection warning.
+  if (response.status === 404) return { ...await getWorkbenchStatus(signal), watch_supported: false };
+  if (!response.ok) throw new Error(`Local service returned ${response.status}`);
+  return response.json();
 }
 
 export function setupAnnotationEngine() {

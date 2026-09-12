@@ -65,7 +65,7 @@ try {
     }
     return request.respond({ status: 503, headers, contentType: "application/json", body: '{"error":"Synthetic test: unavailable"}' });
   });
-  await page.goto(origin, { waitUntil: "networkidle0" });
+  await page.goto(origin, { waitUntil: "networkidle2" });
   await page.evaluate((data) => {
     const node = document.querySelector(".app-shell");
     let fiber = node[Object.keys(node).find((key) => key.startsWith("__reactFiber$"))];

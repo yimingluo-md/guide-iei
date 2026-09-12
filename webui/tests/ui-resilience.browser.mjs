@@ -62,7 +62,7 @@ try {
   await page.evaluateOnNewDocument(() => {
     localStorage.setItem("guideIeiSavedCandidates", '{"synthetic":"SYNTHETIC_ONLY"}');
   });
-  await page.goto(origin, { waitUntil: "networkidle0" });
+  await page.goto(origin, { waitUntil: "networkidle2" });
   await page.waitForFunction(() => document.body.textContent.includes("Some bundled references are unavailable"));
   assert.equal(await page.evaluate(() => localStorage.getItem("guideIeiSavedCandidates")), null);
   const clickText = async (text) => {
@@ -131,7 +131,7 @@ try {
   await page.waitForFunction(() => document.querySelector(".table-frame")?.textContent.includes("NFKB1"));
   assert(await page.evaluate(() => document.body.textContent.includes("Candidate stars are session-only")));
   assert(!(await page.evaluate(() => JSON.stringify(Object.entries(localStorage)))).includes("SYNTHETIC_ONLY"));
-  await page.reload({ waitUntil: "networkidle0" });
+  await page.reload({ waitUntil: "networkidle2" });
   assert.equal(await page.evaluate(() => localStorage.getItem("guideIeiSavedCandidates")), null);
   assert.equal(await page.evaluate(() => [...document.querySelectorAll(".nav-item")]
     .find((node) => node.firstElementChild.textContent === "Saved").lastElementChild.textContent), "0");

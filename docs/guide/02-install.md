@@ -99,8 +99,18 @@ tabs first. Running annotation jobs and dataset downloads are interrupted;
 queued annotation jobs resume on the next launch. Retry interrupted work from
 the workbench. Imports, storage moves, and annotation-environment preparation
 must finish before quitting. Docker is left running for other applications.
-The browser tab itself stays open with a shutdown message; close that tab.
-To start again, open the installed GUIDE-IEI app, not the old browser tab.
+Quitting from either the control window or the webpage leaves the browser tab
+open. It shows **GUIDE-IEI is shutting down…**, followed by **GUIDE-IEI is no
+longer running** once the confirmed shutdown disconnects. Loaded review rows,
+filters and stars remain available; you can still view and export loaded
+variants before closing the tab. Actions that need the local service cannot
+run while it is stopped.
+
+A temporary connection failure instead shows **Connection lost—reconnecting…**;
+it is not treated as proof that the app quit. Reopen GUIDE-IEI from Applications
+to start the service again. An open tab reconnects without reloading or
+discarding its current review. Closing the tab itself still discards unsaved
+**Review once** work.
 
 Opening the same packaged build again reopens its running workbench. If an
 older or different build is already running, the app offers to open that

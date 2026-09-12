@@ -116,11 +116,6 @@ def main():
             assert duplicate.returncode == 42, duplicate.stdout + duplicate.stderr
             assert child.poll() is None
             assert get("/api/service/status")["instance_id"] == status["instance_id"]
-            if os.environ.get("IEI_TEST_PACKAGED_BROWSER") == "1":
-                demo = state / "synthetic-demo.vcf"
-                subprocess.run([str(python), "-B", str(root / "scripts/make_demo_vcf.py"), str(demo)], check=True)
-                browser_env = dict(os.environ, IEI_PACKAGED_TEST_URL=base, IEI_PACKAGED_TEST_VCF=str(demo))
-                subprocess.run(["node", "tests/macos-app.browser.mjs"], cwd=Path(__file__).resolve().parents[1] / "webui", env=browser_env, check=True)
             request = urllib.request.Request(base + "/api/software-update/install", data=b"{}", headers={"Content-Type": "application/json"})
             try:
                 urllib.request.urlopen(request, timeout=10)
@@ -131,9 +126,17 @@ def main():
             request = urllib.request.Request(base + "/api/service/quit",
                 data=json.dumps({"confirm": True, "instance_id": status["instance_id"]}).encode(),
                 headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(request, timeout=10) as response:
-                assert response.status == 202
-                assert json.load(response)["quitting"]
+            if os.environ.get("IEI_TEST_PACKAGED_BROWSER") == "1":
+                demo = state / "synthetic-demo.vcf"
+                subprocess.run([str(python), "-B", str(root / "scripts/make_demo_vcf.py"), str(demo)], check=True)
+                browser_env = dict(os.environ, IEI_PACKAGED_TEST_URL=base, IEI_PACKAGED_TEST_VCF=str(demo))
+                # The browser test now sends the real external Quit itself and
+                # checks the notice/export after the listener has stopped.
+                subprocess.run(["node", "tests/macos-app.browser.mjs"], cwd=Path(__file__).resolve().parents[1] / "webui", env=browser_env, check=True)
+            else:
+                with urllib.request.urlopen(request, timeout=10) as response:
+                    assert response.status == 202
+                    assert json.load(response)["quitting"]
             assert child.wait(timeout=40) == 0
             try:
                 get("/api/health")

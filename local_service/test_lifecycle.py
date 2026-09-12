@@ -165,6 +165,69 @@ class LifecycleTests(unittest.TestCase):
             (self.root / "desktop-build.json").write_text(content)
             self.assertIsNone(self.service.lifecycle_status()["build_id"])
 
+    def test_watch_is_read_only_lightweight_and_bounded(self):
+        with patch.object(self.service, "lifecycle_status", side_effect=AssertionError("must not read databases")):
+            initial = self.service.watch_lifecycle("")
+            self.assertEqual(set(initial), {"service", "instance_id", "desktop_app", "quitting", "restarting"})
+            self.assertFalse(initial["quitting"])
+            self.assertEqual(self.service.watch_lifecycle("previous-instance"), initial)
+            self.assertEqual(self.service.watch_lifecycle(self.service._instance_id, timeout=.01), initial)
+            with self.assertRaisesRegex(ValueError, "Invalid"):
+                self.service.watch_lifecycle("x" * 129)
+            with patch.object(self.service._lifecycle_watch_slots, "acquire", return_value=False):
+                with self.assertRaisesRegex(ValueError, "Too many"):
+                    self.service.watch_lifecycle(self.service._instance_id)
+        with self.assertRaises(ValueError):
+            self.service.request_service_quit({})
+        self.assertFalse(self.service._lifecycle_changed.is_set())
+
+    def test_all_browser_watchers_receive_quit_before_listener_stops(self):
+        server = create_server(self.service, port=0)
+        serving = threading.Thread(target=server.serve_forever, daemon=True)
+        serving.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        waiting = threading.Barrier(4)
+        responses, errors = [], []
+        real_wait = self.service._lifecycle_changed.wait
+
+        def wait(timeout):
+            waiting.wait(timeout=5)
+            return real_wait(timeout)
+
+        def browser():
+            try:
+                with urllib.request.urlopen(base + "/api/service/watch?instance_id=" + self.service._instance_id, timeout=5) as response:
+                    responses.append(json.load(response))
+            except Exception as error:
+                errors.append(error)
+
+        clients = [threading.Thread(target=browser, daemon=True) for _ in range(3)]
+        try:
+            request = urllib.request.Request(base + "/api/service/watch", headers={"Origin": "https://example.com"})
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request, timeout=5)
+            self.assertEqual(error.exception.code, 403)
+            with patch.object(self.service._lifecycle_changed, "wait", side_effect=wait):
+                for client in clients:
+                    client.start()
+                waiting.wait(timeout=5)
+                request = urllib.request.Request(base + "/api/service/quit", data=json.dumps(self.payload()).encode(),
+                    headers={"Content-Type": "application/json"})
+                with urllib.request.urlopen(request, timeout=5) as response:
+                    self.assertEqual(response.status, 202)
+                for client in clients:
+                    client.join(timeout=5)
+            self.assertEqual(errors, [])
+            self.assertEqual(len(responses), 3)
+            self.assertTrue(all(response["quitting"] for response in responses))
+            serving.join(timeout=5)
+            self.assertFalse(serving.is_alive())
+        finally:
+            self.service._lifecycle_changed.set()
+            server.shutdown()
+            server.server_close()
+            serving.join(timeout=5)
+
     def test_legacy_unknown_and_redirected_listeners_are_not_reused(self):
         class Handler(BaseHTTPRequestHandler):
             mode = "unknown"

@@ -30,6 +30,10 @@ Apple Silicon beta release candidate. Publication remains gated on the
 - A ready annotation engine is shown only in the existing Ensembl VEP status
   row, without a redundant setup card. Active preparation and unavailable-engine
   repair remain visible; previous setup logs are collapsed under diagnostics.
+- Quitting from the native window now notifies open browser tabs without
+  discarding their loaded reviews, filters or stars. Temporary connection failures
+  show a reconnecting notice rather than claiming the app quit; tabs reconnect
+  automatically when the service returns, without refreshing the page.
 - Existing managed Colima installations recover from an unused default Docker
   connection without changing the global Docker context. Setup and later jobs
   use the same recovered connection. Missing working-folder sharing is repaired

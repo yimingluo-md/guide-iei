@@ -6,6 +6,7 @@ import { passesMinimumScore, screenVariantBatches } from "./review-filters";
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { WorkbenchErrorBoundary } from "./WorkbenchErrorBoundary";
 import { WorkbenchQuit } from "./WorkbenchQuit";
+import { WorkbenchConnectionNotice, useWorkbenchConnection } from "./WorkbenchConnectionNotice";
 import { clearLegacySavedCandidates } from "./session-privacy";
 import {
   cancelJob,
@@ -733,7 +734,6 @@ function storeCustomGeneLists(lists: CustomGeneList[]) {
 }
 
 export default function VariantWorkbench() {
-  const [quitMessage, setQuitMessage] = useState("");
   const [rows, setRows] = useState<VariantRow[]>([]);
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [saved, setSaved] = useState<Set<string>>(new Set());
@@ -753,23 +753,22 @@ export default function VariantWorkbench() {
     setRows(next);
     setSaved(new Set());
   }, []);
-  if (quitMessage) return <main className="app-shell"><h1>GUIDE-IEI</h1><p role="status">{quitMessage}</p></main>;
   return <>
     {privacyWarning && <div className="alert error" role="alert">Legacy saved-candidate browser data could not be removed. Clear this site’s browser data to remove earlier patient-derived bookmarks. New stars are session-only.</div>}
     <WorkbenchErrorBoundary>
-      <WorkbenchSession onQuit={setQuitMessage} rows={rows} setRows={replaceRows} summary={summary} setSummary={setSummary}
+      <WorkbenchSession rows={rows} setRows={replaceRows} summary={summary} setSummary={setSummary}
         saved={saved} setSaved={setSaved} reviewAnalysisScope={reviewAnalysisScope} setReviewAnalysisScope={setReviewAnalysisScope} />
     </WorkbenchErrorBoundary>
   </>;
 }
 
-function WorkbenchSession({ onQuit, rows, setRows, summary, setSummary, saved, setSaved, reviewAnalysisScope, setReviewAnalysisScope }: {
-  onQuit: (message: string) => void;
+function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved, reviewAnalysisScope, setReviewAnalysisScope }: {
   rows: VariantRow[]; setRows: Dispatch<SetStateAction<VariantRow[]>>;
   summary: ImportSummary | null; setSummary: Dispatch<SetStateAction<ImportSummary | null>>;
   saved: Set<string>; setSaved: Dispatch<SetStateAction<Set<string>>>;
   reviewAnalysisScope: AnalysisScope; setReviewAnalysisScope: Dispatch<SetStateAction<AnalysisScope>>;
 }) {
+  const { connection, acknowledgeQuit } = useWorkbenchConnection();
   const [view, setView] = useState<View>("import");
   const [query, setQuery] = useState("");
   // Filtering re-runs over every row; letting React defer the search value
@@ -1606,9 +1605,11 @@ function WorkbenchSession({ onQuit, rows, setRows, summary, setSummary, saved, s
         <div className="top-actions">
           <span className="research-use-label">Research use only</span>
           <button className="primary-button" onClick={() => { setView("import"); setSelected(null); }}><Icon name="upload" />Import VCF</button>
-          <WorkbenchQuit onQuit={onQuit} />
+          <WorkbenchQuit onQuit={acknowledgeQuit} unavailable={connection.phase !== "running" && connection.phase !== "checking"} />
         </div>
       </header>
+
+      <WorkbenchConnectionNotice connection={connection} />
 
       {referenceError && <div className="alert error" role="alert">
         <strong>Some bundled references are unavailable.</strong> {referenceError}.

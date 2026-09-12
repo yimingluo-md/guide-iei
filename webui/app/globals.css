@@ -32,6 +32,9 @@ button { color: inherit; }
 .topbar { position: sticky; top: 0; z-index: 60; height: 58px; background: #12383d; color: white; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; border-bottom: 1px solid #2d5559; }
 .brand, .top-actions { display: flex; align-items: center; gap: 11px; }
 .workbench-quit { position: relative; }
+.workbench-connection-notice { position: sticky; top: 58px; z-index: 55; margin: 12px 22px; padding: 14px 18px; border: 1px solid #d8c698; border-radius: 8px; background: #fff8e8; color: #514323; font-size: 13px; line-height: 1.5; }
+.workbench-connection-notice strong { display: block; font-size: 15px; }
+.workbench-connection-notice p { margin: 5px 0 0; }
 .workbench-quit > .alert { position: absolute; right: 0; top: 100%; z-index: 20; width: min(420px, 85vw); font-size: 13px; }
 .brand { font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
 .brand-mark { width: 36px; height: 36px; flex-shrink: 0; display: block; }

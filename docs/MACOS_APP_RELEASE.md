@@ -27,6 +27,10 @@ the preview label alone does not establish its signing status.
   libraries, credentials or results are copied into the application.
 - The app opens the existing browser interface; it is not a native variant-table
   rewrite. Closing the browser does not stop the app; use Quit GUIDE-IEI.
+- A bounded, patient-data-free lifecycle watch notifies open browser tabs when
+  Quit is confirmed from either window. The shutdown notice keeps the loaded
+  review mounted for viewing/export. Unconfirmed connection failures show a
+  reconnecting notice instead; reopening reconnects without automatic reload.
 
 Each package has a unique build ID in `desktop-build.json`. A second launch
 reopens an identified instance of the same package; different/older builds

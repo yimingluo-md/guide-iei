@@ -43,7 +43,7 @@ try {
     } else void request.continue();
   });
   await page.setViewport({ width: 1440, height: 1000 });
-  await page.goto(base, { waitUntil: "networkidle0" });
+  await page.goto(base, { waitUntil: "networkidle2" });
   await page.waitForFunction(() => {
     const mark = document.querySelector(".brand img.brand-mark");
     return mark?.complete && mark.naturalWidth > 0 && mark.getAttribute("src") === "/favicon.svg";
@@ -114,6 +114,20 @@ try {
   await clickText("Import and review variants");
   await page.waitForFunction(() => document.body.textContent.includes("Prioritized variants"));
   await page.waitForFunction(() => document.body.textContent.includes("DEMO01") && document.querySelectorAll("tbody tr").length > 0);
+  const reviewGene = await page.$eval("tbody tr td:nth-child(3)", (cell) => cell.textContent.trim());
+  await page.type('input[placeholder="Gene, HGVS, ID, locus…"]', reviewGene);
+  await page.waitForFunction((gene) => [...document.querySelectorAll("tbody tr")].every((row) => row.cells[2].textContent.trim() === gene), {}, reviewGene);
+  await page.click("tbody .star-button");
+  await page.evaluate(() => { window.__reviewTable = document.querySelector("tbody"); });
+  const reviewRows = await page.$$eval("tbody tr", (rows) => rows.length);
+  // Temporary transport failure is not a confirmed Quit. Recovery must keep
+  // this exact review DOM (and its filters/stars), not remount or reload it.
+  await page.setOfflineMode(true);
+  await page.waitForFunction(() => document.querySelector(".workbench-connection-notice")?.textContent.includes("Connection lost—reconnecting…"));
+  assert(!(await page.evaluate(() => document.body.textContent)).includes("GUIDE-IEI is no longer running."));
+  await page.setOfflineMode(false);
+  await page.waitForFunction(() => !document.querySelector(".workbench-connection-notice"));
+  assert(await page.evaluate(() => document.querySelector("tbody") === window.__reviewTable));
   // Cancelling Quit must preserve the review and leave the service alive.
   const clickQuit = () => page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "Quit GUIDE-IEI").click());
   const dialog = new Promise((resolve) => page.once("dialog", async (dialog) => {
@@ -128,11 +142,12 @@ try {
   await extraTab.goto(base);
   await extraTab.close();
   assert((await fetch(base + "/api/health").then((response) => response.json())).ok, "Closing a browser tab must not stop the service");
-  // Check the accepted UI state without stopping the service needed by the
-  // remaining Python integration checks; that harness tests real shutdown.
+  // Check this page's Quit acknowledgement on a second tab. The main review
+  // tab must later learn about the actual Quit from the service, not this POST.
   let quitRequests = 0;
-  page.removeAllListeners("request");
-  page.on("request", (request) => {
+  const quitTab = await browser.newPage();
+  await quitTab.setRequestInterception(true);
+  quitTab.on("request", (request) => {
     if (request.url() === base + "/api/service/quit") {
       const payload = JSON.parse(request.postData());
       assert.equal(payload.confirm, true);
@@ -142,13 +157,46 @@ try {
     } else if (request.url().startsWith(base + "/") || !/^https?:/.test(request.url())) void request.continue();
     else { external.push(request.url()); void request.abort(); }
   });
-  page.once("dialog", (dialog) => void dialog.accept());
-  await clickQuit();
-  await page.waitForFunction(() => document.body.textContent.includes("GUIDE-IEI is shutting down. You can close this tab."));
+  await quitTab.goto(base, { waitUntil: "networkidle2" });
+  quitTab.once("dialog", (dialog) => void dialog.accept());
+  await quitTab.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent.trim() === "Quit GUIDE-IEI").click());
+  await quitTab.waitForFunction(() => document.querySelector(".workbench-connection-notice")?.textContent.includes("GUIDE-IEI is shutting down…"));
   assert.equal(quitRequests, 1);
+  await quitTab.close();
+  // Same real endpoint used by the native control window, deliberately called
+  // outside the page so its browser Quit callback cannot fabricate the notice.
+  const status = await fetch(base + "/api/service/status").then((response) => response.json());
+  const stopped = await fetch(base + "/api/service/quit", { method: "POST",
+    headers: { "Content-Type": "application/json" }, body: JSON.stringify({ confirm: true, instance_id: status.instance_id }) });
+  assert.equal(stopped.status, 202);
+  await page.waitForFunction(() => document.querySelector(".workbench-connection-notice")?.textContent.includes("GUIDE-IEI is no longer running."));
+  assert(await page.evaluate(() => document.querySelector("tbody") === window.__reviewTable));
+  assert.equal(await page.$$eval("tbody tr", (rows) => rows.length), reviewRows);
+  assert.equal(await page.$eval('input[placeholder="Gene, HGVS, ID, locus…"]', (input) => input.value), reviewGene);
+  assert.equal(await page.$$("tbody .star-button.saved").then((buttons) => buttons.length), 1);
+  assert((await page.evaluate(() => document.body.textContent)).includes("DEMO01"));
+  // Export must use the loaded data even though there is no server left.
+  await page.evaluate(() => {
+    const create = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => { window.__shutdownExport = blob.text(); return create(blob); };
+    // Inspect the generated export without writing synthetic data into the
+    // machine's Downloads folder or invoking Chrome's download-close dialog.
+    const click = HTMLAnchorElement.prototype.click;
+    HTMLAnchorElement.prototype.click = function () {
+      if (this.download === "iei-prioritized-variants.tsv") return;
+      return click.call(this);
+    };
+  });
+  page.once("dialog", (dialog) => void dialog.accept());
+  await clickText("Export TSV");
+  const exported = await page.evaluate(() => window.__shutdownExport);
+  assert(exported && exported.includes("DEMO01"), "Loaded review should export after shutdown");
+  if (process.env.IEI_PACKAGED_SHUTDOWN_SCREENSHOT) {
+    await page.screenshot({ path: process.env.IEI_PACKAGED_SHUTDOWN_SCREENSHOT });
+  }
   assert.deepEqual(errors, []);
   assert.deepEqual(external, [], "Offline review startup must not request external services");
-  console.log("PACKAGED BROWSER SMOKE PASSED: engine ready/queued/running/failure/retry/recovered states, collapsed diagnostics, gene lists, synthetic VCF review, Quit cancel preserves review, Quit accept, no external requests");
+  console.log("PACKAGED BROWSER SMOKE PASSED: engine ready/repair states, collapsed diagnostics, temporary disconnection/recovery, Quit cancel/accept, real external Quit notice, loaded review preserved/exported after shutdown, no external requests");
 } finally {
   await browser.close();
 }

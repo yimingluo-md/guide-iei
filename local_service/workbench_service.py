@@ -898,6 +898,8 @@ class AnnotationJobService:
         self._storage_usage_lock = threading.Lock()
         self._restart_requested = False
         self._quit_requested = False
+        self._lifecycle_changed = threading.Event()
+        self._lifecycle_watch_slots = threading.BoundedSemaphore(32)
         self._engine_setup_reserved = False
         self._instance_id = os.environ.get("IEI_DESKTOP_INSTANCE_ID") or uuid.uuid4().hex
         self._stop = threading.Event()
@@ -1701,11 +1703,32 @@ class AnnotationJobService:
                 "launcher window completely, then start GUIDE-IEI again."
             )
         self._restart_requested = True
+        self._lifecycle_changed.set()
         return {
             "restarting": True,
             "exit_code": RESTART_EXIT_CODE,
             "message": "The workbench service is restarting; pending storage locations become active.",
         }
+
+    def watch_lifecycle(self, instance_id: str, timeout: float = 15) -> dict:
+        """Bounded, read-only long poll; no patient data or database queries.
+
+        Wake browsers before a confirmed Quit closes the HTTP server. Ordinary
+        polling alone can miss the short interval between accepting Quit and
+        stopping the listener. A new/mismatched instance returns immediately.
+        """
+        if len(instance_id) > 128:
+            raise ValueError("Invalid workbench instance ID")
+        if instance_id == self._instance_id:
+            if not self._lifecycle_watch_slots.acquire(blocking=False):
+                raise ValueError("Too many lifecycle watchers; retry shortly")
+            try:
+                self._lifecycle_changed.wait(timeout)
+            finally:
+                self._lifecycle_watch_slots.release()
+        return {"service": "GUIDE-IEI", "instance_id": self._instance_id,
+                "quitting": self._quit_requested, "restarting": self._restart_requested,
+                "desktop_app": (self.pipeline_root / "desktop-build.json").is_file()}
 
     def lifecycle_status(self) -> dict:
         """Small, patient-identifier-free status for desktop and browser controls."""
@@ -1736,6 +1759,7 @@ class AnnotationJobService:
         return {"service": "GUIDE-IEI", "instance_id": self._instance_id,
                 "build_id": build.get("build_id"), "version": SERVICE_VERSION,
                 "desktop_app": bool(build), "quitting": self._quit_requested,
+                "restarting": self._restart_requested,
                 "annotations": annotations, "downloads": downloads,
                 "blockers": blockers}
 
@@ -1755,6 +1779,7 @@ class AnnotationJobService:
             self._migration_reservation_reason = "the workbench is shutting down"
             self._quit_requested = True
             self._restart_requested = False
+            self._lifecycle_changed.set()
         return {"quitting": True, "message": "Quit accepted. GUIDE-IEI is shutting down; this browser tab stays open. You can close it now. To start again, open the GUIDE-IEI app from Applications (or your original launcher)."}
 
     def start_storage_migration(self, payload: dict) -> dict:
@@ -5837,6 +5862,7 @@ class AnnotationJobService:
 
     def shutdown(self) -> None:
         self._stop.set()
+        self._lifecycle_changed.set()
         self.docker_startup.stop()
         # The bulk-intake worker stops between items on _stop. Give it a
         # moment to finish the current bookkeeping write; a worker deep in a
@@ -5966,6 +5992,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             return
         if path == "/api/service/status":
             self._json(self.service.lifecycle_status())
+            return
+        if path == "/api/service/watch":
+            self._json(self.service.watch_lifecycle(query.get("instance_id", [""])[0]))
             return
         if path == "/api/annotation-engine/status":
             config = self.service._load_config(self.service.pipeline_root / "config/annotation.config.yaml")
