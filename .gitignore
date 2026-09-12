@@ -58,5 +58,8 @@ webui/.build-required
 config/annotation.config.yaml.new
 release-manifest.txt
 dist/
+_guide_source/
+_site/
+.jekyll-cache/
 .next/
 .pnpm-store/

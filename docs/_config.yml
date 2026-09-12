@@ -1,18 +1,28 @@
-title: GUIDE-IEI Manual
+title: GUIDE-IEI User Guide
 description: >-
   Genomic User-friendly In-depth Diagnostic-analysis Environment for Inborn
   Errors of Immunity — a clinician-developed, locally run, open-source WES/WGS
   analysis platform.
-remote_theme: just-the-docs/just-the-docs
+url: https://yimingluo-md.github.io
+baseurl: /guide-iei
+repository: yimingluo-md/guide-iei
+remote_theme: just-the-docs/just-the-docs@v0.12.0
 plugins:
   - jekyll-remote-theme
 search_enabled: true
 heading_anchors: true
 aux_links:
+  "Download GUIDE-IEI":
+    - "https://github.com/yimingluo-md/guide-iei/releases/tag/v0.6.2"
   "GUIDE-IEI on GitHub":
     - "https://github.com/yimingluo-md/guide-iei"
+footer_content: >-
+  This website contains the User Guide only. Additional technical documentation
+  is available <a href="https://github.com/yimingluo-md/guide-iei/tree/main/docs">on GitHub</a>
+  and is not part of this published guide.
 defaults:
   - scope:
       path: ""
+      type: pages
     values:
       layout: default

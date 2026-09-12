@@ -147,7 +147,7 @@ annotation datasets are installed
 from **Annotate VCF → Set up annotation datasets**, with one-click
 recommended sets for exome or whole-genome analysis. The complete
 walkthrough, including the command-line route, is in the
-**[manual](docs/index.md)**.
+**[User Guide website](https://yimingluo-md.github.io/guide-iei/)**.
 
 ## Supported platforms
 
@@ -159,7 +159,12 @@ walkthrough, including the command-line route, is in the
 
 ## Documentation
 
-The **[GUIDE-IEI manual](docs/index.md)** covers everything in detail:
+The **[GUIDE-IEI User Guide](https://yimingluo-md.github.io/guide-iei/)** is the
+user-facing manual, covering installation through variant review. Only the
+curated guide is published on that website.
+
+Additional technical documentation remains available in the repository,
+outside the published guide:
 
 - [Installation & requirements](docs/INSTALLATION.md)
 - [Annotation dataset setup](docs/DATASET_SETUP.md) (including dbNSFP

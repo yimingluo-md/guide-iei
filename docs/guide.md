@@ -13,14 +13,18 @@ experience beyond a download and a double-click. Chapters follow the order in
 which the work is encountered: orientation, installation, dataset setup,
 then the first analysis.
 
-The technical detail behind every step is documented in the
-[Reference](reference.md) section, linked from each chapter.
+This website publishes the curated User Guide. Additional technical and
+developer documentation exists in the
+[GitHub repository](https://github.com/yimingluo-md/guide-iei/tree/main/docs),
+but is not included in this guide website. Links to those documents open GitHub;
+the remaining documentation will be reviewed separately before website publication.
 
 Screenshots illustrate synthetic demonstration data and example workstation
 states. Their variants, scores, and classifications are not validation controls
 or evidence about real patients. Your installed resources and counts may differ.
 
-Stuck during setup or import? Start with [Troubleshooting](TROUBLESHOOTING.md).
+Stuck during setup or import? See [installation troubleshooting](guide/02-install.md#common-first-run-problems)
+or [quality control](guide/10-quality-control.md).
 
 ## Chapters
 

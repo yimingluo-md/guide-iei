@@ -1,0 +1,59 @@
+name: Publish user guide
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - docs/guide/**
+      - docs/guide.md
+      - docs/_config.yml
+      - docs/assets/img/**
+      - scripts/stage_guide_site.py
+      - scripts/check_guide_site.py
+      - scripts/check_documentation.py
+      - test/test_guide_site.py
+      - .github/workflows/guide-pages.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guide-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Test guide-only publication boundary
+        run: python3 test/test_guide_site.py
+      - name: Stage curated guide only
+        run: python3 scripts/stage_guide_site.py _guide_source
+      - uses: actions/configure-pages@v5
+      - name: Build guide website
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./_guide_source
+          destination: ./_site
+      - name: Verify published pages and internal links
+        run: python3 scripts/check_guide_site.py _site
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy guide website
+        id: deployment
+        uses: actions/deploy-pages@v5
