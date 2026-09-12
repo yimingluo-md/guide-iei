@@ -29,8 +29,12 @@ Apple Silicon beta release candidate. Publication remains gated on the
   large-dataset selection/downloads.
 - Existing managed Colima installations recover from an unused default Docker
   connection without changing the global Docker context. Setup and later jobs
-  use the same recovered connection. Missing app-folder sharing is repaired
+  use the same recovered connection. Missing working-folder sharing is repaired
   with a configuration backup; busy containers are not interrupted.
+- Fixed first launch from `/Applications` on Docker Desktop without sharing that
+  directory. Containers use user-owned working/data folders, not the signed app
+  tree; setup verifies real read/write access and annotation still checks all
+  required input/reference/output locations. LOFTEE and the VEP engine are unchanged.
 - The macOS application, browser tab and workbench header now share the
   DNA/immune-receptor icon.
 - The bundled engine omits unused legacy Kent/jkOwnLib and Carol/Math::CDF

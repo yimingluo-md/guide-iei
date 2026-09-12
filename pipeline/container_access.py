@@ -26,6 +26,10 @@ class AccessError(ValueError):
     pass
 
 
+class RuntimeAccessError(AccessError):
+    """The engine/image cannot run; changing file sharing cannot repair this."""
+
+
 @dataclass(frozen=True)
 class AccessPath:
     path: Path
@@ -153,7 +157,7 @@ while (@ARGV) {
 '''
 
 
-def check_access(paths, runtime, image, *, run=subprocess.run):
+def check_access(paths, runtime, image, *, run=subprocess.run, timeout=60):
     if runtime not in {"docker", "podman", "singularity", "apptainer"}:
         raise AccessError(f"Unsupported container runtime: {runtime}")
     mounts, checks, markers = [], [], []
@@ -206,9 +210,9 @@ def check_access(paths, runtime, image, *, run=subprocess.run):
         for index, (item, _, target, digest) in enumerate(checks):
             command += [str(index), "write" if item.write else "read", target, digest]
         try:
-            result = run(command, text=True, capture_output=True, timeout=60)
+            result = run(command, text=True, capture_output=True, timeout=timeout)
         except (OSError, subprocess.TimeoutExpired) as exc:
-            raise AccessError(
+            raise RuntimeAccessError(
                 f"Could not run the {runtime} file-access check. Start the configured container engine "
                 "and ensure the GUIDE-IEI image is installed; then retry."
             ) from exc
@@ -218,7 +222,7 @@ def check_access(paths, runtime, image, *, run=subprocess.run):
             for phrase in ("cannot connect", "is the docker daemon running", "no such image", "unable to find image",
                            "executable file not found", "can't locate digest/sha")
         ):
-            raise AccessError(
+            raise RuntimeAccessError(
                 "Container engine or GUIDE-IEI image could not run the access probe. "
                 "Start the configured engine and repair/rebuild the GUIDE-IEI image; "
                 "this is not evidence of a file-sharing problem.\n" + result.stderr.strip()[-1500:]

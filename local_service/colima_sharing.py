@@ -36,8 +36,8 @@ def probe(docker, image, root, env):
         return False
 
 
-def mount_plan(config, root, home):
-    """Add one identity-mapped, read-only mount without replacing custom ones."""
+def mount_plan(config, root, home, *, writable=False):
+    """Add an identity-mapped mount without replacing custom ones."""
     result = copy.deepcopy(config)
     mounts = result.get("mounts") or []
     if not isinstance(mounts, list) or any(not isinstance(item, dict) or not isinstance(item.get("location"), str) for item in mounts):
@@ -51,18 +51,22 @@ def mount_plan(config, root, home):
         source = Path(location)
         target = Path(mount.get("mountPoint") or location)
         if source.is_absolute() and target == source and (source == root or source in root.parents):
+            if writable and not mount.get("writable", False):
+                if source != root:
+                    raise SharingError(f"The existing Colima mount {source} is read-only. Allow writes to {root} in your container manager, then Retry preparation; no broader permissions were changed.")
+                mount["writable"] = True
             result["mounts"] = mounts
             return result
     # Colima/Lima may reject host mount paths containing spaces. Sharing the
     # stable Applications directory read-only also survives app replacement.
     shared = root
-    if root == Path("/Applications") or Path("/Applications") in root.parents:
+    if not writable and (root == Path("/Applications") or Path("/Applications") in root.parents):
         shared = Path("/Applications")
     elif any(char.isspace() for char in str(root)):
-        raise SharingError("Move GUIDE-IEI into Applications, then reopen it and choose Retry preparation. Colima cannot share this app location safely.")
+        raise SharingError(f"Colima cannot automatically share a folder containing spaces: {root}. Configure this folder in your container manager, then Retry preparation.")
     if "," in str(shared) or ":" in str(shared):
-        raise SharingError("Move GUIDE-IEI into Applications, then retry preparation; this folder name is not supported by the container runtime.")
-    mounts.append({"location": str(shared), "writable": False})
+        raise SharingError(f"This folder name is not supported by the container runtime: {root}. Choose a folder without commas or colons, then retry preparation.")
+    mounts.append({"location": str(shared), "writable": writable})
     result["mounts"] = mounts
     return result
 
@@ -90,14 +94,15 @@ def atomic_write(path, content):
         Path(temporary).unlink(missing_ok=True)
 
 
-def repair(docker, image, root, env=None):
+def repair(docker, image, root, env=None, *, writable=False, probe_check=None):
     env = dict(os.environ if env is None else env)
     root = Path(root).resolve()
-    if probe(docker, image, root, env):
+    check = probe_check or (lambda: probe(docker, image, root, env))
+    if check():
         return False
     selected = selected_start_command(docker, env)
     if selected and selected[0] == "Docker Desktop":
-        raise SharingError("Docker Desktop needs file-sharing permission for GUIDE-IEI. Open Docker Desktop → Settings → Resources → File sharing, add Applications, apply the change, then choose Retry preparation.")
+        raise SharingError(f"Docker Desktop cannot access the required folder: {root}. Open Docker Desktop → Settings → Resources → File sharing, allow this folder, apply the change, then choose Retry preparation.")
     if not selected or selected[0] != "Colima":
         raise SharingError("The selected container runtime cannot access GUIDE-IEI. Automatic sharing repair supports local Colima profiles; use your container manager's file-sharing settings, then Retry preparation.")
     command = selected[1]
@@ -119,7 +124,7 @@ def repair(docker, image, root, env=None):
         config = yaml.safe_load(original)
         if not isinstance(config, dict) or not isinstance(config.get("kubernetes") or {}, dict):
             raise SharingError("Colima configuration is invalid; no settings were changed. Open Log for details.")
-        planned = mount_plan(config, root, home)
+        planned = mount_plan(config, root, home, writable=writable)
         updated = yaml.safe_dump(planned, sort_keys=False).encode() if planned != config else original
         ensure_idle(docker, config, env)
         backup = config_path.with_name("colima.yaml.guide-iei-backup-" + uuid.uuid4().hex)
@@ -148,13 +153,13 @@ def repair(docker, image, root, env=None):
             if updated != original and config_path.read_bytes() == updated:
                 atomic_write(config_path, original)
             raise SharingError("The container restart did not finish. Previous sharing settings were restored; choose Retry preparation. No image or dataset was deleted.") from exc
-        print("=== Checking repaired application access ===", flush=True)
+        print("=== Checking repaired container access ===", flush=True)
         for attempt in range(6):
-            if probe(docker, image, root, env):
+            if check():
                 return True
             if attempt < 5:
                 time.sleep(1)
-        raise SharingError("Colima restarted but application access still failed. Move GUIDE-IEI into Applications and retry; open Log if the problem persists.")
+        raise SharingError(f"Colima restarted but access to {root} still failed. Check this folder's sharing permissions and open Log for details, then retry.")
 
 
 def main():

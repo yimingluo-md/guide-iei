@@ -43,6 +43,7 @@ export PYTHONDONTWRITEBYTECODE=1
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
+CONTAINER_WORK_DIR="${IEI_CONTAINER_WORK_DIR:-${IEI_WORKBENCH_STATE_DIR:-$HOME/.iei-variant-review}/container-work}"
 
 # ---------------------------------------------------------------- pinned tools
 PYTHON_VERSION="3.13.15"
@@ -696,7 +697,7 @@ else
                         # Explicit mounts replace Colima defaults. Retain home
                         # and temporary access and share app code read-only;
                         # /Applications is not included in the default mounts.
-                        if PATH="$TOOLS_DIR/bin:$PATH" start_managed_colima "$TOOLS_DIR/bin/colima" "$ROOT" "$vm_cpus" "$vm_mem"; then
+                        if PATH="$TOOLS_DIR/bin:$PATH" start_managed_colima "$TOOLS_DIR/bin/colima" "$CONTAINER_WORK_DIR" "$vm_cpus" "$vm_mem"; then
                             DAEMON_UP=1
                             ok "Colima VM started (${vm_cpus} CPU, ${vm_mem} GiB RAM, 120 GiB disk)"
                         else
@@ -819,17 +820,18 @@ else
 
         if [ "$IMAGE_CURRENT" = 1 ]; then
             echo "=== Verifying the annotation engine ==="
-            if "$CONTAINER_BIN" run --rm --pull=never --network=none --mount "type=bind,source=$ROOT,target=/probe,readonly" --entrypoint sh "$IMAGE" -c 'test -r /probe/scripts/setup_environment.sh' >/dev/null 2>&1; then
-                ok "repo directory is mountable inside the container"
-            elif [ "$MODE" = "install" ] && [ "$OS" = "Darwin" ] && [ "$CONTAINER_RUNTIME" = "docker" ]; then
-                if PATH="$TOOLS_DIR/bin:$PATH" "$PYTHON_BIN" "$ROOT/local_service/colima_sharing.py" \
-                    --docker "$CONTAINER_BIN" --image "$IMAGE" --root "$ROOT"; then
-                    ok "application sharing repaired and verified"
-                else
-                    fix "application sharing needs attention" "follow the message above, then choose Retry preparation; no VEP rebuild or dataset removal is needed"
+            workspace_args=()
+            if [ "$MODE" = "install" ]; then
+                workspace_args+=(--prepare)
+                if [ "$OS" = "Darwin" ] && [ "$CONTAINER_RUNTIME" = "docker" ]; then
+                    workspace_args+=(--repair-sharing)
                 fi
+            fi
+            if PATH="$(dirname "$CONTAINER_BIN"):$TOOLS_DIR/bin:$PATH" "$PYTHON_BIN" "$ROOT/local_service/container_workspace.py" \
+                --runtime "$CONTAINER_RUNTIME" --image "$IMAGE" --directory "$CONTAINER_WORK_DIR" ${workspace_args[@]+"${workspace_args[@]}"}; then
+                ok "managed working directory is accessible inside the container"
             else
-                fix "cannot bind-mount $ROOT into the container" "open GUIDE-IEI and choose Retry preparation for automatic Colima repair; for other runtimes, allow this folder in the container manager's file-sharing settings"
+                fix "container workspace needs attention" "follow the message above, then choose Retry preparation; no VEP rebuild or dataset removal is needed"
             fi
         fi
     fi

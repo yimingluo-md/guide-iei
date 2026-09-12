@@ -203,6 +203,17 @@ hts() {
 
     local args=("$@") hosts=() conts=() mount_flags=()
     local i j arg host_dir base mapped found
+    local application_root work_dir=/w bind_cwd=1
+    application_root="$(cd "$(repo_root)" && pwd -P)"
+    if [[ -f "$application_root/desktop-build.json" ]]; then
+        case "$(pwd -P)" in
+            "$application_root"|"$application_root"/*)
+                # Packaged callers use absolute data paths (or stdin/stdout).
+                # Do not bind the signed app just because it is the host cwd.
+                # Relative data-file calls still work when cd'd to a data dir.
+                bind_cwd=0; work_dir=/tmp ;;
+        esac
+    fi
     # Rewrite every absolute path argument to a dedicated bind mount. Output
     # files do not need to exist yet; their existing parent directory is used.
     for i in "${!args[@]}"; do
@@ -212,6 +223,11 @@ hts() {
             host_dir="$(cd "$arg" && pwd -P)"; base=""
         else
             host_dir="$(cd "$(dirname "$arg")" && pwd -P)"; base="$(basename "$arg")"
+        fi
+        if [[ -f "$application_root/desktop-build.json" ]]; then
+            case "$host_dir" in "$application_root"|"$application_root"/*)
+                die "container input/output must be outside the signed app: $arg; stage helper code or choose a user data folder" ;;
+            esac
         fi
         found=-1
         for j in "${!hosts[@]}"; do
@@ -238,9 +254,9 @@ hts() {
             # missing image and can wait for network timeouts before failing.
             "$rt" image inspect "$img" >/dev/null 2>&1 \
                 || die "container image $img is not available locally; run bash docker/build.sh before preparing indexed resources"
-            mount_flags=(-v "$PWD:/w")
+            if [[ "$bind_cwd" == 1 ]]; then mount_flags=(-v "$PWD:/w"); fi
             for i in "${!hosts[@]}"; do mount_flags+=(-v "${hosts[$i]}:${conts[$i]}:rw"); done
-            "$rt" run --pull=never --network=none --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+            "$rt" run --pull=never --network=none --rm --ulimit core=0:0 ${mount_flags[@]+"${mount_flags[@]}"} -w "$work_dir" --entrypoint "$tool" "$img" ${args[@]+"${args[@]}"} || rc=$?
             # A file written by the host or another container can be
             # incompletely visible to a container started moments later
             # (Docker Desktop VirtioFS bind caching; worse on FSKit-exFAT
@@ -251,7 +267,7 @@ hts() {
                 log "WARN  containerized $tool failed (rc=$rc); retrying once after write settling"
                 sleep 5
                 rc=0
-                "$rt" run --pull=never --network=none --rm --ulimit core=0:0 "${mount_flags[@]}" -w /w --entrypoint "$tool" "$img" "${args[@]}" || rc=$?
+                "$rt" run --pull=never --network=none --rm --ulimit core=0:0 ${mount_flags[@]+"${mount_flags[@]}"} -w "$work_dir" --entrypoint "$tool" "$img" ${args[@]+"${args[@]}"} || rc=$?
             fi
             if [[ "$rc" -ge 128 ]]; then
                 log "ERROR: containerized $tool terminated by a signal (exit $rc); not retrying"
@@ -259,9 +275,9 @@ hts() {
             return "$rc"
             ;;
         singularity|apptainer)
-            mount_flags=(--bind "$PWD:/w")
+            if [[ "$bind_cwd" == 1 ]]; then mount_flags=(--bind "$PWD:/w"); fi
             for i in "${!hosts[@]}"; do mount_flags+=(--bind "${hosts[$i]}:${conts[$i]}"); done
-            "$rt" exec "${mount_flags[@]}" --pwd /w "$img" "$tool" "${args[@]}"
+            "$rt" exec ${mount_flags[@]+"${mount_flags[@]}"} --pwd "$work_dir" "$img" "$tool" ${args[@]+"${args[@]}"}
             ;;
         *) die "unsupported HTS container runtime: $rt" ;;
     esac

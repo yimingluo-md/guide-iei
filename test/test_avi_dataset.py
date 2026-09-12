@@ -3,6 +3,7 @@ import gzip
 import contextlib
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import struct
@@ -93,6 +94,30 @@ class AviTest(unittest.TestCase):
     def test_number_a_contract(self):
         self.assertIn(b'ID=raw,Number=A,Type=Float',avi.vcf_header())
         self.assertIn(b'ID=phred,Number=A,Type=Float',avi.vcf_header())
+
+    def test_container_converter_maps_only_helper_archive_and_outputs(self):
+        helper = self.root/'compiler dir/convert'
+        archive = self.root/'source dir/source.zip'
+        output = self.root/'work dir/chr1.vcf.gz'
+        command = [str(helper),str(archive),'100','25','chr1','3',str(output),
+                   str(output.parent/'stats.json'),str(output.parent/'progress')]
+        self.assertEqual(avi.converter_command(command),command)
+        for runtime in ('docker','podman','singularity','apptainer'):
+            with patch.dict(os.environ, {'RUNTIME':runtime,'IMAGE':'local-test-image'}):
+                result = avi.converter_command(command,True)
+            self.assertEqual(result[0],runtime)
+            self.assertIn(str(helper.parent.resolve())+':/avi_tool:ro',result)
+            self.assertIn(str(archive.parent.resolve())+':/avi_source:ro',result)
+            self.assertIn(str(output.parent.resolve())+':/avi_output:rw',result)
+            self.assertIn('/avi_tool/convert',result)
+            self.assertEqual(result[-8:],['/avi_source/source.zip','100','25','chr1','3',
+                                         '/avi_output/chr1.vcf.gz','/avi_output/stats.json','/avi_output/progress'])
+            if runtime in ('docker','podman'):
+                for flag in ('--network=none','--pull=never','core=0:0'): self.assertIn(flag,result)
+            self.assertNotIn('python3',result)
+        command[-1] = str(self.root/'elsewhere/progress')
+        with self.assertRaisesRegex(ValueError,'share a working directory'):
+            avi.converter_command(command,True)
 
     def test_atomic_bundle_publication_and_verified_retry_preserve_source(self):
         path, identity = self.source('chr1\t1\tT\tA\t0\t1\nchr1\t1\tT\tC\t0\t2\nchr1\t1\tT\tG\t0\t3\n')

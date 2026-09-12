@@ -124,8 +124,25 @@ class ColimaSharingTests(unittest.TestCase):
         self.assertFalse(self.commands)
 
     def test_cannot_claim_success_when_mount_stays_unreadable(self):
-        with self.assertRaisesRegex(sharing.SharingError, "application access still failed"):
+        with self.assertRaisesRegex(sharing.SharingError, "access to .* still failed"):
             self.run_repair(probes=[False] * 7)
+
+    def test_workspace_under_home_needs_no_app_mount(self):
+        planned = sharing.mount_plan(self.config, self.home / ".iei-variant-review/container-work", self.home, writable=True)
+        self.assertEqual(planned, self.config)
+
+    def test_external_workspace_gets_only_its_own_writable_mount(self):
+        root = Path("/Volumes/Data/guide-work")
+        planned = sharing.mount_plan(self.config, root, self.home, writable=True)
+        self.assertEqual(planned["mounts"], self.config["mounts"] + [{"location": str(root), "writable": True}])
+
+    def test_workspace_repair_does_not_broaden_parent_permissions(self):
+        config = {"mounts": [{"location": str(self.home), "writable": False}]}
+        with self.assertRaisesRegex(sharing.SharingError, "no broader permissions"):
+            sharing.mount_plan(config, self.home / "data", self.home, writable=True)
+        self.assertFalse(config["mounts"][0]["writable"])
+        planned = sharing.mount_plan(config, self.home, self.home, writable=True)
+        self.assertTrue(planned["mounts"][0]["writable"])
 
     def test_selected_remote_runtime_is_never_changed(self):
         with patch.object(sharing, "probe", return_value=False), \

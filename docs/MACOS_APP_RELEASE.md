@@ -57,13 +57,16 @@ Docker Desktop, unrecognized endpoints and ambiguous profiles are left alone.
 Colima startup can take up to ten minutes while resuming VM preparation. Failed
 startup details appear in the setup log and the native Retry window.
 
-Fresh managed Colima VMs
-share the application code read-only (using the stable `/Applications` parent
-for installed apps) and retain the home/temp mounts. When application access
-fails, setup automatically repairs the selected local Colima profile: it checks
+Application code runs on the Mac; containers do not need the app bundle or
+`/Applications` shared. Fresh managed Colima VMs retain the home/temp mounts
+and add a custom working folder only when needed. Setup verifies actual
+bidirectional read/write access to `container-work` in the workbench state
+directory, normally `~/.iei-variant-review/container-work`. When workspace access
+fails, setup can repair the selected local Colima profile: it checks
 for active containers, backs up the exact YAML, preserves settings and existing
-mounts, adds missing read-only sharing, restarts that same profile without
-switching contexts, and verifies application access. Failed restart restores
+mounts, adds missing workspace sharing, restarts that same profile without
+switching contexts, and verifies workspace access. It does not make an existing
+read-only parent mount writable automatically. Failed restart restores
 the prior sharing configuration. A profile running other containers or
 Kubernetes is not restarted; the startup window asks the user to finish those
 workloads and choose Retry preparation. Configuration backups are private files
@@ -73,7 +76,9 @@ Docker Desktop sharing permissions are not edited behind its UI; if necessary,
 the startup window directs users to Settings → Resources → File sharing and
 then Retry preparation. No Terminal command is required. Remote or unknown
 runtime profiles are not reconfigured. An installed image alone is not considered
-ready if the container cannot read the application. Quitting GUIDE-IEI does not
+ready until workspace read/write preparation succeeds. Later readiness polls
+only read a verified workspace marker and do not write or change sharing.
+Quitting GUIDE-IEI does not
 stop the Docker daemon or VM, which may be used by other applications.
 
 For annotation, open **Import & QC → Set up annotation datasets**. If the
@@ -83,8 +88,13 @@ Progress, logs, and retry are on the same page; quit and conflicting data
 changes are blocked until setup finishes. It does not install Node or change
 an existing conda/Homebrew environment. Choose data locations in Storage and
 then install datasets through the workbench. Large databases and registration-restricted exports remain
-separate from the app. Container file-sharing checks still apply, including
-access to the app under Applications and to selected data directories.
+separate from the app. Container file-sharing checks still apply to actual
+inputs, references, outputs and working directories, including external drives.
+The HTS wrapper does not implicitly mount the app as its working directory.
+Plugin verification checks the baked image plugins against host file hashes;
+the optional AVI ZIP compiler stages and verifies its small C++ helper beside
+the data before compiling/running it in the image. The Python coordinator runs
+on the Mac; Python 3 inside the VEP image is not required.
 
 The self-contained app uses bundle identifier `org.guide-iei.desktop`, distinct
 from the source-tree launcher's `org.guide-iei.workbench`. This keeps macOS

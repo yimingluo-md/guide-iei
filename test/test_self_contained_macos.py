@@ -87,7 +87,7 @@ def main():
             capabilities = get("/api/capabilities")
             if existing_engine:
                 assert capabilities["container_runtimes"]
-                for _ in range(100):
+                for _ in range(300):
                     states = list((state / "Application Support/logs").glob("startup-*.json"))
                     if states and json.loads(states[0].read_text()).get("phase") == "ready":
                         break
@@ -95,8 +95,13 @@ def main():
                 else:
                     raise AssertionError("Native automatic startup did not reuse the ready engine: " +
                                          repr([path.read_text() for path in states]))
-                assert not get("/api/resource-downloads")["jobs"], "Ready engine was unnecessarily reinstalled"
-                print("AUTOMATIC STARTUP PASSED: matching engine reused without any setup job")
+                jobs = get("/api/resource-downloads")["jobs"]
+                assert len(jobs) == 1 and jobs[0]["resource_id"] == "annotation_engine" and jobs[0]["status"] == "succeeded", jobs
+                assert "matches this GUIDE-IEI version" in jobs[0]["log"], jobs
+                assert "Container workspace verified" in jobs[0]["log"], jobs
+                for forbidden in ("=== Installing bundled annotation engine ===", "Downloading and building"):
+                    assert forbidden not in jobs[0]["log"], jobs
+                print("AUTOMATIC STARTUP PASSED: matching engine reused; new workspace verified without image installation")
             else:
                 assert not capabilities["container_runtimes"]
             assert capabilities["defaults"]["output_directory"].startswith(str(state))
@@ -152,6 +157,15 @@ def main():
                 raise AssertionError("Immediate reopen did not become ready")
             assert reopened["instance_id"] != status["instance_id"]
             assert reopened["build_id"] == status["build_id"]
+            if existing_engine:
+                for _ in range(200):
+                    if get("/api/annotation-engine/status").get("available"):
+                        break
+                    time.sleep(.1)
+                else:
+                    raise AssertionError("Reopened engine did not reuse the prepared workspace")
+                # Resource jobs aren't persisted between service instances.
+                assert not get("/api/resource-downloads")["jobs"], "Reopen unnecessarily ran setup again"
             request = urllib.request.Request(base + "/api/service/quit",
                 data=json.dumps({"confirm": True, "instance_id": reopened["instance_id"]}).encode(),
                 headers={"Content-Type": "application/json"})

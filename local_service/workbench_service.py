@@ -42,6 +42,7 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from local_service.ccre_context import CcreContextStore
 from local_service.container_startup import DockerStartup, mac_tool_path, managed_colima_environment
+from local_service.container_workspace import workspace_directory, check_ready as check_container_workspace
 from local_service.clingen_erepo import ClinGenErepoStore
 from local_service import cohort_store as cohort_module
 from local_service.cohort_store import CohortStore
@@ -2275,6 +2276,7 @@ class AnnotationJobService:
         try:
             config_path = self._write_resource_config("annotation_engine")
             command = ["env", f"IEI_PYTHON_BIN={sys.executable}", "PYTHONUNBUFFERED=1",
+                       f"IEI_CONTAINER_WORK_DIR={workspace_directory(self.state_dir)}",
                        "bash", str(self.pipeline_root / "scripts/setup_environment.sh"),
                        "--install", "--yes", "--engine-only", "--config", str(config_path)]
             return self._start_resource_job("annotation_engine", command, "installation", (config_path,))
@@ -4885,12 +4887,7 @@ class AnnotationJobService:
         return config
 
     def annotation_engine_status(self, config: dict) -> dict:
-        """Native readiness includes app sharing, not just an image label.
-
-        A failed first setup may have built/loaded a valid image. Reopening
-        must not mistake that for successful setup while the app is unshared.
-        Keep the cheaper image-only check for general capabilities polling.
-        """
+        """Read-only check of the prepared workspace, not the signed app tree."""
         status = self._container_image_status(config)
         status = {**status, "busy": self._engine_setup_reserved}
         if not status.get("available") or status["busy"]:
@@ -4900,20 +4897,12 @@ class AnnotationJobService:
         if runtime not in {"docker", "podman"}:
             return status
         image = str(container.get("image") or "vep-annotate:latest")
+        directory = workspace_directory(self.state_dir)
         try:
-            result = subprocess.run([runtime, "run", "--rm", "--pull=never", "--network=none",
-                "--mount", f"type=bind,source={self.pipeline_root},target=/probe,readonly",
-                "--entrypoint", "sh", image, "-c", "test -r /probe/scripts/setup_environment.sh"],
-                capture_output=True, text=True, timeout=10, check=False)
-            if result.returncode == 0:
-                return status
-        except (OSError, subprocess.TimeoutExpired):
-            pass
-        return {**status, "available": False, "state": "sharing_required",
-                "message": f"The container cannot read {self.pipeline_root}. "
-                "Choose Retry preparation to repair Colima sharing automatically. "
-                "Other running containers must finish first. Docker Desktop users: allow this folder "
-                "in Settings → Resources → File sharing, then retry."}
+            check_container_workspace(directory, runtime, image)
+        except (OSError, ValueError) as exc:
+            return {**status, "available": False, "state": "sharing_required", "message": str(exc)}
+        return status
 
     def _container_image_status(self, config: dict) -> dict:
         container = config.get("container") or {}

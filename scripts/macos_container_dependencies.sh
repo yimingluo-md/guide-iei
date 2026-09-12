@@ -2,13 +2,15 @@
 # Sourced by setup_environment.sh; uses its ok/fix reporting functions.
 # Keep --check read-only and preserve unrelated user executables.
 start_managed_colima() {
-    local colima="$1" root="$2" cpus="$3" memory="$4"
-    # A stable parent survives replacing the app and avoids spaces in app names.
-    case "$root" in /Applications/*) root=/Applications ;; esac
-    # Explicit mounts replace the defaults. Keep home/temp and share only
-    # the application code read-only (including apps outside the home folder).
+    local colima="$1" workspace="$2" cpus="$3" memory="$4"
+    local extra_mount=()
+    # Explicit mounts replace the defaults. Application code stays on the
+    # host; containers only need user data/work paths, never /Applications.
+    case "$workspace" in "$HOME"|"$HOME"/*|/tmp/colima|/tmp/colima/*) ;;
+        *) extra_mount=(--mount "$workspace:w") ;;
+    esac
     "$colima" start --cpu "$cpus" --memory "$memory" --disk 120 \
-        --mount "$HOME:w" --mount /tmp/colima:w --mount "$root:r"
+        --mount "$HOME:w" --mount /tmp/colima:w ${extra_mount[@]+"${extra_mount[@]}"}
 }
 
 ensure_macos_lima_launchers() {

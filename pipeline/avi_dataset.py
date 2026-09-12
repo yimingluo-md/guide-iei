@@ -165,15 +165,48 @@ def _tabix(path: Path) -> None:
     subprocess.run(command,check=True)
 
 
-def prepare(archive: Path, root: Path, converter: Path, workers: int) -> Path:
+def converter_command(command: list[str], container: bool = False) -> list[str]:
+    """Only the compiled converter runs in Linux; orchestration stays on host.
+
+    Mount the staged binary/source archive read-only and the chromosome output
+    directory writable. Neither application code nor the host cwd is shared.
+    Run the runtime directly so termination signals reach the converter.
+    """
+    if not container:
+        return command
+    runtime = os.environ.get('RUNTIME') or 'docker'
+    image = os.environ.get('IMAGE') or 'vep-annotate:latest'
+    if runtime not in {'docker','podman','singularity','apptainer'}:
+        raise ValueError(f'Unsupported AVI container runtime: {runtime}')
+    mapped = list(command); mounts = []
+    for indexes, target, mode in (((0,), '/avi_tool', 'ro'), ((1,), '/avi_source', 'ro'), ((6,7,8), '/avi_output', 'rw')):
+        directory = Path(command[indexes[0]]).resolve().parent
+        if any(c in str(directory) for c in (':','\n','\r')):
+            raise ValueError(f'Unsupported container folder name: {directory}')
+        for index in indexes:
+            path = Path(command[index]).resolve()
+            if path.parent != directory:
+                raise ValueError('AVI chromosome outputs must share a working directory')
+            mapped[index] = target + '/' + path.name
+        mounts.append(f'{directory}:{target}:{mode}')
+    if runtime in {'docker','podman'}:
+        result = [runtime,'run','--rm','--pull=never','--network=none','--ulimit','core=0:0']
+        for mount in mounts: result += ['-v',mount]
+        return result + ['--entrypoint',mapped[0],image] + mapped[1:]
+    result = [runtime,'exec']
+    for mount in mounts: result += ['--bind',mount]
+    return result + [image] + mapped
+
+
+def prepare(archive: Path, root: Path, converter: Path, workers: int, *, container_converter: bool = False) -> Path:
     root.mkdir(parents=True,exist_ok=True)
     with (root/'.prepare.lock').open('a') as lock:
         try: fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError: raise ValueError('Another AVI preparation is already running for this destination')
-        return _prepare_locked(archive,root,converter,workers)
+        return _prepare_locked(archive,root,converter,workers,container_converter=container_converter)
 
 
-def _prepare_locked(archive: Path, root: Path, converter: Path, workers: int) -> Path:
+def _prepare_locked(archive: Path, root: Path, converter: Path, workers: int, *, container_converter: bool = False) -> Path:
     before=archive.stat(); identity=inspect_archive(archive)
     final=root/'releases'/RELEASE
     if valid_bundle(final/'manifest.json',strict=True):
@@ -221,7 +254,7 @@ def _prepare_locked(archive: Path, root: Path, converter: Path, workers: int) ->
                 progress=work/(ref['chrom']+'.progress'); progress.unlink(missing_ok=True)
                 virtual=ref['virtual_start']
                 cmd=[str(converter),str(archive),str(identity['member_offset']+(virtual>>16)),str(virtual&65535),ref['chrom'],str(ref['rows']),str(output),str(stats),str(progress)]
-                p=subprocess.Popen(cmd); p.avi_job=(ref,output,stats,progress); active.append(p)
+                p=subprocess.Popen(converter_command(cmd,container_converter)); p.avi_job=(ref,output,stats,progress); active.append(p)
             visible=completed
             for p in list(active):
                 ref,output,stats,progress=p.avi_job
@@ -308,6 +341,7 @@ def main() -> int:
     sub.add_parser('source-url')
     sub.add_parser('download-pin')
     prep=sub.add_parser('prepare'); prep.add_argument('--archive',type=Path,required=True); prep.add_argument('--root',type=Path,required=True); prep.add_argument('--converter',type=Path,required=True); prep.add_argument('--workers',type=int,default=4)
+    prep.add_argument('--container-converter',action='store_true',help='run the compiled Linux converter in the configured VEP image')
     status=sub.add_parser('status'); status.add_argument('root',type=Path); status.add_argument('--strict',action='store_true')
     monitor=sub.add_parser('progress'); monitor.add_argument('root',type=Path)
     args=p.parse_args()
@@ -317,7 +351,7 @@ def main() -> int:
     elif args.action=='inspect': print(json.dumps(inspect_archive(args.archive),indent=2))
     elif args.action=='prepare':
         if not 1<=args.workers<=8: p.error('workers must be 1–8')
-        prepare(args.archive.resolve(),args.root.resolve(),args.converter.resolve(),args.workers)
+        prepare(args.archive.resolve(),args.root.resolve(),args.converter.resolve(),args.workers,container_converter=args.container_converter)
     else:
         manifest=current_bundle(args.root)
         if not manifest or not valid_bundle(manifest,strict=args.strict): return 1

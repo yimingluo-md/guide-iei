@@ -58,6 +58,35 @@ if (RUNTIME=docker hts tabix -p vcf "$WORK/output dir/out.vcf.gz") \
     exit 1
 fi
 unset FAKE_IMAGE_MISSING
+
+# A packaged app can live on a host-only, unshared filesystem. Its working
+# directory must never become a Docker bind; relative DATA cwd remains valid.
+mkdir -p "$WORK/packaged app/scripts"
+cp "$ROOT/scripts/lib.sh" "$WORK/packaged app/scripts/lib.sh"
+touch "$WORK/packaged app/desktop-build.json"
+for runtime in docker singularity; do
+    ( source "$WORK/packaged app/scripts/lib.sh"
+      cd "$WORK/packaged app"
+      RUNTIME="$runtime" hts tabix -p vcf "$WORK/output dir/out.vcf.gz" )
+    if grep -F "$WORK/packaged app" "$CAPTURE" >/dev/null; then
+        echo "FAIL: packaged application was bind-mounted" >&2; exit 1
+    fi
+    grep -Fx '/tmp' "$CAPTURE" >/dev/null
+    ( source "$WORK/packaged app/scripts/lib.sh"
+      cd "$WORK/packaged app"
+      RUNTIME="$runtime" hts bcftools --version )
+    grep -Fx '/tmp' "$CAPTURE" >/dev/null
+    ( source "$WORK/packaged app/scripts/lib.sh"
+      cd "$WORK/input dir"
+      RUNTIME="$runtime" hts bgzip -f in.vcf.gz )
+    grep -F "$WORK/input dir:/w" "$CAPTURE" >/dev/null
+    grep -Fx 'in.vcf.gz' "$CAPTURE" >/dev/null
+done
+if ( source "$WORK/packaged app/scripts/lib.sh"
+     RUNTIME=docker hts python3 "$WORK/packaged app/scripts/lib.sh" ) >"$WORK/app-mount.log" 2>&1; then
+    echo "FAIL: explicit app-code mount was accepted without staging" >&2; exit 1
+fi
+grep -F 'stage helper code' "$WORK/app-mount.log" >/dev/null
 grep -F 'is not available locally' "$WORK/missing-image.log" >/dev/null
 
 export FAKE_RUN_RC=125

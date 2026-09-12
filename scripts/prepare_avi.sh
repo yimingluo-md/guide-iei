@@ -29,6 +29,10 @@ if [[ "$HOST_COMPILER" == 1 && "${AVI_FORCE_CONTAINER:-0}" != 1 ]] && command -v
   python3 "${ROOT}/pipeline/avi_dataset.py" prepare --archive "$ARCHIVE" --root "$DEST" --converter "${BUILD}/avi_convert" --workers "${AVI_WORKERS:-4}"
 else
   export HTS_VIA_CONTAINER=1
-  hts c++ -O3 -std=c++17 "${ROOT}/pipeline/avi_convert.cpp" -lz -o "${BUILD}/avi_convert"
-  hts python3 "${ROOT}/pipeline/avi_dataset.py" prepare --archive "$ARCHIVE" --root "$DEST" --converter "${BUILD}/avi_convert" --workers "${AVI_WORKERS:-4}"
+  # The bundled Mac Python runs orchestration; the VEP image need not contain
+  # Python 3. Only stage the C++ source that must be compiled in that image.
+  cp "${ROOT}/pipeline/avi_convert.cpp" "${BUILD}/avi_convert.cpp"
+  cmp -s "${ROOT}/pipeline/avi_convert.cpp" "${BUILD}/avi_convert.cpp" || die "AVI helper staging failed"
+  hts c++ -O3 -std=c++17 "${BUILD}/avi_convert.cpp" -lz -o "${BUILD}/avi_convert"
+  python3 "${ROOT}/pipeline/avi_dataset.py" prepare --archive "$ARCHIVE" --root "$DEST" --converter "${BUILD}/avi_convert" --workers "${AVI_WORKERS:-4}" --container-converter
 fi

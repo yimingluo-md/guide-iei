@@ -6,7 +6,7 @@
 # run without a container; this script covers everything that genuinely needs
 # the built vep-annotate image and the installed reference stack:
 #
-#   1. plugin-syntax : perl -c on the REPO's docker/*.pm inside the container,
+#   1. plugin-syntax : perl -c on the image's /plugins/*.pm inside the container,
 #                      against the real Bio::EnsEMBL modules (the host can only
 #                      compile them against stubs)
 #   2. plugin-list   : record the actual `bcftools plugin -l` output format and
@@ -51,12 +51,11 @@ pass() { log "ok    $*"; }
 log "=== [1/5] plugin syntax against the real Bio::EnsEMBL modules ==="
 for plugin in PromoterAI LoGoFunc IndexedScores; do
     if "$RUNTIME" run --rm --pull=never --network=none \
-        -v "${ROOT}/docker:/verify:ro" \
-        --entrypoint perl "$IMAGE" -I /verify -c "/verify/${plugin}.pm" >/dev/null 2>&1; then
+        --entrypoint perl "$IMAGE" -I /plugins -c "/plugins/${plugin}.pm" >/dev/null 2>&1; then
         pass "perl -c ${plugin}.pm (in-container)"
     else
-        "$RUNTIME" run --rm --pull=never --network=none -v "${ROOT}/docker:/verify:ro" \
-            --entrypoint perl "$IMAGE" -I /verify -c "/verify/${plugin}.pm" 2>&1 | sed 's/^/      /' || true
+        "$RUNTIME" run --rm --pull=never --network=none \
+            --entrypoint perl "$IMAGE" -I /plugins -c "/plugins/${plugin}.pm" 2>&1 | sed 's/^/      /' || true
         fail "perl -c ${plugin}.pm"
     fi
 done

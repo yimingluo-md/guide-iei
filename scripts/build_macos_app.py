@@ -30,7 +30,7 @@ WHEELS = {
 CODE_DIRS = {"local_service", "pipeline", "scripts", "config", "docker", "docs"}
 ROOT_FILES = {"VERSION", "LICENSE", "README.md", "requirements.txt"}
 # Explicit new runtime files also support local previews before they are committed.
-EXTRA_FILES = {"local_service/static_site.py", "local_service/desktop_app.py", "local_service/container_startup.py", "local_service/colima_sharing.py", "docs/MACOS_APP_RELEASE.md", "scripts/bundled_engine.py"}
+EXTRA_FILES = {"local_service/static_site.py", "local_service/desktop_app.py", "local_service/container_startup.py", "local_service/colima_sharing.py", "local_service/container_workspace.py", "docs/MACOS_APP_RELEASE.md", "scripts/bundled_engine.py"}
 
 
 def run(*args, **kwargs):

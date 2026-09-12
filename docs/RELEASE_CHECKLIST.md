@@ -18,8 +18,11 @@ databases to simulate a clean machine.
 - Native first-launch setup: named stages, existing-engine reuse, failed setup
   and Retry, safe Quit/cancellation, ignored old deferral settings and immediate
   Quit/reopen. No skip option. No large annotation-dataset downloads during
-  engine preparation. Verify orphaned managed Colima recovery and actual app
-  sharing, without changing a user's explicitly selected engine.
+  engine preparation. Verify orphaned managed Colima recovery and actual working
+  folder access, without changing a user's explicitly selected engine. With
+  `/Applications` unshared in Docker Desktop, test setup and full annotation
+  from that location (`test/check_unshared_app_annotation.py`); a UI-only smoke
+  with setup disabled does not cover this case.
 - Real container plugin verification and public annotation regression, then
   import its output into an isolated Sample Library/cohort and reopen it.
   Compare every indexed record with the sequential VCF, including chromosome X;

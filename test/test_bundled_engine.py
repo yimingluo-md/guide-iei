@@ -80,12 +80,13 @@ class BundledEngineTests(unittest.TestCase):
                 engine.load_bundle(ROOT, self.directory, "docker", "vep-annotate:latest")
             self.assertEqual(run.call_count, 1)
 
-    def test_new_colima_mounts_app_readonly_and_retains_defaults(self):
-        result = subprocess.run(["bash", "-c", 'source "$1"; fake_colima() { printf "%s\\n" "$@"; }; start_managed_colima fake_colima "$2" 7 8',
-            "test", str(ROOT / "scripts/macos_container_dependencies.sh"), "/Applications/GUIDE IEI.app/Contents/Resources/application"],
+    def test_new_colima_mounts_user_workspace_not_app_and_retains_defaults(self):
+        result = subprocess.run(["bash", "-uc", 'source "$1"; fake_colima() { printf "%s\\n" "$@"; }; start_managed_colima fake_colima "$2" 7 8',
+            "test", str(ROOT / "scripts/macos_container_dependencies.sh"), os.environ["HOME"] + "/.iei-variant-review/container-work"],
             capture_output=True, text=True, check=True)
         arguments = result.stdout.splitlines()
-        self.assertIn("/Applications:r", arguments)
+        self.assertFalse(any("/Applications" in argument for argument in arguments))
+        self.assertEqual(arguments.count("--mount"), 2)
         self.assertIn(os.environ["HOME"] + ":w", arguments)
         self.assertIn("/tmp/colima:w", arguments)
         self.assertNotIn("/:w", arguments)

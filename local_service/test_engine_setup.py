@@ -36,21 +36,18 @@ class EngineSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Windows"):
                 self.service.start_engine_setup({"confirm": True})
 
-    def test_ready_image_without_app_mount_is_not_ready_on_reopen(self):
-        import subprocess
+    def test_ready_image_without_prepared_workspace_is_not_ready_on_reopen(self):
         with patch.object(self.service, "_container_image_status", return_value={"available": True}), \
-                patch("local_service.workbench_service.subprocess.run", return_value=subprocess.CompletedProcess([], 1)) as run:
+                patch("local_service.workbench_service.check_container_workspace", side_effect=ValueError("Workspace not shared; Retry preparation")) as check:
             result = self.service.annotation_engine_status({})
         self.assertFalse(result["available"])
         self.assertEqual(result["state"], "sharing_required")
-        self.assertIn(str(self.service.pipeline_root), result["message"])
-        self.assertIn("repair Colima sharing automatically", result["message"])
-        self.assertIn("--pull=never", run.call_args.args[0])
+        self.assertEqual(result["message"], "Workspace not shared; Retry preparation")
+        self.assertEqual(check.call_args.args[0], self.service.state_dir / "container-work")
 
     def test_mountable_image_is_ready_and_busy_setup_does_not_probe(self):
-        import subprocess
         with patch.object(self.service, "_container_image_status", return_value={"available": True}), \
-                patch("local_service.workbench_service.subprocess.run", return_value=subprocess.CompletedProcess([], 0)) as run:
+                patch("local_service.workbench_service.check_container_workspace") as run:
             self.assertTrue(self.service.annotation_engine_status({})["available"])
             run.reset_mock()
             with patch.object(self.service, "_engine_setup_reserved", True):
