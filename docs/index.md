@@ -15,6 +15,9 @@ a clinician-developed, locally run, open-source WES/WGS analysis platform.
   for macOS 13 or newer, then follow the [installation chapter](guide/02-install.md).
   No separate Python/Node installation is needed; first-launch environment setup
   needs internet, and large annotation datasets are installed afterward.
+  GUIDE-IEI software is MIT-licensed. Annotation datasets retain their own
+  licenses; some are restricted to noncommercial use.
+  [View dataset licenses](guide/03-datasets.md#data-sources-and-licenses).
 - **New to GUIDE-IEI?** Start with the
   [User Guide](guide.md): what the software does, how to install it, and a
   complete walkthrough of your first exome analysis. (The chapter list is

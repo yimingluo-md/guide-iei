@@ -36,6 +36,32 @@ class EngineSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Windows"):
                 self.service.start_engine_setup({"confirm": True})
 
+    def test_essential_setup_uses_one_reserved_worker_and_selected_storage(self):
+        ready = {"available": True, "missing": [], "package": {"available": True},
+                 "free_bytes": 1000, "estimated_required_bytes": 500}
+        with patch("local_service.workbench_service.platform.system", return_value="Darwin"), \
+                patch("local_service.workbench_service.load_starter_plan", return_value={}), \
+                patch.object(self.service, "essential_setup_status", return_value=ready), \
+                patch.object(self.service, "_start_resource_job", return_value={"id": "one"}) as start:
+            self.assertEqual(self.service.start_engine_setup({"confirm": True, "essential": True}), {"id": "one"})
+            self.assertTrue(self.service._engine_setup_reserved)
+            args = start.call_args.args
+            self.assertEqual(args[0], "essential_setup")
+            command = args[1]
+            self.assertIn(str(self.root.resolve() / "scripts/install_essential_annotations.py"), command)
+            self.assertEqual(command[command.index("--annotation-root") + 1], str(self.service.annotation_root))
+            with self.assertRaises(ValueError): self.service.begin_storage_mutation()
+            self.service._finish_engine_setup()
+
+    def test_essential_setup_rejects_unreleased_package_before_worker(self):
+        with patch("local_service.workbench_service.platform.system", return_value="Darwin"), \
+                patch("local_service.workbench_service.load_starter_plan", side_effect=ValueError("not released")), \
+                patch.object(self.service, "_start_resource_job") as start:
+            with self.assertRaisesRegex(ValueError, "not released"):
+                self.service.start_engine_setup({"confirm": True, "essential": True})
+            start.assert_not_called()
+            self.assertFalse(self.service._engine_setup_reserved)
+
     def test_ready_image_without_prepared_workspace_is_not_ready_on_reopen(self):
         with patch.object(self.service, "_container_image_status", return_value={"available": True}), \
                 patch("local_service.workbench_service.check_container_workspace", side_effect=ValueError("Workspace not shared; Retry preparation")) as check:

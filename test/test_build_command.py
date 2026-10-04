@@ -176,7 +176,9 @@ def test_avi_custom_track_is_exact_allele_vcf_not_a_transcript_plugin(tmp_path):
     expected = f"file={os.path.realpath(source)},short_name=AlphaGenomeAVI,format=vcf,type=exact,coords=0,fields=raw%phred"
     assert expected in plan.argv
     assert plan.argv[plan.argv.index(expected) - 1] == "--custom"
-    assert not any("IndexedScores" in arg and "avi" in arg.lower() for arg in plan.argv)
+    # Inspect the resource argument, not the temporary directory: pytest's
+    # directory name itself contains "avi" even for the FuncVEP plugin.
+    assert not any(arg.startswith("IndexedScores,") and "resource=alphagenome_avi" in arg.split(",") for arg in plan.argv)
     cfg["custom_tracks"]["AlphaGenomeAVI"]["manifest"] = ""
     missing = build_vep_command(cfg,"in.vcf.gz","out.vcf.gz",container=False,check_exists=False)
     assert not any("AlphaGenomeAVI" in arg for arg in missing.argv)
@@ -317,6 +319,23 @@ def test_required_spliceai_snv_only(tmp_path):
     assert ",snv=" in spliceai[0]
     assert "indel=" not in spliceai[0]
     assert not plan.errors, plan.errors
+
+
+def test_starter_spliceai_uses_gene_safe_plugin_and_requires_provenance(tmp_path):
+    cfg = _full_cfg(str(tmp_path))
+    block = cfg["plugins"]["SpliceAI"]
+    block.pop("indel", None)
+    block["coverage_scope"] = "essential_splice_sites"
+    plan = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz", check_exists=False)
+    assert any("source_manifest" in error for error in plan.errors)
+    assert not any(a.startswith("SpliceAIStarter,") for a in plan.argv)
+    provenance = tmp_path / "preparation.json"
+    provenance.write_text("{}")
+    block["source_manifest"] = str(provenance)
+    plan = build_vep_command(cfg, "in.vcf.gz", "out.vcf.gz")
+    assert not plan.errors, plan.errors
+    assert any(a.startswith("SpliceAIStarter,snv=") and ",manifest=" in a for a in plan.argv)
+    assert not any(a.startswith("SpliceAI,") for a in plan.argv)
 
 
 def test_core_only(tmp_path):

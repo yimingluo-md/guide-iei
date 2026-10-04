@@ -21,6 +21,10 @@ def main():
     python = app / "Contents/Frameworks/Python.framework/Versions/Current/bin/python3"
     root = app / "Contents/Resources/application"
     existing_engine = os.environ.get("IEI_TEST_EXISTING_ENGINE") == "1"
+    essential_setup = os.environ.get("IEI_TEST_ESSENTIAL_SETUP") == "1"
+    if essential_setup:
+        assert not existing_engine, "Essential first-launch smoke must not install or modify an existing engine"
+        assert os.environ.get("IEI_TEST_NATIVE_APP") == "1", "Essential setup requires the native startup window"
     if existing_engine:
         # Refuse to run the automatic path unless the existing image matches;
         # this test must not install tools or rebuild a user's container.
@@ -57,6 +61,8 @@ def main():
             for name in ("DOCKER_HOST", "DOCKER_CONTEXT"):
                 if name in os.environ:
                     env[name] = os.environ[name]
+        if essential_setup:
+            env["IEI_DESKTOP_SETUP"] = "1"
         log = (state / "service.log").open("w+")
         command = ([str(app / "Contents/MacOS/GUIDE-IEI")]
                    if os.environ.get("IEI_TEST_NATIVE_APP") == "1"
@@ -85,6 +91,27 @@ def main():
             assert manifest["haploinsufficiency"]["genes"] == 48
             assert get("/api/software-update/status")["desktop_app"]
             capabilities = get("/api/capabilities")
+            if essential_setup:
+                plan = json.loads((root / "config/essential-annotations.json").read_text())
+                assert plan["release_status"] == "ready"
+                essential = get("/api/essential-setup/status")
+                assert essential["package"]["installable"]
+                assert set(essential["package"]["missing"]) == {"alphamissense", "cadd", "spliceai"}
+                assert essential["package"]["download_bytes"] == sum(
+                    asset["size_bytes"] for component in plan["components"] for asset in component["files"])
+                assert not essential["available"] and not essential["legacy_ready"]
+                assert essential["annotation_path"].startswith(str(state))
+                for _ in range(100):
+                    states = list((state / "Application Support/logs").glob("startup-*.json"))
+                    startup = json.loads(states[0].read_text()) if states else {}
+                    if startup.get("phase") == "waiting" and startup.get("can_prepare"):
+                        break
+                    time.sleep(.1)
+                else:
+                    raise AssertionError("New installation did not offer unified setup: " + repr(startup))
+                assert startup["annotation_path"] == essential["annotation_path"]
+                assert not get("/api/resource-downloads")["jobs"], "First launch must wait for Prepare"
+                print("ESSENTIAL SETUP PASSED: pinned public package, isolated default storage, explicit Prepare, no automatic downloads")
             if existing_engine:
                 assert capabilities["container_runtimes"]
                 for _ in range(300):

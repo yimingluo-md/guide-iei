@@ -66,7 +66,7 @@ bgzip --version >/dev/null
 tabix --version >/dev/null
 bcftools plugin -l | grep -qx liftover
 perl -MDBD::SQLite -e 'exit 0'
-for plugin in PromoterAI LoGoFunc IndexedScores LoF; do
+for plugin in PromoterAI LoGoFunc IndexedScores SpliceAIStarter LoF; do
     perl -I/plugins -c "/plugins/$plugin.pm"
 done
 """

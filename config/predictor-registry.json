@@ -2,6 +2,62 @@
   "schema_version": 1,
   "resources": [
     {
+      "id": "starter_alphamissense",
+      "label": "AlphaMissense — MANE starter",
+      "family": "prediction_database",
+      "config_path": "plugins.AlphaMissenseStarter",
+      "assembly": "GRCh38",
+      "distribution": "public_optional",
+      "default_enabled": false,
+      "license_ack_required": false,
+      "license_name": "AlphaMissense predictions terms; see bundled notices",
+      "source_url": "https://github.com/google-deepmind/alphamissense",
+      "assets": [
+        {
+          "id": "scores",
+          "config_path": "plugins.AlphaMissenseStarter.file",
+          "role": "score_table",
+          "required": true,
+          "indexed": true
+        },
+        {
+          "id": "manifest",
+          "config_path": "plugins.AlphaMissenseStarter.manifest",
+          "role": "manifest",
+          "required": true,
+          "indexed": false
+        }
+      ]
+    },
+    {
+      "id": "starter_cadd",
+      "label": "CADD — coding SNV starter",
+      "family": "prediction_database",
+      "config_path": "plugins.CADDStarter",
+      "assembly": "GRCh38",
+      "distribution": "public_optional",
+      "default_enabled": false,
+      "license_ack_required": false,
+      "license_name": "CADD non-commercial use",
+      "source_url": "https://cadd.bihealth.org/download",
+      "assets": [
+        {
+          "id": "scores",
+          "config_path": "plugins.CADDStarter.file",
+          "role": "score_table",
+          "required": true,
+          "indexed": true
+        },
+        {
+          "id": "manifest",
+          "config_path": "plugins.CADDStarter.manifest",
+          "role": "manifest",
+          "required": true,
+          "indexed": false
+        }
+      ]
+    },
+    {
       "id": "vep_core",
       "label": "Ensembl VEP core predictors",
       "family": "runtime",
@@ -56,7 +112,7 @@
       "default_enabled": true,
       "license_ack_required": false,
       "license_name": "SpliceAI source dataset terms",
-      "source_url": "https://github.com/Ensembl/VEP_plugins",
+      "source_url": "https://huggingface.co/datasets/luoyiming1991/spliceai-mane-v1.5-d500-m1-snv",
       "assets": [
         {"id": "snv", "config_path": "plugins.SpliceAI.snv", "role": "score_vcf", "required": true, "indexed": true},
         {"id": "indel", "config_path": "plugins.SpliceAI.indel", "role": "score_vcf", "required": false, "indexed": true}
@@ -310,6 +366,55 @@
   ],
   "annotators": [
     {
+      "id": "starter_alphamissense",
+      "label": "AlphaMissense — MANE starter indexed lookup",
+      "resource_id": "starter_alphamissense",
+      "config_path": "plugins.AlphaMissenseStarter",
+      "adapter": "generic_indexed_lookup",
+      "implementation": "indexed_scores",
+      "match": {
+        "scope": "allele_transcript_protein",
+        "dimensions": [
+          "chromosome",
+          "position",
+          "reference",
+          "alternate",
+          "ensembl_transcript",
+          "protein_position",
+          "amino_acid_change"
+        ],
+        "assembly": "GRCh38",
+        "normalize_alleles": false,
+        "normalize_contigs": true,
+        "transcript_version": "stable_id",
+        "fallback": "none",
+        "cardinality": "zero_or_many"
+      }
+    },
+    {
+      "id": "starter_cadd",
+      "label": "CADD — coding SNV starter indexed lookup",
+      "resource_id": "starter_cadd",
+      "config_path": "plugins.CADDStarter",
+      "adapter": "generic_indexed_lookup",
+      "implementation": "indexed_scores",
+      "match": {
+        "scope": "allele",
+        "dimensions": [
+          "chromosome",
+          "position",
+          "reference",
+          "alternate"
+        ],
+        "assembly": "GRCh38",
+        "normalize_alleles": false,
+        "normalize_contigs": true,
+        "transcript_version": "not_applicable",
+        "fallback": "none",
+        "cardinality": "zero_or_many"
+      }
+    },
+    {
       "id": "vep_core",
       "label": "VEP built-in transcript predictors",
       "resource_id": "vep_core",
@@ -491,6 +596,151 @@
     }
   ],
   "predictors": [
+    {
+      "id": "starter_alphamissense",
+      "logical_id": "alphamissense",
+      "provider_priority": 10,
+      "label": "AlphaMissense",
+      "category": "Protein model",
+      "resource_id": "starter_alphamissense",
+      "annotator_id": "starter_alphamissense",
+      "applicability": [
+        "missense_variant"
+      ],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {
+          "id": "score",
+          "field": "StarterAM_score",
+          "value_type": "float",
+          "direction": "higher",
+          "role": "score",
+          "value_range": [
+            0,
+            1
+          ],
+          "derived": false,
+          "filterable": true
+        },
+        {
+          "id": "prediction",
+          "field": "StarterAM_prediction",
+          "value_type": "category",
+          "direction": "none",
+          "role": "prediction",
+          "value_range": null,
+          "derived": false,
+          "filterable": true
+        },
+        {
+          "id": "match",
+          "field": "StarterAM_match",
+          "value_type": "category",
+          "direction": "none",
+          "role": "provenance",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        },
+        {
+          "id": "match_status",
+          "field": "StarterAM_match_status",
+          "value_type": "category",
+          "direction": "none",
+          "role": "provenance",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        },
+        {
+          "id": "source_target",
+          "field": "StarterAM_source_target",
+          "value_type": "text",
+          "direction": "none",
+          "role": "provenance",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        },
+        {
+          "id": "allele_available",
+          "field": "StarterAM_allele_available",
+          "value_type": "boolean",
+          "direction": "none",
+          "role": "flag",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        }
+      ]
+    },
+    {
+      "id": "starter_cadd",
+      "logical_id": "cadd_coding",
+      "provider_priority": 10,
+      "label": "CADD phred",
+      "category": "Ensemble",
+      "resource_id": "starter_cadd",
+      "annotator_id": "starter_cadd",
+      "applicability": [
+        "all_variants"
+      ],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {
+          "id": "phred",
+          "field": "StarterCADD_phred",
+          "value_type": "float",
+          "direction": "higher",
+          "role": "score",
+          "value_range": null,
+          "derived": false,
+          "filterable": true
+        },
+        {
+          "id": "match",
+          "field": "StarterCADD_match",
+          "value_type": "category",
+          "direction": "none",
+          "role": "provenance",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        },
+        {
+          "id": "match_status",
+          "field": "StarterCADD_match_status",
+          "value_type": "category",
+          "direction": "none",
+          "role": "provenance",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        },
+        {
+          "id": "source_target",
+          "field": "StarterCADD_source_target",
+          "value_type": "text",
+          "direction": "none",
+          "role": "provenance",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        },
+        {
+          "id": "allele_available",
+          "field": "StarterCADD_allele_available",
+          "value_type": "boolean",
+          "direction": "none",
+          "role": "flag",
+          "value_range": null,
+          "derived": false,
+          "filterable": false
+        }
+      ]
+    },
     {
       "id": "vep_sift",
       "label": "SIFT (VEP built-in)",
@@ -1025,10 +1275,10 @@
         {"id": "delta_acceptor_loss", "field": "SpliceAI_pred_DS_AL", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
         {"id": "delta_donor_gain", "field": "SpliceAI_pred_DS_DG", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
         {"id": "delta_donor_loss", "field": "SpliceAI_pred_DS_DL", "value_type": "float", "direction": "higher", "role": "score", "value_range": [0, 1], "derived": false, "filterable": true},
-        {"id": "delta_position_acceptor_gain", "field": "SpliceAI_pred_DP_AG", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false},
-        {"id": "delta_position_acceptor_loss", "field": "SpliceAI_pred_DP_AL", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false},
-        {"id": "delta_position_donor_gain", "field": "SpliceAI_pred_DP_DG", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false},
-        {"id": "delta_position_donor_loss", "field": "SpliceAI_pred_DP_DL", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-50, 50], "derived": false, "filterable": false}
+        {"id": "delta_position_acceptor_gain", "field": "SpliceAI_pred_DP_AG", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-500, 500], "derived": false, "filterable": false},
+        {"id": "delta_position_acceptor_loss", "field": "SpliceAI_pred_DP_AL", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-500, 500], "derived": false, "filterable": false},
+        {"id": "delta_position_donor_gain", "field": "SpliceAI_pred_DP_DG", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-500, 500], "derived": false, "filterable": false},
+        {"id": "delta_position_donor_loss", "field": "SpliceAI_pred_DP_DL", "value_type": "integer", "direction": "none", "role": "distance", "value_range": [-500, 500], "derived": false, "filterable": false}
       ]
     },
     {

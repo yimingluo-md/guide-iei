@@ -1,0 +1,34 @@
+{
+  "bases": {
+    "alphamissense": {
+      "Feature": "ENST00000614859.7", "HGVSp": "ENSP000001:p.Phe2Ile",
+      "StarterAM_score": "0.1201", "StarterAM_prediction": "likely_benign",
+      "StarterAM_match": "allele_transcript_protein", "StarterAM_match_status": "exact",
+      "StarterAM_source_target": "ENST00000614859:F2I", "StarterAM_allele_available": "1"
+    },
+    "cadd_coding": {"StarterCADD_phred": "23.4", "StarterCADD_match": "allele", "StarterCADD_match_status": "exact"}
+  },
+  "cases": [
+    {"name": "versioned MANE exact", "logical_id": "alphamissense", "override": {}, "status": "exact", "values": {"score": 0.1201, "prediction": "likely_benign"}},
+    {"name": "zero retained", "logical_id": "alphamissense", "override": {"StarterAM_score": "0"}, "status": "exact", "values": {"score": 0, "prediction": "likely_benign"}},
+    {"name": "wrong transcript", "logical_id": "alphamissense", "override": {"Feature": "ENST00000999999"}, "status": "partial", "values": {}},
+    {"name": "wrong residue", "logical_id": "alphamissense", "override": {"HGVSp": "ENSP1:p.Phe3Ile"}, "status": "partial", "values": {}},
+    {"name": "wrong amino acid", "logical_id": "alphamissense", "override": {"HGVSp": "ENSP1:p.Phe2Leu"}, "status": "partial", "values": {}},
+    {"name": "no protein target", "logical_id": "alphamissense", "override": {"HGVSp": ""}, "status": "partial", "values": {}},
+    {"name": "protein position and amino acids", "logical_id": "alphamissense", "override": {"HGVSp": "", "Protein_position": "2", "Amino_acids": "F/I"}, "status": "exact", "values": {"score": 0.1201, "prediction": "likely_benign"}},
+    {"name": "encoded HGVS", "logical_id": "alphamissense", "override": {"HGVSp": "ENSP1%3Ap.Phe2Ile"}, "status": "exact", "values": {"score": 0.1201, "prediction": "likely_benign"}},
+    {"name": "explicit ambiguity", "logical_id": "alphamissense", "override": {"StarterAM_match_status": "ambiguous"}, "status": "ambiguous", "values": {}},
+    {"name": "no status", "logical_id": "alphamissense", "override": {"StarterAM_match_status": ""}, "status": "partial", "values": {}},
+    {"name": "wrong match scope", "logical_id": "alphamissense", "override": {"StarterAM_match": "allele_only"}, "status": "partial", "values": {}},
+    {"name": "multiple scores", "logical_id": "alphamissense", "override": {"StarterAM_score": "0.1&0.9"}, "status": "exact", "values": {}},
+    {"name": "out of range", "logical_id": "alphamissense", "override": {"StarterAM_score": "1.2"}, "status": "exact", "values": {}},
+    {"name": "nonfinite", "logical_id": "alphamissense", "override": {"StarterAM_score": "NaN"}, "status": "exact", "values": {}},
+    {"name": "CADD scalar", "logical_id": "cadd_coding", "override": {}, "status": "exact", "values": {"phred": 23.4}},
+    {"name": "CADD zero", "logical_id": "cadd_coding", "override": {"StarterCADD_phred": "0"}, "status": "exact", "values": {"phred": 0}},
+    {"name": "CADD no status", "logical_id": "cadd_coding", "override": {"StarterCADD_match_status": "."}, "status": "partial", "values": {}},
+    {"name": "CADD ambiguity", "logical_id": "cadd_coding", "override": {"StarterCADD_match_status": "ambiguous"}, "status": "ambiguous", "values": {}},
+    {"name": "CADD no permissive prefix parsing", "logical_id": "cadd_coding", "override": {"StarterCADD_phred": "23bad"}, "status": "exact", "values": {}},
+    {"name": "CADD no hex", "logical_id": "cadd_coding", "override": {"StarterCADD_phred": "0x10"}, "status": "exact", "values": {}},
+    {"name": "CADD negative", "logical_id": "cadd_coding", "override": {"StarterCADD_phred": "-2"}, "status": "exact", "values": {}}
+  ]
+}

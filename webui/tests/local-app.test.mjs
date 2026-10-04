@@ -74,7 +74,8 @@ test("provides separate local annotation and annotated-VCF review paths", async 
   assert.match(source, /Patient VCF, phenotype, and analysis data are processed locally/);
   assert.match(source, /analysisScope === "whole_genome"/);
   assert.match(source, /function annotationSourceIsLocked/);
-  assert.match(source, /source\.required \|\| source\.setup_mode === "bundled" \|\| source\.id === "dbnsfp"/);
+  assert.match(source, /source\.required \|\| source\.setup_mode === "bundled"/);
+  assert.doesNotMatch(source, /source\.setup_mode === "bundled" \|\| source\.id === "dbnsfp"/);
   assert.match(source, /return source\.installed \|\| source\.enabled/);
   assert.doesNotMatch(source, /DEFAULT_WGS_ANNOTATION_SOURCES/);
   assert.equal(source.match(/annotationSourceIsEnabled\(source, analysisScope, sourceEnabled\)/g)?.length, 2);

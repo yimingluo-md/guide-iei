@@ -97,7 +97,7 @@ def reference_paths(cfg: dict, registry=None) -> list[str]:
     for name, keys in {
         "dbNSFP": ("path",),
         "LoF": ("human_ancestor_fa", "conservation_file", "gerp_bigwig"),
-        "SpliceAI": ("snv", "indel"),
+        "SpliceAI": ("snv", "indel", "source_manifest"),
         "CADD_WGS": ("snv", "indels"),
         "PromoterAI": ("file", "transcript_map", "manifest"),
         "LoGoFunc": ("file", "manifest"),
@@ -158,6 +158,18 @@ def registry_metadata(path: Path, cfg: dict) -> tuple[dict, object | None]:
             for resource in registry.resources
         ],
     })
+    enabled_resources = {
+        item["id"] for item in result["configured_resources"] if item["enabled"]
+    }
+    # Keep provider identity and match contract explicit. "Configured" is not
+    # a claim that an optional file exists or that any individual variant hit.
+    result["configured_predictor_providers"] = [
+        {"logical_id": predictor.logical_id, "predictor_id": predictor.id,
+         "resource_id": predictor.resource_id, "priority": predictor.provider_priority,
+         "scope": registry.annotator(predictor.annotator_id).match.scope.value,
+         "fields": [metric.field for metric in predictor.metrics]}
+        for predictor in registry.predictors if predictor.resource_id in enabled_resources
+    ]
     return result, registry
 
 
@@ -231,6 +243,24 @@ def main() -> int:
         "predictor_registry": predictor_registry,
         "references": reference_metadata,
     }
+    from spliceai_dataset import prefer_legacy
+    splice = dict((cfg.get("plugins") or {}).get("SpliceAI") or {})
+    prefer_legacy(splice, lambda p: Path(p) if Path(p).is_absolute() else Path(args.base_dir) / p)
+    configured_splice = (cfg.get("plugins") or {}).get("SpliceAI") or {}
+    if splice.get("enabled") and splice.get("snv") != configured_splice.get("snv"):
+        manifest["references"].append(file_metadata(splice["snv"]))
+    if splice.get("enabled") and splice.get("format") == "mane_v1.5_sharded":
+        from spliceai_dataset import BASE, validate
+        source = Path(splice["snv"])
+        if not source.is_absolute():
+            source = Path(args.base_dir) / source
+        release = validate(source)
+        manifest["spliceai_release"] = {
+            "source": BASE, "manifest_sha256": sha256(str(source)),
+            "dataset": release["dataset"], "version": release["dataset_version"],
+            "scientific_configuration": release["scientific_configuration"],
+            "chromosome_files": release["files"],
+        }
     with open(args.output + ".run_manifest.json", "w") as out:
         json.dump(manifest, out, indent=2, sort_keys=True)
         out.write("\n")

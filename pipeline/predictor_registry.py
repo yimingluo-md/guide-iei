@@ -286,6 +286,11 @@ class PredictorDefinition:
     default_enabled: bool
     optional: bool
     metrics: tuple[MetricDefinition, ...]
+    # Several independently versioned resources may provide one logical
+    # predictor. Fields remain provider-specific; scores are never selected by
+    # magnitude. Existing registry entries keep their historical identities.
+    logical_id: str
+    provider_priority: int
 
 
 @dataclass(frozen=True)
@@ -324,6 +329,32 @@ class PredictorRegistry:
             return self.predictors_by_id[predictor_id]
         except KeyError as exc:
             raise KeyError(f"unknown predictor: {predictor_id}") from exc
+
+    def providers(self, logical_id: str) -> tuple[PredictorDefinition, ...]:
+        """Return providers in explicit preference order, never score order."""
+        return tuple(sorted(
+            (item for item in self.predictors if item.logical_id == logical_id),
+            key=lambda item: (item.provider_priority, item.id),
+        ))
+
+    def select_provider(
+        self, logical_id: str, available_resources: set[str], *,
+        preferred_resource: str | None = None,
+    ) -> PredictorDefinition | None:
+        """Pure selection after caller validates installation and matching.
+
+        An explicit previous/user choice wins. If it is missing we return None
+        rather than silently replace it; readiness handling belongs to the
+        caller. This function neither enables resources nor touches config.
+        """
+        providers = self.providers(logical_id)
+        if not providers:
+            raise KeyError(f"unknown logical predictor: {logical_id}")
+        if preferred_resource is not None:
+            providers = tuple(p for p in providers if p.resource_id == preferred_resource)
+            if not providers:
+                raise ValueError(f"{preferred_resource} does not provide {logical_id}")
+        return next((p for p in providers if p.resource_id in available_resources), None)
 
 
 def _mapping(value: Any, path: str) -> Mapping[str, Any]:
@@ -639,7 +670,7 @@ def _parse_predictor(
         "id", "label", "category", "resource_id", "annotator_id", "applicability",
         "default_enabled", "optional", "metrics",
     }
-    _keys(obj, required, set(), path)
+    _keys(obj, required, {"logical_id", "provider_priority"}, path)
     resource_id = _identifier(obj["resource_id"], f"{path}.resource_id")
     annotator_id = _identifier(obj["annotator_id"], f"{path}.annotator_id")
     if resource_id not in resource_ids:
@@ -664,6 +695,9 @@ def _parse_predictor(
         _parse_metric(item, f"{path}.metrics[{index}]")
         for index, item in enumerate(metrics_raw)
     )
+    priority = obj.get("provider_priority", 100)
+    if isinstance(priority, bool) or not isinstance(priority, int) or priority < 0:
+        raise RegistryError(f"{path}.provider_priority must be a non-negative integer")
     return PredictorDefinition(
         id=_identifier(obj["id"], f"{path}.id"),
         label=_string(obj["label"], f"{path}.label"),
@@ -674,6 +708,8 @@ def _parse_predictor(
         default_enabled=_boolean(obj["default_enabled"], f"{path}.default_enabled"),
         optional=_boolean(obj["optional"], f"{path}.optional"),
         metrics=metrics,
+        logical_id=_identifier(obj.get("logical_id", obj["id"]), f"{path}.logical_id"),
+        provider_priority=priority,
     )
 
 
@@ -710,7 +746,24 @@ def validate_registry_document(document: Mapping[str, Any]) -> PredictorRegistry
         for index, item in enumerate(predictors_raw)
     )
     fields: dict[str, str] = {}
+    predictor_map = {item.id: item for item in predictors}
     for predictor in predictors:
+        canonical = predictor_map.get(predictor.logical_id)
+        if canonical is None or canonical.logical_id != canonical.id:
+            raise RegistryError(f"{predictor.id} references unknown or indirect logical predictor: {predictor.logical_id}")
+        if predictor.id != predictor.logical_id:
+            canonical_metrics = {metric.id: metric for metric in canonical.metrics}
+            for metric in predictor.metrics:
+                if metric.role is MetricRole.PROVENANCE:
+                    continue
+                if (metric.id == "allele_available" and metric.role is MetricRole.FLAG
+                        and metric.value_type is MetricType.BOOLEAN):
+                    continue
+                expected = canonical_metrics.get(metric.id)
+                if expected is None or (
+                    metric.value_type, metric.role, metric.direction, metric.value_range
+                ) != (expected.value_type, expected.role, expected.direction, expected.value_range):
+                    raise RegistryError(f"provider {predictor.id} metric {metric.id} disagrees with logical predictor {canonical.id}")
         for metric in predictor.metrics:
             previous = fields.get(metric.field)
             if previous is not None:

@@ -66,6 +66,8 @@ CONTAINER_FILES = (
     "docker/PromoterAI.pm",
     "docker/LoGoFunc.pm",
     "docker/IndexedScores.pm",
+    "docker/SpliceAIStarter.pm",
+    "docker/SpliceAI-MANE1.5-gene-map.json",
 )
 MAX_ARCHIVE_BYTES = 500 * 1024 * 1024
 # Bounds on what the archive may EXPAND to (audit M20): the download cap above

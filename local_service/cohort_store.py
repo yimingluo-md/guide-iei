@@ -40,6 +40,7 @@ from pipeline.predictor_registry import (
     load_registry,
 )
 from pipeline.promoterai_evidence import promoterai_observation
+from pipeline.starter_evidence import starter_observation
 from pipeline.vcf_assembly import detect_vcf_assembly
 
 
@@ -1368,6 +1369,27 @@ def _normalized_predictions(
     )
     for predictor in selected_predictors:
         annotator = PREDICTOR_REGISTRY.annotators_by_id[predictor.annotator_id]
+        if predictor.id in {"starter_alphamissense", "starter_cadd"}:
+            evidence = starter_observation(record, predictor.logical_id)
+            if evidence is None or evidence["match_status"] == "unmatched":
+                continue
+            exact = evidence["match_status"] == "exact"
+            target = evidence["target"]
+            predictions.append({
+                "resource_id": predictor.resource_id, "predictor_id": predictor.id,
+                "target_scope": annotator.match.scope.value, "target": target,
+                "bind_annotation": exact and bool(target),
+                "gene_id": "", "gene_symbol": "",
+                "transcript_id": target.get("ensembl_transcript", ""),
+                "protein_change": target.get("amino_acid_change", ""),
+                "match_status": evidence["match_status"], "matcher": annotator.id,
+                "provenance": {**evidence["provenance"], "matched_dimensions": [
+                    d.value for d in annotator.match.dimensions
+                    if exact or d in _VARIANT_MATCH_DIMENSIONS
+                ]},
+                "values": evidence["values"],
+            })
+            continue
         if annotator.match.scope is MatchScope.SAMPLE_HAPLOTYPE:
             # Expanded against the matching sample below, after genotypes are
             # parsed. A CSQ row alone cannot identify a phased observation.
@@ -1705,6 +1727,13 @@ def annotation_from(
     # Read once here and reused by the normalised observation below (it was
     # evaluated twice per annotation row: audit M31).
     promoter_observation = promoterai_observation(record, decode=decode)
+    starter_am = starter_observation(record, "alphamissense")
+    starter_cadd = starter_observation(record, "cadd_coding")
+    coding_cadd = (
+        starter_cadd["values"].get("phred") if starter_cadd is not None
+        else maximum(record, ("CADD_phred",))
+    )
+    wgs_cadd = maximum(record, ("CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED"))
     annotation = {
         "gene": (first(record, ("SYMBOL", "HGNC")) or "—").upper(),
         "gene_id": first(record, ("Gene",)),
@@ -1716,14 +1745,14 @@ def annotation_from(
         "gnomad_popmax": frequency_value,
         "gnomad_popmax_source": frequency_source,
         # When both sources exist on a coding SNV, the explicitly selected
-        # genome-wide v1.7 plugin is authoritative. dbNSFP is the fallback for
-        # exome jobs or records without a plugin value; do not combine sources
-        # by taking the numerically larger score.
-        "cadd": preferred_maximum(record, (
-            ("CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED"),
-            ("CADD_phred",),
-        )),
-        "alpha_missense": maximum(record, ("AlphaMissense_score", "am_pathogenicity")),
+        # genome-wide v1.7 plugin is authoritative. Otherwise use the declared
+        # starter provider, or legacy dbNSFP if starter fields are absent.
+        # Do not combine sources by taking the numerically larger score.
+        "cadd": wgs_cadd if wgs_cadd is not None else coding_cadd,
+        "alpha_missense": (
+            starter_am["values"].get("score") if starter_am is not None
+            else maximum(record, ("AlphaMissense_score", "am_pathogenicity"))
+        ),
         "spliceai": maximum(record, (
             "SpliceAI_pred_DS_AG", "SpliceAI_pred_DS_AL",
             "SpliceAI_pred_DS_DG", "SpliceAI_pred_DS_DL",

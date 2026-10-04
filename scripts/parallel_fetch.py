@@ -92,7 +92,11 @@ def bsd_sum(path: Path) -> tuple[int, int]:
 
 
 def md5(path: Path) -> str:
-    digest = hashlib.md5()
+    return file_digest(path, "md5")
+
+
+def file_digest(path: Path, algorithm: str) -> str:
+    digest = hashlib.new(algorithm)
     with path.open("rb") as handle:
         while block := handle.read(8 * 1024 * 1024):
             digest.update(block)
@@ -206,6 +210,7 @@ def main() -> int:
         help="verify the completed file against this hexadecimal MD5 digest",
     )
     parser.add_argument("--progress-start", type=float, default=0.0)
+    parser.add_argument("--sha256", help="verify the completed file against this SHA-256 digest")
     parser.add_argument("--progress-scale", type=float, default=100.0)
     args = parser.parse_args()
 
@@ -235,6 +240,10 @@ def main() -> int:
     expected_md5 = (args.md5 or "").strip().lower()
     if expected_md5 and not re.fullmatch(r"[0-9a-f]{32}", expected_md5):
         raise SystemExit("--md5 must be a 32-character hexadecimal digest")
+    expected_sha256 = (args.sha256 or "").strip().lower()
+    if expected_sha256 and not re.fullmatch(r"[0-9a-f]{64}", expected_sha256):
+        raise SystemExit("--sha256 must be a 64-character hexadecimal digest")
+    has_checksum = bool(expected_sum or expected_md5 or expected_sha256)
 
     def display_progress(percent: float) -> float:
         return args.progress_start + (args.progress_scale * percent / 100.0)
@@ -274,6 +283,8 @@ def main() -> int:
         refresh_reason = ""
         if (expected_sum and bsd_sum(output) != expected_sum) or (
             expected_md5 and md5(output) != expected_md5
+        ) or (
+            expected_sha256 and file_digest(output, "sha256") != expected_sha256
         ):
             # A size-matching existing file that fails the caller's checksum
             # is a stale same-size file (crashed earlier run, later release
@@ -284,7 +295,7 @@ def main() -> int:
                 f"{output} matches the remote size but fails the expected "
                 "checksum — a stale same-size file; fetching the current one"
             )
-        elif not (expected_sum or expected_md5):
+        elif not has_checksum:
             stored_etag, stored_modified = stored_version()
             modified_known = bool(stored_modified and remote_modified)
             modified_changed = modified_known and stored_modified != remote_modified
@@ -308,7 +319,7 @@ def main() -> int:
                     "under a different remote ETag; fetching the current file"
                 )
         if not refresh_reason:
-            if expected_sum or expected_md5:
+            if has_checksum:
                 print(
                     f"{display_progress(100):5.1f}%  verified {output} "
                     f"({total} bytes)",
@@ -444,7 +455,7 @@ def main() -> int:
                 # the only safe reading.
                 if lm_moved or (
                     etag_moved and not lm_known
-                    and not (expected_sum or expected_md5)
+                    and not has_checksum
                 ):
                     raise RemoteChangedError(
                         f"range {index}: the remote file changed during the "
@@ -544,6 +555,13 @@ def main() -> int:
             _discard_proven_bad(
                 f"completed download failed MD5: expected {expected_md5}, "
                 f"received {actual_md5}"
+            )
+    if expected_sha256:
+        actual_sha256 = file_digest(partial, "sha256")
+        if actual_sha256 != expected_sha256:
+            _discard_proven_bad(
+                f"completed download failed SHA-256: expected {expected_sha256}, "
+                f"received {actual_sha256}"
             )
     partial.replace(output)
     # Record which remote version these bytes are: checksum-less callers can

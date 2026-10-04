@@ -16,6 +16,7 @@ import plistlib
 import re
 import shutil
 import subprocess
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -28,9 +29,17 @@ WHEELS = {
     "x86_64": ("https://files.pythonhosted.org/packages/ef/e3/3af305b830494fa85d95f6d95ef7fa73f2ee1cc8ef5b495c7c3269fb835f/PyYAML-6.0.2-cp313-cp313-macosx_10_13_x86_64.whl", "efdca5630322a10774e8e98e1af481aad470dd62c3170801852d752aa7a783ba"),
 }
 CODE_DIRS = {"local_service", "pipeline", "scripts", "config", "docker", "docs"}
-ROOT_FILES = {"VERSION", "LICENSE", "README.md", "requirements.txt"}
+ROOT_FILES = {"VERSION", "LICENSE", "THIRD_PARTY_NOTICES.md", "README.md", "requirements.txt"}
 # Explicit new runtime files also support local previews before they are committed.
 EXTRA_FILES = {"local_service/static_site.py", "local_service/desktop_app.py", "local_service/container_startup.py", "local_service/colima_sharing.py", "local_service/container_workspace.py", "docs/MACOS_APP_RELEASE.md", "scripts/bundled_engine.py"}
+EXTRA_FILES |= {"THIRD_PARTY_NOTICES.md", "config/starter-licenses.json",
+                "pipeline/starter_annotations.py", "pipeline/starter_evidence.py"}
+EXTRA_FILES |= {"config/essential-annotations.json", "pipeline/starter_package.py",
+                "local_service/essential_setup.py", "local_service/desktop_setup.py",
+                "scripts/install_essential_annotations.py"}
+EXTRA_FILES |= {"docker/SpliceAIStarter.pm", "docker/SpliceAI-MANE1.5-gene-map.json",
+                "scripts/build_spliceai_gene_map.py"}
+EXTRA_FILES |= {"pipeline/spliceai_dataset.py", "config/spliceai-mane-v1.5.json"}
 
 
 def run(*args, **kwargs):
@@ -113,6 +122,13 @@ def main():
         parser.error("build natively on an arm64 or x86_64 Mac")
     if args.without_engine and not args.preview:
         parser.error("--without-engine is only allowed for local preview/CI tests")
+    if not args.preview:
+        sys.path.insert(0, str(ROOT))
+        from pipeline.starter_package import load_plan
+        try:
+            load_plan(ROOT / "config/essential-annotations.json")
+        except (OSError, ValueError) as exc:
+            parser.error(f"essential reference package is not ready for distribution: {exc}")
     dirty = subprocess.check_output(["git", "status", "--porcelain"], cwd=ROOT).strip()
     if not args.preview and (dirty or not args.identity or not args.notary_profile):
         parser.error("release needs a clean tree, --identity and --notary-profile; use --preview for local testing")

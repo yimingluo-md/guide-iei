@@ -202,4 +202,8 @@ intended research or clinical-laboratory context.
 
 ## License
 
-MIT — see `LICENSE`.
+GUIDE-IEI's own application code is licensed under MIT — see `LICENSE`.
+Annotation datasets, bundled engine components, and other third-party materials
+retain their separate licenses. Some annotation resources have noncommercial-use
+restrictions; the MIT license does not override those terms. See
+[third-party license scope](THIRD_PARTY_NOTICES.md).

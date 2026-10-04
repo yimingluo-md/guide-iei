@@ -41,6 +41,9 @@ import urllib.request
 from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 
 from local_service.ccre_context import CcreContextStore
+from local_service.essential_setup import missing_resources, package_status, reference_allowance
+from pipeline.starter_package import load_plan as load_starter_plan, installed_paths as starter_paths, apply_starters
+from pipeline.spliceai_dataset import FORMAT as SPLICEAI_SHARDED, valid as valid_full_spliceai
 from local_service.container_startup import DockerStartup, mac_tool_path, managed_colima_environment
 from local_service.container_workspace import workspace_directory, check_ready as check_container_workspace
 from local_service.clingen_erepo import ClinGenErepoStore
@@ -92,6 +95,8 @@ CONTAINER_FINGERPRINT_FILES = (
     "PromoterAI.pm",
     "LoGoFunc.pm",
     "IndexedScores.pm",
+    "SpliceAIStarter.pm",
+    "SpliceAI-MANE1.5-gene-map.json",
     "prune_kent.py",
     "UPSTREAM-MODIFICATIONS.txt",
 )
@@ -237,11 +242,11 @@ ANNOTATION_SOURCE_SETUP = {
         "download_id": "spliceai",
         "reference_url": "https://doi.org/10.1016/j.cell.2018.12.015",
         "reference_label": "SpliceAI published manuscript",
-        "size_hint": "approximately 27 GB plus index",
+        "size_hint": "approximately 34.3 GB plus indexes; 24 chromosome files",
         "instructions": [
             "Click Download and keep the computer awake; the download is resumable.",
-            "These are Ensembl's SpliceAI scores recalculated directly on GRCh38 — not lifted over from the original hg19 scores, whose coordinate conversion is known to contain errors.",
-            "Download completeness, BGZF structure, and index are checked before SpliceAI is marked ready.",
+            "MANE Select v1.5 SNVs on GRCh38, D=500, masked (M=1), from the published GUIDE-IEI SpliceAI dataset. No indels or MANE Plus Clinical transcripts.",
+            "Original chromosome VCFs and indexes are downloaded unchanged; all checksums are verified before the installation becomes available.",
         ],
     },
     "repeatmasker": {
@@ -483,7 +488,7 @@ SPLICEAI_LOOKUP_URL = "https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/"
 SPLICEAI_LOOKUP_DISTANCE = 500
 SPLICEAI_LOOKUP_MASK = 1
 RESOURCE_DOWNLOAD_OUTPUTS = {
-    "spliceai": [(("plugins", "SpliceAI", "snv"), 30 * GIB, False)],
+    "spliceai": [(("plugins", "SpliceAI", "snv"), 35 * GIB, False)],
     # Check the two CADD payloads together when they share a filesystem.
     "cadd_wgs": [
         (("plugins", "CADD_WGS", "snv"), 75 * GIB, False),
@@ -2287,6 +2292,15 @@ class AnnotationJobService:
             raise ValueError("Confirm annotation-engine setup before installing tools.")
         if platform.system() != "Darwin":
             raise ValueError("On Windows, start Docker Desktop and enable WSL integration. On Linux, install/start your configured container runtime, then retry recommended dataset setup.")
+        essential = payload.get("essential") is True
+        if essential:
+            load_starter_plan(self.pipeline_root / "config/essential-annotations.json")
+            if self.storage_registry.is_default("annotation") and not self.storage_restart_required():
+                self.annotation_root.mkdir(parents=True, exist_ok=True)
+            self._ensure_active_storage_available(require_annotation_root=True)
+            status = self.essential_setup_status()
+            if status["free_bytes"] < status["estimated_required_bytes"]:
+                raise ValueError("Not enough space for essential setup; choose another location in Storage.")
         # This endpoint owns the reservation itself, just like migration. It
         # must not race annotation, imports, another setup, or an update.
         with self._storage_transition:
@@ -2299,12 +2313,19 @@ class AnnotationJobService:
             self._engine_setup_reserved = True
             self._migration_reservation_reason = "annotation-engine setup is running"
         try:
-            config_path = self._write_resource_config("annotation_engine")
+            resource_id = "essential_setup" if essential else "annotation_engine"
+            config_path = self._write_resource_config(resource_id)
             command = ["env", f"IEI_PYTHON_BIN={sys.executable}", "PYTHONUNBUFFERED=1",
                        f"IEI_CONTAINER_WORK_DIR={workspace_directory(self.state_dir)}",
                        "bash", str(self.pipeline_root / "scripts/setup_environment.sh"),
                        "--install", "--yes", "--engine-only", "--config", str(config_path)]
-            return self._start_resource_job("annotation_engine", command, "installation", (config_path,))
+            if essential:
+                command = ["env", f"IEI_PYTHON_BIN={sys.executable}", "PYTHONUNBUFFERED=1",
+                           f"IEI_CONTAINER_WORK_DIR={workspace_directory(self.state_dir)}",
+                           sys.executable, str(self.pipeline_root / "scripts/install_essential_annotations.py"),
+                           "--config", str(config_path), "--annotation-root", str(self.annotation_root),
+                           "--manifest", str(self.pipeline_root / "config/essential-annotations.json")]
+            return self._start_resource_job(resource_id, command, "installation", (config_path,))
         except BaseException:
             self._finish_engine_setup()
             raise
@@ -2322,7 +2343,7 @@ class AnnotationJobService:
         job_id = str(payload.get("job_id") or "")
         with self._resource_lock:
             job = self._resource_jobs.get(job_id)
-            if not job or job.get("resource_id") != "annotation_engine":
+            if not job or job.get("resource_id") not in {"annotation_engine", "essential_setup"}:
                 raise ValueError("annotation-engine setup job not found")
             if job["status"] in {"queued", "running"}:
                 job["_cancel_requested"] = True
@@ -3475,7 +3496,7 @@ class AnnotationJobService:
         try:
             self._run_resource_download_impl(job_id)
         finally:
-            if (self._resource_jobs.get(job_id) or {}).get("resource_id") == "annotation_engine":
+            if (self._resource_jobs.get(job_id) or {}).get("resource_id") in {"annotation_engine", "essential_setup"}:
                 self._finish_engine_setup()
 
     def _run_resource_download_impl(self, job_id: str) -> None:
@@ -3518,12 +3539,14 @@ class AnnotationJobService:
                         stage_label, updates = self._resource_progress_update(
                             stage_label, line
                         )
-                        if resource_id == "annotation_engine" and not self._RESOURCE_STAGE_LINE.search(line):
+                        if resource_id in {"annotation_engine", "essential_setup"} and not self._RESOURCE_STAGE_LINE.search(line):
                             # Structured installer guidance must reach the
                             # native startup window, not disappear into Log.
                             prefix = "GUIDE_IEI_SETUP_ERROR: "
-                            updates = ({"message": line.strip()[len(prefix):], "progress": None}
-                                       if line.startswith(prefix) else None)
+                            if line.startswith(prefix):
+                                updates = {"message": line.strip()[len(prefix):], "progress": None}
+                            elif resource_id == "annotation_engine":
+                                updates = None
                         if updates:
                             if updates.get("message"):
                                 last_line = updates["message"]
@@ -3533,7 +3556,7 @@ class AnnotationJobService:
                 raise RuntimeError("Annotation-engine preparation stopped by the user.")
             if exit_code:
                 raise RuntimeError(last_line or f"download exited with code {exit_code}")
-            if resource_id == "annotation_engine":
+            if resource_id in {"annotation_engine", "essential_setup"}:
                 # A profile may have been created after this service started
                 # (e.g. first setup failed, then Retry recovered it). Carry the
                 # same process-local connection into validation and later jobs.
@@ -3543,6 +3566,11 @@ class AnnotationJobService:
                 status = self._container_image_status(config)
                 if not status["available"]:
                     raise RuntimeError(status.get("message") or "Annotation-engine validation failed; see the setup log.")
+                if resource_id == "essential_setup":
+                    essential_status = self.essential_setup_status()
+                    if essential_status["missing"] or not essential_status["package"]["available"]:
+                        raise RuntimeError("Essential annotation validation failed; retry preparation. "
+                                           + ", ".join(essential_status["missing"]))
             elif resource_id == "gene_knowledge":
                 updated = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
                 if not updated.is_file():
@@ -4909,7 +4937,36 @@ class AnnotationJobService:
             self._set_managed_preparation_paths(
                 config, resource_id, require_installed=True
             )
-        return config
+        try:
+            paths = starter_paths(self.annotation_root, load_starter_plan(
+                self.pipeline_root / "config/essential-annotations.json"))
+        except (OSError, ValueError, KeyError, TypeError):
+            paths = {}
+        return apply_starters(config, paths, self._resolved_reference_path)
+
+    def essential_setup_status(self) -> dict:
+        config = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
+        package = package_status(self.annotation_root, self.pipeline_root / "config/essential-annotations.json")
+        missing = missing_resources(config, self._resolved_reference_path)
+        engine = self.annotation_engine_status(config)
+        # Existing fully configured installations do not have to install the
+        # new subset package merely to reopen the application after an update.
+        legacy_ready = False
+        if not package["available"]:
+            legacy_ready = bool(self._annotation_profile().get("datasets_ready"))
+        probe = self.annotation_root
+        while not probe.exists() and probe != probe.parent:
+            probe = probe.parent
+        free = shutil.disk_usage(probe).free
+        estimate = reference_allowance(missing) + package["download_bytes"]
+        return {"available": bool(engine.get("available") and
+                                  (legacy_ready or (not missing and package["available"]))),
+                "busy": self._engine_setup_reserved, "engine": engine, "package": package,
+                "missing": missing, "legacy_ready": legacy_ready,
+                "annotation_path": str(self.storage_registry.root("annotation")),
+                "free_bytes": free, "estimated_required_bytes": estimate,
+                "restart_required": self.storage_restart_required(),
+                "message": package["message"] if not package["installable"] and not legacy_ready else ""}
 
     def annotation_engine_status(self, config: dict) -> dict:
         """Read-only check of the prepared workspace, not the signed app tree."""
@@ -5087,6 +5144,15 @@ class AnnotationJobService:
         except (OSError, UnicodeError):
             return set()
 
+    @staticmethod
+    def _required_sources(config: dict) -> set[str]:
+        plugins = config.get("plugins") or {}
+        if (plugins.get("dbNSFP", {}).get("required") is False
+                and all(plugins.get(name, {}).get("enabled") and plugins[name].get("file")
+                        for name in ("AlphaMissenseStarter", "CADDStarter"))):
+            return REQUIRED_DIAGNOSTIC_SOURCES - {"dbnsfp"}
+        return REQUIRED_DIAGNOSTIC_SOURCES
+
     def _annotation_profile(self) -> dict:
         config_path = self.pipeline_root / "config" / "annotation.config.yaml"
         # Card copy is written for clinicians and wet-lab scientists: the tool
@@ -5200,7 +5266,7 @@ class AnnotationJobService:
             block = parent if location[1] is None else parent.get(location[1]) or {}
             paths = source_path(source_id, block)
             enabled = bool(block.get("enabled", False))
-            required = source_id in REQUIRED_DIAGNOSTIC_SOURCES or bool(
+            required = source_id in self._required_sources(config) or bool(
                 block.get("required", False)
             )
             # ClinVar can be fetched when a run starts, so an absent local copy
@@ -5267,6 +5333,8 @@ class AnnotationJobService:
                 installed = len(paths) == 2 and valid_avi_bundle(paths[1])
                 if installed:
                     installed = paths[0].resolve() == (paths[1].parent / "avi.grch38.vcf.gz").resolve()
+            if installed and source_id == "spliceai" and block.get("format") == SPLICEAI_SHARDED:
+                installed = len(paths) == 1 and valid_full_spliceai(paths[0])
             if installed and source_id in {
                 "dbnsfp", "spliceai", "cadd_wgs", "repeatmasker", "segdup", "clinvar"
             }:
@@ -5309,7 +5377,12 @@ class AnnotationJobService:
                 )
             available = auto_fetch or installed
             label, description = labels[source_id]
-            setup = ANNOTATION_SOURCE_SETUP[source_id]
+            setup = dict(ANNOTATION_SOURCE_SETUP[source_id])
+            compact_splice = source_id == "spliceai" and bool(block.get("coverage"))
+            if compact_splice:
+                description = ("Essential-site starter installed: MANE v1.5 donor/acceptor SNVs, D=500, M=1. "
+                               "The optional full MANE v1.5 download adds SNVs throughout MANE Select transcript spans.")
+                setup["size_hint"] = "Optional full-table download: approximately 34.3 GB plus indexes"
             access = str(setup.get("access") or (
                 "bundled" if setup.get("setup_mode") == "bundled" else "public"
             ))
@@ -5318,6 +5391,11 @@ class AnnotationJobService:
                 or SOURCE_RECOMMENDATION_DEFAULTS.get(source_id)
                 or ("required" if required else "optional")
             )
+            if source_id == "dbnsfp" and source_id not in self._required_sources(config):
+                recommendation = "optional"
+                setup["recommendation"] = "optional"
+                setup["instructions"] = [line for line in setup.get("instructions", [])
+                                         if not line.startswith("Coding-region CADD")]
             source_version = str(block.get("version") or "")
             if source_id == "dbnsfp" and not installed:
                 # The stock config's initial release is only a fallback path;
@@ -5347,6 +5425,7 @@ class AnnotationJobService:
                 "available_in": available_in,
                 "access": access,
                 "recommendation": recommendation,
+                "compact_coverage": compact_splice,
                 **setup,
                 "status": (
                     "ready" if installed else
@@ -5486,7 +5565,7 @@ class AnnotationJobService:
                     location[1], {}
                 )["enabled"] = False
         config.setdefault("region", {})["coding_only"] = analysis_scope == "exome"
-        for source_id in REQUIRED_DIAGNOSTIC_SOURCES:
+        for source_id in self._required_sources(config):
             if options.get(source_id) is False:
                 raise ValueError(
                     f"{source_id} is required by the diagnostic annotation profile"
@@ -5590,6 +5669,10 @@ class AnnotationJobService:
             )
         else:
             config = self._prefer_installed_managed_resources(config)
+        if resource_id == "spliceai":
+            # Full-table installation must not overwrite the selected starter.
+            stock = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
+            config.setdefault("plugins", {})["SpliceAI"] = (stock.get("plugins") or {}).get("SpliceAI", {})
         config = self._absolutize_annotation_paths(config)
         config_dir = self.state_dir / "resource-configs"
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -6000,6 +6083,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             config = self.service._load_config(self.service.pipeline_root / "config/annotation.config.yaml")
             self._json(self.service.annotation_engine_status(config))
             return
+        if path == "/api/essential-setup/status":
+            self._json(self.service.essential_setup_status())
+            return
         if path == "/api/health":
             worker = self.service.worker_health()
             self._json({
@@ -6341,6 +6427,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/annotation-engine/setup":
                 self._json(self.service.start_engine_setup(self._body()), HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/essential-setup/setup":
+                self._json(self.service.start_engine_setup({**self._body(), "essential": True}), HTTPStatus.ACCEPTED)
                 return
             if path == "/api/annotation-engine/cancel":
                 self._json(self.service.cancel_engine_setup(self._body()), HTTPStatus.ACCEPTED)

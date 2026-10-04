@@ -22,7 +22,7 @@
 #   * ClinVar               (fetched per-run by fetch_clinvar.sh)
 #
 # Usage:
-#   scripts/download_references.sh [config.yaml] [--only vep_cache,fasta,loftee,spliceai,repeatmasker,segdup,ccre,liftover]
+#   scripts/download_references.sh [config.yaml] [--only vep_cache,fasta,loftee,spliceai,repeatmasker,segdup,gtf,ccre,liftover]
 #       [--skip-final-status]  # internal: bulk install reports status once
 #
 # Idempotent: existing non-empty files are skipped. Re-run to resume.
@@ -106,16 +106,32 @@ MIRROR_SHA_GERP="8801e57ce8effbef9248b122caee16da338bfa8319dd41392c9ce4e58ea6cfe
 _sha256_of() { sha256_file "$1"; }
 
 mirror_fetch() { # mirror_fetch <mirror-filename> <sha256> <dest>; 0 on verified success
-    local name="$1" want="$2" dest="$3" got
+    local name="$1" want="$2" dest="$3" got attempt
     [[ -n "$REF_MIRROR" ]] || return 1
     if [[ -s "$dest" ]] && [[ "$(_sha256_of "$dest")" == "$want" ]]; then
         log "mirror: $name already present and verified"
         return 0
     fi
-    log "mirror: fetching $name"
-    if ! fetch "${REF_MIRROR}/${name}" "$dest"; then
-        rm -f "$dest.part"
+    # A proven bad final file must not make fetch() skip a legacy resume.
+    [[ ! -s "$dest" ]] || rm -f "$dest"
+    log "mirror: fetching $name (resumable)"
+    if [[ -s "$dest.part" ]]; then
+        # Preserve sequential partials made by older installers. A fresh curl
+        # invocation resumes its prefix even for HTTP/2 errors not covered by
+        # curl's default --retry policy. Never discard it on transport failure.
+        for attempt in 1 2 3; do
+            if fetch "${REF_MIRROR}/${name}" "$dest"; then break; fi
+            warn "mirror: transfer interrupted; retaining partial download (attempt $attempt/3)"
+        done
+        [[ -s "$dest" ]] || return 1
+    elif ! python3 "${HERE}/parallel_fetch.py" "${REF_MIRROR}/${name}" "$dest" \
+        --connections 8 --chunk-mib 128 --sha256 "$want"; then
+        warn "mirror: download failed; any validated ranges are retained for Retry; trying the canonical source"
         return 1
+    else
+        # parallel_fetch verifies SHA-256 before atomically publishing dest.
+        log "mirror: verified $name"
+        return 0
     fi
     got="$(_sha256_of "$dest")"
     if [[ "$got" != "$want" ]]; then
@@ -250,8 +266,15 @@ if want fasta; then
         if ! ( cd "$(dirname "$FASTA_PATH")" && hts samtools faidx "$(basename "$FASTA_PATH")" 2>/dev/null ); then
             sleep 5  # same settle-and-retry as tabix above
             ( cd "$(dirname "$FASTA_PATH")" && hts samtools faidx "$(basename "$FASTA_PATH")" 2>/dev/null ) \
-                || warn "FASTA .fai index could not be built; rerun this download or build it with samtools faidx"
+                || die "FASTA .fai index could not be built; retry preparation"
         fi
+    fi
+    if [[ ! -s "${FASTA_PATH}.fai" || ! -s "${FASTA_PATH}.gzi" ]]; then
+        log "repairing missing reference FASTA indexes"
+        ( cd "$(dirname "$FASTA_PATH")" && hts samtools faidx "$(basename "$FASTA_PATH")" ) \
+            || die "reference FASTA indexes could not be repaired; retry preparation"
+        [[ -s "${FASTA_PATH}.fai" && -s "${FASTA_PATH}.gzi" ]] \
+            || die "reference FASTA indexes are still missing after indexing"
     fi
 fi
 
@@ -288,14 +311,18 @@ if want loftee; then
 fi
 
 # ============================================================================ #
-# 4. SpliceAI masked SNV scores — Ensembl MANE v1.4, GRCh38
+# 4. SpliceAI masked SNV scores — MANE v1.5, GRCh38, chromosome shards
 # ============================================================================ #
 if want spliceai; then
-    log "=== SpliceAI masked SNV scores (Ensembl MANE v1.4, GRCh38) ==="
+    log "=== Full SpliceAI masked SNV scores (MANE v1.5, D500 M1, GRCh38) ==="
     if [[ "$ASSEMBLY" != "GRCh38" ]]; then
         die "the configured automatic SpliceAI dataset is GRCh38-only; assembly is $ASSEMBLY"
     fi
     [[ -n "$SPLICEAI_PATH" ]] || die "plugins.SpliceAI.snv is not configured"
+    if [[ "$(yaml_get "$CONFIG" plugins.SpliceAI.format)" == "mane_v1.5_sharded" ]]; then
+        python3 "${ROOT}/pipeline/spliceai_dataset.py" "$SPLICEAI_PATH" || die "Full SpliceAI installation failed; retry preserves completed chromosome downloads"
+    else
+    # Explicit legacy configs retain the historical single-file installer.
     SPLICEAI_NAME="spliceai_scores.masked.snv.ensembl_mane_v1.4.grch38.vcf.gz"
     python3 "${HERE}/parallel_fetch.py" \
         "${SPLICEAI_BASE}/${SPLICEAI_NAME}" "$SPLICEAI_PATH" \
@@ -307,6 +334,7 @@ if want spliceai; then
         --connections 1 --chunk-mib 4 \
         || die "SpliceAI SNV index download failed"
     verify_bgzf "${SPLICEAI_PATH}.tbi" || die "SpliceAI SNV index failed BGZF integrity check (delete it and re-run)"
+    fi
 fi
 
 # ============================================================================ #
@@ -436,6 +464,12 @@ if want ccre; then
         log "wrote $CCRE_ROWS SCREEN cCRE intervals"
     fi
     write_sha256_sidecar "$CCRE_PATH" || die "cannot record the SCREEN cCRE checksum: $CCRE_PATH"
+fi
+
+# Essential setup needs release-matched gene models for LOFTEE/PTC and coding
+# regions, but must not download the optional SCREEN regulatory track.
+if want gtf || want ccre; then
+    log "=== Ensembl gene models (release $GENE_TSS_RELEASE) ==="
     [[ -n "$GENE_TSS_PATH" ]] || die "wgs_review.gene_tss.path is not configured"
     [[ -n "$GENE_TSS_GTF" ]] || die "wgs_review.gene_tss.gtf is not configured"
     if [[ ! -s "$GENE_TSS_GTF" ]]; then

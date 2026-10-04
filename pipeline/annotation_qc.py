@@ -25,9 +25,11 @@ import yaml
 try:
     from .promoterai_evidence import SCORE_FIELDS as _PROMOTERAI_SCORE_FIELDS
     from .research_use_notice import RESEARCH_USE_NOTICE
+    from .starter_evidence import starter_observation
 except ImportError:  # direct script execution
     from promoterai_evidence import SCORE_FIELDS as _PROMOTERAI_SCORE_FIELDS
     from research_use_notice import RESEARCH_USE_NOTICE
+    from starter_evidence import starter_observation
 
 
 MISSING = {"", ".", "-"}
@@ -65,6 +67,11 @@ FUNCVEP_PROVENANCE_FIELDS = (
     "FuncVEP_match_status",
     "FuncVEP_source_gene",
 )
+CODING_SNV_CONSEQUENCES = {
+    "missense_variant", "synonymous_variant", "stop_gained", "stop_lost",
+    "start_lost", "stop_retained_variant", "start_retained_variant",
+    "coding_sequence_variant", "protein_altering_variant",
+}
 
 # Protein-level clinical evidence is emitted at INFO/Number=A because one VCF
 # record can contain several ALT alleles.  Presence of the flag pair means the
@@ -202,10 +209,16 @@ def _configured_field_names(config: dict) -> dict[str, list[str]]:
 
 def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = None) -> dict:
     config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    essential_splice = ((config.get("plugins") or {}).get("SpliceAI") or {}).get("coverage_scope") == "essential_splice_sites"
     qc_config = config.get("annotation_qc") or {}
     thresholds = qc_config.get("warn_below") or {}
     max_examples = max_examples or int(qc_config.get("max_missing_examples", 20))
     names = _configured_field_names(config)
+    starter_enabled = {
+        logical_id for logical_id, block in (
+            ("alphamissense", "AlphaMissenseStarter"), ("cadd_coding", "CADDStarter"),
+        ) if ((config.get("plugins") or {}).get(block) or {}).get("enabled")
+    }
     funcvep_enabled = bool(
         (((config.get("plugins") or {}).get("FuncVEP") or {}).get("enabled"))
     )
@@ -318,6 +331,21 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             snv = len(columns[3]) == 1 and all(
                 len(alt) == 1 for alt in columns[4].split(",")
             )
+            if snv and starter_enabled:
+                starter_candidates = {
+                    "alphamissense": [e for e in missense if present(e.get("MANE_SELECT"))],
+                    "cadd_coding": [e for e in entries if has_consequence(e, CODING_SNV_CONSEQUENCES)],
+                }
+                for logical_id, candidates in starter_candidates.items():
+                    if logical_id not in starter_enabled or not candidates:
+                        continue
+                    counters[f"starter_{logical_id}_eligible"] += 1
+                    score = "score" if logical_id == "alphamissense" else "phred"
+                    if any(
+                        (observation := starter_observation(entry, logical_id)) is not None
+                        and score in observation["values"] for entry in candidates
+                    ):
+                        counters[f"starter_{logical_id}_scored"] += 1
             if snv and missense:
                 counters["logofunc_missense_snv_eligible"] += 1
                 allele_available = any(
@@ -437,6 +465,10 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                     if consequence
                 )
             ]
+            if essential_splice:
+                mane = [entry for entry in mane if
+                        {"splice_donor_variant", "splice_acceptor_variant"}.intersection(
+                            entry.get("Consequence", "").split("&"))]
             if snv and mane:
                 counters["spliceai_mane_snv_eligible"] += 1
                 if any(
@@ -549,6 +581,20 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     logofunc_config = plugins.get("LoGoFunc") or {}
     funcvep_config = plugins.get("FuncVEP") or {}
     missense_n = counters["missense_eligible"]
+    for logical_id, block, field, label in (
+        ("alphamissense", "AlphaMissenseStarter", "StarterAM_score", "Starter AlphaMissense on MANE Select missense SNV records"),
+        ("cadd_coding", "CADDStarter", "StarterCADD_phred", "Starter CADD on coding SNV records"),
+    ):
+        settings = plugins.get(block) or {}
+        item = metric(label, counters[f"starter_{logical_id}_eligible"],
+                      counters[f"starter_{logical_id}_scored"],
+                      float(thresholds.get(f"starter_{logical_id}", 0.80)))
+        item.update(field=field, schema_present=field in csq_fields, unit="records")
+        if not settings.get("enabled"):
+            item["status"] = "SKIPPED_DISABLED"
+        elif not item["schema_present"]:
+            item["status"] = "FAIL" if settings.get("required") else "SKIPPED_NOT_INSTALLED"
+        metrics.append(item)
     db_threshold = float(thresholds.get("dbnsfp_missense", 0.80))
     for field in names["critical_dbnsfp"]:
         schema_present = field in csq_fields
@@ -639,7 +685,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     metrics.append(haplotype_metric)
 
     splice_metric = metric(
-        "SpliceAI on MANE SNV records",
+        "SpliceAI on essential splice-site MANE SNVs" if essential_splice else "SpliceAI on MANE SNV records",
         counters["spliceai_mane_snv_eligible"],
         counters["spliceai_annotated"],
         float(thresholds.get("spliceai_mane_snv", 0.90)),
@@ -1001,7 +1047,8 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             "spliceai": {
                 "eligible_mane_snv_records": counters["spliceai_mane_snv_eligible"],
                 "annotated_records": counters["spliceai_annotated"],
-                "scope": "configured Ensembl MANE masked SNV table; indels are not counted",
+                "scope": ("MANE essential donor/acceptor SNVs only; indels and other consequences are not counted"
+                          if essential_splice else "configured Ensembl MANE masked SNV table; indels are not counted"),
             },
             "clinvar": {
                 "exact_match_records": counters["clinvar_exact_match_records"],

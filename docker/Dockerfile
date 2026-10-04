@@ -135,6 +135,7 @@ COPY --chown=vep:vep PromoterAI.pm /plugins/PromoterAI.pm
 # Transcript- and protein-change-aware lookup of the public LoGoFunc canonical
 # missense prediction table. The multi-gigabyte data remain user-supplied.
 COPY --chown=vep:vep LoGoFunc.pm /plugins/LoGoFunc.pm
+COPY --chown=vep:vep SpliceAIStarter.pm SpliceAI-MANE1.5-gene-map.json /plugins/
 
 # Manifest-driven lookup for local indexed predictors. Resource selection is
 # supplied as adapter data, so new predictors do not require Perl wrappers.

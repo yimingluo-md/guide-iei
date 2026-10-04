@@ -232,6 +232,24 @@ def write_funcvep_vcf(
     )
 
 
+def test_compact_spliceai_does_not_expect_scores_on_every_mane_snv(tmp_path):
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "test.vcf"
+    write_config(config)
+    settings = yaml.safe_load(config.read_text())
+    settings["plugins"]["SpliceAI"]["coverage_scope"] = "essential_splice_sites"
+    config.write_text(yaml.safe_dump(settings))
+    write_funcvep_vcf(vcf)  # A MANE missense SNV is outside the compact scope.
+    result = build_report(config, vcf)
+    metric = next(item for item in result["metrics"] if item["name"].startswith("SpliceAI"))
+    assert metric["eligible_records"] == 0
+    vcf.write_text(vcf.read_text().replace("missense_variant", "splice_donor_variant"))
+    result = build_report(config, vcf)
+    metric = next(item for item in result["metrics"] if item["name"].startswith("SpliceAI"))
+    assert metric["eligible_records"] == 1
+    assert metric["annotated_records"] == 1
+
+
 def test_report_uses_annotation_specific_denominators(tmp_path):
     config = tmp_path / "config.yaml"
     vcf = tmp_path / "result.vcf"

@@ -49,7 +49,7 @@ pass() { log "ok    $*"; }
 
 # ---------------------------------------------------------------------------
 log "=== [1/5] plugin syntax against the real Bio::EnsEMBL modules ==="
-for plugin in PromoterAI LoGoFunc IndexedScores; do
+for plugin in PromoterAI LoGoFunc IndexedScores SpliceAIStarter; do
     if "$RUNTIME" run --rm --pull=never --network=none \
         --entrypoint perl "$IMAGE" -I /plugins -c "/plugins/${plugin}.pm" >/dev/null 2>&1; then
         pass "perl -c ${plugin}.pm (in-container)"
@@ -73,7 +73,7 @@ fi
 
 # ---------------------------------------------------------------------------
 log "=== [3/5] baked plugin files match the repo (image drift) ==="
-for plugin in PromoterAI LoGoFunc IndexedScores; do
+for plugin in PromoterAI LoGoFunc IndexedScores SpliceAIStarter; do
     baked="$("$RUNTIME" run --rm --pull=never --network=none --entrypoint sh "$IMAGE" \
         -c "sha256sum /plugins/${plugin}.pm" 2>/dev/null | awk '{print $1}')" || baked=""
     local_sum="$(sha256_file "${ROOT}/docker/${plugin}.pm")" || local_sum=""

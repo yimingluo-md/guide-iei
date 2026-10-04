@@ -350,8 +350,17 @@ flanking pre-mRNA sequence alone — no conservation or annotation
 features. A variant's **delta scores** quantify how much it changes those
 probabilities nearby, reported as four values — acceptor gain, acceptor
 loss, donor gain, donor loss — each with the position of the affected
-site. The bundled table is Ensembl's precomputed MANE-transcript SNV set
-with **masked** scores: changes that strengthen already-annotated sites
+site. The compact starter table covers MANE Select v1.5 essential donor/acceptor
+SNVs (the first/last two intronic bases), with a 500-base prediction window.
+It matches the exact allele and Ensembl gene identity, even when the source
+and VEP use different gene names. A score is never borrowed from an unrelated
+overlapping gene. The optional full MANE Select v1.5 table uses the same
+D=500 masked configuration and covers SNVs throughout MANE transcript spans.
+Its 24 chromosome VCFs are downloaded unchanged and queried directly; no
+concatenation is needed. Neither table supplies indel predictions or MANE
+Plus Clinical coverage. Existing legacy v1.4 installations remain usable until
+explicitly upgraded.
+Both use **masked** scores: changes that strengthen already-annotated sites
 or weaken unannotated ones are zeroed, leaving the disease-relevant
 directions. An `IEI_UNSCORED_INDEL` flag indicates a variant retained
 despite the absence of a precomputed score — the score is missing, not

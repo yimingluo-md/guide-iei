@@ -13,6 +13,8 @@ INPUTS=(
   "PromoterAI.pm"
   "LoGoFunc.pm"
   "IndexedScores.pm"
+  "SpliceAIStarter.pm"
+  "SpliceAI-MANE1.5-gene-map.json"
   "prune_kent.py"
   "UPSTREAM-MODIFICATIONS.txt"
 )

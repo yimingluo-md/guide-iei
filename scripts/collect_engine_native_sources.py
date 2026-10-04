@@ -35,6 +35,7 @@ def collect(runtime, image, output):
     for relative in ('docker/Dockerfile', 'docker/build.sh', 'docker/image_fingerprint.sh',
                      'docker/prune_kent.py', 'docker/UPSTREAM-MODIFICATIONS.txt',
                      'docker/PromoterAI.pm', 'docker/LoGoFunc.pm', 'docker/IndexedScores.pm',
+                     'docker/SpliceAIStarter.pm', 'docker/SpliceAI-MANE1.5-gene-map.json',
                      'docker/.dockerignore'):
         destination = materials / Path(relative).name
         destination.write_bytes((ROOT / relative).read_bytes())

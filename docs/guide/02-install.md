@@ -36,6 +36,10 @@ route in the appendix.
 
 ## Get the software
 
+GUIDE-IEI's application code is MIT-licensed. Annotation datasets retain their
+own terms, including noncommercial restrictions where applicable. See
+[Data sources and licenses](03-datasets.md#data-sources-and-licenses).
+
 **Mac:** [download the signed and notarized 0.6.2 installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.2/GUIDE-IEI-macOS-0.6.2-arm64.dmg),
 or open the [GUIDE-IEI releases page](https://github.com/yimingluo-md/guide-iei/releases)
 for release notes and checksums. The initial self-contained beta is Apple

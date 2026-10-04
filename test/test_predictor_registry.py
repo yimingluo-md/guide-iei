@@ -87,6 +87,30 @@ def test_invalid_utf8_registry_is_reported_as_registry_error(tmp_path):
         raise AssertionError("invalid UTF-8 registry was accepted")
 
 
+def test_provider_selection_preserves_explicit_choice_and_separates_fields():
+    registry = load_registry()
+    assert [p.id for p in registry.providers("alphamissense")] == [
+        "starter_alphamissense", "alphamissense",
+    ]
+    available = {"starter_alphamissense", "dbnsfp"}
+    assert registry.select_provider("alphamissense", available).id == "starter_alphamissense"
+    assert registry.select_provider("alphamissense", available, preferred_resource="dbnsfp").id == "alphamissense"
+    assert registry.select_provider("alphamissense", {"dbnsfp"}).id == "alphamissense"
+    assert registry.select_provider("alphamissense", set()) is None
+    assert registry.select_provider("alphamissense", {"starter_alphamissense"}, preferred_resource="dbnsfp") is None
+    assert registry.predictor("alphamissense").metrics[0].field == "AlphaMissense_score"
+    assert registry.predictor("starter_alphamissense").metrics[0].field == "StarterAM_score"
+
+
+def test_provider_contract_rejects_unknown_logical_id_and_metric_drift():
+    document = raw_document()
+    find(document["predictors"], "starter_alphamissense")["logical_id"] = "unknown"
+    expect_registry_error(document, "logical predictor")
+    document = raw_document()
+    find(document["predictors"], "starter_alphamissense")["metrics"][0]["direction"] = "lower"
+    expect_registry_error(document, "disagrees with logical predictor")
+
+
 def test_registry_catalogs_all_current_source_families_and_funcvep():
     registry = load_registry()
     resource_ids = set(registry.resources_by_id)

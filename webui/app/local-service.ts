@@ -106,6 +106,7 @@ export type ServiceCapabilities = {
       available: boolean;
       installed: boolean;
       configured_paths: string[];
+      compact_coverage?: boolean;
       version: string;
       available_in: ("exome" | "whole_genome")[];
       access: "public" | "bundled" | "registration" | "license" | "terms";
@@ -140,7 +141,7 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "annotation_engine" | "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "alphagenome_avi" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "genia" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
+  resource_id: "annotation_engine" | "essential_setup" | "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "alphagenome_avi" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "genia" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
   operation?: "download" | "preparation" | "installation";
   status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
   progress: number | null;

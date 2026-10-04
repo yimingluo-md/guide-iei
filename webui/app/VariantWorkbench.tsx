@@ -1,6 +1,7 @@
 "use client";
 
 import Image from "next/image";
+import DataLicensesPanel from "./DataLicensesPanel";
 import { passesMinimumScore, screenVariantBatches } from "./review-filters";
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
@@ -184,7 +185,7 @@ import {
   type RegulatoryContextSet,
 } from "./regulatory-evidence";
 
-type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "sample_library" | "storage" | "phenotypes" | "gene_lists" | "gene_knowledge" | "glossary" | "import" | "about";
+type View = "variants" | "genes" | "compound" | "saved" | "family" | "cohort" | "sample_library" | "storage" | "phenotypes" | "gene_lists" | "gene_knowledge" | "glossary" | "import" | "about" | "licenses";
 type AnalysisScope = "exome" | "whole_genome";
 type LibraryImportOptions = {
   keep: boolean;
@@ -1617,7 +1618,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
         <button className="secondary-button" disabled={referencesLoading} onClick={() => { setReferencesLoading(true); setReferenceAttempt((attempt) => attempt + 1); }}>{referencesLoading ? "Retrying…" : "Retry references"}</button>
       </div>}
 
-      <div className={`workspace ${selected ? "review-mode" : ""} ${view === "cohort" ? "cohort-mode" : ""} ${view === "sample_library" ? "library-mode" : ""} ${view === "storage" || view === "about" ? "storage-mode" : ""} ${view === "phenotypes" ? "phenotype-mode" : ""} ${view === "family" ? "family-mode" : ""} ${view === "gene_lists" || view === "gene_knowledge" || view === "glossary" ? "gene-lists-mode" : ""} ${view === "import" ? "import-mode" : ""}`}>
+      <div className={`workspace ${selected ? "review-mode" : ""} ${view === "cohort" ? "cohort-mode" : ""} ${view === "sample_library" ? "library-mode" : ""} ${view === "storage" || view === "about" || view === "licenses" ? "storage-mode" : ""} ${view === "phenotypes" ? "phenotype-mode" : ""} ${view === "family" ? "family-mode" : ""} ${view === "gene_lists" || view === "gene_knowledge" || view === "glossary" ? "gene-lists-mode" : ""} ${view === "import" ? "import-mode" : ""}`}>
         <nav className="rail" aria-label="Primary navigation">
           <div className="nav-group-label">Review</div>
           {([
@@ -1636,6 +1637,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
           <button className={`nav-item ${view === "glossary" ? "active" : ""}`} onClick={() => { setView("glossary"); setSelected(null); }}><span>Glossary</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "storage" ? "active" : ""}`} onClick={() => { setView("storage"); setSelected(null); }}><span>Storage</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "about" ? "active" : ""}`} onClick={() => { setView("about"); setSelected(null); }}><span>About &amp; updates</span><Icon name="star" /></button>
+          <button className={`nav-item ${view === "licenses" ? "active" : ""}`} onClick={() => { setView("licenses"); setSelected(null); }}><span>Data sources &amp; licenses</span><Icon name="file" /></button>
           <button className={`nav-item ${view === "import" ? "active" : ""}`} onClick={() => setView("import")}><span>Import & QC</span><Icon name="chevron" /></button>
           <div className="rail-note"><strong>Defaults active</strong><span>PASS upstream</span><span>MANE transcripts</span><span>Repeat/SegDup excluded</span></div>
         </nav>
@@ -1794,6 +1796,8 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
             <StoragePanel />
           ) : view === "about" ? (
             <AboutPanel />
+          ) : view === "licenses" ? (
+            <DataLicensesPanel />
           ) : view === "phenotypes" ? (
             <PhenotypePanel initialIndividualId={phenotypeTarget} />
           ) : view === "gene_knowledge" ? (
@@ -4477,7 +4481,7 @@ function QcSettingsPanel({ settings, setSettings, preset, setPreset, includeFail
 type AnnotationSource = ServiceCapabilities["annotation_profile"]["sources"][number];
 
 function annotationSourceIsLocked(source: AnnotationSource) {
-  return source.required || source.setup_mode === "bundled" || source.id === "dbnsfp";
+  return source.required || source.setup_mode === "bundled";
 }
 
 function annotationSourceIsEnabled(
@@ -4573,6 +4577,7 @@ function DatasetSetupCard({
   const downloadId = source.download_id as ResourceDownloadJob["resource_id"] | undefined;
   const buttonLabel = source.id === "clinvar"
     ? "Download latest"
+    : source.id === "spliceai" && source.compact_coverage ? "Install optional full SpliceAI (MANE v1.5)"
     : source.id === "clingen_erepo" ? source.installed ? "Check and update snapshot" : "Install latest snapshot"
     : source.setup_mode === "bundled" ? "Download bundled files"
     : source.id === "cadd_wgs" ? source.installed ? "Verify 83 GiB files" : "Download / resume 83 GiB"

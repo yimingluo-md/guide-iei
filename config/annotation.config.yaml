@@ -218,6 +218,21 @@ core:
 # -----------------------------------------------------------------------------
 plugins:
 
+  # Standalone providers. Leave disabled until a validated starter bundle is
+  # installed. Managed activation then makes dbNSFP optional for that profile.
+  # Supply the prepared table and indexed.manifest.json together. Never copy
+  # starter fields into dbNSFP columns: their matching/provenance differs.
+  AlphaMissenseStarter:
+    enabled: false
+    required: false
+    file: ""
+    manifest: ""
+  CADDStarter:
+    enabled: false
+    required: false
+    file: ""
+    manifest: ""
+
   # dbNSFP — ONE file consolidates dozens of precomputed scores that used to
   # need separate plugins/downloads: CADD, REVEL, AlphaMissense, SIFT, PolyPhen,
   # PrimateAI, MetaRNN, GERP, phyloP/phastCons, and more. tier: bring-your-own-large.
@@ -264,14 +279,16 @@ plugins:
     conservation_file: "references/loftee/loftee.sql"
     gerp_bigwig: "references/loftee/gerp_conservation_scores.homo_sapiens.GRCh38.bw"
 
-  # SpliceAI — Ensembl MANE v1.4 masked SNV scores for GRCh38. tier: auto.
-  # Required by the default diagnostic profile and downloaded by
-  # scripts/download_references.sh. This public table covers SNVs; a lab may
-  # add an optional `indel:` VCF here if it has a compatible indexed dataset.
+  # Optional full SpliceAI — MANE Select v1.5, GRCh38, D=500, M=1.
+  # The one-click starter covers essential splice sites. This larger download
+  # adds SNVs throughout MANE transcript spans, retaining 24 original indexed
+  # chromosome files. For a legacy single-file VCF omit `format` below.
   SpliceAI:
     enabled: true
     required: true
-    snv: "references/spliceai/spliceai_scores.masked.snv.ensembl_mane_v1.4.grch38.vcf.gz"
+    format: "mane_v1.5_sharded"
+    version: "MANE v1.5 D=500 M=1"
+    snv: "references/spliceai/mane-v1.5-d500-m1/manifest.json"
 
   # CADD v1.7 genome-wide scores. The standard VEP CADD plugin queries the
   # official score-only BGZF tables directly; the much larger inclAnno tables

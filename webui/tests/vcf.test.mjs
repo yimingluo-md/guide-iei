@@ -36,10 +36,58 @@ const {
   predictorBinaryClassification,
   populationFrequency,
   promoterAiObservation,
+  starterObservation,
   collapseToOneRowPerVariant,
   preferredClinicalTranscriptRows,
   variantQcFailures,
 } = await import(moduleUrl);
+
+const starterContract = JSON.parse(await readFile(
+  new URL("../../test/contracts/starter_evidence_cases.json", import.meta.url), "utf8",
+));
+for (const item of starterContract.cases) {
+  test(`starter shared contract: ${item.name}`, () => {
+    const evidence = starterObservation({
+      ...starterContract.bases[item.logical_id], ...item.override,
+    }, item.logical_id);
+    assert.equal(evidence.match_status, item.status);
+    assert.deepEqual(evidence.values, item.values);
+  });
+}
+
+test("starter providers populate the existing review cards without cross-transcript or cross-allele transfer", async () => {
+  const starter = { ...starterContract.bases.alphamissense, ...starterContract.bases.cadd_coding };
+  const fields = ["Allele", "ALLELE_NUM", "Consequence", "IMPACT", "SYMBOL", "Gene",
+    ...Object.keys(starter), "AlphaMissense_score", "AlphaMissense_pred", "CADD_phred", "CADD_raw"];
+  const entry = (alt, number, overrides) => {
+    const record = { ...starter, Allele: alt, ALLELE_NUM: number,
+      Consequence: "missense_variant", IMPACT: "MODERATE", SYMBOL: "GENE1", Gene: "ENSG1",
+      AlphaMissense_score: "0.99", AlphaMissense_pred: "P", CADD_phred: "50", CADD_raw: "4",
+      ...overrides };
+    return fields.map((field) => record[field] ?? "").join("|");
+  };
+  const vcf = ["##fileformat=VCFv4.2", "##reference=GRCh38",
+    `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS",
+    `1\t100\t.\tT\tA,G\t99\tPASS\tCSQ=${[
+      entry("A", "1", {}),
+      entry("A", "1", { Feature: "ENST9999", HGVSp: "ENSP2:p.Ala9Val" }),
+      entry("G", "2", { StarterAM_match_status: "partial", StarterCADD_phred: "0" }),
+    ].join(",")}\tGT\t1/2`, ""].join("\n");
+  const { rows } = await parseVcfFiles([new File([vcf], "starter.vcf")]);
+  const exact = rows.find((r) => r.alt === "A" && r.transcript === starter.Feature);
+  assert.equal(exact.alphaMissense, 0.1201);
+  assert.equal(exact.alphaPrediction, "likely_benign");
+  assert.equal(exact.cadd, 23.4);
+  assert.equal(exact.caddRaw, null); // never pair starter Phred with dbNSFP raw
+  assert.equal(exact.predictions.starter_alphamissense.scope, "allele_transcript_protein");
+  assert.equal(exact.predictions.starter_alphamissense.values.score, 0.1201);
+  assert.equal(exact.predictions.alphamissense.values.score, 0.99); // source kept separately
+  assert.equal(rows.find((r) => r.transcript === "ENST9999").alphaMissense, null);
+  const otherAlt = rows.find((r) => r.alt === "G");
+  assert.equal(otherAlt.alphaMissense, null);
+  assert.equal(otherAlt.cadd, 0);
+});
 
 test("AVI reads scalar Phred and raw logits without merging alleles or discarding zero", () => {
   assert.deepEqual(alphaGenomeAviScores({ AlphaGenomeAVI_raw: "-2.4", AlphaGenomeAVI_phred: "0" }), { raw: -2.4, phred: 0 });
@@ -851,7 +899,7 @@ test("models SpliceAI as an allele-and-source-gene predictor with delta position
   ];
   const csq = [
     "G", "splice_region_variant", "MODERATE", "GENE1", "ENSG1", "ENST1", "1",
-    "GENE1", "0.31", "0.02", "0.7", "0.01", "-12", "4", "8", "-3",
+    "GENE1", "0.31", "0.02", "0.7", "0.01", "-500", "137", "500", "-3",
   ].join("|");
   const vcf = [
     "##fileformat=VCFv4.2",
@@ -877,9 +925,9 @@ test("models SpliceAI as an allele-and-source-gene predictor with delta position
     target: { gene_symbol: "GENE1" },
     provenance: {
       source_gene_symbol: "GENE1",
-      delta_position_acceptor_gain: -12,
-      delta_position_acceptor_loss: 4,
-      delta_position_donor_gain: 8,
+      delta_position_acceptor_gain: -500,
+      delta_position_acceptor_loss: 137,
+      delta_position_donor_gain: 500,
       delta_position_donor_loss: -3,
     },
   });
@@ -893,7 +941,7 @@ test("drops malformed predictor metrics without rejecting the VCF", async () => 
   ];
   const csq = [
     "G", "splice_region_variant", "MODERATE", "GENE1", "ENSG1", "ENST1", "1",
-    "GENE1", "0.5", "137", "1.0001",
+    "GENE1", "0.5", "501", "1.0001",
   ].join("|");
   const vcf = [
     "##fileformat=VCFv4.2",

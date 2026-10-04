@@ -27,6 +27,10 @@ or evidence about real patients. Your installed resources and counts may differ.
 Stuck during setup or import? See [installation troubleshooting](guide/02-install.md#common-first-run-problems)
 or [quality control](guide/10-quality-control.md).
 
+GUIDE-IEI software is MIT-licensed. Annotation datasets retain their own
+licenses; some are restricted to noncommercial use.
+[View dataset licenses](guide/03-datasets.md#data-sources-and-licenses).
+
 ## Chapters
 
 1. [What GUIDE-IEI does](guide/01-what-guide-iei-does.md)

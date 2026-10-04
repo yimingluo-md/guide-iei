@@ -328,6 +328,76 @@ export type PredictorBinaryClassification = {
 const REGISTRY_ANNOTATORS = Object.fromEntries(
   predictorRegistry.annotators.map((annotator) => [annotator.id, annotator]),
 );
+const STARTER_PROVIDERS: Record<string, { id: string; fields: Record<string, string> }> = Object.fromEntries(
+  predictorRegistry.predictors.filter((p) => (
+    p.id === "starter_alphamissense" || p.id === "starter_cadd"
+  )).map((p) => [p.logical_id, {
+    id: p.id, fields: Object.fromEntries(p.metrics.map((m) => [m.id, m.field])),
+  }]),
+);
+const STARTER_AMINO_ACIDS: Record<string, string> = Object.fromEntries(
+  "Ala Arg Asn Asp Cys Gln Glu Gly His Ile Leu Lys Met Phe Pro Ser Thr Trp Tyr Val Ter"
+    .split(" ").map((name, i) => [name, "ARNDCQEGHILKMFPSTWYV*"[i]]),
+);
+
+/** Paired with pipeline/starter_evidence.py and the shared contract fixtures. */
+export function starterObservation(record: Record<string, string>, logicalId: string) {
+  const provider = STARTER_PROVIDERS[logicalId];
+  if (!provider) throw new Error(`Unknown starter predictor: ${logicalId}`);
+  if (!Object.values(provider.fields).some((field) => field in record)) return null;
+  const text = (value: string | undefined) => {
+    const token = decode(value).trim();
+    return ["", ".", "-"].includes(token) ? "" : token;
+  };
+  const raw = Object.fromEntries(Object.entries(provider.fields).map(
+    ([metric, field]) => [metric, text(record[field])],
+  ));
+  let status = raw.match_status;
+  if (!["exact", "partial", "ambiguous", "unmatched"].includes(status)) {
+    status = Object.values(raw).some(Boolean) ? "partial" : "unmatched";
+  }
+  const am = logicalId === "alphamissense";
+  const expected = am ? "allele_transcript_protein" : "allele";
+  let target: Record<string, string> = {};
+  if (am) {
+    const amino = text(record.Amino_acids);
+    const position = text(record.Protein_position);
+    let protein = /^[A-Z*]\/[A-Z*]$/.test(amino) && /^[1-9]\d*$/.test(position)
+      ? `${amino[0]}${position}${amino[2]}` : "";
+    if (!protein) {
+      const hgvs = text(record.HGVSp).split(":").at(-1) ?? "";
+      const match = hgvs.match(/^(?:p\.)?([A-Z][a-z]{2}|[A-Z*])([1-9]\d*)([A-Z][a-z]{2}|[A-Z*])$/);
+      if (match) {
+        const left = STARTER_AMINO_ACIDS[match[1]] ?? match[1];
+        const right = STARTER_AMINO_ACIDS[match[3]] ?? match[3];
+        if (left.length === 1 && right.length === 1) protein = `${left}${match[2]}${right}`;
+      }
+    }
+    const transcript = text(record.Feature).split(".")[0];
+    if (transcript && protein && raw.source_target === `${transcript}:${protein}`) {
+      target = { ensembl_transcript: transcript,
+        protein_position: protein.match(/\d+/)![0], amino_acid_change: protein };
+    } else if (status === "exact") status = "partial";
+  }
+  if (status === "exact" && raw.match !== expected) status = "partial";
+  const metric = am ? "score" : "phred";
+  const token = raw[metric];
+  const score = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(token)
+    ? Number(token) : NaN;
+  const values: Record<string, number | string> = {};
+  if (status === "exact" && Number.isFinite(score) && score >= 0 && score <= (am ? 1 : 100)) {
+    values[metric] = score;
+    if (am && ["likely_benign", "ambiguous", "likely_pathogenic"].includes(raw.prediction)) {
+      values.prediction = raw.prediction;
+    }
+  }
+  const provenance: Record<string, string | boolean> = Object.fromEntries(Object.entries(raw).filter(
+    ([key, value]) => ["match", "match_status", "source_target"].includes(key) && value,
+  ));
+  if (["0", "1"].includes(raw.allele_available)) provenance.allele_available = raw.allele_available === "1";
+  return { predictor_id: provider.id, match_status: status as PredictorObservation["matchStatus"],
+    values, target, provenance };
+}
 const BROWSER_PREDICTOR_CONTRACTS = Object.fromEntries(
   predictorRegistry.predictors.map((predictor) => {
     const annotator = REGISTRY_ANNOTATORS[predictor.annotator_id];
@@ -2109,15 +2179,21 @@ export async function parseVcfFiles(
             const caddWgs = maximum(combined, [
               "CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED",
             ]);
-            const caddCoding = maximum(combined, ["CADD_phred"]);
+            const starterAm = starterObservation(combined, "alphamissense");
+            const starterCadd = starterObservation(combined, "cadd_coding");
+            const caddCoding = starterCadd !== null
+              ? (starterCadd.values.phred as number | undefined) ?? null
+              : maximum(combined, ["CADD_phred"]);
             const cadd = caddWgs ?? caddCoding;
             const caddWgsRaw = maximum(combined, [
               "CADD_RAW", "CADD_WGS_CADD_RAW", "CADD_WGS_RAW",
             ]);
-            const caddCodingRaw = maximum(combined, ["CADD_raw"]);
-            const caddRaw = caddWgsRaw ?? caddCodingRaw;
-            const alphaMissense = maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]);
-            const alphaPrediction = uniqueValues(
+            const caddCodingRaw = starterCadd !== null ? null : maximum(combined, ["CADD_raw"]);
+            const caddRaw = caddWgs !== null ? caddWgsRaw : (starterCadd !== null ? null : caddWgsRaw ?? caddCodingRaw);
+            const alphaMissense = starterAm !== null
+              ? (starterAm.values.score as number | undefined) ?? null
+              : maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]);
+            const alphaPrediction = starterAm !== null ? String(starterAm.values.prediction ?? "") : uniqueValues(
               first(combined, ["AlphaMissense_pred", "am_class"]),
             ).join(" / ");
             const promoterAiEvidence = promoterAiObservation(combined);
@@ -2373,6 +2449,13 @@ export async function parseVcfFiles(
               ? { ensembl_transcript: transcript }
               : undefined;
             addPrediction("alphagenome_avi", "allele", ALLELE_MATCH_DIMENSIONS, avi);
+            for (const evidence of [starterAm, starterCadd]) {
+              if (!evidence || evidence.match_status === "unmatched") continue;
+              const contract = BROWSER_PREDICTOR_CONTRACTS[evidence.predictor_id];
+              addPrediction(evidence.predictor_id, contract.scope,
+                evidence.match_status === "exact" ? contract.dimensions : ALLELE_MATCH_DIMENSIONS,
+                evidence.values, evidence.match_status, evidence.target, evidence.provenance);
+            }
             const transcriptConsequenceTarget = {
               ...(transcript ? { ensembl_transcript: transcript } : {}),
               ...(consequence ? { consequence } : {}),
@@ -2383,7 +2466,7 @@ export async function parseVcfFiles(
               });
             } else {
               addPrediction("cadd_coding", "allele", ALLELE_MATCH_DIMENSIONS, {
-                phred: caddCoding, raw: caddCodingRaw,
+                phred: maximum(combined, ["CADD_phred"]), raw: maximum(combined, ["CADD_raw"]),
               });
             }
             const addTranscriptPrediction = (
@@ -2394,7 +2477,8 @@ export async function parseVcfFiles(
               values, "exact", transcriptTarget,
             );
             addTranscriptPrediction("alphamissense", {
-              score: alphaMissense, prediction: alphaPrediction,
+              score: maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]),
+              prediction: uniqueValues(first(combined, ["AlphaMissense_pred", "am_class"])).join(" / "),
             });
             addTranscriptPrediction("revel", { score: revel });
             addTranscriptPrediction("metarnn", {

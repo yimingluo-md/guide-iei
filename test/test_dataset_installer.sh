@@ -19,6 +19,8 @@ cp "$SOURCE_ROOT/docker/Dockerfile" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/PromoterAI.pm" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/LoGoFunc.pm" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/IndexedScores.pm" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/SpliceAIStarter.pm" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/SpliceAI-MANE1.5-gene-map.json" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/prune_kent.py" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/UPSTREAM-MODIFICATIONS.txt" "$TEST_ROOT/docker/"
 

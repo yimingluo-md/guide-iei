@@ -1,7 +1,7 @@
 // Native lifecycle for the self-contained edition. The review UI stays in the browser.
 #import <Cocoa/Cocoa.h>
 
-@interface GuideApp : NSObject <NSApplicationDelegate, NSWindowDelegate>
+@interface GuideApp : NSObject <NSApplicationDelegate, NSWindowDelegate, NSTabViewDelegate>
 @property(nonatomic, strong) NSTask *worker;
 @property(nonatomic, copy) NSString *root;
 @property(nonatomic, copy) NSString *python;
@@ -11,6 +11,14 @@
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSButton *openButton;
 @property(nonatomic, strong) NSButton *retryButton;
+@property(nonatomic, strong) NSTextField *dataLabel;
+@property(nonatomic, strong) NSTextField *storageLabel;
+@property(nonatomic, strong) NSPopUpButton *storageKind;
+@property(nonatomic, strong) NSButton *changeStorageButton;
+@property(nonatomic, strong) NSButton *moveStorageButton;
+@property(nonatomic, strong) NSButton *restartStorageButton;
+@property(nonatomic, strong) NSTabView *tabs;
+@property(nonatomic, copy) NSString *migrationID;
 @property(nonatomic, strong) NSProgressIndicator *progress;
 @property(nonatomic, copy) NSString *startupPath;
 @property(nonatomic, copy) NSString *controlPath;
@@ -33,6 +41,56 @@
     if (![data writeToFile:self.controlPath options:NSDataWritingAtomic error:&error]) [self alert:error.localizedDescription];
 }
 - (void)retrySetup:(id)sender { [self startupAction:@"retry"]; self.retryButton.enabled = NO; }
+- (void)prepareSetup:(id)sender { [self startupAction:@"prepare"]; self.retryButton.enabled = NO; }
+- (void)showStorage:(id)sender { [self.tabs selectTabViewItemAtIndex:1]; [self refreshStorage:nil]; }
+- (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item {
+    (void)tabView;
+    if ([item.identifier isEqual:@"storage"]) [self refreshStorage:nil];
+}
+- (NSString *)storageID { return @[@"annotation", @"data", @"temporary"][self.storageKind.indexOfSelectedItem]; }
+- (void)refreshStorage:(id)sender {
+    [self request:@"/api/storage/locations" body:nil done:^(NSDictionary *value, NSString *error) {
+        if (error) { self.storageLabel.stringValue = error; return; }
+        for (NSDictionary *location in value[@"locations"]) {
+            if ([location[@"id"] isEqual:[self storageID]]) {
+                double free = [location[@"free_bytes"] doubleValue] / (1024 * 1024 * 1024);
+                self.storageLabel.stringValue = [NSString stringWithFormat:@"%@\n%.1f GiB free", location[@"path"] ?: @"Unavailable", free];
+            }
+        }
+    }];
+}
+- (void)changeStorage:(id)sender {
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseDirectories = YES; panel.canChooseFiles = NO; panel.canCreateDirectories = YES;
+    panel.prompt = @"Use this folder";
+    panel.message = @"Select a dedicated data folder. This changes the location without moving or deleting existing files.";
+    if ([panel runModal] != NSModalResponseOK) return;
+    [self request:@"/api/storage/location" body:@{@"kind": [self storageID], @"path": panel.URL.path}
+        done:^(NSDictionary *value, NSString *error) {
+            (void)value;
+            if (error) [self alert:error];
+            else { [self refreshStorage:nil]; [self alert:@"Location saved. Click Restart to use this location. Existing files have not been moved or deleted."]; }
+        }];
+}
+- (void)moveStorage:(id)sender {
+    NSSavePanel *panel = [NSSavePanel savePanel];
+    panel.nameFieldStringValue = [@"GUIDE-IEI-" stringByAppendingString:[self storageID]];
+    panel.prompt = @"Copy and verify";
+    panel.message = @"Choose a new destination folder. Existing data will be copied and verified; the original is retained. Restart after completion.";
+    if ([panel runModal] != NSModalResponseOK) return;
+    [self request:@"/api/storage/migrate" body:@{@"kind": [self storageID], @"path": panel.URL.path}
+        done:^(NSDictionary *value, NSString *error) {
+            if (error) [self alert:error];
+            else { self.migrationID = value[@"id"]; self.storageLabel.stringValue = @"Copying and verifying existing data…"; }
+        }];
+}
+- (void)restartStorage:(id)sender {
+    [self request:@"/api/service/restart" body:@{} done:^(NSDictionary *value, NSString *error) {
+        (void)value;
+        if (error) [self alert:error];
+        else { self.preparing = YES; self.openButton.enabled = NO; self.statusLabel.stringValue = @"Restarting with the selected storage locations…"; }
+    }];
+}
 - (NSURL *)baseURL {
     NSInteger port = [NSProcessInfo.processInfo.environment[@"IEI_UI_PORT"] ?: @"3000" integerValue];
     return [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld", (long)port]];
@@ -71,11 +129,33 @@
         self.ownsService = YES;
         NSDictionary *startup = [self startupStatus];
         NSString *phase = startup[@"phase"];
+        BOOL idle = [phase isEqual:@"waiting"] || [phase isEqual:@"failed"] || [phase isEqual:@"ready"];
+        self.changeStorageButton.enabled = idle && !self.migrationID;
+        self.moveStorageButton.enabled = idle && !self.migrationID;
+        self.restartStorageButton.enabled = idle && !self.migrationID;
+        if (self.migrationID) {
+            [self request:@"/api/storage/migrations" body:nil done:^(NSDictionary *data, NSString *failure) {
+                if (failure) { self.storageLabel.stringValue = failure; return; }
+                for (NSDictionary *job in data[@"jobs"]) if ([job[@"id"] isEqual:self.migrationID]) {
+                    self.storageLabel.stringValue = [job[@"error"] length] ? job[@"error"] : job[@"message"] ?: @"Copying and verifying…";
+                    if ([job[@"status"] isEqual:@"succeeded"] || [job[@"status"] isEqual:@"failed"]) {
+                        self.storageLabel.stringValue = [job[@"status"] isEqual:@"succeeded"] ? @"Copy verified. Original retained. Click Restart to use the new location." : job[@"error"];
+                        self.migrationID = nil;
+                    }
+                }
+            }];
+        }
+        if (startup[@"annotation_path"]) {
+            self.dataLabel.stringValue = [NSString stringWithFormat:@"Data location: %@\n%.1f GiB free · estimated setup allowance %.1f GiB",
+                startup[@"annotation_path"], [startup[@"free_bytes"] doubleValue] / (1024*1024*1024),
+                [startup[@"estimated_required_bytes"] doubleValue] / (1024*1024*1024)];
+        }
         if (self.preparing && ![phase isEqual:@"ready"]) {
             self.statusLabel.stringValue = startup[@"message"] ?: @"Preparing GUIDE-IEI for first use. Checking installed components…";
-            self.retryButton.hidden = ![phase isEqual:@"failed"];
-            self.retryButton.enabled = YES;
-            self.progress.hidden = [phase isEqual:@"failed"];
+            self.retryButton.hidden = ![phase isEqual:@"failed"] && ![phase isEqual:@"waiting"];
+            self.retryButton.title = [phase isEqual:@"failed"] ? @"Retry preparation" : @"Prepare GUIDE-IEI";
+            self.retryButton.enabled = [phase isEqual:@"failed"] || [startup[@"can_prepare"] boolValue];
+            self.progress.hidden = [phase isEqual:@"failed"] || [phase isEqual:@"waiting"];
             if (!self.progress.hidden) [self.progress startAnimation:nil];
             return;
         }
@@ -90,7 +170,7 @@
     }];
 }
 - (void)buildControls {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 580, 440)
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 680, 620)
         styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
         backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"GUIDE-IEI"; self.window.delegate = self; self.window.releasedWhenClosed = NO;
@@ -98,14 +178,14 @@
     self.statusLabel = [NSTextField wrappingLabelWithString:@"Starting the workbench…"];
     self.statusLabel.maximumNumberOfLines = 5;
     self.statusLabel.accessibilityLabel = @"Workbench status";
-    NSTextField *hint = [NSTextField wrappingLabelWithString:@"First use installs the bundled VEP engine. Missing container tools and the virtual machine still need an internet connection. Large datasets are selected later inside the workbench. Compatible components are reused.\n\nClosing the browser leaves GUIDE-IEI running. Use Quit to stop it; Docker remains available to other applications."];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Prepare the annotation environment and essential datasets in one step. Internet access is required. Compatible installed components are reused. Advanced datasets remain available inside the analysis workbench.\n\nClosing the browser leaves GUIDE-IEI running. Use Quit to stop it; Docker remains available to other applications."];
     hint.textColor = NSColor.secondaryLabelColor;
     self.openButton = [NSButton buttonWithTitle:@"Open Workbench" target:self action:@selector(openReview:)]; self.openButton.enabled = NO;
     NSButton *quit = [NSButton buttonWithTitle:@"Quit GUIDE-IEI" target:NSApp action:@selector(terminate:)];
     NSButton *log = [NSButton buttonWithTitle:@"Open Log" target:self action:@selector(openLog:)];
     NSStackView *buttons = [NSStackView stackViewWithViews:@[self.openButton, log, quit]];
     buttons.orientation = NSUserInterfaceLayoutOrientationHorizontal; buttons.spacing = 12;
-    self.retryButton = [NSButton buttonWithTitle:@"Retry preparation" target:self action:@selector(retrySetup:)]; self.retryButton.hidden = YES;
+    self.retryButton = [NSButton buttonWithTitle:@"Prepare GUIDE-IEI" target:self action:@selector(prepareSetup:)]; self.retryButton.hidden = YES;
     NSStackView *setupButtons = [NSStackView stackViewWithViews:@[self.retryButton]];
     setupButtons.orientation = NSUserInterfaceLayoutOrientationHorizontal; setupButtons.spacing = 12;
     self.progress = [[NSProgressIndicator alloc] initWithFrame:NSMakeRect(0, 0, 510, 12)];
@@ -113,7 +193,30 @@
     [self.progress.widthAnchor constraintEqualToConstant:510].active = YES;
     self.progress.hidden = !self.preparing;
     if (self.preparing) [self.progress startAnimation:nil];
-    NSStackView *stack = [NSStackView stackViewWithViews:@[heading, self.statusLabel, self.progress, hint, setupButtons, buttons]];
+    self.dataLabel = [NSTextField wrappingLabelWithString:@"Checking the configured data location…"];
+    NSButton *change = [NSButton buttonWithTitle:@"Change…" target:self action:@selector(showStorage:)];
+    NSStackView *setup = [NSStackView stackViewWithViews:@[self.dataLabel, change, hint, setupButtons]];
+    setup.orientation = NSUserInterfaceLayoutOrientationVertical; setup.alignment = NSLayoutAttributeLeading; setup.spacing = 16;
+    self.storageKind = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [self.storageKind addItemsWithTitles:@[@"Annotation datasets", @"Sample Library & Cohort", @"Temporary workspace"]];
+    self.storageKind.target = self; self.storageKind.action = @selector(refreshStorage:);
+    self.storageLabel = [NSTextField wrappingLabelWithString:@"Choose a storage category to inspect or change its location."];
+    self.changeStorageButton = [NSButton buttonWithTitle:@"Change location (without moving files)…" target:self action:@selector(changeStorage:)];
+    self.moveStorageButton = [NSButton buttonWithTitle:@"Copy existing data to a new location…" target:self action:@selector(moveStorage:)];
+    self.restartStorageButton = [NSButton buttonWithTitle:@"Restart to apply storage changes" target:self action:@selector(restartStorage:)];
+    NSStackView *storage = [NSStackView stackViewWithViews:@[self.storageKind, self.storageLabel, self.changeStorageButton, self.moveStorageButton, self.restartStorageButton]];
+    storage.orientation = NSUserInterfaceLayoutOrientationVertical; storage.alignment = NSLayoutAttributeLeading; storage.spacing = 18;
+    self.tabs = [[NSTabView alloc] initWithFrame:NSMakeRect(0,0,630,335)];
+    NSTabViewItem *setupTab = [[NSTabViewItem alloc] initWithIdentifier:@"setup"]; setupTab.label = @"Setup"; setupTab.view = setup;
+    NSTabViewItem *storageTab = [[NSTabViewItem alloc] initWithIdentifier:@"storage"]; storageTab.label = @"Storage"; storageTab.view = storage;
+    [self.tabs addTabViewItem:setupTab]; [self.tabs addTabViewItem:storageTab];
+    self.tabs.delegate = self;
+    [self.tabs.heightAnchor constraintEqualToConstant:335].active = YES;
+    [self.tabs.widthAnchor constraintEqualToConstant:630].active = YES;
+    [hint.widthAnchor constraintEqualToConstant:590].active = YES;
+    [self.dataLabel.widthAnchor constraintEqualToConstant:590].active = YES;
+    [self.storageLabel.widthAnchor constraintEqualToConstant:590].active = YES;
+    NSStackView *stack = [NSStackView stackViewWithViews:@[heading, self.statusLabel, self.progress, self.tabs, buttons]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical; stack.alignment = NSLayoutAttributeLeading; stack.spacing = 18;
     stack.translatesAutoresizingMaskIntoConstraints = NO; [self.window.contentView addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
@@ -121,7 +224,6 @@
         [stack.trailingAnchor constraintEqualToAnchor:self.window.contentView.trailingAnchor constant:-24],
         [stack.topAnchor constraintEqualToAnchor:self.window.contentView.topAnchor constant:24],
         [self.statusLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
-        [hint.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
         [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.window.contentView.bottomAnchor constant:-20]]];
     [self.window center]; [self showControls:nil];
 }

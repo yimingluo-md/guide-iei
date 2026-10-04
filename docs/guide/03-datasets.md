@@ -15,6 +15,22 @@ type?
 This chapter explains which datasets are required, which are optional, and
 which require registration or a separate license.
 
+## Data sources and licenses
+
+GUIDE-IEI software is MIT-licensed. Annotation datasets retain their own
+licenses; some are restricted to noncommercial use. A free download does not
+remove those restrictions. See [dataset license notices](../../THIRD_PARTY_NOTICES.md).
+
+The new **Data sources & licenses** page provides starter-resource attribution,
+subset-change notices and full applicable license texts for offline reading,
+plus links to the other annotation sources. It is informational, without an
+acceptance checkbox. The compact starter package is still in development;
+these notices do not mean it is already bundled in the published installer.
+Registered-user datasets and other resources retain their existing access and
+installation requirements.
+
+## Set up datasets
+
 All of this is done inside the application, at **Annotate VCF → Set up
 annotation datasets**. Each dataset is presented as a card describing in
 plain language what it contributes; this chapter is a tour of those cards.
@@ -27,7 +43,7 @@ plain language what it contributes; this chapter is a tour of those cards.
 |---|---|---|
 | Core references (VEP cache, genome FASTA, LOFTEE data, region tracks) | Multiple large archives plus extracted files; see setup's free-space check | required for all analyses |
 | dbNSFP (registration required) | ~52 GB | protein-effect predictors |
-| SpliceAI MANE SNV scores | 27 GB | splice predictions |
+| Full SpliceAI MANE v1.5 SNV scores (optional) | 34.3 GB plus indexes | splice predictions throughout MANE Select transcript spans; D=500, masked |
 | ENCODE SCREEN + tissue/immune contexts | ~2 GB | WGS regulatory review |
 | PromoterAI (licensed; recommended for WGS) | <1 GB | promoter predictions |
 | AlphaGenome AVI (recommended for WGS) | 75.8 GB prepared download; allow 80 GiB free for setup | genome-wide SNV impact scores |

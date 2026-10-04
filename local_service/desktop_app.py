@@ -104,6 +104,7 @@ def main() -> int:
         signal.signal(name, stop)
     failures = 0
     opened = False
+    browser_opened = False
     try:
         while not stopping:
             started = time.monotonic()
@@ -123,11 +124,14 @@ def main() -> int:
                                     from local_service.desktop_setup import prepare_engine
                                     if not prepare_engine(url, support, Path(status_file),
                                             Path(env["IEI_DESKTOP_STARTUP_CONTROL"]),
-                                            lambda: not stopping and child.poll() is None):
+                                            lambda: not stopping and child.poll() is None, essential=True):
+                                        if not stopping and child.poll() == 75:
+                                            break  # Storage restart: repeat startup with the new roots.
                                         stop(signal.SIGTERM, None)
                                         break
-                                if env.get("IEI_DESKTOP_NO_BROWSER") != "1":
+                                if not browser_opened and env.get("IEI_DESKTOP_NO_BROWSER") != "1":
                                     subprocess.run(["/usr/bin/open", url], check=True)
+                                    browser_opened = True
                                 opened = True
                                 break
                     except (OSError, ValueError):
@@ -149,6 +153,7 @@ def main() -> int:
             if stopping or result == 0:
                 return 0
             if result == 75:
+                opened = False
                 continue
             if result == 4:
                 return result

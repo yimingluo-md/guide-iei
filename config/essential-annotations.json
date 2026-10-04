@@ -1,0 +1,110 @@
+{
+  "schema": "guide-iei.essential-annotations/v1",
+  "release_status": "ready",
+  "assembly": "GRCh38",
+  "vep_release": 113,
+  "components": [
+    {
+      "id": "alphamissense",
+      "version": "2026-10-04-v1",
+      "files": [
+        {
+          "name": "alphamissense.tsv.gz",
+          "size_bytes": 669398180,
+          "sha256": "6145eec8fdffabdfb6d5f60b7b95cbe3adac5ce7cf4a9f84e79a87cb4de5768c",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/alphamissense/alphamissense.tsv.gz"
+        },
+        {
+          "name": "alphamissense.tsv.gz.tbi",
+          "size_bytes": 664943,
+          "sha256": "c3ad6ab4879007ca4128b31dc2fffeaf0c5d87914714ff77f011dc11f18eebfa",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/alphamissense/alphamissense.tsv.gz.tbi"
+        },
+        {
+          "name": "indexed.manifest.json",
+          "size_bytes": 2097,
+          "sha256": "68129feb9b3f2807e7a48b68c51b93708358a186671d8061a3755518d953d306",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/alphamissense/indexed.manifest.json"
+        },
+        {
+          "name": "LICENSE-NOTICES.json",
+          "size_bytes": 20892,
+          "sha256": "2c14eb4eb097aa82cd9f2d7adf2a1adbc8f38be3b92d1f169b4ce6fd86a0f662",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/alphamissense/LICENSE-NOTICES.json"
+        },
+        {
+          "name": "preparation.json",
+          "size_bytes": 4586,
+          "sha256": "9a75c4cd459faff2d3f35ec6fb31c1e30b20c2a44ad225e0a2449be4433b5dcc",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/alphamissense/preparation.json"
+        }
+      ]
+    },
+    {
+      "id": "cadd",
+      "version": "2026-10-04-v1",
+      "files": [
+        {
+          "name": "cadd.tsv.gz",
+          "size_bytes": 526321486,
+          "sha256": "099f9c2b9b1c6769d32993992763877e204cbdd07d97961970a1052ea744ec01",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/cadd/cadd.tsv.gz"
+        },
+        {
+          "name": "cadd.tsv.gz.tbi",
+          "size_bytes": 682127,
+          "sha256": "7d07da078182f922981661bbd7d3664d6341559c5efb0fca55cdf7f457bb7de6",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/cadd/cadd.tsv.gz.tbi"
+        },
+        {
+          "name": "indexed.manifest.json",
+          "size_bytes": 1318,
+          "sha256": "b96020312d9bda6ccb269dbbdefb4d3a3c7fbad89ae0debc17862c851f76753d",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/cadd/indexed.manifest.json"
+        },
+        {
+          "name": "LICENSE-NOTICES.json",
+          "size_bytes": 3115,
+          "sha256": "4263b3d051b755012ec9577eb29e91f48ff5490aa7a4fd0154bbc15c0ca01fb7",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/cadd/LICENSE-NOTICES.json"
+        },
+        {
+          "name": "preparation.json",
+          "size_bytes": 1817,
+          "sha256": "4d7b293dc30033ba514cc45c18ddcb49d12634a85abd8b2b535c6833b472b05e",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/cadd/preparation.json"
+        }
+      ]
+    },
+    {
+      "id": "spliceai",
+      "version": "2026-10-04-v1",
+      "files": [
+        {
+          "name": "spliceai.vcf.gz",
+          "size_bytes": 22312334,
+          "sha256": "30a036dd3b2a76a56413bb84ab054f9045288375f11e91b213f10de2468ef14a",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/spliceai/spliceai.vcf.gz"
+        },
+        {
+          "name": "spliceai.vcf.gz.tbi",
+          "size_bytes": 538795,
+          "sha256": "b2e2156fe1a7d5bfbe7cb8b7f4b2b0891f7626bcca3a9080123af1951fb74a09",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/spliceai/spliceai.vcf.gz.tbi"
+        },
+        {
+          "name": "LICENSE-NOTICES.json",
+          "size_bytes": 23963,
+          "sha256": "1cc03b6770a4c872bba57ce8393b6c892c147685b7fe15f7950f2645ab783044",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/spliceai/LICENSE-NOTICES.json"
+        },
+        {
+          "name": "preparation.json",
+          "size_bytes": 11514,
+          "sha256": "c5d98c06d7855d04259c8ad158f1431c66cdeef50609f86111a30d9c9db7ef25",
+          "url": "https://huggingface.co/datasets/luoyiming1991/guide-iei-essential-annotations-grch38/resolve/3dae640d2fc6672a5f21e5b53a2ba7a15953b0a5/spliceai/preparation.json"
+        }
+      ]
+    }
+  ]
+}

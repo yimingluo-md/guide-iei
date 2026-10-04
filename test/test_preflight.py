@@ -139,6 +139,27 @@ def test_required_spliceai_snv_missing_fails(tmp_path):
     assert "SpliceAI.indel" not in result.stderr
 
 
+def test_sharded_spliceai_missing_manifest_reports_repair(tmp_path):
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    config = tmp_path / "config.yaml"
+    config.write_text(
+        f"reference:\n  assembly: GRCh38\n  vep_cache_dir: {cache}\n"
+        "region:\n  coding_only: false\n"
+        "output:\n  format: vcf\n  compress: bgzip\n"
+        "plugins:\n  SpliceAI:\n    enabled: true\n    required: true\n"
+        "    format: mane_v1.5_sharded\n"
+        f"    snv: {tmp_path / 'full/manifest.json'}\n"
+        "post_processing:\n  clinvar_aa_match:\n    enabled: false\n"
+    )
+    source = tmp_path / "input.vcf"
+    write_vcf(source)
+    result = run_reference_checks(config, source, tmp_path / "out.vcf.gz")
+    assert result.returncode != 0
+    assert "Full SpliceAI installation needs repair" in result.stderr
+    assert "Traceback" not in result.stderr
+
+
 def test_required_loftee_reference_missing_fails(tmp_path):
     cache = tmp_path / "cache"; cache.mkdir()
     config = tmp_path / "config.yaml"

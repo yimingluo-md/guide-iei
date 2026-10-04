@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 try:
+    from .spliceai_dataset import FORMAT as SPLICEAI_SHARDED, validate as validate_spliceai, prefer_legacy
     from .avi_dataset import valid_bundle as valid_avi_bundle
     from .indexed_scores import (
         ManifestError,
@@ -36,6 +37,7 @@ try:
     )
     from .predictor_registry import Adapter, MatchScope, load_registry
 except ImportError:  # direct script execution
+    from spliceai_dataset import FORMAT as SPLICEAI_SHARDED, validate as validate_spliceai, prefer_legacy
     from avi_dataset import valid_bundle as valid_avi_bundle
     from indexed_scores import (
         ManifestError,
@@ -423,8 +425,24 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
             argv += ["--plugin", "LoF," + ",".join(kv)]
 
     # SpliceAI (snv= + indel=)
-    sai = plugins.get("SpliceAI", {})
-    if sai.get("enabled"):
+    sai = dict(plugins.get("SpliceAI", {}))
+    prefer_legacy(sai, lambda p: Path(mapper.absolutize(p)))
+    if sai.get("enabled") and sai.get("format") == SPLICEAI_SHARDED:
+        hp = sai.get("snv")
+        if not hp:
+            plan.errors.append("plugin.SpliceAI.snv: full MANE chromosome manifest is required")
+        elif sai.get("indel"):
+            plan.errors.append("Full MANE 1.5 SpliceAI is SNV-only; do not combine it with an indel table")
+        else:
+            try:
+                # Always validate this multi-file contract, including --no-check.
+                release = validate_spliceai(mapper.absolutize(hp))
+                cp = mapper.map(hp)
+                plan.reference_paths.extend(str(Path(mapper.absolutize(hp)).parent / r["vcf"]) for r in release["files"])
+                argv += ["--plugin", "SpliceAIStarter,shards=" + cp]
+            except ValueError as exc:
+                (plan.errors if sai.get("required") else plan.warnings).append(str(exc))
+    elif sai.get("enabled"):
         parts = []
         ok = True
         for key in ("snv", "indel"):
@@ -437,7 +455,24 @@ def _add_plugins(plugins: dict, plan: VepPlan, mapper: PathMapper,
                 break
             parts.append(f"{key}={cp}")
         if ok and parts:
-            argv += ["--plugin", "SpliceAI," + ",".join(parts)]
+            name = "SpliceAI"
+            if sai.get("coverage_scope") == "essential_splice_sites":
+                name = "SpliceAIStarter"
+                manifest = sai.get("source_manifest")
+                if not manifest:
+                    plan.errors.append("plugin.SpliceAI.source_manifest: starter gene matching requires preparation provenance")
+                    ok = False
+                else:
+                    cp = _resolve(plan, mapper, manifest, "plugin.SpliceAI.source_manifest", True, check_exists)
+                    if cp:
+                        parts.append(f"manifest={cp}")
+                    else:
+                        ok = False
+                if sai.get("indel"):
+                    plan.errors.append("SpliceAI starter is SNV-only; use the full provider for indel predictions")
+                    ok = False
+            if ok:
+                argv += ["--plugin", name + "," + ",".join(parts)]
 
     # CADD v1.7 WGS — the official VEP plugin reads the score-only SNV and
     # indel TSVs directly. Do not convert these files to a duplicate VCF and

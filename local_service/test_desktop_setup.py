@@ -22,7 +22,7 @@ class DesktopSetupTests(unittest.TestCase):
     def action(self, value):
         self.control.write_text(json.dumps({"action": value}))
 
-    def run_setup(self, callback, tick=lambda: None):
+    def run_setup(self, callback, tick=lambda: None, *, essential=False):
         def call(base, route, body=None):
             self.calls.append(route)
             return callback(route, body)
@@ -31,7 +31,74 @@ class DesktopSetupTests(unittest.TestCase):
             self.assertLess(self.ticks, 30, self.status.read_text())
             tick()
         return prepare_engine("http://127.0.0.1:1", self.root, self.status,
-                              self.control, lambda: True, call, pause)
+                              self.control, lambda: True, call, pause, essential=essential)
+
+    def test_essential_setup_waits_for_one_explicit_click(self):
+        state = {"ready": False, "started": False}
+        def call(route, body):
+            if route.endswith("/status"):
+                return {"available": state["ready"], "busy": False,
+                        "package": {"installable": True}, "annotation_path": "/default/data",
+                        "free_bytes": 1000, "estimated_required_bytes": 500}
+            if route.endswith("/setup"):
+                self.assertGreaterEqual(self.ticks, 3)
+                self.assertEqual(route, "/api/essential-setup/setup")
+                state["started"] = True
+                return {"id": "essentials"}
+            state["ready"] = True
+            return {"jobs": [{"id": "essentials", "status": "succeeded"}]}
+        def tick():
+            if self.ticks < 3:
+                self.assertFalse(state["started"])
+                self.assertEqual(json.loads(self.status.read_text())["annotation_path"], "/default/data")
+            if self.ticks == 3:
+                self.action("prepare")
+        self.assertTrue(self.run_setup(call, tick, essential=True))
+        self.assertEqual(self.calls.count("/api/essential-setup/setup"), 1)
+
+    def test_unreleased_package_shows_explanation_without_installing(self):
+        def call(route, body):
+            self.assertEqual(route, "/api/essential-setup/status")
+            return {"available": False, "package": {"installable": False}, "message": "Package is being prepared",
+                    "annotation_path": "/default/data", "free_bytes": 1000, "estimated_required_bytes": 500}
+        def tick():
+            status = json.loads(self.status.read_text())
+            self.assertFalse(status["can_prepare"])
+            self.assertIn("being prepared", status["message"])
+            self.action("quit")
+        self.assertFalse(self.run_setup(call, tick, essential=True))
+
+    def test_ready_existing_installation_does_not_download_new_package(self):
+        self.assertTrue(self.run_setup(lambda *_: {"available": True,
+            "annotation_path": "/ready/data", "free_bytes": 42,
+            "estimated_required_bytes": 0}, essential=True))
+        self.assertEqual(self.calls, ["/api/essential-setup/status"])
+        self.assertEqual(json.loads(self.status.read_text())["annotation_path"], "/ready/data")
+
+    def test_location_survives_progress_failure_and_retry_and_refreshes_on_ready(self):
+        state = {"ready": False, "attempt": 0, "polls": 0}
+        def call(route, body):
+            if route.endswith("/status"):
+                return {"available": state["ready"], "busy": False,
+                    "package": {"installable": True}, "annotation_path": "/selected/data",
+                    "free_bytes": 50 if state["ready"] else 100, "estimated_required_bytes": 10}
+            if route.endswith("/setup"):
+                state["attempt"] += 1
+                return {"id": "essential"}
+            state["polls"] += 1
+            result = "running" if state["polls"] == 1 else "failed" if state["attempt"] == 1 else "succeeded"
+            state["ready"] = result == "succeeded"
+            return {"jobs": [{"id": "essential", "status": result, "message": "Dataset progress"}]}
+        phases = set()
+        def tick():
+            snapshot = json.loads(self.status.read_text())
+            phases.add(snapshot["phase"])
+            self.assertEqual(snapshot["annotation_path"], "/selected/data")
+            if snapshot["phase"] in {"waiting", "failed"}:
+                self.action("prepare")
+        self.assertTrue(self.run_setup(call, tick, essential=True))
+        self.assertTrue({"waiting", "preparing", "failed"} <= phases)
+        self.assertEqual(json.loads(self.status.read_text())["free_bytes"], 50)
 
     def test_ready_engine_is_reused_without_install_even_after_app_update(self):
         self.assertTrue(self.run_setup(lambda *_: {"available": True}))

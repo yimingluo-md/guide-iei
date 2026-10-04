@@ -20,19 +20,35 @@ def api(base, route, body=None):
         raise RuntimeError(detail.get("error") or "Startup request failed") from exc
 
 
-def write_status(path, phase, message, log_path=""):
+def write_status(path, phase, message, log_path="", **details):
     temporary = path.with_suffix(".tmp")
-    temporary.write_text(json.dumps({"phase": phase, "message": message, "log_path": log_path}))
+    temporary.write_text(json.dumps({"phase": phase, "message": message, "log_path": log_path, **details}))
     os.replace(temporary, path)
 
 
-def prepare_engine(base, support, status_path, control_path, alive, call=api, pause=time.sleep):
+def prepare_engine(base, support, status_path, control_path, alive, call=api, pause=time.sleep, *, essential=False):
     """Return True to open review, False to quit; failed installs require Retry."""
     deferred = support / "annotation-setup-deferred.json"
     phase, job, log_path = "checking", None, ""
     quit_requested = cancellation_sent = False
     attempted = False
-    write_status(status_path, phase, "Checking installed annotation components…")
+    authorized = not essential
+    status_route = "/api/essential-setup/status" if essential else "/api/annotation-engine/status"
+    setup_route = "/api/essential-setup/setup" if essential else "/api/annotation-engine/setup"
+    resource_id = "essential_setup" if essential else "annotation_engine"
+    location = {}
+
+    def update_location(status):
+        for key in ("annotation_path", "free_bytes", "estimated_required_bytes"):
+            if key in status:
+                location[key] = status[key]
+
+    def publish(phase, message, log_path="", **details):
+        # Every snapshot is self-contained: the native poll may miss the brief
+        # waiting state, or start with an already prepared installation.
+        write_status(status_path, phase, message, log_path, **{**location, **details})
+
+    publish(phase, "Checking installed annotation components…")
     while alive():
         try:
             action = json.loads(control_path.read_text()).get("action")
@@ -41,7 +57,11 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
             action = None
         if action == "quit":
             quit_requested = True
+        if action == "prepare" and phase in {"waiting", "failed"}:
+            authorized = True
+            phase, job, cancellation_sent = "checking", None, False
         if action == "retry" and phase == "failed":
+            authorized = True
             phase, job, cancellation_sent = "checking", None, False
         try:
             if quit_requested:
@@ -49,47 +69,73 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
                 # before allowing review; never abandon an invisible installer.
                 if attempted and job is None:
                     jobs = call(base, "/api/resource-downloads")["jobs"]
-                    job = next((item for item in jobs if item.get("resource_id") == "annotation_engine"
+                    job = next((item for item in jobs if item.get("resource_id") in {resource_id, "annotation_engine"}
                                 and item["status"] in {"queued", "running"}), None)
                 if job and not cancellation_sent:
                     call(base, "/api/annotation-engine/cancel", {"job_id": job["id"], "confirm": True})
                     cancellation_sent = True
-                if job and call(base, "/api/annotation-engine/status").get("busy"):
-                    write_status(status_path, "stopping", "Stopping annotation preparation safely…", log_path)
+                if job and call(base, status_route).get("busy"):
+                    publish("stopping", "Stopping annotation preparation safely…", log_path)
                 else:
-                    write_status(status_path, "stopped", "Annotation preparation stopped.", log_path)
+                    publish("stopped", "Annotation preparation stopped.", log_path)
                     return False
-            elif phase == "checking":
-                write_status(status_path, phase, "Checking installed annotation components…")
-                status = call(base, "/api/annotation-engine/status")
-                if status.get("available"):
+            elif phase in {"checking", "waiting"}:
+                publish(phase, "Checking installed annotation components…")
+                status = call(base, status_route)
+                update_location(status)
+                if status.get("available") and not status.get("busy") and not status.get("restart_required"):
                     deferred.unlink(missing_ok=True)
-                    write_status(status_path, "ready", "Annotation engine ready. Opening the workbench…")
+                    publish("ready", "GUIDE-IEI is ready. Opening the workbench…")
                     return True
+                if essential and status.get("restart_required"):
+                    phase = "waiting"
+                    publish(phase, "Restart to activate the selected storage location.",
+                                 can_prepare=False, **{k: status[k] for k in ("annotation_path", "free_bytes", "estimated_required_bytes")})
+                    pause(.5)
+                    continue
+                if essential and not authorized:
+                    phase = "waiting"
+                    installable = status.get("package", {}).get("installable", False) or status.get("legacy_ready", False)
+                    publish(phase, status.get("message") or
+                                 "Choose your data location, then prepare the environment and essential annotations together.",
+                                 can_prepare=installable,
+                                 **{k: status[k] for k in ("annotation_path", "free_bytes", "estimated_required_bytes")})
+                    pause(.5)
+                    continue
+                if essential and status.get("busy"):
+                    jobs = call(base, "/api/resource-downloads")["jobs"]
+                    job = next((item for item in jobs if item.get("resource_id") in {resource_id, "annotation_engine"}
+                                and item["status"] in {"queued", "running"}), None)
+                    if job:
+                        log_path, phase = job.get("log_path", ""), "preparing"
+                    pause(.5)
+                    continue
                 if status.get("state") == "runtime_starting":
-                    write_status(status_path, phase, "Starting the installed container runtime…")
+                    publish(phase, "Starting the installed container runtime…")
                 else:
                     attempted = True
-                    job = call(base, "/api/annotation-engine/setup", {"confirm": True})
+                    route = "/api/annotation-engine/setup" if essential and status.get("legacy_ready") else setup_route
+                    job = call(base, route, {"confirm": True})
                     log_path, phase = job.get("log_path", ""), "preparing"
-                    write_status(status_path, phase, "Preparing the annotation engine…", log_path)
+                    publish(phase, "Preparing GUIDE-IEI…", log_path)
             elif phase == "preparing":
                 jobs = call(base, "/api/resource-downloads")["jobs"]
                 job = next(item for item in jobs if item["id"] == job["id"])
                 if job["status"] in {"failed", "interrupted"}:
                     raise RuntimeError(job.get("error") or "Annotation preparation needs attention.")
                 if job["status"] == "succeeded":
-                    status = call(base, "/api/annotation-engine/status")
+                    status = call(base, status_route)
+                    update_location(status)
                     if not status.get("busy"):
                         if not status.get("available"):
                             raise RuntimeError(status.get("message") or "Engine validation failed")
                         deferred.unlink(missing_ok=True)
-                        write_status(status_path, "ready", "Annotation engine ready. Opening the workbench…", log_path)
+                        publish("ready", "GUIDE-IEI is ready. Opening the workbench…", log_path)
                         return True
                 else:
-                    write_status(status_path, phase, job.get("message") or "Preparing the annotation engine…", log_path)
+                    publish(phase, job.get("message") or "Preparing the annotation engine…", log_path)
         except (OSError, ValueError, RuntimeError, KeyError, StopIteration) as exc:
             phase = "failed"
-            write_status(status_path, phase, str(exc) or "Preparation needs attention. Open Log, Retry, or Quit GUIDE-IEI.", log_path)
+            publish(phase, str(exc) or "Preparation needs attention. Open Log, Retry, or Quit GUIDE-IEI.", log_path)
         pause(.5)
     return False

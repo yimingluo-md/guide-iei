@@ -5,6 +5,13 @@ Ensembl VEP plugins, Apache License 2.0:
   sources only when the corresponding file parameter is nonempty. This permits
   a configured SNV-only lookup dataset. Original copyright/license headers are
   retained. The exact substitutions are recorded in docker/Dockerfile.
+  GUIDE-IEI's separate SpliceAIStarter.pm (MIT) matches the compact MANE 1.5
+  SNV subset and full 24-chromosome release by exact genomic allele and stable
+  Ensembl gene identity. Full-release lookups route directly to one shard. Its
+  companion gene-name map is derived from pinned NCBI/Ensembl MANE v1.5 inputs
+  by scripts/build_spliceai_gene_map.py; source hashes and attribution are in
+  the JSON map. It contains no prediction scores or model weights. Legacy
+  single-file SpliceAI tables continue to use the upstream plugin unchanged.
   /plugins/LoF.pm is replaced with the entry point from the pinned GRCh38
   LOFTEE source tree; helper modules remain under /opt/vep/src/loftee.
 

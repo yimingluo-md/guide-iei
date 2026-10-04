@@ -244,9 +244,17 @@ if mode != "--dry-run":
                         )
     spliceai = plugins.get("SpliceAI", {}) or {}
     if spliceai.get("enabled"):
-        for key in ("snv", "indel"):
-            if spliceai.get(key):
-                indexed.append((f"SpliceAI.{key}", absolute(spliceai.get(key)), spliceai.get("required", False)))
+        from spliceai_dataset import FORMAT, prefer_legacy, validate
+        prefer_legacy(spliceai, absolute)
+        if spliceai.get("format") == FORMAT:
+            try:
+                validate(absolute(spliceai.get("snv")) or "")
+            except ValueError as exc:
+                (errors if spliceai.get("required") else warnings).append(str(exc))
+        else:
+            for key in ("snv", "indel"):
+                if spliceai.get(key):
+                    indexed.append((f"SpliceAI.{key}", absolute(spliceai.get(key)), spliceai.get("required", False)))
     cadd = plugins.get("CADD_WGS", {}) or {}
     if cadd.get("enabled"):
         for key in ("snv", "indels"):
@@ -416,6 +424,9 @@ if [[ "$(yaml_get "$CONFIG" plugins.PromoterAI.enabled)" == "true" ]]; then
 fi
 if [[ "$(yaml_get "$CONFIG" plugins.LoGoFunc.enabled)" == "true" ]]; then
     CHECK+='; test -r /plugins/LoGoFunc.pm || { echo "missing bundled LoGoFunc VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'
+fi
+if [[ "$(yaml_get "$CONFIG" plugins.SpliceAI.enabled)" == "true" ]] && { [[ "$(yaml_get "$CONFIG" plugins.SpliceAI.coverage_scope)" == "essential_splice_sites" ]] || [[ "$(yaml_get "$CONFIG" plugins.SpliceAI.format)" == "mane_v1.5_sharded" ]]; }; then
+    CHECK+='; test -r /plugins/SpliceAIStarter.pm && test -r /plugins/SpliceAI-MANE1.5-gene-map.json || { echo "missing bundled starter SpliceAI gene matcher; prepare the updated annotation engine" >&2; exit 2; }'
 fi
 if [[ "$GENERIC_INDEXED_ENABLED" == "true" ]]; then
     CHECK+='; test -r /plugins/IndexedScores.pm || { echo "missing bundled indexed-predictor VEP plugin; rebuild with bash docker/build.sh" >&2; exit 2; }'

@@ -159,7 +159,7 @@ def write_invalid_metric_vcf(path: Path) -> None:
     ]
     spliceai = [
         "G", "1", "splice_region_variant", "MODERATE", "GENE1",
-        "ENSG000001", "ENST000001", "1", "GENE1", "0.5", "137", "",
+        "ENSG000001", "ENST000001", "1", "GENE1", "0.5", "501", "",
     ]
     nonfinite = [
         "T", "1", "missense_variant", "MODERATE", "GENE2",
@@ -501,7 +501,8 @@ class PredictorStorageTests(unittest.TestCase):
             "Feature": "ENST_WRONG",
             "SpliceAI_pred_SYMBOL": "SOURCE",
             "SpliceAI_pred_DS_AG": "0.91",
-            "SpliceAI_pred_DP_AG": "4",
+            "SpliceAI_pred_DP_AG": "-500",
+            "SpliceAI_pred_DP_DL": "500",
         })
         spliceai = next(
             prediction for prediction in annotation["_predictions"]
@@ -510,6 +511,8 @@ class PredictorStorageTests(unittest.TestCase):
         self.assertEqual(spliceai["gene_symbol"], "SOURCE")
         self.assertEqual(spliceai["gene_id"], "")
         self.assertEqual(spliceai["target"], {"gene_symbol": "SOURCE"})
+        self.assertEqual(spliceai["provenance"]["delta_position_acceptor_gain"], -500)
+        self.assertEqual(spliceai["provenance"]["delta_position_donor_loss"], 500)
         self.assertEqual(
             spliceai["provenance"]["source_gene_symbol"], "SOURCE"
         )
@@ -572,6 +575,11 @@ class PredictorStorageTests(unittest.TestCase):
                 # These fields carry match identity, not arbitrary category
                 # data, so keep their producer contracts explicit.
                 record.update({
+                    "StarterAM_match": "allele_transcript_protein",
+                    "StarterAM_match_status": "exact",
+                    "StarterAM_source_target": "ENST000001:A12V",
+                    "StarterCADD_match": "allele",
+                    "StarterCADD_match_status": "exact",
                     "PromoterAI_match": "exact_version",
                     "PromoterAI_source_transcript": "ENST000001.1",
                     "PromoterAI_strand": "+",
