@@ -44,7 +44,9 @@ def test_baked_checks_ignore_a_competing_stdlib_test_package(tmp_path):
     package.mkdir()
     (package / "__init__.py").write_text("# Simulates the regular stdlib test package.\n")
     code = (
-        "import sys; sys.path.append(" + repr(str(tmp_path)) + "); import test; "
+        # Make the simulated regular package win even when this interpreter
+        # already ships a real stdlib test package (Ubuntu/python.org builds).
+        "import sys; sys.path.insert(0, " + repr(str(tmp_path)) + "); import test; "
         "assert test.__file__ == " + repr(str(package / "__init__.py")) + "; "
         "import pytest; raise SystemExit(pytest.main(['-q', 'test/test_starter_release_safety.py', "
         "'-k', 'test_baked_starter_contract_checks_every_dependency']))"
