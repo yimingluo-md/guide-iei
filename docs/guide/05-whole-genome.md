@@ -13,6 +13,14 @@ the evidence available for the non-coding candidates that emerge.
 
 ## Annotating a genome
 
+After essential setup, choose **Install recommended WGS datasets** under
+**Import & QC → Set up annotation datasets** for full SpliceAI MANE 1.5,
+ENCODE SCREEN tissue/immune contexts, and AlphaGenome AVI. These downloads
+extend the starter annotations without reinstalling core references. PromoterAI
+is also recommended for WGS, and GenIA for both exome and genome; each requires
+user-provided data. dbNSFP, LoGoFunc, FuncVEP, full CADD and OMIM remain optional.
+See [dataset setup and disk requirements](03-datasets.md).
+
 A whole-genome VCF typically contains 4–5 million PASS variants, and
 annotation time scales with variant count rather than genome size.
 Annotating a full genome on a standard workstation is supported but slow —

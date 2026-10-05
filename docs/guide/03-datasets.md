@@ -21,36 +21,39 @@ GUIDE-IEI software is MIT-licensed. Annotation datasets retain their own
 licenses; some are restricted to noncommercial use. A free download does not
 remove those restrictions. See [dataset license notices](../../THIRD_PARTY_NOTICES.md).
 
-The new **Data sources & licenses** page provides starter-resource attribution,
+The **Databases & licenses** page provides starter-resource attribution,
 subset-change notices and full applicable license texts for offline reading,
 plus links to the other annotation sources. It is informational, without an
-acceptance checkbox. The compact starter package is still in development;
-these notices do not mean it is already bundled in the published installer.
+acceptance checkbox. The compact starter package is downloaded alongside the
+essential references, not embedded in the application installer.
 Registered-user datasets and other resources retain their existing access and
 installation requirements.
 
 ## Set up datasets
 
-All of this is done inside the application, at **Annotate VCF → Set up
-annotation datasets**. Each dataset is presented as a card describing in
+First-time essential setup is offered in the startup/preparation window.
+Additional datasets and individual repair actions are inside the application,
+at **Import & QC → Annotate VCF → Set up annotation datasets**.
+Each dataset is presented as a card describing in
 plain language what it contributes; this chapter is a tour of those cards.
 
-![The dataset setup screen: engine and reference status, one-click download tiles for the exome and WGS profiles, and the registration-gated dbNSFP and PromoterAI cards](../assets/img/dataset-cards.png)
+The page separates essential/included resources, recommended WGS downloads,
+recommended user-provided resources, and optional additions.
 
 ## Plan disk space first
 
 | Dataset | Approximate payload or preparation requirement | Contributes |
 |---|---|---|
 | Core references (VEP cache, genome FASTA, LOFTEE data, region tracks) | Multiple large archives plus extracted files; see setup's free-space check | required for all analyses |
-| dbNSFP (registration required) | ~52 GB | protein-effect predictors |
-| Full SpliceAI MANE v1.5 SNV scores (optional) | 34.3 GB plus indexes | splice predictions throughout MANE Select transcript spans; D=500, masked |
+| dbNSFP (optional; registration required) | ~52 GB | additional predictors and selectable conservation scores |
+| Full SpliceAI MANE v1.5 SNV scores (recommended for WGS) | 34.3 GB plus indexes | splice predictions throughout MANE Select transcript spans; D=500, masked |
 | ENCODE SCREEN + tissue/immune contexts | ~2 GB | WGS regulatory review |
 | PromoterAI (licensed; recommended for WGS) | <1 GB | promoter predictions |
 | AlphaGenome AVI (recommended for WGS) | 75.8 GB prepared download; allow 80 GiB free for setup | genome-wide SNV impact scores |
 | CADD whole-genome (optional) | ~83 GiB | non-coding CADD only |
 | LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
 | FuncVEP (optional; licensed) | 4.24 GB source ZIP; 24 GiB free for automatic setup | missense functional-effect scores |
-| GenIA (optional; registration required) | source-release dependent; small derived SQLite index | gene–disease, phenotype, and exact-allele evidence |
+| GenIA (recommended; user-provided) | source-release dependent; small derived SQLite index | gene–disease, phenotype, and exact-allele evidence for exome and genome |
 
 These are not additive minimum-disk requirements: compressed downloads,
 installed files, and temporary preparation space are different quantities.
@@ -80,31 +83,39 @@ indexing tools are ready. Source-checkout installations build the configured
 local image if it is missing or outdated; the standalone Mac app imports its
 bundled image instead. Compatible images are reused. No separate installation
 of bioinformatics command-line tools is required. Large reference datasets
-are still installed separately using the choices below.
+are downloaded to the selected annotation location, not embedded in the installer.
 
 ## Step 1 — One click for the public datasets
 
-Two actions install the recommended public resources (not every optional dataset):
+Essential setup supplies the VEP cache, reference genome, LOFTEE resources,
+compact MANE AlphaMissense, coding-SNV CADD and essential donor/acceptor-site
+SpliceAI, plus ClinVar and ClinGen. No separate recommended-exome action is needed.
 
-- **Recommended for exome** — the core references plus the datasets used in
-  exome review.
-- **Recommended for WGS** — the exome set plus ENCODE SCREEN tissue and
-  immune contexts and **AlphaGenome AVI** SNV scores. Both profiles use the same SpliceAI MANE SNV table;
-  the WGS action does not add genome-wide indel scores or optional CADD.
-  PromoterAI is also recommended for
-  WGS, but because it is licensed it cannot be included in the one-click
-  download — it is set up once in Step 3 below.
+**Install recommended WGS datasets** adds exactly three resources:
 
-Progress is reported per dataset. A third action, **Refresh changing
-sources** (labelled **Update installed datasets** on the setup screen), checks
+- **Full SpliceAI MANE 1.5**, beyond the essential-site starter.
+- **ENCODE SCREEN tissue and immune contexts**.
+- **AlphaGenome AVI** SNV scores.
+
+All three can be downloaded automatically without user-supplied files; their
+usage terms still apply. Together they require approximately **112 GB of
+downloads** when none is installed. The button estimates missing datasets only
+and shows a separate setup-space allowance. Installed resources are skipped;
+the essential references are not downloaded again. Full SpliceAI also benefits
+covered splice-region SNVs in exome data; its WGS recommendation does not
+prevent exome use. It does not add indel scores.
+
+**Recommended · user-provided** contains PromoterAI (WGS) and GenIA (exome
+and genome). Neither is required to run, and neither is in the automatic batch.
+**Optional add-ons** contains dbNSFP, LoGoFunc, FuncVEP, full CADD, and OMIM.
+
+Progress is reported per dataset. **Update installed datasets** separately checks
 for updated ClinVar and ClinGen resources. Annotation runs
 record the source versions used, allowing results from different dates to be
 compared explicitly.
 
-During the first installation, two independent groups can download at the
-same time, so progress messages may alternate between datasets. Concurrency is
-limited to two groups to avoid overwhelming a typical workstation or external
-drive. All existing checksum and archive validation remains in place.
+The WGS additions are processed one dataset at a time. Existing checksum and
+archive validation remains in place.
 
 If setup is interrupted or stops on an error, completed and verified files are
 kept. The setup panel shows the error and a **Retry** action; retrying checks
@@ -122,12 +133,23 @@ does not change which variants WGS intake retains.
 
 See [AlphaGenome AVI](../ALPHAGENOME_AVI.md) for installation, storage and provenance.
 
-## Step 2 — dbNSFP: the one registration
+## Step 2 — Optional dbNSFP
+
+dbNSFP is **optional after essential setup**. It adds REVEL, other predictors,
+selectable conservation scores (such as GERP, phyloP, and phastCons), and score
+coverage beyond the compact starters. GUIDE-IEI does not import every field in
+the upstream database. MANE AlphaMissense and coding-SNV CADD remain available
+without it; VEP supplies basic gene/transcript, HGVS, and configured gnomAD
+frequency annotations independently.
+
+**pLI and LOEUF do not depend on dbNSFP.** They come from the bundled gnomAD
+v4.1.1 constraint table (19,638 genes), using one representative transcript per
+gene, preferentially MANE Select and then canonical. No extra download is needed.
 
 dbNSFP assembles the field's protein-effect predictors (AlphaMissense,
 CADD, REVEL, SIFT, PolyPhen-2, and others) into a single resource. It is
 free for academic use, but its license does not permit redistribution, so
-each user registers once:
+users who want this optional resource register once:
 
 1. At **[dbnsfp.org/download](https://www.dbnsfp.org/download)**, request
    the free **academic** access using an institutional email address.
@@ -141,8 +163,6 @@ each user registers once:
    verifies the published checksum and index, and installs the resource. The
    private link is removed after the job and is not written to the job log or
    configuration.
-
-![The annotation-dataset screen groups registration-gated resources and their setup controls](../assets/img/dataset-dbnsfp-card.png)
 
 ## Step 3 — PromoterAI: recommended for whole-genome work
 
@@ -218,10 +238,11 @@ and a missing score is not evidence that a variant is neutral or benign.
   registered-user resource can add immune gene–disease knowledge, reported
   phenotypes, and exact GRCh38 variant records. GUIDE-IEI does not bundle a
   credential, download URL, or GenIA source file. After obtaining the exports,
-  open **Import & QC → Set up annotation datasets → User action needed →
+  open **Import & QC → Set up annotation datasets → Recommended · user-provided →
   GenIA**, select one or more files, and install them locally.
-  GenIA remains optional; this grouping means that the user supplies the
-  files, not that annotation requires them. dbNSFP is required separately.
+  GenIA is recommended for exome and genome but not required to run; this
+  grouping means that the user supplies the files. dbNSFP is a separate
+  optional addition after essential setup.
 
   The five recognized components are **GEI gene–disease list**, **GenIA
   disease catalog**, **disease–phenotype associations**, **GenIA phenotype
@@ -264,13 +285,13 @@ and a missing score is not evidence that a variant is neutral or benign.
 
 The software includes compact gene-knowledge resources (gnomAD constraint,
 HGNC, the IUIS IEI classification, and ClinGen gene–disease validity and
-dosage). Large annotation references are separate: the recommended setup
-downloads missing SCREEN cCRE/gene-TSS files and GRCh37 conversion data as
-well as the other required references. Do not assume that the application
+dosage). Large annotation references are separate downloads. Included resource
+cards offer individual setup or repair actions for cCRE/gene-TSS and GRCh37
+conversion data. Do not assume that the application
 download alone contains these files.
 
 Licensed OMIM data and registered-user GenIA exports are never shipped.
-OMIM is under **Optional add-ons**, while GenIA is under **User action needed**
+OMIM is under **Optional add-ons**, while GenIA is under **Recommended · user-provided**
 on the same dataset screen. An authorized OMIM user can paste
 their four private links for local download and indexing, or select an
 institution's already-downloaded copy. GenIA instead accepts authorized local
@@ -281,8 +302,8 @@ exports and retains only its derived component database.
 The dataset screen itself is the status display: each card reports
 installed-or-missing, with versions. Installed required/included resources
 remain on; installed optional predictors default to on where applicable and
-can be changed for that run. “User action needed” can contain both required
-dbNSFP and optional GenIA.
+can be changed for that run. Recommended user-provided resources are not
+prerequisites; dbNSFP is optional once essential setup is complete.
 
 For deeper verification, the regression panel annotates eight public control
 variants and asserts selected expected annotations—not every predictor or

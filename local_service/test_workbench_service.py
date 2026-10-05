@@ -1117,6 +1117,69 @@ class AnnotationJobServiceTests(unittest.TestCase):
         start_job.assert_called_once()
         self.assertEqual(result["status"], "queued")
 
+    def test_wgs_recommendation_is_only_three_additions(self):
+        profile = self.service._annotation_profile()
+        wgs = profile["recommended_profiles"]["whole_genome"]
+        self.assertEqual(wgs["missing"], ["spliceai", "screen_context", "alphagenome_avi"])
+        self.assertEqual(wgs["setup_bytes"], 117 * 1024 ** 3)
+        self.assertGreater(wgs["download_bytes"], 111 * 10 ** 9)
+        sources = {source["id"]: source for source in profile["sources"]}
+        self.assertEqual(sources["genia"]["recommendation"], "recommended")
+        self.assertFalse(sources["genia"]["required"])
+        self.assertEqual(sources["spliceai"]["available_in"], ["exome", "whole_genome"])
+
+    def test_wgs_download_dispatches_missing_additions_only(self):
+        profile = {"recommended_profiles": {"whole_genome": {
+            "installed": False, "missing": ["screen_context"],
+        }}}
+        with patch.object(self.service, "_annotation_profile", return_value=profile), patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ), patch.object(self.service, "_start_resource_job", return_value={}) as start:
+            self.service.start_resource_download("recommended_wgs")
+        command = start.call_args.args[1]
+        self.assertTrue(command[1].endswith("install_recommended_wgs.sh"))
+        self.assertEqual(command[-2:], [str(self.service.annotation_root / "screen-context"), "screen_context"])
+
+    def test_wgs_space_check_does_not_charge_for_installed_resources(self):
+        from collections import namedtuple
+        usage = namedtuple("usage", "total used free")(10 * 1024 ** 3, 0, 3 * 1024 ** 3)
+        profile = {"recommended_profiles": {"whole_genome": {
+            "installed": False, "missing": ["screen_context"],
+        }}}
+        with patch.object(self.service, "_annotation_profile", return_value=profile), patch(
+            "local_service.workbench_service.shutil.disk_usage", return_value=usage
+        ):
+            self.service._ensure_annotation_download_space("recommended_wgs")
+
+    def test_dbnsfp_not_required_with_starter_config(self):
+        config = {"plugins": {
+            "dbNSFP": {"required": False},
+            "AlphaMissenseStarter": {"enabled": True, "file": "am.gz"},
+            "CADDStarter": {"enabled": True, "file": "cadd.gz"},
+        }}
+        self.assertNotIn("dbnsfp", self.service._required_sources(config))
+        config["plugins"]["CADDStarter"]["enabled"] = False
+        self.assertIn("dbnsfp", self.service._required_sources(config))
+
+    def test_wgs_config_uses_full_spliceai_not_starter(self):
+        config_path = self.root / "config" / "annotation.config.yaml"
+        import yaml
+        config = yaml.safe_load(config_path.read_text())
+        config["plugins"]["SpliceAI"] = {
+            "format": "mane_v1.5_sharded", "snv": "references/spliceai/mane-v1.5/manifest.json",
+        }
+        config_path.write_text(yaml.safe_dump(config))
+        starter = {**config, "plugins": {**config["plugins"], "SpliceAI": {
+            "format": "starter", "coverage": "essential", "snv": "references/starter/spliceai.gz",
+        }}}
+        with patch.object(self.service, "_prefer_installed_managed_resources", return_value=starter):
+            generated = self.service._write_resource_config("recommended_wgs")
+            profile = self.service._annotation_profile()
+        block = yaml.safe_load(generated.read_text())["plugins"]["SpliceAI"]
+        self.assertEqual(block["format"], "mane_v1.5_sharded")
+        self.assertTrue(block["snv"].endswith("spliceai/mane-v1.5/manifest.json"))
+        self.assertIn("spliceai", profile["recommended_profiles"]["whole_genome"]["missing"])
+
     def test_spliceai_lookup_fetches_once_then_serves_from_cache(self):
         canned = {
             "variant": "8-140300616-T-G",

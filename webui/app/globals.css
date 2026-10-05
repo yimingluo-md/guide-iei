@@ -50,7 +50,9 @@ button { color: inherit; }
 .rail { background: #eef1ef; border-right: 1px solid #d7ddda; padding: 20px 12px; }
 .nav-group-label { color: #8a9491; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; padding: 0 9px 8px; }
 .nav-group-label.secondary { margin-top: 24px; }
-.nav-item { width: 100%; height: 36px; border: 0; background: transparent; border-radius: 6px; padding: 0 9px; display: flex; align-items: center; justify-content: space-between; color: #53615d; cursor: pointer; font-size: 12px; }
+.nav-item { width: 100%; min-height: 36px; height: auto; border: 0; background: transparent; border-radius: 6px; padding: 8px 9px; display: flex; align-items: center; justify-content: space-between; gap: 10px; text-align: left; line-height: 1.4; color: #53615d; cursor: pointer; font-size: 12px; }
+.nav-item > span:first-child { min-width: 0; }
+.nav-item > :last-child { flex-shrink: 0; }
 .nav-item:hover { background: #e3e9e6; }
 .nav-item.active { background: white; color: #174d4e; box-shadow: 0 1px 1px #1a2b2610; font-weight: 650; }
 .nav-item > span:last-child { color: #87928f; font: 10px var(--font-geist-mono); }
@@ -326,7 +328,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .dataset-quick-setup { margin: 12px 0 16px; padding: 13px; border: 1px solid #bcd7cf; border-radius: 7px; background: #f2f8f5; }
 .dataset-quick-setup h4, .dataset-group-head h4 { margin: 2px 0 0; color: #34574e; font-size: 11px; }
 .dataset-quick-setup > div:first-child > p:last-child { margin: 5px 0 0; color: #6d7f79; font-size: 8px; line-height: 1.45; }
-.dataset-quick-actions { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 7px; margin-top: 11px; }
+.dataset-quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; margin-top: 11px; }
+.dataset-quick-setup > p { color: #536b63; font-size: 10px; line-height: 1.5; }
 .dataset-quick-actions button { min-width: 0; padding: 10px; border: 1px solid #a9c9bf; border-radius: 6px; background: white; color: #315e52; cursor: pointer; text-align: left; }
 .dataset-quick-actions button:hover:not(:disabled) { border-color: #438a77; background: #f8fcfa; }
 .dataset-quick-actions button:disabled { opacity: .55; cursor: wait; }

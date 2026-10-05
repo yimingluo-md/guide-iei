@@ -17,8 +17,9 @@ subsequent runs; the walkthrough is not a runtime guarantee.
 1. **GUIDE-IEI installed** and the workbench running
    ([Install it on your computer](02-install.md)) — started with
    `bash scripts/start_workbench.sh`, opened at `http://127.0.0.1:3000`.
-2. **Annotation datasets installed** — at minimum the one-click
-   **Recommended for exome** set plus dbNSFP
+2. **Essential annotation setup completed** — core references, compact
+   AlphaMissense/coding-SNV CADD/essential-site SpliceAI, ClinVar and ClinGen.
+   dbNSFP and LoGoFunc are optional additions
    ([Set up the annotation datasets](03-datasets.md)).
 3. **A VCF** — single- or multi-sample, `.vcf` or `.vcf.gz`. GRCh38 is used
    directly; a GRCh37/hg19 file from an older pipeline is converted
@@ -50,7 +51,8 @@ The next screen presents two things.
 
 **Dataset readiness** — every annotation source, marked available or
 missing. Required sources must all be present before the run can start;
-optional sources (LoGoFunc, CADD) simply annotate when present. If a
+optional sources (such as dbNSFP and LoGoFunc) annotate when present. Coding-SNV
+CADD is supplied by essential setup, independently of dbNSFP. If a
 required source is missing, the screen links directly to **Set up
 annotation datasets**.
 

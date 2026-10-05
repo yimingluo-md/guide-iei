@@ -122,7 +122,7 @@ export type ServiceCapabilities = {
     }[];
     recommended_profiles: {
       exome: { installed: boolean; missing: string[] };
-      whole_genome: { installed: boolean; missing: string[] };
+      whole_genome: { installed: boolean; missing: string[]; download_bytes?: number; setup_bytes?: number };
     };
     dbnsfp_predictors: {
       id: string;

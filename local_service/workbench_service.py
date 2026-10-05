@@ -130,7 +130,7 @@ REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp"
 SOURCE_RECOMMENDATION_DEFAULTS = {
     "dbnsfp": "required",
     "loftee": "required",
-    "spliceai": "required",
+    "spliceai": "recommended_wgs",
     "repeatmasker": "included",
     "segdup": "included",
     "promoterai": "recommended_wgs",
@@ -145,7 +145,7 @@ SOURCE_RECOMMENDATION_DEFAULTS = {
     "ccre": "included",
     "screen_context": "recommended_wgs",
     "clingen_erepo": "required",
-    "genia": "optional",
+    "genia": "recommended",
 }
 DBNSFP_OPTIONAL_PREDICTORS = [
     {"id": "metarnn", "label": "MetaRNN", "category": "Ensemble", "columns": ["MetaRNN_score", "MetaRNN_pred"]},
@@ -224,7 +224,7 @@ ANNOTATION_SOURCE_SETUP = {
             "Copy the link ending in dbNSFP<version>_grch38.gz from the instruction email and paste it here; do not choose the similarly named _grch37.gz link. An Outlook Safe Links URL is accepted.",
             "GUIDE-IEI derives the matching .tbi and .md5 links, downloads all three files with eight resumable connections, verifies the published checksum and index, and installs them automatically.",
             "The private academic link is used only for this local download, is never written to the job log or configuration, and is deleted from temporary storage when the job ends.",
-            "Coding-region CADD, AlphaMissense, REVEL and the other bundled predictors all come from this one dataset.",
+            "Optional after essential setup: adds REVEL, additional predictors and selectable conservation scores. MANE AlphaMissense and coding-SNV CADD are supplied separately by the starter package; pLI and LOEUF are bundled gnomAD gene constraints.",
         ],
     },
     "loftee": {
@@ -444,7 +444,7 @@ ANNOTATION_SOURCE_SETUP = {
     "genia": {
         "setup_mode": "manual",
         "access": "registration",
-        "recommendation": "optional",
+        "recommendation": "recommended",
         "reference_url": "https://geniadb.org/",
         "reference_label": "GenIA website and registration",
         "size_hint": "small private local index; source files are not copied",
@@ -473,7 +473,7 @@ RESOURCE_DOWNLOAD_COMMANDS = {
     "screen_context": ("scripts/download_screen_context_bundle.sh",),
     "screen_context_build": ("scripts/prepare_screen_ccre_data.sh",),
     "recommended_exome": ("scripts/install_recommended_datasets.sh", "exome"),
-    "recommended_wgs": ("scripts/install_recommended_datasets.sh", "whole_genome"),
+    "recommended_wgs": ("scripts/install_recommended_wgs.sh",),
     "refresh_updates": ("scripts/update_refreshable_datasets.sh",),
 }
 # Conservative minimum free-space checks for downloads started from the UI.
@@ -523,12 +523,8 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
     ],
     "recommended_wgs": [
         (("custom_tracks", "AlphaGenomeAVI", "dest_dir"), 80 * GIB, True),
-        (("reference", "vep_cache_dir"), 35 * GIB, True),
-        (("reference", "fasta", "path"), 2 * GIB, False),
-        (("plugins", "LoF", "human_ancestor_fa"), 20 * GIB, False),
-        (("plugins", "SpliceAI", "snv"), 30 * GIB, False),
-        (("clinvar", "dest_dir"), 2 * GIB, True),
-        (("clingen_erepo", "dest_dir"), 1 * GIB, True),
+        (("plugins", "SpliceAI", "snv"), 35 * GIB, False),
+        (("wgs_review", "screen_context", "manifest"), 2 * GIB, False),
     ],
     "refresh_updates": [
         (("clinvar", "dest_dir"), 2 * GIB, True),
@@ -537,6 +533,14 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
     "dbnsfp_download": [
         (("plugins", "dbNSFP", "path"), 60 * GIB, False),
     ],
+}
+
+# Additional downloads, not another installation of the essential reference set.
+# Decimal download estimates are deliberately separate from setup disk allowances.
+WGS_RECOMMENDED_DOWNLOAD_BYTES = {
+    "spliceai": 34_317_245_229,
+    "screen_context": 1_500_000_000,
+    "alphagenome_avi": 75_800_000_000,
 }
 
 
@@ -2396,6 +2400,9 @@ class AnnotationJobService:
                 "bash", str(self.pipeline_root / specification[0]), str(config_path),
                 *specification[1:],
             ]
+            if resource_id == "recommended_wgs":
+                missing = self._annotation_profile()["recommended_profiles"]["whole_genome"]["missing"]
+                command += [str(self.annotation_root / "screen-context"), ",".join(missing)]
         return self._start_resource_job(resource_id, command, "download")
 
     def _ensure_annotation_download_space(
@@ -2409,6 +2416,14 @@ class AnnotationJobService:
         config = self._load_config(
             self.pipeline_root / "config" / "annotation.config.yaml"
         )
+        if resource_id == "recommended_wgs":
+            missing = self._annotation_profile()["recommended_profiles"]["whole_genome"]["missing"]
+            ids = ("alphagenome_avi", "spliceai", "screen_context")
+            output_specs = [spec for source_id, spec in zip(ids, output_specs) if source_id in missing]
+            output_overrides = dict(output_overrides or {})
+            output_overrides[("wgs_review", "screen_context", "manifest")] = (
+                self.annotation_root / "screen-context" / "prepared" / "screen.registry-v4.immune-contexts.json"
+            )
         locations: dict[int, dict] = {}
         for key_path, required, is_directory in output_specs:
             resolved = (output_overrides or {}).get(key_path)
@@ -2417,6 +2432,11 @@ class AnnotationJobService:
                 for key in key_path:
                     value = value.get(key) if isinstance(value, dict) else None
                 resolved = self._resolved_reference_path(value)
+            if (key_path == ("plugins", "SpliceAI", "snv") and resolved is not None
+                    and resolved.name == "manifest.json"):
+                # Sharded tables occupy a directory, not the tiny manifest alone.
+                resolved = resolved.parent
+                is_directory = True
             destination = (
                 resolved
                 if resolved is not None and is_directory
@@ -5165,7 +5185,7 @@ class AnnotationJobService:
             "repeatmasker": ("Repetitive-region flag", "Marks variants inside repetitive DNA, where sequencing and variant calling are less reliable"),
             "segdup": ("Duplicated-region flag", "Marks variants in segmental duplications — genomic segments with near-identical copies elsewhere in the genome, a classic source of false variant calls"),
             "promoterai": ("PromoterAI", "Predicts whether a variant near a gene's transcription start disrupts that gene's expression. Requires two files licensed from Illumina; nothing is uploaded anywhere"),
-            "cadd_wgs": ("CADD scores for non-coding regions", "Genome-wide CADD deleteriousness scores for variants outside protein-coding regions. Coding-region CADD is already included with dbNSFP — install this only for whole-genome, non-coding analysis"),
+            "cadd_wgs": ("CADD scores for non-coding regions", "Genome-wide CADD deleteriousness scores for variants outside protein-coding regions. Coding-SNV CADD is included in essential setup — install this only for whole-genome, non-coding analysis"),
             "logofunc": ("LoGoFunc", "Research-grade prediction of whether a missense variant causes gain of function, loss of function, or neither — a mechanism hint, not a clinical classifier"),
             "funcvep": ("FuncVEP", "Research-grade estimates of a missense variant's functional effect from three complementary model settings — not a clinical pathogenicity classification"),
             "alphagenome_avi": ("AlphaGenome AVI", "Genome-wide predicted functional impact of single-nucleotide variants, shown as an AVI Phred score"),
@@ -5381,8 +5401,8 @@ class AnnotationJobService:
             compact_splice = source_id == "spliceai" and bool(block.get("coverage"))
             if compact_splice:
                 description = ("Essential-site starter installed: MANE v1.5 donor/acceptor SNVs, D=500, M=1. "
-                               "The optional full MANE v1.5 download adds SNVs throughout MANE Select transcript spans.")
-                setup["size_hint"] = "Optional full-table download: approximately 34.3 GB plus indexes"
+                               "The recommended WGS download adds SNVs throughout MANE Select transcript spans; it can also be used for covered exome splice-region SNVs.")
+                setup["size_hint"] = "Full-table download: approximately 34.3 GB plus indexes"
             access = str(setup.get("access") or (
                 "bundled" if setup.get("setup_mode") == "bundled" else "public"
             ))
@@ -5501,15 +5521,24 @@ class AnnotationJobService:
                     missing.append(source_id)
             return {"installed": not missing, "missing": missing}
 
+        # The compact essential-site starter (or a legacy full table) must not
+        # satisfy the explicit recommendation for the full MANE 1.5 release.
+        stock_config = self._load_config(config_path)
+        full_splice_path = self._resolved_reference_path(
+            ((stock_config.get("plugins") or {}).get("SpliceAI") or {}).get("snv")
+        )
+        wgs_missing = [source_id for source_id in WGS_RECOMMENDED_DOWNLOAD_BYTES
+                       if not (valid_full_spliceai(full_splice_path) if source_id == "spliceai"
+                               else source_by_id.get(source_id, {}).get("installed", False))]
         recommended_profiles = {
             "exome": automatic_profile(automatic_exome_ids),
-            # CADD WGS is deliberately NOT part of the recommended set: it is
-            # an optional research annotation (83 GiB, non-commercial terms)
-            # installed from its own card. The SCREEN context layer powers the
-            # whole-genome Regulatory evidence tab and is small, so it is.
-            "whole_genome": automatic_profile(
-                automatic_exome_ids + ("ccre", "screen_context", "alphagenome_avi")
-            ),
+            "whole_genome": {
+                "installed": not wgs_missing,
+                "missing": wgs_missing,
+                "download_bytes": sum(WGS_RECOMMENDED_DOWNLOAD_BYTES[key] for key in wgs_missing),
+                "setup_bytes": sum({"spliceai": 35, "screen_context": 2, "alphagenome_avi": 80}[key]
+                                   * GIB for key in wgs_missing),
+            },
         }
         dbnsfp_header = self._dbnsfp_header_columns(config)
         dbnsfp_predictors = [
@@ -5669,7 +5698,7 @@ class AnnotationJobService:
             )
         else:
             config = self._prefer_installed_managed_resources(config)
-        if resource_id == "spliceai":
+        if resource_id in {"spliceai", "recommended_wgs"}:
             # Full-table installation must not overwrite the selected starter.
             stock = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
             config.setdefault("plugins", {})["SpliceAI"] = (stock.get("plugins") or {}).get("SpliceAI", {})

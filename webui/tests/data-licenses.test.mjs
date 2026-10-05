@@ -17,13 +17,13 @@ new Function("require", "module", "exports", compiled)(require, module, module.e
 
 test("license page renders offline terms without consent controls", () => {
   const html = renderToStaticMarkup(createElement(module.exports.default));
-  assert.match(html, /Data sources &amp; licenses/);
+  assert.match(html, /Databases &amp; licenses/);
   assert.match(html, /AlphaMissense/);
   assert.match(html, /CADD/);
   assert.match(html, /SpliceAI/);
   assert.match(html, /Section 8/); // Full CC legal text, not merely a web link.
   assert.match(html, /<details>/);
-  assert.match(html, /not yet part of the released installer/);
+  assert.match(html, /not embedded in the application installer/);
   assert.doesNotMatch(html, /<input|<form|<iframe/);
   assert.doesNotMatch(source, /fetch\(|localStorage|sessionStorage/);
 });

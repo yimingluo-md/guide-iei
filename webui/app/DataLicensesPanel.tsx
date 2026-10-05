@@ -6,7 +6,7 @@ export default function DataLicensesPanel() {
   const texts: Record<string, { url: string; text: string }> = starterLicenses.license_texts;
   return <div className="gene-knowledge-settings data-licenses-panel">
     <div className="content-header"><div><p className="eyebrow">About the data</p>
-      <h1>Data sources &amp; licenses</h1>
+      <h1>Databases &amp; licenses</h1>
       <p className="subtitle">GUIDE-IEI software is MIT-licensed. Annotation datasets retain their own licenses; some are restricted to noncommercial use.</p>
     </div></div>
     <section className="gene-resource-section">
@@ -17,7 +17,7 @@ export default function DataLicensesPanel() {
     </section>
     <section className="gene-resource-section">
       <h2>Compact starter annotations</h2>
-      <p>The starter package is in development and is not yet part of the released installer. The following notices accompany newly prepared subsets.</p>
+      <p>Essential setup downloads these compact subsets alongside the reference files; they are not embedded in the application installer. The following notices describe their sources and preparation.</p>
       {starterLicenses.resources.map((resource) => <article className="software-update-card" key={resource.id}>
         <h3>{resource.name}</h3>
         <p><strong>{resource.license_id}</strong> · <a href={resource.source_url} target="_blank" rel="noreferrer">Official source ↗</a> · <a href={texts[resource.license_id].url} target="_blank" rel="noreferrer">Upstream terms ↗</a></p>

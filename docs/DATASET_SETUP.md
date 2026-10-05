@@ -9,15 +9,16 @@ nav_order: 2
 [Manual home](index.md)
 
 The easiest route is inside the application: **Annotate VCF → Set up
-annotation datasets**. One-click actions install the recommended automatic
-downloads for either exome or whole-genome analysis and refresh changing public
-sources such as ClinVar. dbNSFP registration and licensed PromoterAI setup are
-shown separately with source links and guided instructions. Missing SCREEN
-Registry V4 cCRE regions and hg19 input references are downloaded by setup;
+annotation datasets**. After first-time essential setup, **Install recommended
+WGS datasets** adds full SpliceAI MANE 1.5, SCREEN tissue/immune contexts and
+AlphaGenome AVI, skipping installed resources. **Update installed datasets**
+separately refreshes ClinVar and ClinGen. PromoterAI (WGS) and GenIA (exome and
+genome) are recommended user-provided resources. dbNSFP is optional after
+essential setup. Included resource cards can repair cCRE and hg19 input references;
 LoGoFunc remains an optional public research annotation, and FuncVEP
 is an optional licensed archive that GUIDE-IEI can download after the user
-reviews and acknowledges the upstream terms. GenIA is a separate optional,
-registered-user source installed from exports the user already has. An
+reviews and acknowledges the upstream terms. GenIA is not required to run;
+it is installed from registered-user exports the user already has. An
 existing official ZIP can be selected for FuncVEP instead. Each dataset card
 explains in plain language what the dataset adds; the technical details behind
 every card are in the [dataset reference](dataset-reference.md), and screen

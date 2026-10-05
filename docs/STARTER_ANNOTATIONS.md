@@ -182,7 +182,7 @@ intervals instead of parsing the entire genome-wide source table.
 
 New preparations include a checksummed `LICENSE-NOTICES.json` with full license
 text, attribution, retained source notices, and subset modifications. These
-notices are also readable offline under **Data sources & licenses**. Starter
+notices are also readable offline under **Databases & licenses**. Starter
 datasets have no mandatory acknowledgment checkbox; their use restrictions
 still apply. Other datasets' existing access requirements are unchanged.
 

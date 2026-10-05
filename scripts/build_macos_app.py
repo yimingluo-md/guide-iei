@@ -40,6 +40,7 @@ EXTRA_FILES |= {"config/essential-annotations.json", "pipeline/starter_package.p
 EXTRA_FILES |= {"docker/SpliceAIStarter.pm", "docker/SpliceAI-MANE1.5-gene-map.json",
                 "scripts/build_spliceai_gene_map.py"}
 EXTRA_FILES |= {"pipeline/spliceai_dataset.py", "config/spliceai-mane-v1.5.json"}
+EXTRA_FILES |= {"scripts/install_recommended_wgs.sh"}
 
 
 def run(*args, **kwargs):
