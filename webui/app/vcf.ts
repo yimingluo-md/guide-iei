@@ -346,7 +346,7 @@ export function starterObservation(record: Record<string, string>, logicalId: st
   if (!provider) throw new Error(`Unknown starter predictor: ${logicalId}`);
   if (!Object.values(provider.fields).some((field) => field in record)) return null;
   const text = (value: string | undefined) => {
-    const token = decode(value).trim();
+    const token = decode(value).replace(/^[ \t\r\n\v\f]+|[ \t\r\n\v\f]+$/g, "");
     return ["", ".", "-"].includes(token) ? "" : token;
   };
   const raw = Object.fromEntries(Object.entries(provider.fields).map(

@@ -3,6 +3,42 @@
 Each entry describes what changed for the people using GUIDE-IEI. The
 version here, in the `VERSION` file, and in the release tag always agree.
 
+## Unreleased
+
+- Recover resolvable AlphaMissense version conflicts by preferring the exact
+  pinned MANE v1.5 version within the preferred source table. Canonical-source
+  precedence is unchanged; unresolved winning-tier conflicts remain withheld.
+  The rebuild recovers 95,924 scores across 30 MANE transcripts; 12 genuinely
+  unresolved keys remain withheld. CADD and SpliceAI payloads are unchanged.
+  Load the release-test helper by file path so a stdlib `test` package cannot
+  shadow it, with a regression that reproduces the competing-package environment.
+- Keep dataset-action errors visible across polling, display essential-setup
+  progress/logs, and disable WGS installation when its status cannot be checked.
+  Preserve explicit starter-provider opt-outs and probe all full-SpliceAI shards
+  and indexes for container access. Starter readers share ASCII numeric parsing
+  and test full target/provenance contracts as well as scores.
+- Harden developer release audits against optimized Python, require baked
+  starter-plugin/gene-map identities, pin CADD source hashes, and provide clear
+  errors for malformed source manifests. These audit checks do not alter scores.
+- Fix recommended-WGS upgrades on installations with preserved legacy SpliceAI
+  configuration: install MANE 1.5 separately and select it after validation,
+  without overwriting the user's YAML or old table. Optional unavailable
+  SpliceAI no longer prevents writing the completed run's provenance manifest.
+- Run both pytest and unittest suites through pytest in clean-clone CI, with
+  explicit test dependencies; keep large opt-in CLI audits outside unit runs.
+  Refresh generated predictor documentation, fix shell examples, and isolate
+  the one-click sequencing test from the workstation's free disk space.
+- Full SpliceAI readiness checks no longer hash the 34 GB dataset after storage
+  migration or repair-backup cleanup. Checks use size/mtime (including existing
+  receipts); changed files require explicit verification/repair. Installation
+  and repair retain SHA-256 checks. Annotation-panel polls no longer overlap.
+- Correct AlphaMissense starter deduplication across transcript versions using
+  the same allele/stable-transcript/protein key as the runtime matcher. Preserve
+  canonical-source precedence and withhold unresolved source/version conflicts.
+  Add full-table runtime-key uniqueness and real-VEP regression release gates;
+  annotation QC now warns explicitly about duplicate runtime matches. Updating
+  the dataset does not modify existing VCFs: affected results need reannotation.
+
 ## 0.6.2 — 2026-09-11
 
 Apple Silicon beta release candidate. Publication remains gated on the

@@ -18,6 +18,8 @@ comparison also checks gene/transcript/protein coordinates. See
 
 | Predictor | Resource ID | Registered scope | Fields |
 |---|---|---|---|
+| AlphaMissense | `starter_alphamissense` | `allele_transcript_protein` | `StarterAM_score`, `StarterAM_prediction`, `StarterAM_match`, `StarterAM_match_status`, `StarterAM_source_target`, `StarterAM_allele_available` |
+| CADD phred | `starter_cadd` | `allele` | `StarterCADD_phred`, `StarterCADD_match`, `StarterCADD_match_status`, `StarterCADD_source_target`, `StarterCADD_allele_available` |
 | SIFT (VEP built-in) | `vep_core` | `transcript_consequence` | `SIFT` |
 | PolyPhen (VEP built-in) | `vep_core` | `transcript_consequence` | `PolyPhen` |
 | AlphaMissense | `dbnsfp` | `allele_transcript` | `AlphaMissense_score`, `AlphaMissense_pred` |

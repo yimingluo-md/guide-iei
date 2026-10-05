@@ -243,10 +243,12 @@ def test_empty_subset_never_published(tmp_path):
     assert not (tmp_path / "bundle").exists()
 
 
-def test_canonical_am_wins_even_when_lower_and_input_order_reversed(tmp_path):
+@pytest.mark.parametrize("isoform_version", [".1", ".2"])
+def test_canonical_am_wins_even_when_lower_and_input_order_reversed(tmp_path, isoform_version):
     pysam = pytest.importorskip("pysam")
     row = ["1", "12", "A", "G", "ENST000001.1", "K2R", "0.1", "likely_benign", "ENST000001.2", "canonical"]
     isoform = row[:]
+    isoform[4] = "ENST000001" + isoform_version
     isoform[6:8] = ["0.9", "likely_pathogenic"]
     isoform[-1] = "isoforms"
     stats = Counter()
@@ -256,6 +258,98 @@ def test_canonical_am_wins_even_when_lower_and_input_order_reversed(tmp_path):
         assert handle.readlines()[1].split("\t")[6] == "0.1"
     assert stats["canonical_isoform_disagreements"] == 1
     assert stats["output_rows"] == 1
+
+
+def test_am_normalized_sort_groups_interleaved_proteins_and_preserves_versions(tmp_path):
+    pytest.importorskip("pysam")
+    from pipeline.starter_annotations import validate_am_runtime_keys
+    base = ["1", "12", "A", "G", "ENST000001.2", "K2R", "0.1", "likely_benign", "ENST000001.3", "canonical"]
+    second = base[:]; second[5] = "K3R"
+    iso = base[:]; iso[4] = "ENST000001.3"; iso[6] = "0.9"; iso[-1] = "isoforms"
+    iso_second = iso[:]; iso_second[5] = "K3R"
+    rows = [iso_second, iso, second, base]
+    stats = Counter()
+    path = tmp_path / "am.tsv.gz"
+    write_sorted(rows, path, "alphamissense", stats)
+    with gzip.open(path, "rt") as f:
+        output = [line for line in f if not line.startswith("#")]
+    assert validate_am_runtime_keys(output) == 2
+    assert all(line.split("\t")[4] == "ENST000001.2" for line in output)
+    assert stats["canonical_isoform_overlaps"] == 2
+    # Old version-first ordering, including non-adjacent duplicate keys.
+    with pytest.raises(ValueError, match="duplicate AlphaMissense runtime key"):
+        validate_am_runtime_keys("\t".join(r) for r in [base, second, iso, iso_second])
+
+
+@pytest.mark.parametrize("source", ["canonical", "isoforms"])
+def test_am_cross_version_same_source_conflicts_fail_or_withhold(tmp_path, source):
+    pytest.importorskip("pysam")
+    base = ["1", "12", "A", "G", "ENST000001.2", "K2R", "0.1", "likely_benign", "ENST000001.4", source]
+    conflict = base[:]; conflict[4] = "ENST000001.3"; conflict[6] = "0.2"
+    fallback = base[:]; fallback[-1] = "isoforms"
+    other = base[:]; other[1] = "13"
+    rows = [conflict, other, fallback, base]
+    with pytest.raises(ValueError, match="conflicting scores"):
+        write_sorted(rows, tmp_path / "fail.gz", "alphamissense", Counter())
+    stats, examples = Counter(), []
+    path = tmp_path / "withheld.gz"
+    write_sorted(rows, path, "alphamissense", stats, "withhold", examples)
+    assert stats["output_rows"] == 1
+    assert stats["ambiguous_keys_withheld"] == 1
+    assert examples[0]["key"][4] == "ENST000001"
+    with gzip.open(path, "rt") as f:
+        assert f.readlines()[1].split("\t")[1] == "13"
+
+
+def test_am_equivalent_isoform_versions_collapse_deterministically(tmp_path):
+    pytest.importorskip("pysam")
+    base = ["1", "12", "A", "G", "ENST000001.2", "K2R", "0.1", "likely_benign", "ENST000001.3", "isoforms"]
+    equivalent = base[:]; equivalent[4] = "ENST000001.3"
+    outputs = []
+    for i, rows in enumerate(([base, equivalent], [equivalent, base])):
+        stats = Counter(); path = tmp_path / f"order{i}.gz"
+        write_sorted(rows, path, "alphamissense", stats)
+        with gzip.open(path, "rt") as f:
+            outputs.append(f.read())
+        assert stats["output_rows"] == stats["equivalent_version_duplicates_removed"] == 1
+    assert outputs[0] == outputs[1]
+    assert "ENST000001.3" in outputs[0].splitlines()[1].split("\t")[4]
+
+
+@pytest.mark.parametrize("source", ["canonical", "isoforms"])
+@pytest.mark.parametrize("score", ["0.05", "0.9"])
+def test_exact_mane_version_resolves_conflicts_independent_of_order_and_score(source, score):
+    from itertools import permutations
+    from pipeline.starter_annotations import resolve_am_duplicates
+    old = "1\t12\tA\tG\tENST000001.1\tK2R\t0.1\tlikely_benign\tENST000001.2\t" + source + "\n"
+    old_conflict = old.replace("0.1", "0.3")
+    exact = old.replace("ENST000001.1", "ENST000001.2").replace("0.1", score)
+    for rows in permutations([old, old_conflict, exact]):
+        stats = Counter()
+        assert list(resolve_am_duplicates(rows, stats, "error", [])) == [exact]
+        assert stats["mane_version_conflicts_resolved"] == 1
+        assert stats["ambiguous_keys_withheld"] == 0
+
+
+def test_conflicting_exact_mane_predictions_still_withheld_without_fallback():
+    from itertools import permutations
+    from pipeline.starter_annotations import resolve_am_duplicates
+    exact = "1\t12\tA\tG\tENST000001.2\tK2R\t0.1\tlikely_benign\tENST000001.2\tcanonical\n"
+    conflict = exact.replace("0.1", "0.9")
+    older = exact.replace("ENST000001.2\tK2R", "ENST000001.1\tK2R")
+    supplemental = exact.replace("canonical", "isoforms")
+    for rows in permutations([exact, conflict, older, supplemental]):
+        stats = Counter()
+        assert list(resolve_am_duplicates(rows, stats, "withhold", [])) == []
+        assert stats["ambiguous_keys_withheld"] == 1
+        assert stats["mane_version_conflicts_resolved"] == 0
+
+
+def test_inconsistent_mane_versions_in_one_key_fail():
+    from pipeline.starter_annotations import resolve_am_duplicates
+    row = "1\t12\tA\tG\tENST000001.1\tK2R\t0.1\tlikely_benign\tENST000001.2\tisoforms\n"
+    with pytest.raises(ValueError, match="inconsistent pinned MANE"):
+        list(resolve_am_duplicates([row, row.replace("ENST000001.2", "ENST000001.3")], Counter(), "withhold", []))
 
 
 def test_ambiguous_preferred_source_withholds_entire_key_not_just_one_row():

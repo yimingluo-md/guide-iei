@@ -294,8 +294,8 @@ def alphamissense_rows(paths: list[Path], mane: dict, stats: Counter) -> Iterabl
             if tx != selected["transcript"]:
                 stats["source_transcript_version_differs_from_mane"] += 1
             covered.add(stable_id(tx))
-            # Retain BOTH versions; do not rewrite the source transcript into
-            # the MANE version. Runtime lookup must also match protein change.
+            # Preserve source-version provenance; duplicate resolution uses the
+            # runtime's stable transcript + protein-change key, not this version.
             yield [chrom, str(pos), ref, alt, tx, row["protein_variant"],
                    row["am_pathogenicity"], row["am_class"], selected["transcript"],
                    "canonical" if "uniprot_id" in row else "isoforms"]
@@ -340,6 +340,9 @@ def spliceai_rows(paths: list[Path], sites: dict, stats: Counter) -> Iterable[li
                 stats["source_rows"] += 1
                 if not symbols:
                     continue
+                if len(fields[3]) != 1 or len(fields[4]) != 1 or "," in fields[4]:
+                    raise ValueError("Pinned SpliceAI source must contain biallelic SNVs only; "
+                                     f"unexpected indel or multi-allelic row at {chrom}:{pos}")
                 chrom, pos, ref, alt = snv(chrom, fields[1], fields[3], fields[4])
                 info = dict(item.split("=", 1) for item in fields[7].split(";") if "=" in item)
                 if "SpliceAI" not in info:
@@ -369,7 +372,7 @@ def indexed_manifest(kind: str, release: str) -> dict:
     prefix = "StarterAM" if am else "StarterCADD"
     dimensions = {"allele": {"chrom": "chrom", "position": "position", "reference": "reference", "alternate": "alternate"}}
     required = ["allele"]
-    outputs = [{"id": prefix + "_phred", "column": "phred", "type": "number", "direction": "higher", "description": "Original CADD v1.7 Phred score; coding SNVs only"}]
+    outputs = [{"id": prefix + "_phred", "column": "phred", "type": "number", "direction": "higher", "description": f"Original CADD Phred score ({release}); coding SNVs only"}]
     if am:
         required += ["ensembl_transcript_id", "protein_change"]
         dimensions.update({"ensembl_transcript_id": {"column": "transcript_id", "normalization": "strip_version"},
@@ -386,17 +389,47 @@ def indexed_manifest(kind: str, release: str) -> dict:
     return validate_manifest(payload)
 
 
+def am_runtime_key(columns: list[str]) -> tuple[str, ...]:
+    """The IndexedScores strip_version contract (source versions stay in rows)."""
+    return (*columns[:4], stable_id(columns[4]), columns[5])
+
+
+def validate_am_runtime_keys(lines: Iterable[str]) -> int:
+    """Reject collisions in a coordinate-sorted table, with bounded memory.
+
+    Keep all keys at a position: version-first sorting can interleave protein
+    changes, so comparing only adjacent lines would miss the original defect.
+    """
+    coordinate, seen, count = None, set(), 0
+    for line in lines:
+        if line.startswith("#"):
+            continue
+        columns = line.rstrip("\r\n").split("\t")
+        if len(columns) != len(AM_COLUMNS):
+            raise ValueError("invalid AlphaMissense table column count")
+        current = tuple(columns[:2])
+        if current != coordinate:
+            coordinate, seen = current, set()
+        key = am_runtime_key(columns)
+        if key in seen:
+            raise ValueError(f"duplicate AlphaMissense runtime key: {key}")
+        seen.add(key)
+        count += 1
+    return count
+
+
 def resolve_am_duplicates(lines: Iterable[str], stats: Counter, policy: str,
                           examples: list) -> Iterable[str]:
     """Resolve source overlap without choosing a score by magnitude.
 
-    Only one record per source class is kept in memory. Conflicts in the
-    preferred source either fail (default) or withhold the complete key with
-    an audit entry. A valid canonical score does not inherit ambiguity from
-    the supplemental isoform table.
+    Canonical source precedence is unchanged. Within a source, exact pinned
+    MANE-version rows take precedence over older/different versions. Conflicts
+    among the winning tier still fail or withhold the entire key. No scores
+    are averaged or selected by magnitude. Memory stays bounded per key.
     """
     key = None
-    entries, conflicts = {}, set()
+    entries, conflicts, disagreements = {}, set(), set()
+    mane_target = None
 
     def emit():
         if not entries:
@@ -409,6 +442,9 @@ def resolve_am_duplicates(lines: Iterable[str], stats: Counter, policy: str,
             if len(examples) < 20:
                 examples.append({"key": list(key), "source_table": preferred})
             return None
+        selected = entries[preferred].rstrip("\n").split("\t")
+        if preferred in disagreements and selected[4] == selected[8]:
+            stats["mane_version_conflicts_resolved"] += 1
         if len(entries) == 2:
             stats["canonical_isoform_overlaps"] += 1
             if entries["canonical"].split("\t")[6:8] != entries["isoforms"].split("\t")[6:8]:
@@ -417,21 +453,40 @@ def resolve_am_duplicates(lines: Iterable[str], stats: Counter, policy: str,
 
     for line in lines:
         columns = line.rstrip("\n").split("\t")
-        current = tuple(columns[:6])
+        current = am_runtime_key(columns)
         if key is not None and current != key:
             selected = emit()
             if selected is not None:
                 yield selected
-            entries, conflicts = {}, set()
+            entries, conflicts, disagreements = {}, set(), set()
+            mane_target = None
         key = current
+        if mane_target is not None and columns[8] != mane_target:
+            raise ValueError(f"inconsistent pinned MANE target for duplicate key: {key}")
+        mane_target = columns[8]
         source = columns[-1]
         if source not in {"canonical", "isoforms"}:
             raise ValueError("unknown AlphaMissense source table")
         if source in entries:
-            if line == entries[source]:
+            previous = entries[source].rstrip("\n").split("\t")
+            agrees = columns[6:8] == previous[6:8]
+            if agrees:
                 stats["identical_duplicates_removed"] += 1
+                if line != entries[source]:
+                    stats["equivalent_version_duplicates_removed"] += 1
             else:
-                conflicts.add(source)
+                disagreements.add(source)
+            rank, old_rank = columns[4] == columns[8], previous[4] == previous[8]
+            if rank > old_rank:
+                entries[source] = line
+                conflicts.discard(source)
+            elif rank == old_rank:
+                if not agrees:
+                    conflicts.add(source)
+                # Equivalent rows retain deterministic version provenance even
+                # if a caller supplies a different order within this key.
+                elif line < entries[source]:
+                    entries[source] = line
         else:
             entries[source] = line
     selected = emit()
@@ -454,7 +509,10 @@ def write_sorted(rows: Iterable[list[str]], destination: Path, kind: str, stats:
     ordered = destination.parent / "rows.sorted.tsv"
     with raw.open("w", encoding="utf-8") as handle:
         for count, row in enumerate(rows, 1):
-            handle.write("\t".join(row) + "\n")
+            # Temporary sort-only column groups stable IDs BEFORE protein and
+            # version. Never rewrite the published source transcript column.
+            sort_row = row + [stable_id(row[4])] if kind == "alphamissense" else row
+            handle.write("\t".join(sort_row) + "\n")
             if count % 5_000_000 == 0:
                 print(f"{kind}: selected {count:,} source rows", file=sys.stderr, flush=True)
     print(f"{kind}: sorting selected rows", file=sys.stderr, flush=True)
@@ -462,8 +520,9 @@ def write_sorted(rows: Iterable[list[str]], destination: Path, kind: str, stats:
     if kind == "alphamissense":
         # Canonical published predictions take precedence over supplemental
         # isoform predictions for the SAME biological key, irrespective of
-        # file order or score. Conflicts within either source remain errors.
-        keys += ["-k5,5", "-k6,6", "-k10,10"]
+        # file order or score. Exact MANE-version preference resolves only
+        # within-source version conflicts; unresolved conflicts remain errors.
+        keys += ["-k11,11", "-k6,6", "-k10,10", "-k5,5"]
     subprocess.run(["sort", "-T", str(destination.parent), "-t", "\t", *keys, "-o", str(ordered), str(raw)], check=True, env={**os.environ, "LC_ALL": "C"})
     with pysam.BGZFile(str(destination), "wb") as output, ordered.open(encoding="utf-8") as source:
         if vcf:
@@ -474,10 +533,11 @@ def write_sorted(rows: Iterable[list[str]], destination: Path, kind: str, stats:
             header = "#" + "\t".join(AM_COLUMNS if kind == "alphamissense" else CADD_COLUMNS) + "\n"
         output.write(header.encode())
         last_key, last_line = None, None
-        resolved = resolve_am_duplicates(source, stats, ambiguous_source_policy, withheld_examples) if kind == "alphamissense" else source
+        source_rows = (line.rsplit("\t", 1)[0] + "\n" for line in source) if kind == "alphamissense" else source
+        resolved = resolve_am_duplicates(source_rows, stats, ambiguous_source_policy, withheld_examples) if kind == "alphamissense" else source_rows
         for line in resolved:
             columns = line.rstrip("\n").split("\t")
-            key = tuple(columns[i] for i in ([0, 1, 3, 4] if vcf else range(6 if kind == "alphamissense" else 4)))
+            key = am_runtime_key(columns) if kind == "alphamissense" else tuple(columns[i] for i in ([0, 1, 3, 4] if vcf else range(4)))
             if key == last_key:
                 if line != last_line:
                     raise ValueError(f"conflicting scores for duplicate key: {key}")
@@ -497,7 +557,8 @@ def write_sorted(rows: Iterable[list[str]], destination: Path, kind: str, stats:
         pysam.tabix_index(str(destination), seq_col=0, start_col=1, end_col=1, force=True)
     # Exercise the index and compare counts before publishing the directory.
     with pysam.TabixFile(str(destination)) as index:
-        count = sum(1 for chrom in index.contigs for _ in index.fetch(chrom))
+        lines = (line for chrom in index.contigs for line in index.fetch(chrom))
+        count = validate_am_runtime_keys(lines) if kind == "alphamissense" else sum(1 for _ in lines)
         if count != stats["output_rows"]:
             raise ValueError("tabix round-trip count differs from prepared rows")
     raw.unlink()
@@ -526,6 +587,12 @@ def prepare(kind: str, sources: list[Path], output: Path, *, release: str,
         if source_manifest is None:
             raise ValueError("SpliceAI requires the pinned source release manifest")
         upstream = json.loads(source_manifest.read_text(encoding="utf-8"))
+        if (not isinstance(upstream, dict)
+                or not isinstance(upstream.get("scientific_configuration"), dict)
+                or not isinstance(upstream.get("files"), list)
+                or any(not isinstance(row, dict) or not isinstance(row.get("vcf"), str)
+                       for row in upstream.get("files", []))):
+            raise ValueError("SpliceAI source manifest has an invalid object/settings/files schema")
         settings = upstream.get("scientific_configuration", {})
         if (upstream.get("status") != "passed"
                 or upstream.get("genome_assembly") != "GRCh38/hg38"
@@ -595,6 +662,8 @@ def prepare(kind: str, sources: list[Path], output: Path, *, release: str,
                    "preparer_sha256": PREPARER_SHA256}
         if kind == "alphamissense":
             payload["ambiguous_source_policy"] = ambiguous_source_policy
+            payload["deduplication_key"] = "allele+stable_transcript_id+protein_change"
+            payload["duplicate_precedence"] = ["canonical_before_isoforms", "exact_pinned_mane_version_within_source"]
             payload["withheld_examples"] = withheld_examples
         if source_complete is not None:
             payload["all_source_chromosomes_supplied"] = source_complete

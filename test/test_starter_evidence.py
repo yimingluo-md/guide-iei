@@ -16,6 +16,8 @@ def test_shared_starter_contract(case):
     result = starter_observation(record, case["logical_id"])
     assert result["match_status"] == case["status"]
     assert result["values"] == case["values"]
+    assert result["target"] == case["target"]
+    assert result["provenance"] == case["provenance"]
     # The SQL score column must agree with the observation reader.
     annotation = annotation_from(record)
     column, metric = ("alpha_missense", "score") if case["logical_id"] == "alphamissense" else ("cadd", "phred")
@@ -135,3 +137,20 @@ def test_run_manifest_lists_starter_provider_contract(tmp_path):
         assert "StarterAM_score" in am[0]["fields"]
     finally:
         sys.path.pop(0)
+
+
+def test_qc_flags_duplicate_runtime_matches_even_with_passing_coverage(tmp_path):
+    import yaml
+    from pipeline.annotation_qc import build_report, render_html
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump({"plugins": {"AlphaMissenseStarter": {"enabled": True}},
+                                     "annotation_qc": {"warn_below": {"starter_alphamissense": 0}}}))
+    vcf = tmp_path / "starter.vcf"
+    vcf.write_text(starter_vcf({"StarterAM_match_status": "ambiguous",
+                               "StarterAM_match": "multiple_exact_records"}))
+    report = build_report(config, vcf)
+    metric = next(m for m in report["metrics"] if m.get("field") == "StarterAM_score")
+    assert metric["duplicate_match_records"] == 2
+    assert metric["status"] == "WARN"
+    assert "reannotate" in metric["remediation"]
+    assert "2 record(s) with duplicate matches" in render_html(report)

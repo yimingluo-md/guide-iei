@@ -1,0 +1,15 @@
+{
+  "release": "CADD1.7-GRCh38",
+  "source": "https://kircherlab.bihealth.org/download/CADD/v1.7/GRCh38",
+  "provenance": "Data SHA-256 from the validated essential-20261005-r1 CADD preparation; index SHA-256 from the same local source set, previously checked against the official MD5. These pins prevent unreviewed upstream replacement; they are not an independent upstream signature.",
+  "files": {
+    "whole_genome_SNVs.tsv.gz": {
+      "size_bytes": 87473403655,
+      "sha256": "11582f442d3db5bc529a3786e9ddfe27860642c2447d64e468387ad9c050645a"
+    },
+    "whole_genome_SNVs.tsv.gz.tbi": {
+      "size_bytes": 2761840,
+      "sha256": "bf21382da1faa72dfee9dd0905bc294b9e074f70b31daaed370f19b0db4ce8f4"
+    }
+  }
+}

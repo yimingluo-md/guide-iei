@@ -3,6 +3,7 @@
 import Image from "next/image";
 import DataLicensesPanel from "./DataLicensesPanel";
 import { groupDatasetSources } from "./dataset-setup";
+import { startSerialPolling } from "./serial-polling";
 import { passesMinimumScore, screenVariantBatches } from "./review-filters";
 
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
@@ -4924,6 +4925,7 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   const [fork, setFork] = useState(8);
   const [workerMode, setWorkerMode] = useState<"automatic" | "custom">("automatic");
   const [serviceError, setServiceError] = useState("");
+  const [connectionError, setConnectionError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [stageProgress, setStageProgress] = useState("");
   const [expandedLog, setExpandedLog] = useState<{ id: string; text: string } | null>(null);
@@ -4939,16 +4941,25 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
     let active = true;
     async function refresh(initial = false) {
       try {
-        const [nextCapabilities, nextJobs, nextResourceJobs] = await Promise.all([
+        // Wait even when one request rejects early: a slow capabilities call
+        // must finish before another polling batch can start.
+        const [capabilitiesResult, jobsResult, resourceJobsResult] = await Promise.allSettled([
           getCapabilities(),
           getJobs(),
           getResourceDownloads(),
         ]);
         if (!active) return;
+        if (capabilitiesResult.status !== "fulfilled" || jobsResult.status !== "fulfilled"
+            || resourceJobsResult.status !== "fulfilled") {
+          throw new Error("Annotation status request failed");
+        }
+        const nextCapabilities = capabilitiesResult.value;
+        const nextJobs = jobsResult.value;
+        const nextResourceJobs = resourceJobsResult.value;
         setCapabilities(nextCapabilities);
         setJobs(nextJobs);
         setResourceJobs(nextResourceJobs);
-        setServiceError("");
+        setConnectionError("");
         if (initial) {
           setProfile(nextCapabilities.profiles[0]?.id ?? "local");
           setInputAssembly(nextCapabilities.defaults.input_assembly);
@@ -4957,12 +4968,13 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
           setWorkerMode("automatic");
         }
       } catch {
-        if (active) setServiceError("Local annotation service is not running.");
+        if (active) setConnectionError("Local annotation service is not running.");
       }
     }
-    refresh(true);
-    const timer = window.setInterval(() => refresh(false), 2500);
-    return () => { active = false; window.clearInterval(timer); };
+    const stopPolling = startSerialPolling(refresh, () => {
+      if (active) setConnectionError("Local annotation service is not running.");
+    });
+    return () => { active = false; stopPolling(); };
   }, []);
 
   function chooseFiles(files: File[]) {
@@ -5216,6 +5228,8 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       && (job.status === "queued" || job.status === "running"),
   );
   const engineJob = latestResourceJobs.get("annotation_engine");
+  const essentialJob = latestResourceJobs.get("essential_setup");
+  const essentialBusy = essentialJob?.status === "queued" || essentialJob?.status === "running";
   const engineBusy = engineJob?.status === "queued" || engineJob?.status === "running";
   const quickSetupResourceIds = ["recommended_exome", "recommended_wgs", "refresh_updates"];
   const latestQuickSetupJob = resourceJobs.find((job) => quickSetupResourceIds.includes(job.resource_id));
@@ -5230,6 +5244,8 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
   const annotationSources = capabilities?.annotation_profile.sources ?? [];
   const wgsSetup = capabilities?.annotation_profile.recommended_profiles?.whole_genome;
   const wgsDatasetsInstalled = Boolean(wgsSetup?.installed);
+  const wgsSetupKnown = !capabilities?.annotation_profile.error
+    && Boolean(wgsSetup && (wgsSetup.installed || Number.isFinite(wgsSetup.download_bytes)));
   const datasetGroups = groupDatasetSources(annotationSources);
   const accessRequiredSources = datasetGroups.userProvided.filter((source) => source.id !== "genia");
   const geniaSource = datasetGroups.userProvided.find((source) => source.id === "genia");
@@ -5279,10 +5295,18 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
           {engineJob?.error && <p role="status">{engineJob.error}</p>}
         </div>}
         {engineJob && <details className="advanced-paths annotation-engine-diagnostics"><summary>Annotation-engine diagnostics</summary><p>Latest setup: {engineJob.status === "succeeded" ? "completed" : engineJob.status}. Current availability is shown in the Ensembl VEP row above.</p><h4>Annotation-engine setup log</h4><pre>{engineJob.log || "No log output yet."}</pre></details>}
+        {essentialJob && <div className="dataset-quick-setup essential-setup-status">
+          <h4>Essential annotation setup</h4>
+          <p role="status" aria-live="polite">{resourceProgressMessage(essentialJob, "Preparing essential annotations…")}</p>
+          {essentialBusy && <progress max={100} value={essentialJob.progress ?? undefined}/>}
+          {essentialJob.error && <p role="alert">{essentialJob.error}</p>}
+          {(essentialJob.status === "failed" || essentialJob.status === "interrupted") && <p>Retry essential setup from the GUIDE-IEI startup window. Completed downloads are preserved.</p>}
+          <details><summary>Essential setup log ({essentialJob.status})</summary><pre>{essentialJob.log || "No log output yet."}</pre></details>
+        </div>}
         <div className="dataset-quick-setup">
           <div><p className="eyebrow">Recommended for whole-genome analysis</p><h4>Extend the essential annotations</h4><p>Install full SpliceAI MANE 1.5, ENCODE SCREEN tissue and immune contexts, and AlphaGenome AVI. No user-supplied files are needed; dataset usage terms still apply. Essential references are not downloaded again.</p></div>
           <div className="dataset-quick-actions">
-            <button type="button" disabled={!capabilities || resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "Recommended WGS datasets installed" : failedQuickSetupJob?.resource_id === "recommended_wgs" ? "Retry WGS dataset installation" : "Install recommended WGS datasets"}</strong><span>{wgsDatasetsInstalled ? "Full MANE 1.5 SpliceAI, SCREEN and AVI are present" : wgsSetup?.download_bytes !== undefined ? `Approximately ${(wgsSetup.download_bytes / 1e9).toFixed(1)} GB for missing datasets · up to ${Math.ceil((wgsSetup.setup_bytes ?? 0) / 1024 ** 3)} GiB setup allowance before credit for existing files` : "Checking missing datasets…"}</span></button>
+            <button type="button" disabled={!wgsSetupKnown || resourceSetupBusy || wgsDatasetsInstalled} onClick={() => void downloadResource("recommended_wgs")}><strong>{wgsDatasetsInstalled ? "Recommended WGS datasets installed" : failedQuickSetupJob?.resource_id === "recommended_wgs" ? "Retry WGS dataset installation" : "Install recommended WGS datasets"}</strong><span>{capabilities?.annotation_profile.error ? "Cannot check datasets — resolve the configuration error above" : wgsDatasetsInstalled ? "Full MANE 1.5 SpliceAI, SCREEN and AVI are present" : wgsSetup?.download_bytes !== undefined ? `Approximately ${(wgsSetup.download_bytes / 1e9).toFixed(1)} GB for missing datasets · up to ${Math.ceil((wgsSetup.setup_bytes ?? 0) / 1024 ** 3)} GiB setup allowance before credit for existing files` : capabilities ? "Dataset status unavailable" : "Checking missing datasets…"}</span></button>
             <button type="button" className="dataset-update-all" disabled={resourceSetupBusy} onClick={() => void downloadResource("refresh_updates")}><strong>{failedQuickSetupJob?.resource_id === "refresh_updates" ? "Retry dataset update" : "Update installed datasets"}</strong><span>Refresh ClinVar and ClinGen; pinned resources stay unchanged</span></button>
           </div>
           <p>Installed datasets are skipped; interrupted downloads resume where supported. Full SpliceAI can also annotate covered splice-region SNVs in exome data.</p>
@@ -5298,7 +5322,8 @@ function AnnotationPanel({ analysisScope, onReviewFile, onReviewPath }: { analys
       {!setupOnly && <details className="advanced-paths"><summary>Output and execution</summary><div className="form-pair simple"><label className="form-field"><span>Output folder</span><input value={outputDirectory} onChange={(event) => setOutputDirectory(event.target.value)} /></label><label className="form-field"><span>Execution</span><select value={profile} onChange={(event) => setProfile(event.target.value)} disabled={!capabilities}>{capabilities?.profiles.map((item) => <option key={item.id} value={item.id}>{item.label}</option>) ?? <option>Local workstation</option>}</select></label></div></details>}
       <div className="annotation-actions wizard-actions"><button className="secondary-button" onClick={() => { setSetupOnly(false); setStep(1); }}>{setupOnly ? "Done" : "Back"}</button>{!setupOnly && <button className="primary-button dark" onClick={queueAnnotation} disabled={submitting || resourceSetupBusy || !capabilities || !profileReady}>{submitting ? stageProgress || "Starting…" : resourceSetupBusy ? "Wait for dataset download" : "Start VEP annotation"}</button>}</div>
     </>}
-    {serviceError && <div className={`alert ${capabilities ? "error" : ""}`}>{serviceError}{!capabilities && <small> Start <span className="mono">python3 -m local_service.workbench_service</span> in the pipeline folder.</small>}</div>}
+    {connectionError && <div className="alert error" role="alert">{connectionError}</div>}
+    {serviceError && <div className={`alert ${capabilities ? "error" : ""}`} role="alert">{serviceError}<button type="button" className="secondary-button" onClick={() => setServiceError("")}>Dismiss</button>{!capabilities && <small> Start <span className="mono">python3 -m local_service.workbench_service</span> in the pipeline folder.</small>}</div>}
     {recentJobs.length > 0 && <div className="job-list"><div className="job-list-head"><strong>Recent annotation jobs</strong><span>{jobs.filter((job) => job.status === "queued" || job.status === "running").length} active</span></div>{recentJobs.map((job) => <div className="job-row" key={job.id}><span className={`job-status ${job.status}`}>{job.status}</span><div><strong title={job.input_path}>{fileName(job.input_path)}</strong><span title={job.final_output_path ?? job.output_path}>{job.final_output_path ?? job.output_path}</span><small className="job-assembly">{annotationAssemblySummary(job)}</small>{job.status === "running" && <AnnotationJobProgress job={job}/>} {job.error && <small className="job-error">{job.error}</small>}</div><div className="job-actions">{job.status === "succeeded" && <button onClick={() => reviewJob(job)}>Review</button>}<button onClick={() => showLog(job.id)}>Log</button>{(job.status === "queued" || job.status === "running") && <button onClick={() => stopJob(job.id)}>Cancel</button>}</div></div>)}</div>}
     {expandedLog && <div className="log-view"><div><strong>Job log</strong><button onClick={() => setExpandedLog(null)}>×</button></div><pre>{expandedLog.text || "No log output yet."}</pre></div>}
   </section>;

@@ -40,8 +40,8 @@ jobs:
       # NumPy is optional for end users (only the one-time SCREEN preparation
       # task needs it; its tests SKIP without it). CI installs it so the SCREEN
       # preparation path is genuinely exercised rather than skipped.
-      - name: NumPy for the SCREEN preparation tests
-        run: python3 -m pip install --user numpy || python3 -m pip install --break-system-packages --user numpy
+      - name: Python test dependencies (pytest and SCREEN NumPy)
+        run: python3 -m pip install --user -r requirements-dev.txt || python3 -m pip install --break-system-packages --user -r requirements-dev.txt
 
       # The library projection tests run bcftools natively; without it the
       # discovered backend would try the container image, which CI never
@@ -75,10 +75,10 @@ jobs:
       - name: Python unit suites (pipeline + local service)
         run: |
           set -e
-          for test_file in test/test_*.py local_service/test_*.py; do
-            echo "== $test_file"
-            python3 "$test_file"
-          done
+          # Collect both unittest classes and pytest functions/fixtures.
+          # Opt-in dataset/container CLI harnesses have no collected tests;
+          # never invoke their __main__ blocks in a clean-clone unit run.
+          python3 -m pytest -q test local_service
 
       - name: Documentation links, shell examples, and generated references
         run: |

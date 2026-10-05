@@ -52,6 +52,8 @@ for (const item of starterContract.cases) {
     }, item.logical_id);
     assert.equal(evidence.match_status, item.status);
     assert.deepEqual(evidence.values, item.values);
+    assert.deepEqual(evidence.target, item.target);
+    assert.deepEqual(evidence.provenance, item.provenance);
   });
 }
 

@@ -1,0 +1,15 @@
+{
+  "description": "Public GRCh38 alleles with cross-version duplicate runtime keys in starter 2026-10-04-v1. Preserve canonical precedence; within-source conflicts prefer the unique pinned MANE-version prediction.",
+  "cases": [
+    {"gene":"CIITA","chrom":"16","pos":10877334,"ref":"C","alt":"A","transcript":"ENST00000324288","protein":"R2S","score":0.5141},
+    {"gene":"TAPBP","chrom":"6","pos":33301763,"ref":"C","alt":"A","transcript":"ENST00000434618","protein":"E448D","score":0.0812},
+    {"gene":"DMD","chrom":"X","pos":31121922,"ref":"C","alt":"A","transcript":"ENST00000357033","protein":"M3685I","score":0.4143},
+    {"gene":"ATRX","chrom":"X","pos":77508354,"ref":"C","alt":"A","transcript":"ENST00000373344","protein":"M2492I","score":0.7403},
+    {"gene":"CFH","chrom":"1","pos":196652121,"ref":"A","alt":"G","transcript":"ENST00000367429","protein":"R2G","score":0.1586},
+    {"gene":"HNF1A","chrom":"12","pos":120978772,"ref":"G","alt":"A","transcript":"ENST00000257555","protein":"V2I","score":0.1585},
+    {"gene":"COL1A1","chrom":"17","pos":50185506,"ref":"A","alt":"C","transcript":"ENST00000225964","protein":"L1464R","score":0.4554},
+    {"gene":"MAPT","chrom":"17","pos":45962341,"ref":"G","alt":"A","transcript":"ENST00000262410","protein":"A2T","score":0.2058,"source_transcript":"ENST00000262410.10"},
+    {"gene":"WT1","chrom":"11","pos":32389062,"ref":"A","alt":"C","transcript":"ENST00000452863","protein":"L522R","score":0.6692,"source_transcript":"ENST00000452863.10"},
+    {"gene":"EIF4G3","chrom":"1","pos":21002714,"ref":"G","alt":"A","transcript":"ENST00000602326","protein":"P10L","score":0.4485,"source_transcript":"ENST00000602326.6"}
+  ]
+}

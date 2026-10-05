@@ -12,6 +12,9 @@ import shutil
 import subprocess
 import sys
 
+if not __debug__:
+    raise RuntimeError("Release validation requires assertions; run Python without -O or PYTHONOPTIMIZE")
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from pipeline.starter_package import (component_path, component_valid, install,

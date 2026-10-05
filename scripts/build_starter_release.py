@@ -26,7 +26,7 @@ def fetch(url, target, *, download, digest=None, size=None, md5=None):
     if target.is_file():
         if digest and (size is None or target.stat().st_size == size) and file_identity(target)["sha256"] == digest:
             return
-        if md5:
+        if md5 and not digest:
             hasher = hashlib.md5()
             with target.open("rb") as handle:
                 for block in iter(lambda: handle.read(8 * 1024 * 1024), b""): hasher.update(block)
@@ -36,6 +36,7 @@ def fetch(url, target, *, download, digest=None, size=None, md5=None):
     if not download:
         raise ValueError(f"Missing source {target}; use --download to authorize source transfers")
     command = [sys.executable, str(ROOT / "scripts/parallel_fetch.py"), url, str(target), "--connections", "4"]
+    if digest: command += ["--sha256", digest]
     if md5: command += ["--md5", md5]
     subprocess.run(command, check=True)
     if digest and (file_identity(target)["sha256"] != digest or (size is not None and target.stat().st_size != size)):
@@ -63,17 +64,13 @@ def build(kind, source, output, download):
                        release="AlphaMissense-2023-MANE1.5", mane_summary=source / "MANE.GRCh38.v1.5.summary.txt.gz",
                        ambiguous_source_policy="withhold", **common)
     if kind == "cadd":
+        pin = json.loads((ROOT / "config/cadd-starter-source.json").read_text())
+        if pin["source"] != CADD_BASE:
+            raise ValueError("CADD source URL differs from the reviewed pin")
         for name in ("whole_genome_SNVs.tsv.gz", "whole_genome_SNVs.tsv.gz.tbi"):
-            sidecar = source / (name + ".md5")
-            if not sidecar.exists():
-                if not download: raise ValueError("CADD published checksum is missing")
-                result = subprocess.run(["curl", "-fsSL", "--retry", "3", "--max-time", "60", f"{CADD_BASE}/{name}.md5"],
-                                        check=True, capture_output=True)
-                sidecar.write_bytes(result.stdout)
-            checksum = sidecar.read_text().split()[0].lower()
-            import re
-            if not re.fullmatch(r"[0-9a-f]{32}", checksum): raise ValueError("Invalid official CADD MD5")
-            fetch(f"{CADD_BASE}/{name}", source / name, download=download, md5=checksum)
+            asset = pin["files"][name]
+            fetch(f"{CADD_BASE}/{name}", source / name, download=download,
+                  digest=asset["sha256"], size=asset["size_bytes"])
         return prepare(kind, [source / "whole_genome_SNVs.tsv.gz"], release="CADD1.7-GRCh38-coding-SNV",
                        gtf=ROOT / "references/regions/Homo_sapiens.GRCh38.113.gtf.gz", **common)
     manifest_path = source / "spliceai-release-manifest.json"

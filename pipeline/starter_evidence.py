@@ -27,21 +27,23 @@ _AA = dict(zip(
     "ARNDCQEGHILKMFPSTWYV*",
 ))
 _EMPTY = {"", ".", "-"}
-_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?")
+_NUMBER = re.compile(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", re.ASCII)
 
 
 def _text(value: str) -> str:
-    value = unquote(value).strip()
+    # VEP fields use ASCII; match the browser instead of each runtime's
+    # different Unicode whitespace/digit normalization rules.
+    value = unquote(value).strip(" \t\r\n\v\f")
     return "" if value in _EMPTY else value
 
 
 def protein_change(record: dict[str, str]) -> str:
     amino = _text(record.get("Amino_acids", ""))
     position = _text(record.get("Protein_position", ""))
-    if re.fullmatch(r"[A-Z*]/[A-Z*]", amino) and re.fullmatch(r"[1-9]\d*", position):
+    if re.fullmatch(r"[A-Z*]/[A-Z*]", amino) and re.fullmatch(r"[1-9][0-9]*", position):
         return amino[0] + position + amino[-1]
     hgvs = _text(record.get("HGVSp", "")).rsplit(":", 1)[-1]
-    match = re.fullmatch(r"(?:p\.)?([A-Z][a-z]{2}|[A-Z*])([1-9]\d*)([A-Z][a-z]{2}|[A-Z*])", hgvs)
+    match = re.fullmatch(r"(?:p\.)?([A-Z][a-z]{2}|[A-Z*])([1-9][0-9]*)([A-Z][a-z]{2}|[A-Z*])", hgvs)
     if not match:
         return ""
     left, pos, right = match.groups()

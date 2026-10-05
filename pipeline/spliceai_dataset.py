@@ -10,6 +10,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PIN = ROOT / "config/spliceai-mane-v1.5.json"
@@ -19,6 +20,19 @@ NOTICES = {
     "LICENSE.md": "b1c450715e42435fd3e4f2dec9d0f65ff2340a3ca81436ab1bccfb1403bc7f3d",
     "NOTICE.md": "51a6867c8eae3b0043fd4a594e22310d342a452e73ca1520fb5926731000c063",
 }
+
+
+def full_install_config(configured=None):
+    """Release-owned upgrade target, independent of preserved legacy YAML.
+
+    Keep an explicitly configured sharded destination. Legacy and compact
+    provider paths must never become destinations for the full release.
+    """
+    if configured and configured.get("format") == FORMAT and configured.get("snv"):
+        return dict(configured)
+    return {"enabled": True, "required": True, "format": FORMAT,
+            "version": "MANE v1.5 D=500 M=1",
+            "snv": "references/spliceai/mane-v1.5-d500-m1/manifest.json"}
 
 
 def prefer_legacy(block, resolve):
@@ -50,25 +64,65 @@ def assets(release):
 
 
 def validate(path, *, strict=False):
-    """Raise actionable errors; cheap unchanged-file validation for UI polls."""
+    """Metadata-only by default; only explicit strict checks read payloads.
+
+    Old three-element receipts are compatible: ctime changes on migration,
+    chmod and hard-link cleanup without any change in the file contents.
+    Metadata is a readiness shortcut, not a cryptographic integrity guarantee.
+    """
     path = Path(path)
     try:
         release = json.loads(path.read_text())
         if release != json.loads(PIN.read_text()):
             raise ValueError("release manifest differs from the pinned MANE 1.5 dataset")
-        receipt = json.loads((path.parent / "installation.json").read_text())
+        receipt = {} if strict else json.loads((path.parent / "installation.json").read_text())
         for name, size, sha in assets(release):
             file = path.parent / name
             stat = file.stat()
             if file.is_symlink() or not file.is_file() or (size is not None and stat.st_size != size):
                 raise ValueError(f"missing or incomplete chromosome asset: {name}")
-            signature = [stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns]
-            if strict or receipt.get("files", {}).get(name) != signature:
+            signature = [stat.st_size, stat.st_mtime_ns]
+            if strict:
                 if digest(file) != sha:
                     raise ValueError(f"checksum mismatch: {name}")
+                after = file.stat()
+                if (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns) != (
+                        after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns, after.st_ctime_ns):
+                    raise ValueError(f"file changed during verification: {name}")
+            else:
+                saved = receipt.get("files", {}).get(name)
+                if (not isinstance(saved, list) or len(saved) not in (2, 3)
+                        or any(type(value) is not int for value in saved)
+                        or saved[:2] != signature):
+                    raise ValueError(f"verification required for {name}; run the SpliceAI installation/repair action")
         return release
     except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
         raise ValueError(f"Full SpliceAI installation needs repair: {exc}") from exc
+
+
+def _signatures(directory, release):
+    return {name: [stat.st_size, stat.st_mtime_ns]
+            for name, _, _ in assets(release)
+            for stat in [(directory / name).stat()]}
+
+
+def _write_receipt(directory, signatures):
+    """Publish verification metadata atomically; callers hold the install lock."""
+    receipt = {"source": BASE, "files": signatures}
+    temporary = None
+    try:
+        # Keep a crash-orphaned temporary file outside the dedicated payload
+        # directory so it cannot block a later repair as an unrelated asset.
+        with tempfile.NamedTemporaryFile(mode="w", dir=directory.parent,
+                                         prefix=f".{directory.name}-receipt-", delete=False) as handle:
+            temporary = Path(handle.name)
+            handle.write(json.dumps(receipt) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, directory / "installation.json")
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def valid(path):
@@ -100,11 +154,21 @@ def install(path, run=subprocess.run):
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             raise ValueError("Full SpliceAI installation is already running") from None
-        if valid(path):
+        release = json.loads(PIN.read_text())
+        # Explicit install/repair, never a request-handler readiness check.
+        # Reverify stale metadata once and refresh its receipt without making
+        # a second 34 GB installation. Corruption must fall through to repair.
+        try:
+            signatures = _signatures(path.parent, release)
             validate(path, strict=True)
+            if signatures != _signatures(path.parent, release):
+                raise ValueError("SpliceAI files changed during verification")
+        except (OSError, ValueError):
+            pass
+        else:
+            _write_receipt(path.parent, signatures)
             print("=== Full SpliceAI MANE 1.5 already verified ===", flush=True)
             return
-        release = json.loads(PIN.read_text())
         stage = path.parent.with_name(path.parent.name + ".preparing")
         if stage.is_symlink():
             raise ValueError("SpliceAI staging directory must not be a symbolic link")
@@ -137,10 +201,7 @@ def install(path, run=subprocess.run):
                  "--sha256", sha, "--connections", "8" if name.endswith(".vcf.gz") else "1"], check=True)
             if (size is not None and target.stat().st_size != size) or digest(target) != sha:
                 raise ValueError(f"SpliceAI asset verification failed: {name}")
-        receipt = {"source": BASE, "files": {name: [(stage / name).stat().st_size,
-                    (stage / name).stat().st_mtime_ns, (stage / name).stat().st_ctime_ns]
-                    for name, _, _ in assets(release)}}
-        (stage / "installation.json").write_text(json.dumps(receipt) + "\n")
+        _write_receipt(stage, _signatures(stage, release))
         (stage / path.name).write_bytes(PIN.read_bytes())
         validate(stage / path.name)
         if path.parent.exists():
@@ -155,5 +216,11 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path)
+    parser.add_argument("--verify-only", action="store_true",
+                        help="Read-only SHA-256 verification of every file; does not download or refresh receipts")
     args = parser.parse_args()
-    install(args.manifest)
+    if args.verify_only:
+        validate(args.manifest, strict=True)
+        print("Full SpliceAI SHA-256 verification passed")
+    else:
+        install(args.manifest)

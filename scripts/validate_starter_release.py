@@ -11,13 +11,79 @@ import re
 from pathlib import Path
 import shutil
 import sys
+from itertools import groupby, zip_longest
+from collections import Counter
+
+if not __debug__:
+    raise RuntimeError("Release validation requires assertions; run Python without -O or PYTHONOPTIMIZE")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from pipeline.starter_annotations import (annotation_regions, file_identity,
-                                         mane_select, PREPARER_SHA256)
+                                         mane_select, PREPARER_SHA256,
+                                         validate_am_runtime_keys)
 from pipeline.indexed_scores import load_manifest, validate_manifest_files
 from pipeline.starter_package import install, installed_paths, load_plan, component_path
+
+
+def audit_am_version_upgrade(baseline, updated, gtf=None):
+    """Independently compare every row against the old versioned-key table.
+
+    The baseline must be the complete r2 table, not an already-withheld release.
+    Group one coordinate at a time: memory is bounded, and no payload is changed.
+    """
+    import pysam
+    counts = Counter()
+    resolved_transcripts = Counter()
+    def coordinate(line):
+        row = line.split("\t", 2)
+        return row[0], int(row[1])
+    def key(row):
+        return tuple(row[:4] + [row[4].split(".")[0], row[5]])
+    with pysam.TabixFile(str(baseline)) as old, pysam.TabixFile(str(updated)) as new:
+        for a, b in zip_longest(groupby(old.fetch(), coordinate), groupby(new.fetch(), coordinate)):
+            assert a is not None and b is not None and a[0] == b[0], "Changed coordinate coverage"
+            candidates = {}
+            for line in a[1]:
+                row = line.split("\t")
+                candidates.setdefault(key(row), []).append(row)
+                counts["baseline_rows"] += 1
+            actual = {}
+            for line in b[1]:
+                row = line.split("\t")
+                assert key(row) not in actual, "Duplicate runtime key in updated table"
+                actual[key(row)] = row
+            expected = {}
+            for k, rows in candidates.items():
+                preferred = [r for r in rows if r[-1] == "canonical"] or rows
+                exact = [r for r in preferred if r[4] == r[8]]
+                tier = exact or preferred
+                if len({tuple(r[6:8]) for r in tier}) != 1:
+                    counts["unresolved_keys"] += 1
+                    continue
+                expected[k] = min(tier)
+                if exact and len({tuple(r[6:8]) for r in preferred}) > 1:
+                    counts["mane_version_conflicts_resolved"] += 1
+                    resolved_transcripts[expected[k][4]] += 1
+            assert set(actual) == set(expected), f"Unexpected/missing keys at {a[0]}"
+            for k, row in actual.items():
+                assert row == expected[k], f"Source score/version selection differs at {k}"
+            counts["verified_output_rows"] += len(actual)
+    if gtf is not None:
+        from pipeline.starter_annotations import open_text, ATTRIBUTE
+        found = set()
+        with open_text(gtf) as handle:
+            for line in handle:
+                fields = line.rstrip("\n").split("\t")
+                if len(fields) != 9 or fields[2] != "transcript":
+                    continue
+                attrs = dict(ATTRIBUTE.findall(fields[8]))
+                transcript = attrs.get("transcript_id", "") + "." + attrs.get("transcript_version", "")
+                if transcript in resolved_transcripts:
+                    found.add(transcript)
+        assert found == set(resolved_transcripts), "Resolved MANE versions differ from the VEP-release GTF"
+    return {"status": "PASS", **counts, "resolved_transcripts": dict(resolved_transcripts),
+            "vep_gtf": file_identity(gtf) if gtf is not None else None}
 
 
 def audit_component(kind, build, sources):
@@ -41,7 +107,8 @@ def audit_component(kind, build, sources):
                                 data, Path(str(data) + ".tbi"), strict=True)
     samples = []
     with pysam.TabixFile(str(data)) as index:
-        counts = {chrom: sum(1 for _ in index.fetch(chrom)) for chrom in index.contigs}
+        counts = {chrom: (validate_am_runtime_keys(index.fetch(chrom)) if kind == "alphamissense"
+                          else sum(1 for _ in index.fetch(chrom))) for chrom in index.contigs}
         assert sum(counts.values()) == metadata["statistics"]["output_rows"]
         assert set(counts) == {str(i) for i in range(1, 23)} | {"X", "Y"}
         # Bounded, reproducible spatial sampling across all primary chromosomes.
@@ -100,12 +167,21 @@ def audit_component(kind, build, sources):
             precedent = [r.split("\t") for r in index.fetch("1", 12746433, 12746434)
                          if r.split("\t")[2:6] == ["T", "A", "ENST00000614859.5", "F2I"]]
             assert len(precedent) == 1 and precedent[0][6] == "0.1201" and precedent[0][-1] == "canonical"
+            for case in json.loads((ROOT / "test/contracts/alphamissense_version_collisions.json").read_text())["cases"]:
+                matches = [r.split("\t") for r in index.fetch(case["chrom"], case["pos"]-1, case["pos"])
+                           if r.split("\t")[2:4] == [case["ref"], case["alt"]]]
+                matches = [r for r in matches if r[4].split(".")[0] == case["transcript"] and r[5] == case["protein"]]
+                assert len(matches) == 1 and float(matches[0][6]) == case["score"], case
+                if case.get("source_transcript"):
+                    assert matches[0][4] == matches[0][8] == case["source_transcript"], case
             for withheld in metadata.get("withheld_examples", []):
                 key = withheld["key"]
-                assert not any(r.split("\t")[:6] == key for r in index.fetch(key[0], int(key[1])-1, int(key[1])))
+                assert not any((r.split("\t")[:4] + [r.split("\t")[4].split(".")[0], r.split("\t")[5]]) == key
+                               for r in index.fetch(key[0], int(key[1])-1, int(key[1])))
         assert metadata["statistics"]["output_rows"] > 60_000_000
     print(f"{kind}: integrity, index count, and biological checks PASS", flush=True)
     return {"status": "PASS", "records": sum(counts.values()), "contig_counts": counts,
+            "runtime_key_uniqueness": "PASS" if kind == "alphamissense" else "not_applicable",
             "sampled_rows": len(samples), "source_comparisons": comparisons,
             "payload_bytes": sum(a["size_bytes"] for a in metadata["files"]),
             "preparation": file_identity(directory / "preparation.json"),
@@ -158,12 +234,18 @@ def main():
     parser.add_argument("--build", type=Path, required=True)
     parser.add_argument("--sources", type=Path, default=ROOT / "references/starter-sources")
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--am-versioned-baseline", type=Path,
+                        help="Compare every AlphaMissense row against the original versioned-key r2 table")
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     with ThreadPoolExecutor(max_workers=3) as pool:
         futures = {k: pool.submit(audit_component, k, args.build, args.sources)
                    for k in ("alphamissense", "cadd", "spliceai")}
         results = {k: f.result() for k, f in futures.items()}
+    if args.am_versioned_baseline:
+        results["alphamissense"]["version_resolution_audit"] = audit_am_version_upgrade(
+            args.am_versioned_baseline, args.build / "alphamissense/alphamissense.tsv.gz",
+            ROOT / "references/regions/Homo_sapiens.GRCh38.113.gtf.gz")
     results["installation"] = local_install_test(args.build, args.output)
     (args.output / "validation.json").write_text(json.dumps(results, indent=2) + "\n")
     print(f"ALL CHECKS PASSED: {args.output / 'validation.json'}", flush=True)

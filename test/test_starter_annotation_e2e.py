@@ -12,10 +12,26 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+
+if not __debug__:
+    raise RuntimeError("Release validation requires assertions; run Python without -O or PYTHONOPTIMIZE")
 from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
+
+
+def verify_baked_plugins(image, run=subprocess.check_output):
+    from pipeline.starter_annotations import file_identity
+    identities = {}
+    for name in ("IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json"):
+        baked = run(["docker", "run", "--rm", "--network", "none", "--entrypoint",
+                     "sha256sum", image, "/plugins/" + name], text=True).split()[0]
+        identity = file_identity(ROOT / "docker" / name)
+        if baked != identity["sha256"]:
+            raise ValueError(f"Rebuild an isolated test image; baked {name} is stale")
+        identities[name] = identity
+    return identities
 
 
 def main():
@@ -33,6 +49,10 @@ def main():
     scratch.mkdir(parents=True, exist_ok=False)
     build = args.build.resolve()
     alleles = set()
+    regression_cases = json.loads((ROOT / "test/contracts/alphamissense_version_collisions.json").read_text())["cases"]
+    regression_seen = set()
+    for case in regression_cases:
+        alleles.add((case["chrom"], case["pos"], case["ref"], case["alt"]))
     tables = {kind: pysam.TabixFile(str(build / kind / (kind + suffix))) for kind, suffix in
               (("alphamissense", ".tsv.gz"), ("cadd", ".tsv.gz"), ("spliceai", ".vcf.gz"))}
     for kind in ("alphamissense", "spliceai"):
@@ -71,9 +91,7 @@ def main():
     config["output"]["vep_stats"] = False
     plan = build_vep_command(config, str(input_path), str(output_path), base_dir=str(ROOT), verify_integrity=True)
     assert not plan.errors, plan.errors
-    baked = subprocess.check_output(["docker", "run", "--rm", "--network", "none", "--entrypoint",
-        "sha256sum", config["container"]["image"], "/plugins/IndexedScores.pm"], text=True).split()[0]
-    assert baked == file_identity(ROOT / "docker/IndexedScores.pm")["sha256"], "Rebuild an isolated test image; baked plugin is stale"
+    baked_plugins = verify_baked_plugins(config["container"]["image"])
     command = ["docker", "run", "--rm", "--network", "none"]
     for mount in plan.mounts:
         command += ["-v", f"{mount.host}:{mount.container}:{mount.mode}"]
@@ -99,6 +117,15 @@ def main():
             for text in annotations.split(","):
                 csq = dict(zip(fields, (unquote(v) for v in text.split("|"))))
                 stored = annotation_from(csq)
+                for case in regression_cases:
+                    if ((chrom, pos, ref, alt) == (case["chrom"], case["pos"], case["ref"], case["alt"])
+                            and csq.get("Feature", "").split(".")[0] == case["transcript"]):
+                        regression_seen.add(case["gene"])
+                        if case["score"] is None:
+                            assert not csq.get("StarterAM_score"), (case, csq)
+                        else:
+                            assert csq.get("StarterAM_match_status") == "exact", (case, csq)
+                            assert float(csq["StarterAM_score"]) == case["score"], (case, csq)
                 if csq.get("StarterCADD_phred"):
                     assert len(original["cadd"]) == 1
                     assert float(csq["StarterCADD_phred"]) == float(original["cadd"][0][4])
@@ -133,12 +160,15 @@ def main():
     assert counters["records"] == len(alleles)
     assert all(counters[k] > 0 for k in ("cadd_exact", "alphamissense_exact", "spliceai_exact")), counters
     assert counters["spliceai_missing_symbol_rescued"] > 0, counters
+    assert regression_seen == {c["gene"] for c in regression_cases}, regression_seen
     for table in tables.values():
         table.close()
     image_id = subprocess.check_output(["docker", "image", "inspect", config["container"]["image"],
                                         "--format", "{{.Id}}"], text=True).strip()
     report = {"status": "PASS", "counts": dict(counters), "engine_image_id": image_id,
+              "alphamissense_version_collision_regressions": sorted(regression_seen),
               "indexed_plugin": file_identity(ROOT / "docker/IndexedScores.pm"),
+              "baked_plugins": baked_plugins,
               "input": file_identity(input_path), "output": file_identity(output_path),
               "preparations": {k: file_identity(build / k / "preparation.json") for k in tables},
               "scope": "Existing VEP113 engine/cache; baked plugin matches current source; no dbNSFP or clinical sources; not a clean-machine test"}

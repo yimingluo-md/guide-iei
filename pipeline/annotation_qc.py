@@ -340,6 +340,9 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                     if logical_id not in starter_enabled or not candidates:
                         continue
                     counters[f"starter_{logical_id}_eligible"] += 1
+                    prefix = "StarterAM" if logical_id == "alphamissense" else "StarterCADD"
+                    if any(entry.get(prefix + "_match") == "multiple_exact_records" for entry in candidates):
+                        counters[f"starter_{logical_id}_duplicate_matches"] += 1
                     score = "score" if logical_id == "alphamissense" else "phred"
                     if any(
                         (observation := starter_observation(entry, logical_id)) is not None
@@ -590,6 +593,11 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                       counters[f"starter_{logical_id}_scored"],
                       float(thresholds.get(f"starter_{logical_id}", 0.80)))
         item.update(field=field, schema_present=field in csq_fields, unit="records")
+        item["duplicate_match_records"] = counters[f"starter_{logical_id}_duplicate_matches"]
+        if item["duplicate_match_records"]:
+            item["status"] = "WARN"
+            item["remediation"] = ("Multiple source rows matched the same runtime key. Update the essential "
+                                   "annotation package, then reannotate affected VCFs; missing scores are withheld.")
         if not settings.get("enabled"):
             item["status"] = "SKIPPED_DISABLED"
         elif not item["schema_present"]:
@@ -1112,9 +1120,12 @@ def _format_percent(value: float | None) -> str:
 def render_html(report: dict) -> str:
     rows = []
     for item in report["metrics"]:
+        note = (f"<br><small>{item['duplicate_match_records']} record(s) with duplicate matches. "
+                f"{html.escape(item['remediation'])}</small>"
+                if item.get("duplicate_match_records") else "")
         rows.append(
             "<tr>"
-            f"<td>{html.escape(item['name'])}</td>"
+            f"<td>{html.escape(item['name'])}{note}</td>"
             f"<td>{item['eligible_records']}</td>"
             f"<td>{item['annotated_records']}</td>"
             f"<td>{_format_percent(item['coverage'])}</td>"

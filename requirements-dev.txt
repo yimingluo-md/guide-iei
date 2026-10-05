@@ -1,0 +1,4 @@
+# Test-only dependencies; not required by the end-user application.
+-r requirements.txt
+pytest>=7,<9
+numpy

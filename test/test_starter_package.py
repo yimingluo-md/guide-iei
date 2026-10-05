@@ -63,6 +63,33 @@ def test_bad_download_not_published_and_retry_recovers(tmp_path, release):
     assert len(installed_paths(root, plan)) == 3
 
 
+def test_am_only_release_upgrade_preserves_other_components_and_old_results(tmp_path, release):
+    from local_service.essential_setup import package_status
+    path, content = release
+    old = load_plan(path)
+    root = tmp_path / "references"
+    install(root, old, downloader(content, []))
+    old_am = component_path(root, old["components"][0])
+    new = copy.deepcopy(old)
+    am = new["components"][0]
+    am["version"] = "v2"
+    for asset in am["files"]:
+        url = asset["url"].replace("a" * 40, "b" * 40)
+        data = content[asset["url"]] + b":corrected"
+        content[url] = data
+        asset.update(url=url, size_bytes=len(data), sha256=hashlib.sha256(data).hexdigest())
+    path.write_text(json.dumps(new))
+    assert package_status(root, path)["missing"] == ["alphamissense"]
+    calls = []
+    install(root, new, downloader(content, calls))
+    assert len(calls) == len(am["files"])
+    assert all("/alphamissense/" in call[2] for call in calls)
+    assert old_am.is_dir()
+    assert package_status(root, path)["available"]
+    config = apply_starters({"plugins": {}}, installed_paths(root, new), lambda p: Path(p) if p else None)
+    assert "/v2/" in config["plugins"]["AlphaMissenseStarter"]["file"]
+
+
 def test_changed_file_invalidates_installation_and_repair_preserves_old_copy(tmp_path, release):
     path, content = release
     plan = load_plan(path)
@@ -115,9 +142,30 @@ def test_starter_activation_preserves_installed_full_sources_and_explicit_provid
     assert config["plugins"]["CADDStarter"]["enabled"]
 
 
+@pytest.mark.parametrize("name", ["AlphaMissenseStarter", "CADDStarter"])
+def test_explicit_disabled_pathless_starter_stays_disabled(tmp_path, name):
+    cfg = {"plugins": {name: {"enabled": False}}}
+    paths = {key: tmp_path / key for key in ("alphamissense", "cadd", "spliceai")}
+    apply_starters(cfg, paths, lambda p: Path(p) if p else None)
+    assert cfg["plugins"][name] == {"enabled": False}
+
+
+def test_shipped_auto_starter_defaults_activate_after_installation(tmp_path):
+    import yaml
+    cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "config/annotation.config.yaml").read_text())
+    paths = {key: tmp_path / key for key in ("alphamissense", "cadd", "spliceai")}
+    for name in ("AlphaMissenseStarter", "CADDStarter"):
+        assert "enabled" not in cfg["plugins"][name]
+    apply_starters(cfg, paths, lambda p: Path(p) if p else None)
+    assert all(cfg["plugins"][name]["enabled"] for name in ("AlphaMissenseStarter", "CADDStarter"))
+
+
 def test_one_click_orders_engine_references_starters_then_official_clinical_sources(tmp_path, release, monkeypatch):
     import yaml
+    from types import SimpleNamespace
     from scripts.install_essential_annotations import prepare
+    monkeypatch.setattr("scripts.install_essential_annotations.shutil.disk_usage",
+                        lambda path: SimpleNamespace(free=1024**4))
     monkeypatch.setattr("scripts.install_essential_annotations.managed_colima_environment", lambda env: env)
     from local_service.essential_setup import required_files
     path, content = release
@@ -163,6 +211,16 @@ def test_one_click_orders_engine_references_starters_then_official_clinical_sour
     prepare(source_config, root, path, run=run)
     assert "fetch_clinvar.sh" not in calls and "update_clingen_erepo.sh" not in calls
     assert "parallel_fetch.py" not in calls
+
+
+def test_essential_setup_low_space_fails_before_starting_tools(tmp_path, release, monkeypatch):
+    from types import SimpleNamespace
+    from scripts.install_essential_annotations import prepare
+    monkeypatch.setattr("scripts.install_essential_annotations.shutil.disk_usage",
+                        lambda path: SimpleNamespace(free=0))
+    with pytest.raises(ValueError, match="Not enough space"):
+        prepare(Path(__file__).resolve().parents[1] / "config/annotation.config.yaml",
+                tmp_path, release[0], run=lambda *a, **kw: pytest.fail("must not start tools"))
 
 
 def test_unreleased_package_never_starts_environment_preparation(tmp_path):

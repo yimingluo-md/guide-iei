@@ -29,6 +29,22 @@ essential references, not embedded in the application installer.
 Registered-user datasets and other resources retain their existing access and
 installation requirements.
 
+### AlphaMissense starter correction (October 2026)
+
+The initial starter release (`2026-10-04-v1`) could withhold AlphaMissense scores
+because different source transcript versions matched the same variant. The
+corrected package deduplicates by allele, stable transcript ID and protein change,
+preserving canonical-source precedence. Within that source, an unambiguous score
+for the exact MANE v1.5 transcript version takes precedence over older-version
+scores. Conflicts that remain unresolved stay unscored; scores are never averaged
+or chosen by magnitude.
+
+After updating GUIDE-IEI to a version that includes the corrected package pin,
+run essential setup again in the startup/preparation window. Completed reference
+files, CADD and essential-site SpliceAI are reused; only the changed AlphaMissense
+component needs downloading. Existing VCFs and saved reviews are not rewritten:
+rerun annotation and re-import an updated VCF to recover affected scores.
+
 ## Set up datasets
 
 First-time essential setup is offered in the startup/preparation window.
@@ -104,6 +120,13 @@ and shows a separate setup-space allowance. Installed resources are skipped;
 the essential references are not downloaded again. Full SpliceAI also benefits
 covered splice-region SNVs in exome data; its WGS recommendation does not
 prevent exome use. It does not add indel scores.
+
+Full SpliceAI status checks do not reread the large score files. Moving data
+through Storage or cleaning up a repair backup should not trigger another full
+verification. If files have changed or the verification receipt is missing,
+use the SpliceAI installation/repair action: it verifies the files in a background
+job, reuses intact data and downloads only damaged or missing assets. The status
+check itself is not a fresh checksum verification.
 
 **Recommended · user-provided** contains PromoterAI (WGS) and GenIA (exome
 and genome). Neither is required to run, and neither is in the automatic batch.

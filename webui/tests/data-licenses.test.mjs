@@ -12,11 +12,11 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX,
     target: ts.ScriptTarget.ES2022, esModuleInterop: true },
 }).outputText;
-const module = { exports: {} };
-new Function("require", "module", "exports", compiled)(require, module, module.exports);
+const compiledModule = { exports: {} };
+new Function("require", "module", "exports", compiled)(require, compiledModule, compiledModule.exports);
 
 test("license page renders offline terms without consent controls", () => {
-  const html = renderToStaticMarkup(createElement(module.exports.default));
+  const html = renderToStaticMarkup(createElement(compiledModule.exports.default));
   assert.match(html, /Databases &amp; licenses/);
   assert.match(html, /AlphaMissense/);
   assert.match(html, /CADD/);

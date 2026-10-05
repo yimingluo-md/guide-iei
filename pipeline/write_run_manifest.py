@@ -254,13 +254,27 @@ def main() -> int:
         source = Path(splice["snv"])
         if not source.is_absolute():
             source = Path(args.base_dir) / source
-        release = validate(source)
-        manifest["spliceai_release"] = {
-            "source": BASE, "manifest_sha256": sha256(str(source)),
-            "dataset": release["dataset"], "version": release["dataset_version"],
-            "scientific_configuration": release["scientific_configuration"],
-            "chromosome_files": release["files"],
-        }
+        try:
+            release = validate(source)
+        except ValueError as exc:
+            if splice.get("required"):
+                raise
+            # Match the builder: optional invalid data is omitted, not a
+            # reason to discard provenance for the entire completed run.
+            manifest["spliceai_release"] = {
+                "status": "unavailable", "manifest_path": str(source),
+                "reason": str(exc),
+                "included_in_vep_command": any(
+                    str(arg).startswith("SpliceAIStarter,shards=")
+                    for arg in plan.get("argv", [])),
+            }
+        else:
+            manifest["spliceai_release"] = {
+                "source": BASE, "manifest_sha256": sha256(str(source)),
+                "dataset": release["dataset"], "version": release["dataset_version"],
+                "scientific_configuration": release["scientific_configuration"],
+                "chromosome_files": release["files"],
+            }
     with open(args.output + ".run_manifest.json", "w") as out:
         json.dump(manifest, out, indent=2, sort_keys=True)
         out.write("\n")

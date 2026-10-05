@@ -154,6 +154,8 @@ def apply_starters(config, paths, resolve):
         db["enabled"] = False
     for kind, name in (("alphamissense", "AlphaMissenseStarter"), ("cadd", "CADDStarter")):
         block = plugins.setdefault(name, {})
+        if block.get("enabled") is False:
+            continue
         # A user-configured provider path is an explicit choice, not our default.
         if not block.get("file"):
             block.update(enabled=True, required=True, file=str(paths[kind] / (kind + ".tsv.gz")),

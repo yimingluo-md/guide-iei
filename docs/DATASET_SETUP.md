@@ -24,6 +24,40 @@ explains in plain language what the dataset adds; the technical details behind
 every card are in the [dataset reference](dataset-reference.md), and screen
 behavior in [Reference setup](REFERENCE_SETUP.md).
 
+### Full SpliceAI integrity and storage moves
+
+On upgrades that preserve an older MANE 1.4 configuration, the full SpliceAI
+download and recommended-WGS action install MANE 1.5 into a separate managed
+directory. After validation, new annotation jobs use it automatically; the old
+table and user configuration remain unchanged. An explicitly configured MANE
+1.5 sharded destination is respected.
+
+Routine readiness checks are metadata-only: pinned release identity, regular
+files, sizes and modification times. Existing `[size, mtime_ns, ctime_ns]`
+receipts remain readable, but ctime is ignored because copying, permission
+changes and removal of hard-linked repair backups change it without changing
+content. New receipts record only size and mtime. Metadata checks cannot detect
+an edit that deliberately preserves both size and mtime.
+
+Changed metadata fails fast with a verification-required message; HTTP polls,
+command planning, preflight and run-manifest generation never hash shards as a
+fallback. Explicit installation/repair performs SHA-256 checks against the
+pinned release and atomically refreshes the receipt after success, reusing intact
+files. To request a **read-only full checksum check** without downloads or receipt
+updates:
+
+```bash
+python3 pipeline/spliceai_dataset.py /path/to/spliceai/mane-v1.5/manifest.json --verify-only
+```
+
+That explicit check reads the full dataset and can take time. To clear a stale
+receipt after verification, use the installation/repair action. No annotation
+scores or the published SpliceAI dataset are changed by this behavior.
+
+If optional full SpliceAI is unavailable, annotation may proceed without it.
+The run manifest still records provenance and the unavailable resource's reason;
+a required invalid resource remains an error.
+
 Everything below is the equivalent command-line route.
 
 **AlphaGenome AVI** is included in Recommended for WGS; CADD whole-genome

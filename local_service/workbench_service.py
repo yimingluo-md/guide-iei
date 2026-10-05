@@ -43,7 +43,9 @@ from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
 from local_service.ccre_context import CcreContextStore
 from local_service.essential_setup import missing_resources, package_status, reference_allowance
 from pipeline.starter_package import load_plan as load_starter_plan, installed_paths as starter_paths, apply_starters
-from pipeline.spliceai_dataset import FORMAT as SPLICEAI_SHARDED, valid as valid_full_spliceai
+from pipeline.spliceai_dataset import (
+    FORMAT as SPLICEAI_SHARDED, valid as valid_full_spliceai, full_install_config,
+)
 from local_service.container_startup import DockerStartup, mac_tool_path, managed_colima_environment
 from local_service.container_workspace import workspace_directory, check_ready as check_container_workspace
 from local_service.clingen_erepo import ClinGenErepoStore
@@ -2416,6 +2418,9 @@ class AnnotationJobService:
         config = self._load_config(
             self.pipeline_root / "config" / "annotation.config.yaml"
         )
+        if resource_id in {"spliceai", "recommended_wgs"}:
+            config.setdefault("plugins", {})["SpliceAI"] = full_install_config(
+                (config.get("plugins") or {}).get("SpliceAI"))
         if resource_id == "recommended_wgs":
             missing = self._annotation_profile()["recommended_profiles"]["whole_genome"]["missing"]
             ids = ("alphagenome_avi", "spliceai", "screen_context")
@@ -4957,6 +4962,13 @@ class AnnotationJobService:
             self._set_managed_preparation_paths(
                 config, resource_id, require_installed=True
             )
+        splice = (config.get("plugins") or {}).get("SpliceAI") or {}
+        full = full_install_config(splice)
+        if valid_full_spliceai(self._resolved_reference_path(full["snv"])):
+            # An explicit full install upgrades a preserved v1.4/compact
+            # provider without editing user YAML. Keep enable/required choices.
+            full.update({key: splice[key] for key in ("enabled", "required") if key in splice})
+            config.setdefault("plugins", {})["SpliceAI"] = full
         try:
             paths = starter_paths(self.annotation_root, load_starter_plan(
                 self.pipeline_root / "config/essential-annotations.json"))
@@ -5525,7 +5537,7 @@ class AnnotationJobService:
         # satisfy the explicit recommendation for the full MANE 1.5 release.
         stock_config = self._load_config(config_path)
         full_splice_path = self._resolved_reference_path(
-            ((stock_config.get("plugins") or {}).get("SpliceAI") or {}).get("snv")
+            full_install_config((stock_config.get("plugins") or {}).get("SpliceAI"))["snv"]
         )
         wgs_missing = [source_id for source_id in WGS_RECOMMENDED_DOWNLOAD_BYTES
                        if not (valid_full_spliceai(full_splice_path) if source_id == "spliceai"
@@ -5701,7 +5713,8 @@ class AnnotationJobService:
         if resource_id in {"spliceai", "recommended_wgs"}:
             # Full-table installation must not overwrite the selected starter.
             stock = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
-            config.setdefault("plugins", {})["SpliceAI"] = (stock.get("plugins") or {}).get("SpliceAI", {})
+            config.setdefault("plugins", {})["SpliceAI"] = full_install_config(
+                (stock.get("plugins") or {}).get("SpliceAI"))
         config = self._absolutize_annotation_paths(config)
         config_dir = self.state_dir / "resource-configs"
         config_dir.mkdir(parents=True, exist_ok=True)

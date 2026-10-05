@@ -8,6 +8,9 @@ import hashlib
 import pathlib
 import subprocess
 import tempfile
+import sys
+
+import pytest
 
 import yaml
 
@@ -120,6 +123,41 @@ def test_manifest_records_config_hash_argv_and_cheap_reference_identity(tmp_path
     )
     assert genia_entry["size"] == genia_aa.stat().st_size
     assert genia_entry["sha256"] == hashlib.sha256(genia_aa.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("damage", ["missing", "invalid"])
+@pytest.mark.parametrize("required", [False, True])
+def test_invalid_sharded_spliceai_preserves_optional_run_manifest(tmp_path, damage, required):
+    source_manifest = tmp_path / "spliceai/manifest.json"
+    if damage == "invalid":
+        source_manifest.parent.mkdir()
+        source_manifest.write_text("{}")
+    cfg = {"plugins": {"SpliceAI": {
+        "enabled": True, "required": required, "format": "mane_v1.5_sharded",
+        "snv": str(source_manifest),
+    }}}
+    from pipeline.build_vep_command import build_vep_command
+    plan = build_vep_command(cfg, str(tmp_path / "in.vcf"), str(tmp_path / "out.vcf"), check_exists=False)
+    assert bool(plan.errors) == required
+    assert not any(arg.startswith("SpliceAIStarter,") for arg in plan.argv)
+    config = tmp_path / "config.yaml"
+    config.write_text(yaml.safe_dump(cfg))
+    result = subprocess.run([
+        sys.executable, str(SCRIPT), "--config", str(config), "--base-dir", str(tmp_path),
+        "--input", str(tmp_path / "in.vcf"), "--output", str(tmp_path / "out.vcf"),
+        "--plan-json", json.dumps({"argv": plan.argv}), "--runtime", "docker", "--image", "test",
+    ], capture_output=True, text=True)
+    sidecar = tmp_path / "out.vcf.run_manifest.json"
+    if required:
+        assert result.returncode != 0
+        assert not sidecar.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        manifest = json.loads(sidecar.read_text())
+        assert manifest["vep_argv"] == plan.argv
+        assert manifest["spliceai_release"]["status"] == "unavailable"
+        assert manifest["spliceai_release"]["included_in_vep_command"] is False
+        assert "needs repair" in manifest["spliceai_release"]["reason"]
 
 
 if __name__ == "__main__":

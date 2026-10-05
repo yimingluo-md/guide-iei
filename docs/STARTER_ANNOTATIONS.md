@@ -12,6 +12,14 @@ separate gates.
 
 ## Implemented foundation
 
+Unit tests (synthetic fixtures; no full dataset downloads) use the same runner
+as clean-clone CI, collecting both pytest functions and unittest classes:
+
+```bash
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest -q test local_service
+```
+
 - `pipeline/starter_annotations.py`: bounded-memory release-time preparation of
   AlphaMissense MANE, coding-SNV CADD Phred, and essential-site SpliceAI subsets.
 - `pipeline/predictor_registry.py`: optional `logical_id` and
@@ -21,10 +29,11 @@ separate gates.
   silently when their resource is unavailable.
 - The registry declares disabled standalone AlphaMissense and CADD providers
   for the existing `IndexedScores` adapter, using distinct annotation fields.
-- Disabled configuration blocks are present for both providers. Explicitly
-  configured, validated table/manifest pairs can use the existing generic VEP
-  command builder. The combined setup coordinator now installs and activates a
-  complete pinned starter package; its validated payload is awaiting publication.
+- Unconfigured provider blocks omit `enabled`: managed activation turns them on
+  only after a validated starter package is installed. Explicit `enabled: false`
+  is respected even without a file path. This also applies to preserved older
+  YAML: remove that flag (automatic mode) or set it to true to opt in. Explicit
+  table/manifest pairs use the existing generic VEP command builder.
 - Preparation writes a new directory atomically, validates duplicate keys,
   builds a tabix index, verifies indexed record counts, and records source/output
   hashes without host paths. It never writes into a user's installed dataset or
@@ -109,13 +118,23 @@ The field-level matching and source versions must remain visible in provenance.
 The official canonical and isoform tables sometimes disagree even for identical
 allele/transcript/protein keys (observed at 1:12746434:T:A,
 ENST00000614859.5, F2I: 0.1201 versus 0.1341). Canonical predictions take precedence
-over isoform predictions for the same key. This is independent of input order
-and score magnitude; overlaps/disagreements are counted. Conflicts within a
-single source class fail preparation by default. The explicit
+over isoform predictions for the same **allele + stable transcript ID + protein
+change** key, including across source transcript versions. Sorting groups this
+normalized key before versions; the selected row retains its original version.
+This is independent of input order
+and score magnitude; overlaps/disagreements are counted. Within the preferred
+source class, rows whose version exactly matches pinned MANE v1.5 take precedence.
+Conflicts among those exact-version rows (or among other-version rows when no
+exact version exists) fail preparation by default. The explicit
 `--ambiguous-source-policy withhold` option excludes the complete ambiguous key
 and records counts/examples; it never falls back to a supplemental score when
 the preferred source conflicts. This is needed for genuine conflicting
 duplicates in the published isoform table. Supplemental isoform data extends coverage.
+Identical score/label pairs from different versions of the same source collapse
+deterministically, preferring exact MANE-version provenance. Unresolved differing
+pairs in the preferred source are withheld; no fallback to another source is used. Full
+normalized-key uniqueness is checked through the tabix index during preparation
+and release validation, and is required by the publication gate.
 
 ### CADD
 
@@ -198,17 +217,27 @@ resources. Sizes below use decimal MB (1 MB = 1,000,000 bytes).
 
 | Resource | Verified result | Compressed data + index |
 |---|---|---|
-| AlphaMissense MANE v1.5 selection | 68,241,860 rows across 24 primary chromosomes; source scores for 17,640 of 19,299 selected transcripts | 670.1 MB |
+| AlphaMissense MANE v1.5 selection (2026-10-05 version-resolution correction) | 67,723,760 unique runtime keys across 24 primary chromosomes; source scores for 17,640 of 19,299 selected transcripts before conflict withholding | 665.9 MB |
 | Essential-site SpliceAI, all 24 primary chromosomes | 2,193,822 records: all three alternate SNVs at 731,274 targeted bases | 22.9 MB |
 | Coding-SNV CADD | 107,765,334 rows: three alternate SNVs at every one of 35,921,778 coding/stop-codon bases | 527.0 MB |
 
 The AlphaMissense build read 216,256,584 rows from the canonical and isoform
-tables. It resolved 556,324 overlapping keys by canonical-source precedence
-(551,713 had different scores or labels), removed 728,078 identical duplicates,
-and withheld 12 ambiguous keys from the isoform source. The exact examples and
+tables. It resolved 977,972 overlapping stable-transcript keys by canonical-source
+precedence (968,549 had different scores or labels), removed 728,606 equivalent
+duplicates (including 528 across source versions), resolved 95,924 same-source
+version conflicts by the exact pinned MANE version, and withheld 12 remaining
+ambiguous keys from the preferred source. The exact examples and
 source/output SHA-256 values are recorded in `preparation.json`. Source coverage
 is not a promise of complete predictions for every variant of every transcript.
 The 1,659 MANE transcripts without source scores remain genuinely uncovered.
+
+The initial `2026-10-04-v1` AlphaMissense table is superseded: it contained
+518,100 version-colliding runtime keys across 97 MANE transcripts. The correction
+first restored an unambiguous prediction for 422,176 of those keys. The subsequent
+version-resolution correction recovers the other 95,924 keys across 30 MANE
+transcripts: exactly one source row matches the pinned MANE version in each case.
+The 12 genuinely unresolved keys remain withheld. This is a preparation correction, not a new model
+or recomputed prediction. Existing annotated VCFs require reannotation.
 
 Validation included a complete tabix record-count round trip, strict data/index
 SHA-256 verification, registry/manifest compatibility, and real-locus checks of
@@ -225,18 +254,35 @@ retains all 2,193,822 records and passed its full-payload audit.
 
 Repeatable opt-in release checks (all outputs go into NEW development folders):
 
+These audit tools refuse `python -O`/`PYTHONOPTIMIZE`, so their assertion gates
+cannot silently disappear. The VEP check fingerprints both `IndexedScores.pm`
+and `SpliceAIStarter.pm` plus the MANE 1.5 gene map inside the image. New mirror
+staging requires those identities in its passing report.
+
+CADD source data and index identities are pinned in
+`config/cadd-starter-source.json`, using the previously audited source set.
+This prevents silently accepting a changed upstream file/checksum pair; it is
+not an independent upstream signature. Changing source releases requires a
+reviewed pin update. Prepared components still carry their own SHA-256 pins.
+The manifest description records the requested release rather than assuming 1.7.
+The pinned SpliceAI source contract deliberately rejects targeted indels and
+multi-allelic rows instead of silently omitting unexpected input.
+
 ```bash
-python scripts/validate_starter_release.py --build <build> --output <audit-folder>
-python test/test_starter_annotation_e2e.py --build <build> --output <vep-folder>
-python test/test_essential_clinical_downloads.py --output <clinical-folder>
-node webui/tests/starter-real-payload.mjs <vep-folder>/starter.vep.vcf.gz
+python scripts/validate_starter_release.py --build "/path/to/build" --output "/path/to/new-audit-folder" --am-versioned-baseline "/path/to/original-r2/alphamissense.tsv.gz"
+python test/test_starter_annotation_e2e.py --build "/path/to/build" --output "/path/to/new-vep-folder"
+python test/test_essential_clinical_downloads.py --output "/path/to/new-clinical-folder"
+node webui/tests/starter-real-payload.mjs "/path/to/new-vep-folder/starter.vep.vcf.gz"
 ```
 
 The first check verifies real file hashes, complete indexed record counts,
+AlphaMissense runtime-key uniqueness across every row and a full-row comparison
+against the original versioned table (including Ensembl GTF version agreement),
 sampled original-source scores, every retained SpliceAI site's gene context,
 and isolated installation/retry/corruption/repair. The second annotates public
 synthetic variants through the existing VEP engine after requiring its baked
-plugin to match current source; it is not validation of app startup on a clean machine.
+plugins and gene map to match current source, including ten cross-version regression loci;
+it is not validation of app startup on a clean machine.
 The third downloads fresh official ClinVar and ClinGen snapshots without
 replacing the workstation's installed databases. None substitutes for a
 clean-machine test or native-window visual validation.
@@ -247,13 +293,19 @@ manifest pinned to the returned immutable Hugging Face commit; it does not edit
 the application's manifest. The public download/install must also be tested
 before activating that candidate. Component-specific license notices travel
 with the payload; these data are not relabeled MIT.
+Use `--reuse-unchanged-from config/essential-annotations.json` for a component-only
+correction: unchanged scores, indexes, manifests and notices keep their previous
+immutable pins and installation receipts. The new app plan therefore downloads
+only the corrected AlphaMissense component, preserving older installed versions
+and all existing analysis results.
 
 The latest focused regression run passed 253 Python tests, covering preparation,
 publication gates, installation, registry, command generation, indexed scoring,
 run manifests, local service and guide checks. Browser unit tests passed 160
 tests with 1 skip; TypeScript checking and native launcher syntax checks passed.
 
-Real-payload results (2026-10-04):
+Historical real-payload results (2026-10-04; these checks missed cross-version
+AlphaMissense collisions and do not validate the corrected table):
 
 - All data/index/notice hashes and complete tabix record counts passed.
 - CADD source comparisons: 312 spatially sampled rows; SpliceAI: 311. Every
@@ -276,6 +328,57 @@ Evidence is retained under `test/out/starter-validation-20261004-r2`,
 `test/out/starter-vep-20261004-r2`, `test/out/essential-clinical-20261004`, and
 `test/out/starter-anonymous-download-20261004`.
 These checks do not substitute for pending clean-installer/native UI tests.
+
+Historical stable-ID-only correction validation (`2026-10-05-v2`; superseded by the version-resolution correction):
+
+- All 67,627,836 AlphaMissense rows passed a complete normalized runtime-key
+  uniqueness scan, strict hash verification and tabix validation. The old table
+  is rejected by the new uniqueness check.
+- Real VEP113 annotation of 83 public synthetic alleles passed, including all
+  nine cross-version regression loci. The browser reader checked 1,576 transcript
+  rows: 43 AlphaMissense, 805 CADD and 420 SpliceAI observations agree with VEP.
+- CIITA, TAPBP, CFH, DMD, ATRX, HNF1A and COL1A1 examples recover their canonical
+  predictions. The MAPT and WT1 examples have conflicting isoform-only source
+  records and remain unscored as intended.
+- 221 focused Python tests passed, including the local service, package-only
+  upgrade/reuse, duplicate-match QC warnings, registry and publication gates.
+- Published AlphaMissense component `2026-10-05-v2` at immutable Hugging Face
+  revision `41fb66ed1d11ccf9e0687133ccd48cfaa0051964`. Anonymous public download,
+  installation, strict hashes and download-free retry passed for the candidate
+  app plan. CADD and SpliceAI retain their original component pins.
+
+Evidence: `test/out/starter-validation-20261005-r1` and
+`test/out/starter-vep-20261005-r1`, plus
+`test/out/starter-anonymous-download-20261005-r1`. No patient records or active installed
+databases were modified by these tests.
+
+Version-resolution correction checks (2026-10-05):
+
+- Rebuilt from the original canonical and isoform sources: 67,723,760 rows,
+  with 95,924 same-source version conflicts resolved and 12 unresolved keys
+  withheld. Canonical-source precedence is unchanged.
+- Full-row comparison against all 68,241,860 rows of the original versioned
+  table passed, including source scores, labels and transcript provenance.
+  All 30 recovered transcript versions agree with the Ensembl 113 GTF.
+  Full runtime-key uniqueness, strict hashes, indexes and isolated
+  installation/retry/corruption/repair checks also passed.
+- Real VEP113 annotation of 84 synthetic alleles passed, including ten
+  regression genes. MAPT, WT1 and EIF4G3 recover the exact pinned MANE-version
+  prediction. The browser reader checked 1,594 transcript rows: 46 AlphaMissense,
+  823 CADD and 420 SpliceAI scores agree with VEP.
+- All 939 Python tests passed (15 skipped), including a subprocess regression
+  with a competing regular `test` package. Release-test helpers load by path.
+- Published AlphaMissense component `2026-10-05-v3` at immutable Hugging Face
+  revision `dbfc10be74a60f8d538ee05f6e4950a3039d4e05`. Fresh anonymous installation
+  passed for all 14 files, including strict hashes, a space-containing data path,
+  atomic installation and download-free retry. The app source now pins this
+  release; CADD and SpliceAI retain their original component pins.
+
+Evidence: `test/out/starter-validation-20261005-r2`,
+`test/out/starter-vep-20261005-r2`, and
+`test/out/starter-anonymous-download-20261005-r2`. Existing installed datasets
+and patient records were not changed. Packaged apps need a rebuild to include
+the updated pin; previously annotated VCFs require reannotation.
 
 Mac preview verification (2026-10-04):
 

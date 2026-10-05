@@ -312,7 +312,9 @@ def build_vep_command(cfg: dict, input_vcf: str, output_file: str,
             seen.add(key)
             combined.append(m)
     plan.mounts = combined
-    plan.reference_paths = mapper.paths
+    # Multi-file adapters add assets below an already mapped directory.
+    # Preserve these for container-access probes without adding extra mounts.
+    plan.reference_paths = list(dict.fromkeys([*mapper.paths, *plan.reference_paths]))
     return plan
 
 
