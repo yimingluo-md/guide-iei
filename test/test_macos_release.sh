@@ -41,3 +41,8 @@ launch_output="$(
 echo "$launch_output" | grep -Fq "ROOT=${SUPPORT}/application"
 test -x "${SUPPORT}/application/scripts/start_workbench.sh"
 echo "MACOS STANDALONE RELEASE TEST PASSED"
+
+# Real Cocoa controls, synthetic service responses: never downloads data.
+xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Cocoa \
+    "${ROOT}/test/native_wgs_setup_smoke.m" -o "${TEMP}/native-wgs-setup-smoke"
+"${TEMP}/native-wgs-setup-smoke"

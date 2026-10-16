@@ -82,7 +82,10 @@ Double-click **GUIDE-IEI.app** wherever you placed it.
   included; no Terminal window or separate Python/Node installation is needed.
   Before opening the browser, a native startup window checks the annotation
   engine, prepares missing container tools, and loads the bundled prebuilt VEP
-  image. VEP is not compiled or downloaded separately. A clean Mac still needs
+  image. Choose the data location (or keep the default), review the dataset
+  terms, and choose **Prepare GUIDE-IEI** for the
+  core references and compact score starters, plus ClinVar and ClinGen.
+  VEP is not compiled or downloaded separately. A clean Mac still needs
   internet access to download the container tools and Linux virtual machine;
   setup time depends on network and hardware. Named stages and **Open Log** show
   progress; compatible existing components are reused. Later launches perform
@@ -92,8 +95,17 @@ Double-click **GUIDE-IEI.app** wherever you placed it.
   to cancel preparation safely. The app opens the workbench only after engine
   readiness checks pass; there is no skip option. **Import & QC → Set up
   annotation datasets → Set up annotation engine** remains available for repair.
-  Large annotation databases
-  are never downloaded by startup setup: select them inside Import & QC.
+  **Also install recommended whole-genome datasets** is off by default. Select it to
+  add Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI after essentials
+  finish. The window shows the additional download and setup-space allowance
+  for missing resources. These are not required for basic exome analysis.
+  The workbench can open once essentials are ready while these optional
+  downloads continue; an optional download failure does not block review.
+  You can also select the WGS option later in this window or use
+  **Import & QC → Set up annotation datasets → Install recommended WGS datasets**.
+  PromoterAI and GenIA require your own files and are set up inside the
+  analysis workbench. Large datasets are downloaded separately, not included
+  in the app installer.
   Use **Quit GUIDE-IEI** to stop
   the app; closing its browser tab does not stop it.
 

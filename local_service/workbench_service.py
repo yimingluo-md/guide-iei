@@ -4976,6 +4976,43 @@ class AnnotationJobService:
             paths = {}
         return apply_starters(config, paths, self._resolved_reference_path)
 
+    def recommended_wgs_status(self) -> dict:
+        """Compact, read-only native setup view of the existing WGS contract."""
+        try:
+            profile = self._annotation_profile()
+            plan = profile.get("recommended_profiles", {}).get("whole_genome", {})
+            if profile.get("error") or not {"installed", "missing", "download_bytes", "setup_bytes"} <= plan.keys():
+                raise ValueError(profile.get("error") or "Recommended WGS dataset status is unavailable.")
+            probe = self.annotation_root
+            while not probe.exists() and probe != probe.parent:
+                probe = probe.parent
+            result = {**plan, "known": True, "error": "",
+                      "annotation_path": str(self.storage_registry.root("annotation")),
+                      "free_bytes": shutil.disk_usage(probe).free,
+                      "restart_required": self.storage_restart_required()}
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            result = {"known": False, "error": str(exc), "installed": False}
+        # No full log or unrelated job/patient metadata in the native poll.
+        with self._resource_lock:
+            jobs = [job for job in reversed(list(self._resource_jobs.values()))
+                    if job.get("resource_id") == "recommended_wgs"]
+            job = next((job for job in jobs if job["status"] in {"queued", "running"}), jobs[0] if jobs else None)
+            result["job"] = {key: job.get(key) or "" for key in
+                             ("id", "status", "message", "error", "log_path")} if job else None
+        return result
+
+    def start_recommended_wgs_setup(self, payload: dict) -> dict:
+        if payload.get("confirm") is not True:
+            raise ValueError("Confirm recommended WGS setup before downloading datasets.")
+        status = self.recommended_wgs_status()
+        if not status["known"]:
+            raise ValueError(status["error"])
+        if status.get("restart_required"):
+            raise ValueError("Restart to activate the selected storage location first.")
+        if not self.essential_setup_status()["available"]:
+            raise ValueError("Finish essential setup before adding recommended WGS datasets.")
+        return self.start_resource_download("recommended_wgs")
+
     def essential_setup_status(self) -> dict:
         config = self._load_config(self.pipeline_root / "config/annotation.config.yaml")
         package = package_status(self.annotation_root, self.pipeline_root / "config/essential-annotations.json")
@@ -6128,6 +6165,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/essential-setup/status":
             self._json(self.service.essential_setup_status())
             return
+        if path == "/api/recommended-wgs/status":
+            self._json(self.service.recommended_wgs_status())
+            return
         if path == "/api/health":
             worker = self.service.worker_health()
             self._json({
@@ -6383,6 +6423,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     "/api/software-update/install",
                     "/api/software-update/rollback",
                 }
+                or path == "/api/recommended-wgs/setup"
                 or path.startswith("/api/resource-downloads/")
                 or path.startswith("/api/resource-preparations/")
                 or path.startswith("/api/sample-library/")
@@ -6472,6 +6513,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 return
             if path == "/api/essential-setup/setup":
                 self._json(self.service.start_engine_setup({**self._body(), "essential": True}), HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/recommended-wgs/setup":
+                self._json(self.service.start_recommended_wgs_setup(self._body()), HTTPStatus.ACCEPTED)
                 return
             if path == "/api/annotation-engine/cancel":
                 self._json(self.service.cancel_engine_setup(self._body()), HTTPStatus.ACCEPTED)

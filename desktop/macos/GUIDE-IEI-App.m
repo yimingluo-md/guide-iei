@@ -1,6 +1,12 @@
 // Native lifecycle for the self-contained edition. The review UI stays in the browser.
 #import <Cocoa/Cocoa.h>
 
+@interface GuideSetupDocument : NSView
+@end
+@implementation GuideSetupDocument
+- (BOOL)isFlipped { return YES; }
+@end
+
 @interface GuideApp : NSObject <NSApplicationDelegate, NSWindowDelegate, NSTabViewDelegate>
 @property(nonatomic, strong) NSTask *worker;
 @property(nonatomic, copy) NSString *root;
@@ -11,6 +17,17 @@
 @property(nonatomic, strong) NSTextField *statusLabel;
 @property(nonatomic, strong) NSButton *openButton;
 @property(nonatomic, strong) NSButton *retryButton;
+@property(nonatomic, strong) NSButton *wgsChoice;
+@property(nonatomic, strong) NSTextField *wgsSummary;
+@property(nonatomic, strong) NSTextField *wgsJobLabel;
+@property(nonatomic, copy) NSDictionary *wgsStatus;
+@property(nonatomic, copy) NSString *wgsError;
+@property(nonatomic, copy) NSString *wgsLogPath;
+@property BOOL wgsQueued;
+@property BOOL wgsStarting;
+@property BOOL wgsPolling;
+@property NSUInteger wgsGeneration;
+@property BOOL serviceBusy;
 @property(nonatomic, strong) NSTextField *dataLabel;
 @property(nonatomic, strong) NSTextField *storageLabel;
 @property(nonatomic, strong) NSPopUpButton *storageKind;
@@ -41,7 +58,90 @@
     if (![data writeToFile:self.controlPath options:NSDataWritingAtomic error:&error]) [self alert:error.localizedDescription];
 }
 - (void)retrySetup:(id)sender { [self startupAction:@"retry"]; self.retryButton.enabled = NO; }
-- (void)prepareSetup:(id)sender { [self startupAction:@"prepare"]; self.retryButton.enabled = NO; }
+- (void)prepareSetup:(id)sender {
+    if (!self.preparing) { [self startWgs]; return; }
+    self.wgsQueued = self.wgsChoice.state == NSControlStateValueOn;
+    self.wgsError = nil;
+    [self startupAction:@"prepare"]; self.retryButton.enabled = NO;
+}
+- (BOOL)wgsActive {
+    NSString *status = self.wgsStatus[@"job"][@"status"];
+    return self.wgsStarting || [status isEqual:@"queued"] || [status isEqual:@"running"];
+}
+- (void)wgsChanged:(id)sender { [self updateWgsControls]; }
+- (void)updateWgsControls {
+    NSDictionary *startup = [self startupStatus];
+    NSString *phase = startup[@"phase"];
+    BOOL active = [self wgsActive];
+    BOOL installed = [self.wgsStatus[@"installed"] boolValue];
+    BOOL known = [self.wgsStatus[@"known"] boolValue];
+    BOOL waiting = [phase isEqual:@"waiting"] || [phase isEqual:@"failed"];
+    self.wgsChoice.enabled = !active && !installed && (!self.preparing || waiting);
+    if (!known) self.wgsSummary.stringValue = self.wgsStatus[@"error"] ?: @"Checking additional download and storage requirements…";
+    else if (installed) self.wgsSummary.stringValue = @"All three recommended WGS datasets are installed. No additional download is needed.";
+    else self.wgsSummary.stringValue = [NSString stringWithFormat:@"Additional download: approximately %.1f GB · setup allowance: up to %.0f GiB before credit for existing files\n%.1f GiB free at the selected data location.",
+        [self.wgsStatus[@"download_bytes"] doubleValue] / 1e9,
+        ceil([self.wgsStatus[@"setup_bytes"] doubleValue] / (1024*1024*1024)),
+        [self.wgsStatus[@"free_bytes"] doubleValue] / (1024*1024*1024)];
+    NSDictionary *job = self.wgsStatus[@"job"];
+    NSString *jobStatus = job[@"status"];
+    if ([job[@"log_path"] isKindOfClass:NSString.class]) self.wgsLogPath = job[@"log_path"];
+    BOOL failed = [jobStatus isEqual:@"failed"] || [jobStatus isEqual:@"interrupted"];
+    if (self.wgsError.length) self.wgsJobLabel.stringValue = self.wgsError;
+    else if (self.wgsStarting) self.wgsJobLabel.stringValue = @"Starting recommended WGS downloads…";
+    else if (active) self.wgsJobLabel.stringValue = job[@"message"] ?: @"Preparing recommended WGS datasets…";
+    else if (self.wgsQueued) self.wgsJobLabel.stringValue = @"Recommended WGS downloads will start after essential setup finishes.";
+    else if (failed && !installed) self.wgsJobLabel.stringValue = [NSString stringWithFormat:@"Optional WGS setup needs attention: %@\nEssential setup is separate. Open the workbench when ready, or select WGS setup and retry; completed files are retained.", job[@"error"] ?: job[@"message"] ?: @"Open Log for details."];
+    else self.wgsJobLabel.stringValue = installed ? @"Recommended WGS datasets are ready." : @"";
+    self.wgsJobLabel.hidden = self.wgsJobLabel.stringValue.length == 0;
+    if (!self.preparing) {
+        self.retryButton.hidden = NO;
+        self.retryButton.title = active ? @"Installing recommended WGS datasets…" : failed || self.wgsError.length ? @"Retry WGS dataset installation" : @"Install recommended WGS datasets";
+        self.retryButton.enabled = known && !installed && !active && !self.serviceBusy && !self.migrationID
+            && ![self.wgsStatus[@"restart_required"] boolValue] && self.wgsChoice.state == NSControlStateValueOn;
+        self.progress.hidden = !active;
+        if (active) [self.progress startAnimation:nil]; else [self.progress stopAnimation:nil];
+    } else if (waiting && self.wgsChoice.state == NSControlStateValueOn && !known) {
+        self.retryButton.enabled = NO;
+    }
+}
+- (void)startWgs {
+    self.wgsQueued = NO; // Exactly one attempt per explicit selection/Prepare.
+    if ([self wgsActive] || [self.wgsStatus[@"installed"] boolValue]) return;
+    if (![self.wgsStatus[@"known"] boolValue]) {
+        self.wgsError = @"WGS status could not be checked. Essential setup is unaffected; check the connection and retry.";
+        [self updateWgsControls]; return;
+    }
+    self.wgsGeneration++;
+    self.wgsStarting = YES; self.wgsError = nil; [self updateWgsControls];
+    [self request:@"/api/recommended-wgs/setup" body:@{@"confirm": @YES} done:^(NSDictionary *job, NSString *error) {
+        self.wgsStarting = NO;
+        if (error) self.wgsError = [@"Optional WGS setup: " stringByAppendingString:error];
+        else {
+            NSMutableDictionary *status = [self.wgsStatus mutableCopy]; status[@"job"] = job;
+            self.wgsStatus = status;
+        }
+        [self updateWgsControls];
+    }];
+}
+- (void)refreshWgs {
+    if (self.wgsPolling || self.wgsStarting || self.quitting) return;
+    self.wgsPolling = YES;
+    NSUInteger generation = self.wgsGeneration;
+    [self request:@"/api/recommended-wgs/status" body:nil done:^(NSDictionary *status, NSString *error) {
+        self.wgsPolling = NO;
+        if (self.quitting || generation != self.wgsGeneration) return;
+        if (error) self.wgsStatus = @{@"known": @NO, @"error": error};
+        else self.wgsStatus = status;
+        // Normalize JSON null before native dictionary subscripting.
+        if (![self.wgsStatus[@"job"] isKindOfClass:NSDictionary.class]) {
+            NSMutableDictionary *clean = [self.wgsStatus mutableCopy]; [clean removeObjectForKey:@"job"]; self.wgsStatus = clean;
+        }
+        if ([self wgsActive]) self.wgsError = nil; // Recover a timed-out POST whose job did start.
+        [self updateWgsControls];
+        if (!self.preparing && self.wgsQueued && !error) [self startWgs];
+    }];
+}
 - (void)showStorage:(id)sender { [self.tabs selectTabViewItemAtIndex:1]; [self refreshStorage:nil]; }
 - (void)tabView:(NSTabView *)tabView didSelectTabViewItem:(NSTabViewItem *)item {
     (void)tabView;
@@ -127,12 +227,13 @@
             return;
         }
         self.ownsService = YES;
+        self.serviceBusy = [value[@"blockers"] count] > 0 || [value[@"annotations"] integerValue] + [value[@"downloads"] integerValue] > 0;
         NSDictionary *startup = [self startupStatus];
         NSString *phase = startup[@"phase"];
         BOOL idle = [phase isEqual:@"waiting"] || [phase isEqual:@"failed"] || [phase isEqual:@"ready"];
-        self.changeStorageButton.enabled = idle && !self.migrationID;
-        self.moveStorageButton.enabled = idle && !self.migrationID;
-        self.restartStorageButton.enabled = idle && !self.migrationID;
+        self.changeStorageButton.enabled = idle && !self.migrationID && !self.serviceBusy;
+        self.moveStorageButton.enabled = idle && !self.migrationID && !self.serviceBusy;
+        self.restartStorageButton.enabled = idle && !self.migrationID && !self.serviceBusy;
         if (self.migrationID) {
             [self request:@"/api/storage/migrations" body:nil done:^(NSDictionary *data, NSString *failure) {
                 if (failure) { self.storageLabel.stringValue = failure; return; }
@@ -157,6 +258,7 @@
             self.retryButton.enabled = [phase isEqual:@"failed"] || [startup[@"can_prepare"] boolValue];
             self.progress.hidden = [phase isEqual:@"failed"] || [phase isEqual:@"waiting"];
             if (!self.progress.hidden) [self.progress startAnimation:nil];
+            [self updateWgsControls]; [self refreshWgs];
             return;
         }
         self.preparing = NO;
@@ -167,18 +269,20 @@
         NSInteger jobs = [value[@"annotations"] integerValue], downloads = [value[@"downloads"] integerValue];
         self.statusLabel.stringValue = blockers.count ? [@"Working: " stringByAppendingString:[blockers componentsJoinedByString:@", "]] :
             jobs + downloads ? [NSString stringWithFormat:@"Running · %ld annotation job(s) · %ld dataset job(s)", (long)jobs, (long)downloads] : @"Running · no active jobs";
+        [self updateWgsControls]; [self refreshWgs];
     }];
 }
 - (void)buildControls {
-    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 680, 620)
-        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable
+    self.window = [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 740, 760)
+        styleMask:NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable | NSWindowStyleMaskResizable
         backing:NSBackingStoreBuffered defer:NO];
     self.window.title = @"GUIDE-IEI"; self.window.delegate = self; self.window.releasedWhenClosed = NO;
+    self.window.contentMinSize = NSMakeSize(740, 650);
     NSTextField *heading = [NSTextField labelWithString:@"GUIDE-IEI Workbench"]; heading.font = [NSFont boldSystemFontOfSize:22];
     self.statusLabel = [NSTextField wrappingLabelWithString:@"Starting the workbench…"];
     self.statusLabel.maximumNumberOfLines = 5;
     self.statusLabel.accessibilityLabel = @"Workbench status";
-    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Prepare the annotation environment and essential datasets in one step. Internet access is required. Compatible installed components are reused. Advanced datasets remain available inside the analysis workbench.\n\nClosing the browser leaves GUIDE-IEI running. Use Quit to stop it; Docker remains available to other applications."];
+    NSTextField *hint = [NSTextField wrappingLabelWithString:@"Prepare the annotation environment and essential datasets in one step. Internet access is required. Compatible installed components are reused."];
     hint.textColor = NSColor.secondaryLabelColor;
     self.openButton = [NSButton buttonWithTitle:@"Open Workbench" target:self action:@selector(openReview:)]; self.openButton.enabled = NO;
     NSButton *quit = [NSButton buttonWithTitle:@"Quit GUIDE-IEI" target:NSApp action:@selector(terminate:)];
@@ -195,8 +299,36 @@
     if (self.preparing) [self.progress startAnimation:nil];
     self.dataLabel = [NSTextField wrappingLabelWithString:@"Checking the configured data location…"];
     NSButton *change = [NSButton buttonWithTitle:@"Change…" target:self action:@selector(showStorage:)];
-    NSStackView *setup = [NSStackView stackViewWithViews:@[self.dataLabel, change, hint, setupButtons]];
+    self.wgsChoice = [NSButton checkboxWithTitle:@"Also install recommended whole-genome datasets" target:self action:@selector(wgsChanged:)];
+    self.wgsChoice.state = NSControlStateValueOff;
+    self.wgsSummary = [NSTextField wrappingLabelWithString:@"Checking additional download and storage requirements…"];
+    self.wgsSummary.textColor = NSColor.secondaryLabelColor;
+    NSTextField *wgsPurpose = [NSTextField wrappingLabelWithString:@"Adds evidence for deep-intronic and other non-coding variants. Not required for basic exome analysis."];
+    NSTextField *splice = [NSTextField wrappingLabelWithString:@"Full SpliceAI MANE 1.5\nPredicted effects on splicing beyond essential splice sites, including deep-intronic SNVs within covered MANE transcripts."];
+    NSTextField *screen = [NSTextField wrappingLabelWithString:@"ENCODE SCREEN\nAnnotation of candidate cis-regulatory elements, with tissue and immune-cell activity context."];
+    NSTextField *avi = [NSTextField wrappingLabelWithString:@"AlphaGenome AVI\nPredicted functional-impact scores for non-coding variants."];
+    NSTextField *later = [NSTextField wrappingLabelWithString:@"You can install these datasets later at any time under Import & QC → Set up annotation datasets. The workbench can open once essentials are ready while optional WGS downloads continue."];
+    NSTextField *provided = [NSTextField wrappingLabelWithString:@"Also recommended — add your own files later\n\nPromoterAI: Predicted effects of promoter variants; recommended for WGS.\n\nGenIA: Expert-curated gene–disease, phenotype and variant evidence for IEIs.\n\nThese resources require user-provided files and are not included in automatic preparation."];
+    NSTextField *closing = [NSTextField wrappingLabelWithString:@"Closing the browser leaves GUIDE-IEI running. Use Quit to stop it; Docker remains available to other applications."];
+    closing.textColor = NSColor.secondaryLabelColor;
+    self.wgsJobLabel = [NSTextField wrappingLabelWithString:@""];
+    self.wgsJobLabel.maximumNumberOfLines = 3;
+    self.wgsJobLabel.accessibilityLabel = @"Recommended WGS installation status";
+    NSStackView *setup = [NSStackView stackViewWithViews:@[self.dataLabel, change, hint, self.wgsChoice, wgsPurpose, self.wgsSummary, splice, screen, avi, later, provided, closing]];
     setup.orientation = NSUserInterfaceLayoutOrientationVertical; setup.alignment = NSLayoutAttributeLeading; setup.spacing = 16;
+    NSScrollView *setupScroll = [[NSScrollView alloc] initWithFrame:NSZeroRect];
+    setupScroll.hasVerticalScroller = YES; setupScroll.autohidesScrollers = YES; setupScroll.drawsBackground = NO;
+    GuideSetupDocument *document = [[GuideSetupDocument alloc] initWithFrame:NSZeroRect];
+    document.translatesAutoresizingMaskIntoConstraints = NO;
+    setup.translatesAutoresizingMaskIntoConstraints = NO; [document addSubview:setup]; setupScroll.documentView = document;
+    [NSLayoutConstraint activateConstraints:@[
+        [document.widthAnchor constraintEqualToAnchor:setupScroll.contentView.widthAnchor],
+        [setup.leadingAnchor constraintEqualToAnchor:document.leadingAnchor constant:8],
+        [setup.trailingAnchor constraintEqualToAnchor:document.trailingAnchor constant:-20],
+        [setup.topAnchor constraintEqualToAnchor:document.topAnchor constant:8],
+        [setup.bottomAnchor constraintEqualToAnchor:document.bottomAnchor constant:-12]]];
+    for (NSTextField *label in @[self.dataLabel, hint, wgsPurpose, self.wgsSummary, splice, screen, avi, later, provided, closing])
+        [label.widthAnchor constraintEqualToAnchor:setup.widthAnchor].active = YES;
     self.storageKind = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
     [self.storageKind addItemsWithTitles:@[@"Annotation datasets", @"Sample Library & Cohort", @"Temporary workspace"]];
     self.storageKind.target = self; self.storageKind.action = @selector(refreshStorage:);
@@ -207,16 +339,15 @@
     NSStackView *storage = [NSStackView stackViewWithViews:@[self.storageKind, self.storageLabel, self.changeStorageButton, self.moveStorageButton, self.restartStorageButton]];
     storage.orientation = NSUserInterfaceLayoutOrientationVertical; storage.alignment = NSLayoutAttributeLeading; storage.spacing = 18;
     self.tabs = [[NSTabView alloc] initWithFrame:NSMakeRect(0,0,630,335)];
-    NSTabViewItem *setupTab = [[NSTabViewItem alloc] initWithIdentifier:@"setup"]; setupTab.label = @"Setup"; setupTab.view = setup;
+    NSTabViewItem *setupTab = [[NSTabViewItem alloc] initWithIdentifier:@"setup"]; setupTab.label = @"Setup"; setupTab.view = setupScroll;
     NSTabViewItem *storageTab = [[NSTabViewItem alloc] initWithIdentifier:@"storage"]; storageTab.label = @"Storage"; storageTab.view = storage;
     [self.tabs addTabViewItem:setupTab]; [self.tabs addTabViewItem:storageTab];
     self.tabs.delegate = self;
-    [self.tabs.heightAnchor constraintEqualToConstant:335].active = YES;
-    [self.tabs.widthAnchor constraintEqualToConstant:630].active = YES;
-    [hint.widthAnchor constraintEqualToConstant:590].active = YES;
-    [self.dataLabel.widthAnchor constraintEqualToConstant:590].active = YES;
+    NSLayoutConstraint *preferredTabHeight = [self.tabs.heightAnchor constraintEqualToConstant:410];
+    preferredTabHeight.priority = NSLayoutPriorityDefaultLow; preferredTabHeight.active = YES;
+    [self.tabs.heightAnchor constraintGreaterThanOrEqualToConstant:180].active = YES;
     [self.storageLabel.widthAnchor constraintEqualToConstant:590].active = YES;
-    NSStackView *stack = [NSStackView stackViewWithViews:@[heading, self.statusLabel, self.progress, self.tabs, buttons]];
+    NSStackView *stack = [NSStackView stackViewWithViews:@[heading, self.statusLabel, self.progress, self.tabs, self.wgsJobLabel, setupButtons, buttons]];
     stack.orientation = NSUserInterfaceLayoutOrientationVertical; stack.alignment = NSLayoutAttributeLeading; stack.spacing = 18;
     stack.translatesAutoresizingMaskIntoConstraints = NO; [self.window.contentView addSubview:stack];
     [NSLayoutConstraint activateConstraints:@[
@@ -224,6 +355,8 @@
         [stack.trailingAnchor constraintEqualToAnchor:self.window.contentView.trailingAnchor constant:-24],
         [stack.topAnchor constraintEqualToAnchor:self.window.contentView.topAnchor constant:24],
         [self.statusLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [self.tabs.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
+        [self.wgsJobLabel.widthAnchor constraintEqualToAnchor:stack.widthAnchor],
         [stack.bottomAnchor constraintLessThanOrEqualToAnchor:self.window.contentView.bottomAnchor constant:-20]]];
     [self.window center]; [self showControls:nil];
 }
@@ -240,7 +373,7 @@
     [NSWorkspace.sharedWorkspace openURL:self.baseURL];
 }
 - (void)openLog:(id)sender {
-    NSString *setupLog = [self startupStatus][@"log_path"];
+    NSString *setupLog = self.wgsLogPath.length && !self.preparing ? self.wgsLogPath : [self startupStatus][@"log_path"];
     NSString *path = setupLog.length && [NSFileManager.defaultManager fileExistsAtPath:setupLog] ? setupLog : self.logPath;
     [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:path]];
 }

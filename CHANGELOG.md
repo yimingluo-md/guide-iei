@@ -5,6 +5,12 @@ version here, in the `VERSION` file, and in the release tag always agree.
 
 ## Unreleased
 
+- Offer optional recommended WGS downloads in the Mac startup window, off by
+  default: Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI. Show purpose,
+  missing-resource space estimates and progress; reuse existing installers and
+  allow later opt-in/retry without blocking a ready workbench. Explain the
+  separately supplied PromoterAI and GenIA resources. Keep setup actions visible
+  while longer dataset details scroll.
 - Recover resolvable AlphaMissense version conflicts by preferring the exact
   pinned MANE v1.5 version within the preferred source table. Canonical-source
   precedence is unchanged; unresolved winning-tier conflicts remain withheld.

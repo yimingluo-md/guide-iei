@@ -48,7 +48,14 @@ rerun annotation and re-import an updated VCF to recover affected scores.
 ## Set up datasets
 
 First-time essential setup is offered in the startup/preparation window.
-Additional datasets and individual repair actions are inside the application,
+The Mac startup window also offers **Also install recommended whole-genome datasets**,
+off by default. It adds Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI
+after essentials finish, with an estimate of the additional download and
+setup space for missing resources. Not required for basic exome analysis.
+The workbench opens once essentials are ready; optional downloads can continue
+in the background and a failure can be retried without blocking review.
+You can select this option later in the startup window too.
+Additional datasets and individual repair actions remain inside the application,
 at **Import & QC → Annotate VCF → Set up annotation datasets**.
 Each dataset is presented as a card describing in
 plain language what it contributes; this chapter is a tour of those cards.
@@ -109,9 +116,12 @@ SpliceAI, plus ClinVar and ClinGen. No separate recommended-exome action is need
 
 **Install recommended WGS datasets** adds exactly three resources:
 
-- **Full SpliceAI MANE 1.5**, beyond the essential-site starter.
-- **ENCODE SCREEN tissue and immune contexts**.
-- **AlphaGenome AVI** SNV scores.
+- **Full SpliceAI MANE 1.5:** predicted effects on splicing beyond essential
+  splice sites, including deep-intronic SNVs within covered MANE transcripts.
+- **ENCODE SCREEN:** annotation of candidate cis-regulatory elements, with
+  tissue and immune-cell activity context.
+- **AlphaGenome AVI:** predicted functional-impact scores for non-coding
+  variants. The installed precomputed scores cover SNVs, not indels.
 
 All three can be downloaded automatically without user-supplied files; their
 usage terms still apply. Together they require approximately **112 GB of
@@ -120,6 +130,11 @@ and shows a separate setup-space allowance. Installed resources are skipped;
 the essential references are not downloaded again. Full SpliceAI also benefits
 covered splice-region SNVs in exome data; its WGS recommendation does not
 prevent exome use. It does not add indel scores.
+
+**PromoterAI** is also recommended for WGS promoter-variant review, and
+**GenIA** provides expert-curated gene–disease, phenotype and variant evidence
+for IEIs. Both require user-provided files and are configured separately in
+the analysis workbench; they are not part of automatic WGS setup.
 
 Full SpliceAI status checks do not reread the large score files. Moving data
 through Storage or cleaning up a repair backup should not trigger another full

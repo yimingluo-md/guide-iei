@@ -48,6 +48,18 @@ compressed archive after SHA-256, source identity and architecture checks.
 The loaded tools/plugins are tested before the configured image tag is updated.
 A missing or corrupt bundle fails with repair guidance, never a local build.
 
+The native setup window also prepares essential annotation datasets in the
+selected storage location. Its **Also install recommended whole-genome datasets**
+checkbox is off by default and queues the existing recommended-WGS installer
+only after essentials are ready. It adds Full SpliceAI MANE 1.5, ENCODE SCREEN
+and AlphaGenome AVI, with missing-resource download and setup-space estimates.
+The browser can open while optional WGS downloads continue. Their failure
+does not invalidate essential readiness; progress, logs and retry remain
+available in the native window and analysis workbench. Users may opt in later.
+PromoterAI and GenIA are described here but require files supplied separately
+inside the analysis workbench. Scrollable setup details leave the primary
+actions visible. These datasets remain separate downloads, not bundled assets.
+
 Existing selected Docker Desktop/Colima engines are started without changing
 their configuration. On a clean Mac, setup installs pinned user-space
 Lima/Colima/Docker CLI tools and creates a VM; Docker Desktop is not required.

@@ -1128,6 +1128,49 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertFalse(sources["genia"]["required"])
         self.assertEqual(sources["spliceai"]["available_in"], ["exome", "whole_genome"])
 
+    def test_native_wgs_status_reuses_profile_and_returns_only_relevant_job(self):
+        plan = {"installed": False, "missing": ["screen_context"], "download_bytes": 123, "setup_bytes": 456}
+        self.service._resource_jobs = {
+            "active": {"id": "active", "resource_id": "recommended_wgs", "status": "running",
+                       "message": "ENCODE SCREEN", "log_path": "/test/setup.log", "log": "not in poll"},
+            "other": {"id": "other", "resource_id": "dbnsfp", "status": "running"},
+            "old": {"id": "old", "resource_id": "recommended_wgs", "status": "failed"},
+        }
+        with patch.object(self.service, "_annotation_profile", return_value={"recommended_profiles": {"whole_genome": plan}}):
+            status = self.service.recommended_wgs_status()
+        self.assertTrue(status["known"])
+        self.assertEqual(status["missing"], ["screen_context"])
+        self.assertEqual(status["download_bytes"], 123)
+        self.assertEqual(status["job"]["id"], "active")
+        self.assertNotIn("log", status["job"])
+        self.assertEqual(status["annotation_path"], str(self.service.storage_registry.root("annotation")))
+
+    def test_native_wgs_status_failure_does_not_claim_installed(self):
+        for profile in ({"error": "Broken configuration"}, {"recommended_profiles": {"whole_genome": {}}}):
+            with patch.object(self.service, "_annotation_profile", return_value=profile):
+                status = self.service.recommended_wgs_status()
+            self.assertFalse(status["known"])
+            self.assertFalse(status["installed"])
+            self.assertTrue(status["error"])
+
+    def test_native_wgs_setup_requires_consent_ready_essentials_and_active_storage(self):
+        with patch.object(self.service, "recommended_wgs_status", return_value={"known": True}), patch.object(
+            self.service, "essential_setup_status", return_value={"available": False}
+        ) as essential, patch.object(self.service, "start_resource_download", return_value={"id": "wgs"}) as start:
+            with self.assertRaisesRegex(ValueError, "Confirm"):
+                self.service.start_recommended_wgs_setup({})
+            with self.assertRaisesRegex(ValueError, "Finish essential"):
+                self.service.start_recommended_wgs_setup({"confirm": True})
+            start.assert_not_called()
+            essential.return_value = {"available": True}
+            self.assertEqual(self.service.start_recommended_wgs_setup({"confirm": True}), {"id": "wgs"})
+            start.assert_called_once_with("recommended_wgs")
+        for state in ({"known": False, "error": "Cannot inspect datasets"}, {"known": True, "restart_required": True}):
+            with patch.object(self.service, "recommended_wgs_status", return_value=state), patch.object(self.service, "start_resource_download") as start:
+                with self.assertRaises(ValueError):
+                    self.service.start_recommended_wgs_setup({"confirm": True})
+                start.assert_not_called()
+
     def test_wgs_download_dispatches_missing_additions_only(self):
         profile = {"recommended_profiles": {"whole_genome": {
             "installed": False, "missing": ["screen_context"],
