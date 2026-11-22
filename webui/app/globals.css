@@ -104,8 +104,19 @@ button { color: inherit; }
 .frequency-custom input:focus { border-color: #5f9e94; box-shadow: 0 0 0 2px #19786e14; }
 .frequency-custom input[aria-invalid="true"] { border-color: #c77f7f; }
 .frequency-error { margin: 0; color: var(--red); font-size: 8px; line-height: 1.4; }
-.threshold { display: flex; justify-content: space-between; align-items: center; color: #5c6965; font-size: 10px; }
-.threshold input { width: 70px; height: 27px; border: 1px solid #d2d9d6; border-radius: 4px; padding: 0 6px; outline: 0; }
+.score-filters, .score-picker, .score-rule { display: grid; gap: 6px; min-width: 0; }
+.score-rule { margin: 0; padding: 8px; border: 1px solid var(--line); border-radius: 5px; }
+.score-rule legend { padding: 0 3px; font-weight: 650; }
+.score-filters small { color: #54665e; font-size: 11px; }
+.score-rule-inputs, .score-rule-footer { display: flex; align-items: center; gap: 5px; }
+.score-rule-inputs input, .score-rule-inputs select, .score-picker input { min-width: 0; width: 100%; padding: 4px; border: 1px solid #bdc9c2; border-radius: 4px; background: white; }
+.score-rule-footer button, .score-metric-list button { color: var(--teal); border: 0; background: transparent; text-align: left; cursor: pointer; }
+.score-rule-footer button { margin-left: auto; }
+.score-metric-list, .score-category-list { display: grid; gap: 3px; max-height: 180px; overflow-y: auto; }
+.score-metric-list button { padding: 5px; }
+.score-metric-list button:hover, .score-metric-list button:focus-visible { background: #edf4f1; }
+.score-category-list label { display: flex; align-items: center; gap: 5px; }
+
 .filter-section select { width: 100%; height: 31px; border: 1px solid #ccd5d1; border-radius: 5px; color: #43514d; background: white; padding: 0 7px; font-size: 10px; }
 .microcopy { margin: 0; font-size: 9px; line-height: 1.4; color: #909a97; }
 .filter-link { width: fit-content; border: 0; background: transparent; padding: 2px 0; color: var(--teal); font-size: 9px; cursor: pointer; }
@@ -853,6 +864,8 @@ tbody tr:last-child td { border-bottom: 0; }
 .cohort-import-result .failed { color: var(--red); }
 .query-mode { height: 34px; margin: 10px 0 13px; padding: 3px; display: grid; grid-template-columns: 1fr 1.45fr; gap: 3px; border-radius: 6px; background: #eef1ef; }
 .query-mode button { border: 0; border-radius: 4px; background: transparent; color: #71807b; cursor: pointer; font-size: 10px; }
+.filters .review-gene-mode { min-height: 38px; height: auto; }
+.filters .review-gene-mode button { font-size: 11px; line-height: 1.25; padding: 3px; }
 .query-mode button.active { background: white; color: #185653; box-shadow: 0 1px 3px #17252218; font-weight: 650; }
 .query-note { min-height: 35px; padding: 8px 10px; border-radius: 5px; background: #f3f6f4; color: #75817d !important; }
 .qualifying-grid { display: grid; grid-template-columns: 1.1fr repeat(4, minmax(95px, .75fr)); gap: 8px; align-items: end; }
@@ -1657,3 +1670,21 @@ tbody tr:last-child td { border-bottom: 0; }
 .data-licenses-panel details { margin-top: 1rem; }
 .data-licenses-panel summary { cursor: pointer; font-weight: 600; }
 .data-licenses-panel li { margin: 0.75rem 0; }
+
+.gencc-relationship { padding: .65rem 0; border-top: 1px solid var(--line); }
+.gencc-relationship summary { cursor: pointer; }
+.gencc-assessments { display: block; margin: .2rem 0 0 1rem; }
+.gencc-assessments b { display: inline-block; margin-left: .6rem; color: #92400e; }
+.gencc-relationship .knowledge-table-wrap { margin-top: .5rem; }
+
+.custom-score-setup { padding: 1rem; border: 1px solid var(--border, #cbd8d4); border-radius: .6rem; min-width: 0; }
+.custom-score-setup[open] { grid-column: 1 / -1; }
+.custom-score-setup summary { cursor: pointer; }
+.custom-score-setup fieldset { min-width: 0; border: 0; padding: 0; }
+.custom-score-setup h4 { margin: 1rem 0 .4rem; }
+.custom-score-setup label { display: grid; gap: .2rem; margin: .4rem 0; }
+.custom-score-setup label input:not([type=checkbox]), .custom-score-setup select { padding: .35rem; min-width: 0; max-width: 100%; }
+.custom-mapping { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)); }
+.custom-column-list { overflow: auto; max-height: 14rem; margin: .5rem 0; }
+.custom-column-list label, .custom-score-settings label { display: flex; align-items: baseline; gap: .5rem; overflow-wrap: anywhere; }
+.custom-column-list small { color: var(--muted, #52625e); }

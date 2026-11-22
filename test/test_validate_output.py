@@ -54,6 +54,17 @@ def test_required_dbnsfp_fields_missing_fails(tmp_path):
         raise AssertionError("missing required dbNSFP fields were accepted")
 
 
+def test_wildcard_dbnsfp_accepts_expanded_fields(tmp_path):
+    config = tmp_path / "config.yaml"
+    vcf = tmp_path / "out.vcf"
+    for columns in ("ALL", ["ALL"]):
+        config.write_text(yaml.safe_dump({"plugins": {"dbNSFP": {
+            "enabled": True, "required": True, "columns": columns,
+        }}}))
+        write_vcf(vcf, ["Allele", "CADD_phred", "REVEL_score"])
+        validate(config, vcf)
+
+
 def test_required_spliceai_fields_present(tmp_path):
     config = tmp_path / "config.yaml"; write_config(config, spliceai=True)
     vcf = tmp_path / "out.vcf"

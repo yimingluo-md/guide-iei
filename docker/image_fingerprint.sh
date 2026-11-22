@@ -12,6 +12,7 @@ INPUTS=(
   "build.sh"
   "PromoterAI.pm"
   "LoGoFunc.pm"
+  "GuideAllele.pm"
   "IndexedScores.pm"
   "SpliceAIStarter.pm"
   "SpliceAI-MANE1.5-gene-map.json"

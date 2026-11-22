@@ -19,12 +19,14 @@ import sqlite3
 import uuid
 import zipfile
 from collections import Counter, defaultdict
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from xml.etree import ElementTree
 
 
+MAX_XLSX_MEMBER_BYTES = 24 * 1024 * 1024
+MAX_XLSX_CELLS = 1_000_000
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 LIST_FIELDS = {
     "sample_ids", "reported_race", "reported_ethnicity",
@@ -165,22 +167,30 @@ def decode_upload(filename: str, encoded: str) -> bytes:
 
 
 def _column_number(reference: str) -> int:
-    letters = re.match(r"[A-Z]+", reference.upper())
+    match = re.fullmatch(r"([A-Z]{1,3})[1-9][0-9]*", reference.upper())
+    if not match:
+        raise ValueError("invalid XLSX cell reference")
     result = 0
-    for letter in letters.group() if letters else "":
+    for letter in match[1]:
         result = result * 26 + ord(letter) - 64
-    return max(0, result - 1)
+    if result > 16384:
+        raise ValueError("XLSX column exceeds the worksheet limit")
+    return result - 1
 
 
-def _xlsx_sheets(content: bytes) -> tuple[zipfile.ZipFile, list[tuple[str, str]]]:
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
-        workbook = ElementTree.fromstring(archive.read("xl/workbook.xml"))
-        relationships = ElementTree.fromstring(
-            archive.read("xl/_rels/workbook.xml.rels")
-        )
-    except (zipfile.BadZipFile, KeyError, ElementTree.ParseError) as exc:
-        raise ValueError("the XLSX workbook is invalid or unsupported") from exc
+def _xlsx_xml(archive, path):
+    if archive.getinfo(path).file_size > MAX_XLSX_MEMBER_BYTES:
+        raise ValueError("XLSX worksheet or metadata exceeds the import size limit")
+    with archive.open(path) as member:
+        content = member.read(MAX_XLSX_MEMBER_BYTES + 1)
+    if len(content) > MAX_XLSX_MEMBER_BYTES:
+        raise ValueError("XLSX worksheet or metadata exceeds the import size limit")
+    return ElementTree.fromstring(content)
+
+
+def _xlsx_sheets(archive):
+    workbook = _xlsx_xml(archive, "xl/workbook.xml")
+    relationships = _xlsx_xml(archive, "xl/_rels/workbook.xml.rels")
     relation_targets = {
         relation.attrib["Id"]: relation.attrib["Target"]
         for relation in relationships
@@ -200,17 +210,25 @@ def _xlsx_sheets(content: bytes) -> tuple[zipfile.ZipFile, list[tuple[str, str]]
         sheets.append((sheet.attrib.get("name", "Sheet"), path))
     if not sheets:
         raise ValueError("the XLSX workbook contains no readable sheets")
-    return archive, sheets
+    return sheets
 
 
 def _xlsx_rows(content: bytes, requested_sheet: str | None) -> tuple[list[str], list[list[str]]]:
-    archive, sheets = _xlsx_sheets(content)
+    try:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
+            return _worksheet_rows(archive, requested_sheet)
+    except (zipfile.BadZipFile, KeyError, ElementTree.ParseError) as exc:
+        raise ValueError("the XLSX workbook is invalid or unsupported") from exc
+
+
+def _worksheet_rows(archive, requested_sheet):
+    sheets = _xlsx_sheets(archive)
     sheet_names = [name for name, _ in sheets]
     selected = requested_sheet if requested_sheet in sheet_names else sheet_names[0]
     sheet_path = dict(sheets)[selected]
     shared: list[str] = []
     try:
-        shared_root = ElementTree.fromstring(archive.read("xl/sharedStrings.xml"))
+        shared_root = _xlsx_xml(archive, "xl/sharedStrings.xml")
         for item in shared_root.iter(
             "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}si"
         ):
@@ -222,15 +240,19 @@ def _xlsx_rows(content: bytes, requested_sheet: str | None) -> tuple[list[str], 
     except KeyError:
         pass
     try:
-        root = ElementTree.fromstring(archive.read(sheet_path))
+        root = _xlsx_xml(archive, sheet_path)
     except (KeyError, ElementTree.ParseError) as exc:
         raise ValueError(f"the XLSX sheet {selected!r} cannot be read") from exc
     ns = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
     rows: list[list[str]] = []
+    text_size = 0
+    allocated_cells = 0
     for row in root.iter(f"{ns}row"):
         values: dict[int, str] = {}
+        next_column = 0
         for cell in row.findall(f"{ns}c"):
-            index = _column_number(cell.attrib.get("r", ""))
+            index = _column_number(cell.attrib["r"]) if "r" in cell.attrib else next_column
+            next_column = index + 1
             cell_type = cell.attrib.get("t")
             raw_node = cell.find(f"{ns}v")
             raw = raw_node.text if raw_node is not None and raw_node.text else ""
@@ -244,13 +266,18 @@ def _xlsx_rows(content: bytes, requested_sheet: str | None) -> tuple[list[str], 
                 value = "TRUE" if raw == "1" else "FALSE"
             else:
                 value = raw
+            text_size += len(value)
+            if text_size > MAX_XLSX_MEMBER_BYTES:
+                raise ValueError("XLSX sheet text exceeds the import size limit")
             values[index] = clean(value)
         if values:
             width = max(values) + 1
+            allocated_cells += width
+            if allocated_cells > MAX_XLSX_CELLS:
+                raise ValueError("XLSX sheet exceeds the import cell limit")
             rows.append([values.get(index, "") for index in range(width)])
         else:
             rows.append([])
-    archive.close()
     return sheet_names, rows
 
 
@@ -334,6 +361,8 @@ def parse_table(
     if chosen < 1 or chosen > len(rows):
         raise ValueError("header_row is outside the input")
     columns = unique_headers(rows[chosen - 1])
+    if extension == ".xlsx" and len(columns) * (len(rows) - chosen) > MAX_XLSX_CELLS:
+        raise ValueError("XLSX table exceeds the import cell limit")
     data_rows = []
     for source_row in rows[chosen:]:
         padded = source_row + [""] * max(0, len(columns) - len(source_row))
@@ -460,7 +489,7 @@ class PhenotypeStore:
             ).fetchone()
         return dict(row)
 
-    def _serialize(self, row: sqlite3.Row, sample_ids: list[str]) -> dict:
+    def _serialize(self, row: sqlite3.Row | dict, sample_ids: list[str]) -> dict:
         result = dict(row)
         for field in (
             "reported_race", "reported_ethnicity",
@@ -472,19 +501,22 @@ class PhenotypeStore:
 
     def get(self, individual_id: str) -> dict | None:
         with self._session() as connection:
-            row = connection.execute(
-                "SELECT * FROM phenotype_individuals WHERE individual_id = ?",
+            return self._get_on(connection, individual_id)
+
+    def _get_on(self, connection, individual_id):
+        row = connection.execute(
+            "SELECT * FROM phenotype_individuals WHERE individual_id = ?",
+            (individual_id,),
+        ).fetchone()
+        if not row:
+            return None
+        samples = [
+            item["sample_id"] for item in connection.execute(
+                "SELECT sample_id FROM phenotype_sample_links "
+                "WHERE individual_id = ? ORDER BY sample_id",
                 (individual_id,),
-            ).fetchone()
-            if not row:
-                return None
-            samples = [
-                item["sample_id"] for item in connection.execute(
-                    "SELECT sample_id FROM phenotype_sample_links "
-                    "WHERE individual_id = ? ORDER BY sample_id",
-                    (individual_id,),
-                ).fetchall()
-            ]
+            ).fetchall()
+        ]
         return self._serialize(row, samples)
 
     def by_sample(self, sample_id: str) -> list[dict]:
@@ -498,7 +530,19 @@ class PhenotypeStore:
             ]
         return [record for value in ids if (record := self.get(value))]
 
+    def individual_ids(self) -> list[str]:
+        with self._session() as connection:
+            return [row[0] for row in connection.execute(
+                "SELECT individual_id FROM phenotype_individuals ORDER BY individual_id"
+            )]
+
     def list(self, query: str = "", limit: int = 500) -> list[dict]:
+        return self.list_page(query, limit)["individuals"]
+
+    def list_page(self, query: str = "", limit: int = 500, offset: int = 0) -> dict:
+        limit = max(1, min(int(limit), 5000))
+        if not 0 <= offset <= 2**63 - 1:
+            raise ValueError("invalid phenotype list offset")
         parameters: list = []
         where = "1"
         if query.strip():
@@ -517,14 +561,25 @@ class PhenotypeStore:
             """
             parameters = [token] * 6
         with self._session() as connection:
-            ids = [
-                row["individual_id"] for row in connection.execute(
-                    f"SELECT p.individual_id FROM phenotype_individuals p "
-                    f"WHERE {where} ORDER BY p.updated_at DESC LIMIT ?",
-                    (*parameters, max(1, min(int(limit), 5000))),
-                ).fetchall()
-            ]
-        return [record for value in ids if (record := self.get(value))]
+            rows = connection.execute(
+                f"""
+                SELECT p.*, (
+                    SELECT json_group_array(sample_id) FROM (
+                        SELECT sample_id FROM phenotype_sample_links
+                        WHERE individual_id = p.individual_id ORDER BY sample_id
+                    )
+                ) AS linked_samples
+                FROM phenotype_individuals p WHERE {where}
+                ORDER BY p.updated_at DESC, p.individual_id LIMIT ? OFFSET ?
+                """,
+                (*parameters, limit + 1, offset),
+            ).fetchall()
+        individuals = []
+        for row in rows[:limit]:
+            values = dict(row)
+            samples = json.loads(values.pop("linked_samples"))
+            individuals.append(self._serialize(values, samples))
+        return {"individuals": individuals, "has_more": len(rows) > limit}
 
     def profiles(self) -> list[dict]:
         with self._session() as connection:
@@ -688,13 +743,25 @@ class PhenotypeStore:
         individual_id = clean(payload.get("individual_id"))
         if not individual_id:
             raise ValueError("individual_id is required")
+
+        def values(field):
+            value = payload.get(field)
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return split_values(value)
+            if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+                raise ValueError(f"{field} must be a list of strings")
+            return list(dict.fromkeys(clean(item) for item in value if clean(item)))
+
+        custom_fields = payload.get("custom_fields")
+        if custom_fields is None:
+            custom_fields = {}
+        if not isinstance(custom_fields, dict):
+            raise ValueError("custom_fields must be an object")
         record = {
             "individual_id": individual_id,
-            "sample_ids": (
-                split_values(payload.get("sample_ids"))
-                if isinstance(payload.get("sample_ids"), str)
-                else [clean(value) for value in payload.get("sample_ids", []) if clean(value)]
-            ),
+            "sample_ids": values("sample_ids"),
             "sex_at_birth": normalize_sex(clean(payload.get("sex_at_birth"))),
             "age_at_evaluation": parse_age(
                 clean(payload.get("age_at_evaluation")),
@@ -712,31 +779,15 @@ class PhenotypeStore:
                 ),
             ),
             "age_at_onset_unit": clean(payload.get("age_at_onset_unit")) or "years",
-            "reported_race": (
-                split_values(payload.get("reported_race"))
-                if isinstance(payload.get("reported_race"), str)
-                else payload.get("reported_race", [])
-            ),
-            "reported_ethnicity": (
-                split_values(payload.get("reported_ethnicity"))
-                if isinstance(payload.get("reported_ethnicity"), str)
-                else payload.get("reported_ethnicity", [])
-            ),
+            "reported_race": values("reported_race"),
+            "reported_ethnicity": values("reported_ethnicity"),
             "phenotype_summary": clean(payload.get("phenotype_summary")),
-            "present_features": (
-                split_values(payload.get("present_features"))
-                if isinstance(payload.get("present_features"), str)
-                else payload.get("present_features", [])
-            ),
-            "absent_features": (
-                split_values(payload.get("absent_features"))
-                if isinstance(payload.get("absent_features"), str)
-                else payload.get("absent_features", [])
-            ),
+            "present_features": values("present_features"),
+            "absent_features": values("absent_features"),
             "current_diagnosis": clean(payload.get("current_diagnosis")),
             "notes": clean(payload.get("notes")),
             "source_date": clean(payload.get("source_date")),
-            "custom_fields": payload.get("custom_fields", {}),
+            "custom_fields": custom_fields,
         }
         self._upsert(record, "replace", clean(payload.get("source_name")) or "manual")
         return self.get(individual_id)
@@ -744,7 +795,12 @@ class PhenotypeStore:
     def _upsert(self, record: dict, mode: str, source_name: str,
                 connection: sqlite3.Connection | None = None) -> str:
         now = utc_now()
-        existing = self.get(record["individual_id"])
+        if connection is None:
+            with self._session() as session:
+                return self._upsert(record, mode, source_name, session)
+        if not connection.in_transaction:
+            connection.execute("BEGIN IMMEDIATE")
+        existing = self._get_on(connection, record["individual_id"])
         if existing and mode == "skip_existing":
             return "skipped"
         if existing and mode == "update_nonblank":
@@ -763,59 +819,57 @@ class PhenotypeStore:
         # Bulk imports pass one shared connection so every patient row and
         # the audit-run record commit together: per-record commits left
         # unaudited partial updates when an import failed midway.
-        session = nullcontext(connection) if connection is not None else self._session()
-        with session as connection:
-            connection.execute(
-                """
-                INSERT INTO phenotype_individuals(
-                  individual_id, sex_at_birth,
-                  age_at_evaluation, age_at_evaluation_unit,
-                  age_at_onset, age_at_onset_unit,
-                  reported_race_json, reported_ethnicity_json,
-                  phenotype_summary, present_features_json, absent_features_json,
-                  current_diagnosis, notes, source_date, custom_fields_json,
-                  source_name, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(individual_id) DO UPDATE SET
-                  sex_at_birth=excluded.sex_at_birth,
-                  age_at_evaluation=excluded.age_at_evaluation,
-                  age_at_evaluation_unit=excluded.age_at_evaluation_unit,
-                  age_at_onset=excluded.age_at_onset,
-                  age_at_onset_unit=excluded.age_at_onset_unit,
-                  reported_race_json=excluded.reported_race_json,
-                  reported_ethnicity_json=excluded.reported_ethnicity_json,
-                  phenotype_summary=excluded.phenotype_summary,
-                  present_features_json=excluded.present_features_json,
-                  absent_features_json=excluded.absent_features_json,
-                  current_diagnosis=excluded.current_diagnosis,
-                  notes=excluded.notes,
-                  source_date=excluded.source_date,
-                  custom_fields_json=excluded.custom_fields_json,
-                  source_name=excluded.source_name,
-                  updated_at=excluded.updated_at
-                """,
-                (
-                    record["individual_id"], record["sex_at_birth"],
-                    record["age_at_evaluation"], record["age_at_evaluation_unit"],
-                    record["age_at_onset"], record["age_at_onset_unit"],
-                    json.dumps(record["reported_race"]),
-                    json.dumps(record["reported_ethnicity"]),
-                    record["phenotype_summary"],
-                    json.dumps(record["present_features"]),
-                    json.dumps(record["absent_features"]),
-                    record["current_diagnosis"], record["notes"], record["source_date"],
-                    json.dumps(record.get("custom_fields") or {}, sort_keys=True),
-                    source_name, existing["created_at"] if existing else now, now,
-                ),
-            )
-            connection.execute(
-                "DELETE FROM phenotype_sample_links WHERE individual_id = ?",
-                (record["individual_id"],),
-            )
-            connection.executemany(
-                "INSERT INTO phenotype_sample_links(individual_id, sample_id) VALUES (?, ?)",
-                [(record["individual_id"], sample) for sample in record["sample_ids"]],
-            )
+        connection.execute(
+            """
+            INSERT INTO phenotype_individuals(
+              individual_id, sex_at_birth,
+              age_at_evaluation, age_at_evaluation_unit,
+              age_at_onset, age_at_onset_unit,
+              reported_race_json, reported_ethnicity_json,
+              phenotype_summary, present_features_json, absent_features_json,
+              current_diagnosis, notes, source_date, custom_fields_json,
+              source_name, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(individual_id) DO UPDATE SET
+              sex_at_birth=excluded.sex_at_birth,
+              age_at_evaluation=excluded.age_at_evaluation,
+              age_at_evaluation_unit=excluded.age_at_evaluation_unit,
+              age_at_onset=excluded.age_at_onset,
+              age_at_onset_unit=excluded.age_at_onset_unit,
+              reported_race_json=excluded.reported_race_json,
+              reported_ethnicity_json=excluded.reported_ethnicity_json,
+              phenotype_summary=excluded.phenotype_summary,
+              present_features_json=excluded.present_features_json,
+              absent_features_json=excluded.absent_features_json,
+              current_diagnosis=excluded.current_diagnosis,
+              notes=excluded.notes,
+              source_date=excluded.source_date,
+              custom_fields_json=excluded.custom_fields_json,
+              source_name=excluded.source_name,
+              updated_at=excluded.updated_at
+            """,
+            (
+                record["individual_id"], record["sex_at_birth"],
+                record["age_at_evaluation"], record["age_at_evaluation_unit"],
+                record["age_at_onset"], record["age_at_onset_unit"],
+                json.dumps(record["reported_race"]),
+                json.dumps(record["reported_ethnicity"]),
+                record["phenotype_summary"],
+                json.dumps(record["present_features"]),
+                json.dumps(record["absent_features"]),
+                record["current_diagnosis"], record["notes"], record["source_date"],
+                json.dumps(record.get("custom_fields") or {}, sort_keys=True),
+                source_name, existing["created_at"] if existing else now, now,
+            ),
+        )
+        connection.execute(
+            "DELETE FROM phenotype_sample_links WHERE individual_id = ?",
+            (record["individual_id"],),
+        )
+        connection.executemany(
+            "INSERT INTO phenotype_sample_links(individual_id, sample_id) VALUES (?, ?)",
+            [(record["individual_id"], sample) for sample in record["sample_ids"]],
+        )
         return "updated" if existing else "created"
 
     def import_records(self, payload: dict) -> dict:

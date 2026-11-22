@@ -343,6 +343,13 @@ def reduce_vep(vep_tab: Path, metadata: Path, output: Path) -> int:
                 raise ValueError("VEP output contains data before its tab header")
             values = line.rstrip("\r\n").split("\t")
             row = dict(zip(header, values))
+            # Old standalone --tab inputs were already picked by VEP. New
+            # exports include all rows so both MANE designations survive.
+            if "PICK" in row and not (
+                row["PICK"] == "1" or clean(row.get("MANE_SELECT", "")) not in {"", "-", "."}
+                or clean(row.get("MANE_PLUS_CLINICAL", "")) not in {"", "-", "."}
+            ):
+                continue
             if "missense_variant" not in row.get("Consequence", ""):
                 continue
             meta = source.get(row.get("Uploaded_variation", ""))

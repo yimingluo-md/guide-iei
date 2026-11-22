@@ -35,6 +35,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable, Mapping
 
+if __package__:
+    from .numeric import finite_float
+else:  # Imported by annotation_qc.py when launched as a script.
+    from numeric import finite_float
+
 # Priority order; compared case-insensitively.
 SCORE_FIELDS: tuple[str, ...] = (
     "PromoterAI_score",
@@ -93,7 +98,7 @@ def first_number(raw: str) -> float | None:
         if token in EMPTY:
             continue
         try:
-            return float(token)
+            return finite_float(token)
         except ValueError:
             return None
     return None
@@ -107,7 +112,7 @@ def unambiguous_integer(raw: str) -> int | None:
         if token in EMPTY:
             continue
         try:
-            number = float(token)
+            number = finite_float(token)
         except ValueError:
             continue
         if number.is_integer():

@@ -528,7 +528,9 @@ changing the list rebuilds the catalogs on the next run.
 Only the optional GenIA **variant VCF** component can enable GenIA protein
 matching. Its gene, disease, and phenotype components cannot.
 
-A candidate must be a missense consequence with the same gene, Ensembl
+The catalogs retain missense consequences on MANE Select, MANE Plus Clinical,
+and the VEP-picked transcript for each allele and gene. Gene-symbol comparison
+is case-insensitive. A candidate must be a missense consequence with the same gene, Ensembl
 transcript stable ID, protein position, and reference amino acid as the source
 record. The same-change result additionally requires the same alternate amino
 acid; a residue-only detail represents a different substitution at that
@@ -570,6 +572,12 @@ enabled-by-default `loftee_ptc_50bp.py` postprocessor:
    measures from that PTC to the true final exon-exon junction.
 5. Uses `distance <= 50` as `FAIL`; otherwise `PASS`.
 6. Replaces `50_BP_RULE` inside `CSQ/LoF_info` only when calculation succeeds.
+
+The calculation trims shared VCF padding separately for each allele. At a
+CDS boundary it accepts a repeat insertion when the same genomic edit can be
+placed between two coding bases. Unresolved placements retain the original
+LOFTEE value. QC counts a frameshift record as fully recomputed when every
+applicable transcript has a recalculated rule.
 
 For a single-exon transcript, there is no downstream exon-exon junction and
 the conventional 50–55-nt exon-junction NMD rule is not applicable. The
@@ -653,7 +661,14 @@ The three statuses are intentionally conservative:
 |--------|-----------------|
 | `FRAME_RESTORED_CONFIRMED` | All copies carrying the component variants form a non-frameshift, non-stop-changing protein haplotype; excluded from isolated-LoF review by default |
 | `FRAME_RESTORATION_PARTIAL_CONFIRMED` | A restoring haplotype is confirmed, but another allele copy remains disrupted (for example homozygous frameshift plus heterozygous partner); remains visible |
-| `FRAME_RESTORING_POSSIBLE_UNPHASED` | Restoration is possible but heterozygous phase/phase-set evidence is insufficient; remains visible with a warning |
+| `FRAME_RESTORING_POSSIBLE_UNPHASED` | Restoration is possible. Phase evidence is insufficient or a contributing genotype is incomplete. The variant remains visible with a warning. |
+
+A partial genotype such as `./2` or `2|.` supplies carrier evidence only for
+ALT 2. The missing copy leaves its dosage unresolved. Even with a shared
+phase set or a homozygous partner, a proposed restoration involving this call
+can receive at most `FRAME_RESTORING_POSSIBLE_UNPHASED`. The audit counts
+these possible calls in `incomplete_genotype_haplotypes`. Genotypes such as
+`0/.` and `./.` supply no known ALT.
 
 Explicitly phased trans variants are not called restoring. Haplosaurus
 haplotypes retaining a frameshift or changing a stop are also not treated as

@@ -135,6 +135,48 @@
       ]
     },
     {
+      "id": "gpn_star_m",
+      "label": "GPN-Star-M",
+      "family": "prediction_database",
+      "config_path": "wgs_review.gpn_star_m",
+      "assembly": "GRCh38",
+      "distribution": "public_optional",
+      "default_enabled": false,
+      "license_ack_required": false,
+      "license_name": "Apache-2.0",
+      "source_url": "https://huggingface.co/datasets/songlab/gpn-star-scores",
+      "assets": [
+        {
+          "id": "shards",
+          "config_path": "wgs_review.gpn_star_m.directory",
+          "role": "parquet_directory",
+          "required": true,
+          "indexed": false
+        }
+      ]
+    },
+    {
+      "id": "gpn_star_v",
+      "label": "GPN-Star-V",
+      "family": "prediction_database",
+      "config_path": "wgs_review.gpn_star_v",
+      "assembly": "GRCh38",
+      "distribution": "public_optional",
+      "default_enabled": false,
+      "license_ack_required": false,
+      "license_name": "Apache-2.0",
+      "source_url": "https://huggingface.co/datasets/songlab/gpn-star-scores",
+      "assets": [
+        {
+          "id": "shards",
+          "config_path": "wgs_review.gpn_star_v.directory",
+          "role": "parquet_directory",
+          "required": true,
+          "indexed": false
+        }
+      ]
+    },
+    {
       "id": "alphagenome_avi",
       "label": "AlphaGenome AVI",
       "family": "prediction_database",
@@ -349,6 +391,21 @@
       ]
     },
     {
+      "id": "encode_re2g",
+      "label": "ENCODE-rE2G",
+      "family": "regional_context",
+      "config_path": "wgs_review.encode_re2g",
+      "assembly": "GRCh38",
+      "distribution": "automatic",
+      "default_enabled": false,
+      "license_ack_required": false,
+      "license_name": "ENCODE data-use policy",
+      "source_url": "https://www.encodeproject.org/pipelines/ENCPL835OUC/",
+      "assets": [
+        {"id": "links", "config_path": "wgs_review.encode_re2g.database", "role": "interval_table", "required": true, "indexed": true}
+      ]
+    },
+    {
       "id": "screen_context",
       "label": "ENCODE SCREEN tissue and immune context",
       "family": "regional_context",
@@ -494,6 +551,52 @@
       "adapter": "generic_indexed_lookup",
       "implementation": "generic_indexed_table",
       "match": {"scope": "allele_gene", "dimensions": ["chromosome", "position", "reference", "alternate", "ensembl_gene"], "assembly": "GRCh38", "normalize_alleles": true, "normalize_contigs": true, "transcript_version": "not_applicable", "fallback": "none", "cardinality": "zero_or_one"}
+    },
+    {
+      "id": "gpn_star_m",
+      "label": "GPN-Star-M",
+      "resource_id": "gpn_star_m",
+      "config_path": "wgs_review.gpn_star_m",
+      "adapter": "batch_parquet_lookup",
+      "implementation": "gpn_star",
+      "match": {
+        "scope": "allele",
+        "dimensions": [
+          "chromosome",
+          "position",
+          "reference",
+          "alternate"
+        ],
+        "assembly": "GRCh38",
+        "normalize_alleles": true,
+        "normalize_contigs": true,
+        "transcript_version": "not_applicable",
+        "fallback": "none",
+        "cardinality": "zero_or_one"
+      }
+    },
+    {
+      "id": "gpn_star_v",
+      "label": "GPN-Star-V",
+      "resource_id": "gpn_star_v",
+      "config_path": "wgs_review.gpn_star_v",
+      "adapter": "batch_parquet_lookup",
+      "implementation": "gpn_star",
+      "match": {
+        "scope": "allele",
+        "dimensions": [
+          "chromosome",
+          "position",
+          "reference",
+          "alternate"
+        ],
+        "assembly": "GRCh38",
+        "normalize_alleles": true,
+        "normalize_contigs": true,
+        "transcript_version": "not_applicable",
+        "fallback": "none",
+        "cardinality": "zero_or_one"
+      }
     },
     {
       "id": "alphagenome_avi",
@@ -1350,6 +1453,74 @@
         {"id": "match", "field": "FuncVEP_match", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false},
         {"id": "match_status", "field": "FuncVEP_match_status", "value_type": "category", "direction": "none", "role": "provenance", "value_range": null, "derived": true, "filterable": false},
         {"id": "source_gene", "field": "FuncVEP_source_gene", "value_type": "text", "direction": "none", "role": "provenance", "value_range": null, "derived": false, "filterable": false}
+      ]
+    },
+    {
+      "id": "gpn_star_m",
+      "label": "GPN-Star-M",
+      "category": "Genome-wide variant impact",
+      "resource_id": "gpn_star_m",
+      "annotator_id": "gpn_star_m",
+      "applicability": [
+        "snv"
+      ],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {
+          "id": "llr",
+          "field": "GPNm447_LLR",
+          "value_type": "float",
+          "direction": "lower",
+          "role": "score",
+          "value_range": null,
+          "derived": false,
+          "filterable": true
+        },
+        {
+          "id": "abs_llr",
+          "field": "GPNm447_ABSLLR",
+          "value_type": "float",
+          "direction": "higher",
+          "role": "score",
+          "value_range": null,
+          "derived": false,
+          "filterable": true
+        }
+      ]
+    },
+    {
+      "id": "gpn_star_v",
+      "label": "GPN-Star-V",
+      "category": "Genome-wide variant impact",
+      "resource_id": "gpn_star_v",
+      "annotator_id": "gpn_star_v",
+      "applicability": [
+        "snv"
+      ],
+      "default_enabled": false,
+      "optional": true,
+      "metrics": [
+        {
+          "id": "llr",
+          "field": "GPNv100_LLR",
+          "value_type": "float",
+          "direction": "lower",
+          "role": "score",
+          "value_range": null,
+          "derived": false,
+          "filterable": true
+        },
+        {
+          "id": "abs_llr",
+          "field": "GPNv100_ABSLLR",
+          "value_type": "float",
+          "direction": "higher",
+          "role": "score",
+          "value_range": null,
+          "derived": false,
+          "filterable": true
+        }
       ]
     },
     {

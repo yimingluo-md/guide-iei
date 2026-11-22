@@ -39,9 +39,11 @@
 @property(nonatomic, strong) NSProgressIndicator *progress;
 @property(nonatomic, copy) NSString *startupPath;
 @property(nonatomic, copy) NSString *controlPath;
+@property(nonatomic, copy) NSString *endpointPath;
 @property BOOL preparing;
 @property(nonatomic, strong) NSTimer *timer;
 @property BOOL polling;
+@property NSUInteger storageRestartGeneration;
 @property BOOL ownsService;
 @property BOOL quitting;
 @end
@@ -52,17 +54,19 @@
     id value = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
     return [value isKindOfClass:NSDictionary.class] ? value : @{};
 }
-- (void)startupAction:(NSString *)action {
-    NSData *data = [NSJSONSerialization dataWithJSONObject:@{@"action": action} options:0 error:nil];
+- (BOOL)writeStartupControl:(NSDictionary *)message {
+    NSData *data = [NSJSONSerialization dataWithJSONObject:message options:0 error:nil];
     NSError *error = nil;
-    if (![data writeToFile:self.controlPath options:NSDataWritingAtomic error:&error]) [self alert:error.localizedDescription];
+    if ([data writeToFile:self.controlPath options:NSDataWritingAtomic error:&error]) return YES;
+    [self alert:error.localizedDescription];
+    return NO;
 }
-- (void)retrySetup:(id)sender { [self startupAction:@"retry"]; self.retryButton.enabled = NO; }
+- (void)retrySetup:(id)sender { [self writeStartupControl:@{@"action": @"retry"}]; self.retryButton.enabled = NO; }
 - (void)prepareSetup:(id)sender {
     if (!self.preparing) { [self startWgs]; return; }
     self.wgsQueued = self.wgsChoice.state == NSControlStateValueOn;
     self.wgsError = nil;
-    [self startupAction:@"prepare"]; self.retryButton.enabled = NO;
+    [self writeStartupControl:@{@"action": @"prepare"}]; self.retryButton.enabled = NO;
 }
 - (BOOL)wgsActive {
     NSString *status = self.wgsStatus[@"job"][@"status"];
@@ -78,7 +82,7 @@
     BOOL waiting = [phase isEqual:@"waiting"] || [phase isEqual:@"failed"];
     self.wgsChoice.enabled = !active && !installed && (!self.preparing || waiting);
     if (!known) self.wgsSummary.stringValue = self.wgsStatus[@"error"] ?: @"Checking additional download and storage requirements…";
-    else if (installed) self.wgsSummary.stringValue = @"All three recommended WGS datasets are installed. No additional download is needed.";
+    else if (installed) self.wgsSummary.stringValue = @"All recommended WGS datasets are installed. No additional download is needed.";
     else self.wgsSummary.stringValue = [NSString stringWithFormat:@"Additional download: approximately %.1f GB · setup allowance: up to %.0f GiB before credit for existing files\n%.1f GiB free at the selected data location.",
         [self.wgsStatus[@"download_bytes"] doubleValue] / 1e9,
         ceil([self.wgsStatus[@"setup_bytes"] doubleValue] / (1024*1024*1024)),
@@ -153,8 +157,16 @@
         if (error) { self.storageLabel.stringValue = error; return; }
         for (NSDictionary *location in value[@"locations"]) {
             if ([location[@"id"] isEqual:[self storageID]]) {
-                double free = [location[@"free_bytes"] doubleValue] / (1024 * 1024 * 1024);
-                self.storageLabel.stringValue = [NSString stringWithFormat:@"%@\n%.1f GiB free", location[@"path"] ?: @"Unavailable", free];
+                id freeBytes = location[@"free_bytes"];
+                NSString *status;
+                if ([location[@"exists"] isEqual:@NO]) {
+                    status = @"Folder unavailable";
+                } else if ([freeBytes isKindOfClass:NSNumber.class]) {
+                    status = [NSString stringWithFormat:@"%.1f GiB free", [freeBytes doubleValue] / (1024 * 1024 * 1024)];
+                } else {
+                    status = @"Free space unavailable";
+                }
+                self.storageLabel.stringValue = [NSString stringWithFormat:@"%@\n%@", location[@"path"] ?: @"Unavailable", status];
             }
         }
     }];
@@ -188,18 +200,30 @@
     [self request:@"/api/service/restart" body:@{} done:^(NSDictionary *value, NSString *error) {
         (void)value;
         if (error) [self alert:error];
-        else { self.preparing = YES; self.openButton.enabled = NO; self.statusLabel.stringValue = @"Restarting with the selected storage locations…"; }
+        else {
+            self.storageRestartGeneration++;
+            self.wgsGeneration++;
+            self.preparing = YES; self.openButton.enabled = NO; self.retryButton.enabled = NO;
+            self.statusLabel.stringValue = @"Restarting with the selected storage locations…";
+        }
     }];
 }
 - (NSURL *)baseURL {
-    NSInteger port = [NSProcessInfo.processInfo.environment[@"IEI_UI_PORT"] ?: @"3000" integerValue];
+    NSData *data = [NSData dataWithContentsOfFile:self.endpointPath];
+    id endpoint = data ? [NSJSONSerialization JSONObjectWithData:data options:0 error:nil] : nil;
+    if (![endpoint isKindOfClass:NSDictionary.class] || ![endpoint[@"service"] isEqual:@"GUIDE-IEI"]
+        || ![endpoint[@"port"] isKindOfClass:NSNumber.class]) return nil;
+    NSInteger port = [endpoint[@"port"] integerValue];
+    if (port < 1 || port > 65535) return nil;
     return [NSURL URLWithString:[NSString stringWithFormat:@"http://127.0.0.1:%ld", (long)port]];
 }
 - (void)showControls:(id)sender {
     [self.window makeKeyAndOrderFront:nil]; [NSApp activateIgnoringOtherApps:YES];
 }
 - (void)request:(NSString *)route body:(NSDictionary *)body done:(void (^)(NSDictionary *, NSString *))done {
-    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:route relativeToURL:self.baseURL]];
+    NSURL *base = self.baseURL;
+    if (!base) { done(nil, @"Starting the workbench…"); return; }
+    NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:route relativeToURL:base]];
     request.timeoutInterval = 5;
     if (body) {
         request.HTTPMethod = @"POST";
@@ -219,14 +243,16 @@
 - (void)refreshStatus:(NSTimer *)timer {
     if (self.polling || self.quitting || !self.worker.running) return;
     self.polling = YES;
+    NSUInteger generation = self.storageRestartGeneration;
     [self request:@"/api/service/status" body:nil done:^(NSDictionary *value, NSString *error) {
         self.polling = NO;
-        if (self.quitting || !self.worker.running) return;
+        if (self.quitting || !self.worker.running || generation != self.storageRestartGeneration) return;
         if (error || ![value[@"instance_id"] isEqual:self.instanceID]) {
             self.statusLabel.stringValue = self.ownsService ? @"Reconnecting to the workbench…" : @"Starting the workbench…";
             return;
         }
         self.ownsService = YES;
+        if ([value[@"restarting"] boolValue]) return;
         self.serviceBusy = [value[@"blockers"] count] > 0 || [value[@"annotations"] integerValue] + [value[@"downloads"] integerValue] > 0;
         NSDictionary *startup = [self startupStatus];
         NSString *phase = startup[@"phase"];
@@ -251,7 +277,9 @@
                 startup[@"annotation_path"], [startup[@"free_bytes"] doubleValue] / (1024*1024*1024),
                 [startup[@"estimated_required_bytes"] doubleValue] / (1024*1024*1024)];
         }
-        if (self.preparing && ![phase isEqual:@"ready"]) {
+        if (phase.length) self.preparing = ![phase isEqual:@"ready"];
+        if (self.preparing) {
+            self.openButton.enabled = NO;
             self.statusLabel.stringValue = startup[@"message"] ?: @"Preparing GUIDE-IEI for first use. Checking installed components…";
             self.retryButton.hidden = ![phase isEqual:@"failed"] && ![phase isEqual:@"waiting"];
             self.retryButton.title = [phase isEqual:@"failed"] ? @"Retry preparation" : @"Prepare GUIDE-IEI";
@@ -305,7 +333,7 @@
     self.wgsSummary.textColor = NSColor.secondaryLabelColor;
     NSTextField *wgsPurpose = [NSTextField wrappingLabelWithString:@"Adds evidence for deep-intronic and other non-coding variants. Not required for basic exome analysis."];
     NSTextField *splice = [NSTextField wrappingLabelWithString:@"Full SpliceAI MANE 1.5\nPredicted effects on splicing beyond essential splice sites, including deep-intronic SNVs within covered MANE transcripts."];
-    NSTextField *screen = [NSTextField wrappingLabelWithString:@"ENCODE SCREEN\nAnnotation of candidate cis-regulatory elements, with tissue and immune-cell activity context."];
+    NSTextField *screen = [NSTextField wrappingLabelWithString:@"ENCODE SCREEN and ENCODE-rE2G\nPredicted target genes and annotation of candidate cis-regulatory elements, with tissue and immune-cell activity context."];
     NSTextField *avi = [NSTextField wrappingLabelWithString:@"AlphaGenome AVI\nPredicted functional-impact scores for non-coding variants."];
     NSTextField *later = [NSTextField wrappingLabelWithString:@"You can install these datasets later at any time under Import & QC → Set up annotation datasets. The workbench can open once essentials are ready while optional WGS downloads continue."];
     NSTextField *provided = [NSTextField wrappingLabelWithString:@"Also recommended — add your own files later\n\nPromoterAI: Predicted effects of promoter variants; recommended for WGS.\n\nGenIA: Expert-curated gene–disease, phenotype and variant evidence for IEIs.\n\nThese resources require user-provided files and are not included in automatic preparation."];
@@ -370,7 +398,9 @@
 - (void)openReview:(id)sender {
     if (self.preparing && self.worker.running) { [self showControls:nil]; return; }
     if (self.worker.running && !self.ownsService) { [self showControls:nil]; return; }
-    [NSWorkspace.sharedWorkspace openURL:self.baseURL];
+    NSURL *base = self.baseURL;
+    if (base) [NSWorkspace.sharedWorkspace openURL:base];
+    else [self showControls:nil];
 }
 - (void)openLog:(id)sender {
     NSString *setupLog = self.wgsLogPath.length && !self.preparing ? self.wgsLogPath : [self startupStatus][@"log_path"];
@@ -388,10 +418,12 @@
     [env removeObjectForKey:@"PYTHONPATH"];
     [env removeObjectForKey:@"PYTHONHOME"];
     env[@"IEI_DESKTOP_APP"] = @"1";
+    env[@"IEI_DESKTOP_LAUNCHER_PID"] = @(NSProcessInfo.processInfo.processIdentifier).stringValue;
     env[@"IEI_PYTHON_BIN"] = self.python;
     env[@"IEI_DESKTOP_INSTANCE_ID"] = self.instanceID;
     env[@"IEI_DESKTOP_STARTUP_STATUS"] = self.startupPath;
     env[@"IEI_DESKTOP_STARTUP_CONTROL"] = self.controlPath;
+    env[@"IEI_DESKTOP_ENDPOINT_FILE"] = self.endpointPath;
     env[@"PATH"] = [NSString stringWithFormat:@"%@:%@/.iei-variant-review/tools/bin:/usr/bin:/bin:/usr/sbin:/sbin:%@/.docker/bin:/usr/local/bin:/opt/homebrew/bin:/Applications/Docker.app/Contents/Resources/bin", self.python.stringByDeletingLastPathComponent, NSHomeDirectory(), NSHomeDirectory()];
     task.environment = env;
     NSFileHandle *log = [NSFileHandle fileHandleForWritingAtPath:self.logPath];
@@ -414,6 +446,7 @@
     self.logPath = [logs stringByAppendingPathComponent:[NSString stringWithFormat:@"desktop-%@.log", NSUUID.UUID.UUIDString]];
     self.startupPath = [logs stringByAppendingPathComponent:[NSString stringWithFormat:@"startup-%@.json", self.instanceID]];
     self.controlPath = [logs stringByAppendingPathComponent:[NSString stringWithFormat:@"startup-%@.control.json", self.instanceID]];
+    self.endpointPath = [logs stringByAppendingPathComponent:[NSString stringWithFormat:@"endpoint-%@.json", self.instanceID]];
     self.preparing = ![NSProcessInfo.processInfo.environment[@"IEI_DESKTOP_SETUP"] isEqual:@"0"];
     [NSFileManager.defaultManager createFileAtPath:self.logPath contents:nil attributes:@{NSFilePosixPermissions:@0600}];
     NSMenu *bar = [NSMenu new];
@@ -440,7 +473,7 @@
                     [alert addButtonWithTitle:@"Open running workbench"]; [alert addButtonWithTitle:@"Close this copy"];
                     if ([alert runModal] == NSAlertFirstButtonReturn) [weak openReview:nil];
                 } else if (code == 44) {
-                    [weak alert:@"The workbench port is already in use by another application or an older launcher. No process was stopped. Quit any older GUIDE-IEI launcher before opening this app; if another application owns the port, leave it running and use a different GUIDE-IEI port."];
+                    [weak alert:@"Another GUIDE-IEI launcher is still starting or stopping. Wait a moment and reopen this app. No process was stopped."];
                 } else if (code != 0 && code != 42) {
                     [NSApp activateIgnoringOtherApps:YES];
                     NSAlert *alert = [NSAlert new]; alert.messageText = weak.ownsService ? @"The workbench stopped" : @"The workbench could not start";
@@ -462,6 +495,32 @@
     [self showControls:nil]; return YES;
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender { [NSApp terminate:nil]; return NO; }
+- (void)checkSetupQuitReply:(NSString *)requestID {
+    if (!self.quitting || !self.worker.running) return;
+    NSDictionary *status = [self startupStatus];
+    NSString *failure = status[@"quit_error"];
+    if ([requestID isEqual:status[@"quit_request_id"]] && failure.length) {
+        self.quitting = NO;
+        self.preparing = NO;
+        [NSApp replyToApplicationShouldTerminate:NO];
+        [self refreshStatus:nil];
+        [self alert:failure];
+        return;
+    }
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{
+        [self checkSetupQuitReply:requestID];
+    });
+}
+- (NSApplicationTerminateReply)requestSetupQuit {
+    NSString *requestID = NSUUID.UUID.UUIDString;
+    if (![self writeStartupControl:@{@"action": @"quit", @"request_id": requestID}]) {
+        self.quitting = NO;
+        [self refreshStatus:nil];
+        return NSTerminateCancel;
+    }
+    dispatch_async(dispatch_get_main_queue(), ^{ [self checkSetupQuitReply:requestID]; });
+    return NSTerminateLater;
+}
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
     if (self.worker.running) {
         if (self.quitting) return NSTerminateLater;
@@ -473,8 +532,8 @@
             if ([confirm runModal] != NSAlertFirstButtonReturn) return NSTerminateCancel;
         }
         self.quitting = YES; self.statusLabel.stringValue = @"Stopping GUIDE-IEI…";
-        if (self.preparing) { [self startupAction:@"quit"]; return NSTerminateLater; }
-        if (!self.ownsService) { [self.worker terminate]; return NSTerminateLater; }
+        if (self.preparing) return [self requestSetupQuit];
+        if (!self.ownsService && !self.baseURL) { [self.worker terminate]; return NSTerminateLater; }
         [self request:@"/api/service/quit" body:@{@"confirm": @YES, @"instance_id": self.instanceID} done:^(NSDictionary *value, NSString *failure) {
             (void)value;
             if (failure && self.worker.running) {
@@ -489,6 +548,7 @@
 - (void)applicationWillTerminate:(NSNotification *)notification {
     [self.timer invalidate];
     [NSFileManager.defaultManager removeItemAtPath:self.startupPath error:nil];
+    [NSFileManager.defaultManager removeItemAtPath:self.endpointPath error:nil];
     [NSFileManager.defaultManager removeItemAtPath:self.controlPath error:nil];
 }
 @end

@@ -25,11 +25,17 @@ from local_service.cohort_store import (
     CohortStore,
     HtsBackend,
     VcfHeader,
+    consequence_matches_alt,
     info_map,
     normalize_chromosome,
     parse_csq_entries,
     read_vcf_header,
+    wgs_retained_alts,
 )
+from local_service.element_gene_links import interval as affected_bed_interval
+from pipeline.numeric import finite_float
+
+from pipeline.vcf_io import COMPRESSED_SUFFIXES
 from pipeline.promoterai_evidence import (
     SCORE_FIELD_KEYS as _PROMOTERAI_SCORE_KEYS,
     promoterai_observation,
@@ -61,6 +67,7 @@ NONCODING_MODES = {"ccre", "all", "none"}
 UNSCORED_SPLICEAI_INTRONIC = "SpliceAI_intronic"
 UNSCORED_PROMOTERAI_PROMOTER = "PromoterAI_promoter"
 PROMOTERAI_WINDOW_BP = 500
+REVIEW_FORMAT_VERSION = 8
 
 
 @dataclass(frozen=True)
@@ -87,7 +94,7 @@ class WgsPrefilterOptions:
             if isinstance(value, bool):
                 raise ValueError(f"{key} must be a number or null")
             try:
-                parsed = float(value)
+                parsed = finite_float(value)
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"{key} must be a number or null") from exc
             if parsed < minimum or (maximum is not None and parsed > maximum):
@@ -115,7 +122,7 @@ class WgsPrefilterOptions:
 def _open_text(path: Path):
     return (
         gzip.open(path, "rt", encoding="utf-8", errors="replace")
-        if path.name.lower().endswith((".gz", ".bgz"))
+        if path.name.lower().endswith(COMPRESSED_SUFFIXES)
         else path.open("rt", encoding="utf-8", errors="replace")
     )
 
@@ -140,6 +147,7 @@ def _filter_header(
         return "Disabled" if item is None else str(item)
 
     return (
+        '##INFO=<ID=IEI_WGS_RETAINED,Number=A,Type=Integer,Description="Compact WGS eligibility in ALT order (1=retained, 0=excluded)">\n'
         "##INFO=<ID=IEI_UNSCORED_INDEL,Number=A,Type=String,"
         "Description=\"Precomputed score unavailable for an applicable "
         "sequence-resolved indel; ampersand joins reasons and dot means not "
@@ -154,7 +162,7 @@ def _filter_header(
         f"CCREResource={ccre_bed_path.name if ccre_bed_path else 'Unavailable'},"
         f"PromoterMap={promoter_map_path.name if promoter_map_path else 'Unavailable'},"
         "UnscoredIndelSafety=Enabled,"
-        "Transcripts=MANEThenPICKThenOnePerGene>\n"
+        "Transcripts=MANEThenPICKThenOnePerGene,LoGoFunc=RetainStrictSource>\n"
     )
 
 
@@ -242,7 +250,7 @@ def _numbers(records: Iterable[dict[str, str]], names: set[str]) -> list[float]:
                 continue
             for token in re.split(r"[,&|]", raw):
                 try:
-                    values.append(float(token))
+                    values.append(finite_float(token))
                 except ValueError:
                     continue
     return values
@@ -287,20 +295,21 @@ def _info_numbers(
     ALT in ALT order; pooling them across alleles assigns one allele's value
     to another (a rare ALT sharing a record with a common one inherits the
     common AF and is wrongly excluded). When the comma arity matches the ALT
-    count, select this ALT's token; any other shape cannot be attributed and
-    is pooled as before.
+    count, select this ALT's token. Ignore unattributable multiallelic values.
     """
     values: list[float] = []
     for key, raw in info.items():
         if key.lower() not in names or raw in {"", ".", "-"}:
             continue
         tokens = raw.split(",")
-        if alt_count > 1 and len(tokens) == alt_count:
+        if alt_count > 1:
+            if len(tokens) != alt_count:
+                continue
             tokens = [tokens[alt_index]]
         for token in tokens:
             for piece in re.split(r"[&|]", token):
                 try:
-                    values.append(float(piece))
+                    values.append(finite_float(piece))
                 except ValueError:
                     continue
     return values
@@ -352,14 +361,14 @@ def _header_dataset_flags(header: VcfHeader) -> tuple[list[str], bool, bool]:
     return flags
 
 
-def evaluate_record(
+def _evaluate_alts(
     line: str,
     header: VcfHeader,
     options: WgsPrefilterOptions,
     ccre_intervals: dict[str, tuple[tuple[int, int], ...]],
     exome_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
     promoter_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
-) -> tuple[bool, tuple[tuple[str, ...], ...]]:
+) -> tuple[tuple[bool, ...], tuple[tuple[str, ...], ...]]:
     columns = line.rstrip("\r\n").split("\t")
     if len(columns) < 8:
         raise ValueError("encountered a structurally invalid VCF record")
@@ -367,56 +376,32 @@ def evaluate_record(
     # eligible; explicit failure labels are excluded. Same policy as the
     # annotation pre-filter and the exome review parser.
     if columns[6] not in ("PASS", "."):
-        return False, ()
+        return (), ()
     chrom = normalize_chromosome(columns[0])
     try:
         pos = int(columns[1])
     except ValueError as exc:
         raise ValueError(f"invalid VCF position: {columns[1]}") from exc
-    record_end = pos + max(1, len(columns[3])) - 1
-    in_exome = bool(
-        exome_intervals
-        and _range_overlaps(chrom, pos, record_end, exome_intervals)
-    )
-    in_ccre = bool(
-        ccre_intervals
-        and _range_overlaps(chrom, pos, record_end, ccre_intervals)
-    )
-    in_promoter = bool(
-        promoter_intervals
-        and _range_overlaps(chrom, pos, record_end, promoter_intervals)
-    )
-
     info = info_map(columns[7])
     csq_fields, spliceai_dataset_available, promoterai_dataset_available = (
         _header_dataset_flags(header)
     )
     consequences = parse_csq_entries(info.get("CSQ", ""), csq_fields)
-    alts = columns[4].split(",")
+    ref = columns[3]
+    alts = tuple(columns[4].split(","))
+    source_retained = wgs_retained_alts(info, len(alts))
     reasons_by_alt: list[tuple[str, ...]] = []
-    retain_record = False
+    retained = [False] * len(alts)
     for alt_index, alt in enumerate(alts):
-        matched: list[dict[str, str]] = []
-        for consequence in consequences:
-            allele_number = consequence.get("ALLELE_NUM", "")
-            if allele_number.isdigit():
-                if int(allele_number) == alt_index + 1:
-                    matched.append(consequence)
-            elif not consequence.get("Allele") or consequence.get("Allele") == alt:
-                matched.append(consequence)
-        if not matched and len(alts) == 1:
-            # A single-ALT record's consequences necessarily describe this
-            # ALT even when VEP's minimised Allele string does not compare
-            # equal to the raw ALT. A multi-allelic record with no allele
-            # match must NOT inherit the other alleles' annotations.
-            matched = consequences
-        # When a multi-allelic record's entries cannot be attributed to one
-        # ALT, never let the unattributable values EXCLUDE an allele (the
-        # frequency gate below uses `matched` only), but do let them QUALIFY
-        # the record for retention: retention is record-granular, and keeping
-        # the record is the safe direction for a diagnostic prefilter.
-        qualification_entries = matched or consequences
-
+        if alt in {"*", ".", "<NON_REF>", "<*>"} or (
+            source_retained is not None and source_retained[alt_index] == "0"
+        ):
+            reasons_by_alt.append(())
+            continue
+        matched = consequences if len(alts) == 1 else [
+            entry for entry in consequences
+            if consequence_matches_alt(entry, ref=ref, alts=alts, alt_index=alt_index)
+        ]
         frequencies = _population_frequencies(matched, info, alt_index, len(alts))
         if (
             options.max_gnomad_popmax is not None
@@ -426,10 +411,23 @@ def evaluate_record(
             reasons_by_alt.append(())
             continue
 
-        splice_values = _numbers(qualification_entries, SPLICEAI_FIELDS) + _info_numbers(
+        start = end = pos
+        if len(ref) > 1 or len(alt) > 1:
+            span = affected_bed_interval({"chrom": chrom, "pos": pos, "ref": ref, "alt": alt})
+            if span is not None:
+                # Convert changed bases to a closed interval. For insertions,
+                # start == end + 1 requires both flanks inside the same region.
+                start, end = span[1] + 1, span[2]
+            else:
+                end = pos + len(ref) - 1
+        in_exome = bool(exome_intervals and _range_overlaps(chrom, start, end, exome_intervals))
+        in_ccre = bool(ccre_intervals and _range_overlaps(chrom, start, end, ccre_intervals))
+        in_promoter = bool(promoter_intervals and _range_overlaps(chrom, start, end, promoter_intervals))
+
+        splice_values = _numbers(matched, SPLICEAI_FIELDS) + _info_numbers(
             info, SPLICEAI_FIELDS, alt_index, len(alts)
         )
-        promoter_values = _promoter_scores(qualification_entries)
+        promoter_values = _promoter_scores(matched)
         splice_qualifies = bool(
             options.min_spliceai is not None
             and splice_values
@@ -448,7 +446,7 @@ def evaluate_record(
         )
         consequence_terms = {
             term
-            for consequence in qualification_entries
+            for consequence in matched
             for term in consequence.get("Consequence", "").split("&")
             if term
         }
@@ -481,8 +479,22 @@ def evaluate_record(
             or noncoding_qualifies
             or unscored_reasons
         ):
-            retain_record = True
-    return retain_record, tuple(reasons_by_alt)
+            retained[alt_index] = True
+    return tuple(retained), tuple(reasons_by_alt)
+
+
+def evaluate_record(
+    line: str,
+    header: VcfHeader,
+    options: WgsPrefilterOptions,
+    ccre_intervals: dict[str, tuple[tuple[int, int], ...]],
+    exome_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
+    promoter_intervals: dict[str, tuple[tuple[int, int], ...]] | None = None,
+) -> tuple[bool, tuple[tuple[str, ...], ...]]:
+    retained, reasons = _evaluate_alts(
+        line, header, options, ccre_intervals, exome_intervals, promoter_intervals,
+    )
+    return any(retained), reasons
 
 
 def record_passes(
@@ -502,9 +514,11 @@ def record_passes(
 def add_unscored_indel_info(
     line: str,
     reasons_by_alt: tuple[tuple[str, ...], ...],
+    retained: tuple[bool, ...] = (),
 ) -> str:
     """Add an allele-specific INFO flag without changing any source annotation."""
-    if not any(reasons_by_alt):
+    if (len(retained) <= 1 and not any(reasons_by_alt)
+            and "IEI_UNSCORED_INDEL=" not in line and "IEI_WGS_RETAINED=" not in line):
         return line if line.endswith("\n") else line + "\n"
     columns = line.rstrip("\r\n").split("\t")
     if len(columns) < 8:
@@ -512,9 +526,12 @@ def add_unscored_indel_info(
     values = ["&".join(reasons) if reasons else "." for reasons in reasons_by_alt]
     parts = [
         part for part in columns[7].split(";")
-        if part and not part.startswith("IEI_UNSCORED_INDEL=")
+        if part and part != "." and not part.startswith(("IEI_UNSCORED_INDEL=", "IEI_WGS_RETAINED="))
     ]
-    parts.append("IEI_UNSCORED_INDEL=" + ",".join(values))
+    if len(retained) > 1:
+        parts.append("IEI_WGS_RETAINED=" + ",".join("1" if keep else "0" for keep in retained))
+    if any(reasons_by_alt):
+        parts.append("IEI_UNSCORED_INDEL=" + ",".join(values))
     columns[7] = ";".join(parts) if parts else "."
     return "\t".join(columns) + "\n"
 
@@ -549,7 +566,7 @@ def compact_review_transcripts(line: str, header: VcfHeader) -> tuple[str, int, 
     groups: dict[tuple[str, str], list[int]] = {}
     for index, row in enumerate(parsed):
         allele = value(row, "ALLELE_NUM", "Allele") or "1"
-        gene = value(row, "SYMBOL", "Gene", "HGNC") or "intergenic"
+        gene = value(row, "Gene", "SYMBOL", "HGNC") or "intergenic"
         groups.setdefault((allele, gene), []).append(index)
 
     selected: set[int] = set()
@@ -563,6 +580,13 @@ def compact_review_transcripts(line: str, header: VcfHeader) -> tuple[str, int, 
             if value(parsed[index], "PICK") not in {"", "0"}
         ]
         selected.update(mane or picked or indexes[:1])
+        # Keep the original CSQ (including protein and transcript provenance)
+        # for the browser and cohort index. At most one extra row per group.
+        if "LoGoFunc_match" in fields:
+            for index in indexes:
+                if value(parsed[index], "LoGoFunc_match") == "allele_transcript_protein":
+                    selected.add(index)
+                    break
 
     retained = [entry for index, entry in enumerate(entries) if index in selected]
     info_parts[csq_index] = "CSQ=" + ",".join(retained)
@@ -612,12 +636,12 @@ def _filter_group_worker(
             scanned += 1
             if scanned % 25000 == 0:
                 report_progress()
-            retain, reasons_by_alt = evaluate_record(
+            eligible, reasons_by_alt = _evaluate_alts(
                 line, header, options, ccre_intervals, exome_intervals,
                 promoter_intervals,
             )
-            if retain:
-                flagged = add_unscored_indel_info(line, reasons_by_alt)
+            if any(eligible):
+                flagged = add_unscored_indel_info(line, reasons_by_alt, eligible)
                 compacted, input_count, output_count = compact_review_transcripts(
                     flagged, header
                 )
@@ -752,10 +776,7 @@ class WgsReviewStore:
         # up to their own limit.
         source_sha = _full_content_sha256(source, limit=1 << 30)
         fingerprint_value = {
-            # v5: worker interval slicing normalizes contig names — v4 review
-            # caches built from chr-prefixed VCFs under-retained coding and
-            # cCRE variants and must be rebuilt.
-            "review_format_version": 6,
+            "review_format_version": REVIEW_FORMAT_VERSION,
             "source": str(source),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
@@ -799,7 +820,7 @@ class WgsReviewStore:
         ).hexdigest()[:24]
         cache_root = self.cache_dir / fingerprint
         cache_root.mkdir(parents=True, exist_ok=True)
-        source_stem = re.sub(r"\.vcf(?:\.gz)?$", "", source.name, flags=re.IGNORECASE)
+        source_stem = re.sub(r"\.vcf(?:\.(?:gz|bgzf?))?$", "", source.name, flags=re.IGNORECASE)
         source_stem = re.sub(r"[^A-Za-z0-9._-]+", "_", source_stem)[:120] or "wgs"
         output = cache_root / f"{source_stem}.review.prefiltered.vcf.gz"
         metadata_path = Path(f"{output}.json")
@@ -969,6 +990,7 @@ class WgsReviewStore:
                     if (
                         line.startswith("##IEI_WGS_PREFILTER=<")
                         or line.startswith("##INFO=<ID=IEI_UNSCORED_INDEL,")
+                        or line.startswith("##INFO=<ID=IEI_WGS_RETAINED,")
                         or line.startswith("##INFO=<ID=IEI_AM_TRANSCRIPTS,")
                     ):
                         continue
@@ -1013,6 +1035,7 @@ class WgsReviewStore:
             index_path = backend.create_index(output)
 
         metadata = {
+            "review_format_version": REVIEW_FORMAT_VERSION,
             "path": str(output),
             "index_path": str(index_path),
             "cache_hit": False,

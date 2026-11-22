@@ -1,15 +1,18 @@
 import csv
+import json
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pipeline.clingen_erepo_annotate import main as annotate_main
-from pipeline.prepare_clingen_erepo import read_rows, scan_clinvar, write_sqlite
+from local_service.clingen_erepo import ClinGenErepoStore
+from pipeline.prepare_clingen_erepo import main as prepare_main, read_rows, scan_clinvar, write_sqlite
 
 
 FIELDS = [
@@ -22,6 +25,58 @@ FIELDS = [
 
 
 class ClinGenErepoTests(unittest.TestCase):
+    def test_store_closes_each_read_even_on_query_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "clingen.sqlite3"
+            write_sqlite(database, [], {}, {})
+            manifest = Path(directory) / "manifest.json"
+            manifest.write_text("{}")
+            store = ClinGenErepoStore(database, manifest)
+            connections = []
+            connect = sqlite3.connect
+
+            def track(*args, **kwargs):
+                connection = connect(*args, **kwargs)
+                connections.append(connection)
+                return connection
+
+            with patch("local_service.clingen_erepo.sqlite3.connect", side_effect=track):
+                self.assertEqual(store.variant("1", 1, "A", "G")["assertions"], [])
+                self.assertEqual(len(connections), 2)  # status and lookup
+                with self.assertRaises(OverflowError):
+                    store.variant("1", 2**80, "A", "G")
+            self.assertEqual(len(connections), 3)
+            for connection in connections:
+                with self.assertRaisesRegex(sqlite3.ProgrammingError, "closed"):
+                    connection.execute("SELECT 1")
+
+    def test_manifest_artifacts_resolve_after_publication(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.tsv"
+            with source.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, fieldnames=FIELDS, delimiter="\t")
+                writer.writeheader()
+                writer.writerow({"Uuid": "u1", "ClinVar Variation Id": "123", "Assertion": "Benign"})
+            clinvar = root / "clinvar.vcf"
+            clinvar.write_text("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t100\t123\tA\tG\t.\t.\t.\n")
+            stage = root / "stage"
+            stage.mkdir()
+            # Direct callers can place an artifact in a separate subdirectory.
+            with patch.object(sys, "argv", [
+                "prepare_clingen_erepo", "--source", str(source), "--clinvar-vcf", str(clinvar),
+                "--output-vcf", str(stage / "tracks" / "alleles.vcf"),
+                "--output-sqlite", str(stage / "assertions.sqlite3"),
+                "--manifest", str(stage / "manifest.json"),
+            ]):
+                self.assertEqual(prepare_main(), 0)
+            installed = root / "installed"
+            stage.rename(installed)
+            manifest = json.loads((installed / "manifest.json").read_text())
+            for key, relative in (("vcf", "tracks/alleles.vcf"), ("sqlite", "assertions.sqlite3")):
+                self.assertEqual(manifest[key], relative)
+                self.assertTrue((installed / manifest[key]).is_file())
+
     def test_preserves_disease_specific_assertions_and_excludes_retractions(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

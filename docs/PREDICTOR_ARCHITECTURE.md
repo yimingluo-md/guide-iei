@@ -354,3 +354,11 @@ Run the repository's broader test and container smoke suites before release.
 The real source dataset should also receive one release-level validation on a
 supported clean machine; synthetic fixtures prove logic, not compatibility
 with a newly published upstream file.
+
+### Regulatory element–gene links
+
+These are review-time GRCh38 interval lookups. The record identifies a reference element, target gene, reference biosample, model and release. VEP consequences and variant-effect scores retain their own identities. The browser and cohort search use the same affected-base and insertion-breakpoint rules.
+
+The ENCODE-rE2G importer uses the accession, byte length and upstream MD5 in `config/encode-re2g-grch38.tsv`. The catalog selects released GRCh38 thresholded element–gene links from the ENCODE E2G enhancer–gene analysis step (`encode-e2g-enhancer-gene-predictions-step-v-2-0`) and the standard `dhs_only` model. The ENCODE portal also lists ABC and Extended model outputs. Each model needs its own provider identity if added.
+
+To add a source, implement its importer against the versioned `sources`, `links` and `metadata` tables and register its release path, score label and public provenance URL in `local_service/element_gene_links.py`. Publish a complete, indexed database atomically. Wire its installation into dataset setup and expose the source selection in the review controls. The lookup, target-list filter and cohort target-gene query accept a registered provider ID. Keep native source scores and thresholds separate across providers. Exercise interval boundaries, multiple targets, case-insensitive gene symbols and an allele whose VEP gene differs from its predicted target.

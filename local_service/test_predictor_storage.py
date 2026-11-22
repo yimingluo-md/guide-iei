@@ -849,6 +849,115 @@ class PredictorImportIntegrationTests(unittest.TestCase):
                     store.query_predictions(predictor_id="revel"), []
                 )
 
+    def test_padded_keys_merge_only_within_the_same_source_on_import_and_upgrade(self):
+        path = self.root / "padded.vcf"
+        write_cadd_vcf(path, 30)
+        body = path.read_text().splitlines()[-1]
+        with path.open("a") as out:
+            out.write(body.replace("\tA\tG\t", "\tAT\tGT\t") + "\n")
+        other = self.root / "other.vcf"
+        write_cadd_vcf(other, 0)
+        db = self.root / "cohort.sqlite3"
+        store = CohortStore(db)
+        store.import_vcf(path)
+        store.import_vcf(other)
+        matches = store.query_predictions(predictor_id="cadd_coding")
+        self.assertEqual(sorted(m["values"]["phred"] for m in matches), [0, 30])
+        with store._session() as c:
+            cols = [r[1] for r in c.execute("PRAGMA table_info(prediction_observations)") if r[1] != "id"]
+            key = json.dumps({"alternate":"GT","chromosome":"1","position":100,"reference":"AT"}, separators=(",", ":"))
+            c.execute(f"INSERT INTO prediction_observations({','.join(cols)}) SELECT "
+                      + ",".join("?" if col == "target_key" else col for col in cols)
+                      + " FROM prediction_observations WHERE id=?", (key, matches[0]["id"]))
+            c.execute("DELETE FROM cohort_meta WHERE key='minimal_prediction_keys'")
+        upgraded = CohortStore(db).query_predictions(predictor_id="cadd_coding")
+        self.assertEqual(sorted(m["values"]["phred"] for m in upgraded), [0, 30])
+        self.assertEqual({json.loads(m["target_key"])["reference"] for m in upgraded}, {"A"})
+
+    def test_retire_the_last_source_carrier_with_an_unaffected_noncarrier(self):
+        sparse = self.root / "older.vcf"
+        rich = self.root / "rich.vcf"
+        write_cadd_vcf(sparse, None)
+        write_predictor_vcf(rich)
+        lines = rich.read_text().splitlines()
+        rich.write_text("\n".join(line + ("\tOther" if line.startswith("#CHROM") else
+                           "\t0/0" if not line.startswith("#") else "") for line in lines) + "\n")
+        store = CohortStore(self.root / "retired.sqlite3")
+        store.import_vcf(sparse)
+        store.import_vcf(rich)
+        before = store.query_predictions(predictor_id="funcvep")
+        self.assertTrue(before)
+        sample = next(r for r in store.list_samples() if Path(r["source_path"]).name == rich.name and r["name"] == "P1")
+        store.remove_samples([sample["id"]])
+        self.assertIn("Other", [r["name"] for r in store.list_samples()])
+        self.assertEqual(store.query_predictions(predictor_id="funcvep"), [])
+        self.assertEqual(store.query_predictions(predictor_id="logofunc"), [])
+        with store._session() as c:
+            self.assertEqual({tuple(r) for r in c.execute("SELECT cadd,logofunc_gof FROM cohort_annotations")}, {(None,None)})
+
+    def test_removing_a_newer_source_restores_legacy_zero_with_provenance(self):
+        sparse = self.root / "legacy.vcf"
+        rich = self.root / "recent.vcf"
+        write_cadd_vcf(sparse, 0)
+        write_cadd_vcf(rich, 35)
+        database = self.root / "upgraded.sqlite3"
+        store = CohortStore(database)
+        store.import_vcf(sparse)
+        with store._session() as connection:
+            connection.execute("DROP TABLE cohort_source_scores")
+            connection.execute("DELETE FROM cohort_meta WHERE key='source_score_first_file'")
+        store = CohortStore(database)
+        store.import_vcf(rich)
+        entry = next(r for r in store.list_samples() if Path(r["source_path"]).name == rich.name)
+        store.remove_samples([entry["id"]])
+        prediction, = store.query_predictions(predictor_id="cadd_coding")
+        self.assertEqual(prediction["values"]["phred"], 0)
+        with store._session() as connection:
+            self.assertEqual(connection.execute("SELECT cadd FROM cohort_annotations").fetchone()[0], 0)
+
+    def test_partial_funcvep_never_replaces_exact_values(self):
+        fields = dict(Allele="G", ALLELE_NUM=1, Consequence="missense_variant", IMPACT="MODERATE",
+                      SYMBOL="GENE1", Gene="ENSG000001", Feature="ENST_SOURCE",
+                      FuncVEP_source_gene="ENSG000001", FuncVEP_allele_available=1)
+        for order in (("exact","partial"), ("partial","exact")):
+            for separate in (True, False):
+                with self.subTest(order=order, separate=separate):
+                    path = self.root / "mixed.vcf"
+                    write_predictor_vcf(path)
+                    lines = path.read_text().splitlines()
+                    header = [line for line in lines if line.startswith("#")]
+                    row = lines[len(header)].split("\t")
+                    entries = [_csq(**fields, FuncVEP_CTI=0.2 if status=="exact" else 0.99,
+                                    FuncVEP_match_status=status,
+                                    FuncVEP_match="allele_gene" if status=="exact" else "allele_only")
+                               for status in order]
+                    groups = entries if separate else [",".join(entries)]
+                    path.write_text("\n".join(header + ["\t".join([*row[:7], "CSQ="+entry, *row[8:]]) for entry in groups])+"\n")
+                    store = CohortStore(self.root / f"{order[0]}-{separate}.sqlite3")
+                    store.stage_batch_records = 1
+                    store.import_vcf(path)
+                    obs, = store.query_predictions(predictor_id="funcvep")
+                    self.assertEqual((obs["match_status"], obs["values"]["cti"]), ("exact", 0.2))
+
+    def test_gene_list_returns_both_overlapping_genes_and_counts_one_allele(self):
+        path = self.root / "panel.vcf"
+        write_cadd_vcf(path, 20)
+        lines = path.read_text().splitlines()
+        lines = [line.replace('CADD_phred">','CADD_phred|MANE_SELECT|PICK">') for line in lines]
+        row = lines[-1].split("\t")
+        first = row[7][4:]
+        second = first.replace("GENE1","GENE2").replace("ENST000001","ENST000002").replace("MODERATE","HIGH").replace("missense_variant","stop_gained")
+        row[7] = f"CSQ={first}|MANE|1,{second}||1"
+        path.write_text("\n".join([*lines[:-1], "\t".join(row)])+"\n")
+        store = CohortStore(self.root / "panel.sqlite3")
+        store.import_vcf(path)
+        opts = {"mode":"gene_list","genes":["GENE1","GENE2"]}
+        both = store.query({**opts, "impacts":["HIGH","MODERATE"]})
+        self.assertEqual([r["gene"] for r in both["rows"]], ["GENE2","GENE1"])
+        self.assertEqual((both["variants"], both["individuals"]), (1,1))
+        self.assertEqual([r["sample_qualifying_variant_count"] for r in both["rows"]], [1,1])
+        self.assertEqual([r["gene"] for r in store.query({**opts,"impacts":["HIGH"]})["rows"]], ["GENE2"])
+
     def test_forced_reimport_removes_stale_source_predictions(self):
         first = self.root / "first.vcf"
         second = self.root / "second.vcf"
@@ -870,6 +979,13 @@ class PredictorImportIntegrationTests(unittest.TestCase):
         after = store.query_predictions(predictor_id="cadd_coding")
         self.assertEqual([row["values"]["phred"] for row in after], [20])
         self.assertEqual(after[0]["source_file_id"], second_source_file_id)
+        with store._session() as c:
+            self.assertEqual(c.execute("SELECT cadd FROM cohort_annotations").fetchone()[0], 20)
+        write_cadd_vcf(second, None)
+        store.import_vcf(second, force=True)
+        with store._session() as c:
+            self.assertIsNone(c.execute("SELECT cadd FROM cohort_annotations").fetchone()[0])
+
 
     def test_multiallelic_missing_csq_match_does_not_borrow_other_allele(self):
         fields = [
@@ -996,6 +1112,8 @@ class PredictorImportIntegrationTests(unittest.TestCase):
             "##contig=<ID=1,length=248956422>\n"
             '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
             + "|".join(fields) + '">\n'
+            '##INFO=<ID=GPNm447_LLR,Number=A,Type=Float,Description="test">\n'
+            '##INFO=<ID=GPNm447_ABSLLR,Number=A,Type=Float,Description="test">\n'
             '##INFO=<ID=ClinVar_path_aa_match,Number=A,Type=Integer,Description="test">\n'
             '##INFO=<ID=ClinVar_path_aa_change_match,Number=A,Type=Integer,Description="test">\n'
             '##INFO=<ID=ClinGen_ERepo,Number=A,Type=String,Description="test">\n'
@@ -1005,7 +1123,7 @@ class PredictorImportIntegrationTests(unittest.TestCase):
             '##INFO=<ID=GenIA_path_aa_details,Number=A,Type=String,Description="test">\n'
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
             f"1\t400\t.\tA\tG,T\t99\tPASS\tCSQ={','.join(consequences)};"
-            "ClinVar_path_aa_match=0,1;"
+            "GPNm447_LLR=0,-2;GPNm447_ABSLLR=-0.5,0.75;ClinVar_path_aa_match=0,1;"
             "ClinVar_path_aa_change_match=0,0;"
             f"ClinGen_ERepo={g_assertion},{t_assertions};"
             "ClinGen_ERepo_count=1,2;"
@@ -1017,6 +1135,9 @@ class PredictorImportIntegrationTests(unittest.TestCase):
         )
         store = CohortStore(self.root / "allele-info.sqlite3")
         store.import_vcf(vcf)
+        scores = {json.loads(p["target_key"])["alternate"]: p["values"]
+                  for p in store.query_predictions(predictor_id="gpn_star_m")}
+        self.assertEqual(scores, {"G": {"llr": 0, "abs_llr": -0.5}, "T": {"llr": -2, "abs_llr": 0.75}})
         amino_acid = store.query_predictions(predictor_id="clinvar_aa_match")
         self.assertEqual(len(amino_acid), 2)
         by_alt = {

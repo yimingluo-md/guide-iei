@@ -1,4 +1,4 @@
-import type { GenotypeEvidence, VariantRow } from "./vcf";
+import { isHeterozygousGenotype, transmissionContext, normalizedContig, normalizedVariantKey, type GenotypeEvidence, type VariantRow } from "./vcf";
 
 export type PedigreeMember = {
   familyId: string;
@@ -43,6 +43,7 @@ export type DeNovoStatus =
   | "likely_artifact"
   | "mendelian_conflict"
   | "inherited"
+  | "unassessed"
   | "not_proband";
 
 export type DeNovoAssessment = {
@@ -60,7 +61,8 @@ export type CompoundPhase =
   | "possible_trans"
   | "phase_unknown"
   | "cis"
-  | "excluded_hemizygous";
+  | "excluded_hemizygous"
+  | "excluded_ploidy";
 
 export type CompoundHetPair = {
   key: string;
@@ -167,57 +169,6 @@ export function parsePedigree(
   return { members, trios, warnings };
 }
 
-function alleles(evidence: GenotypeEvidence | null) {
-  return evidence?.gt.split(/[|/]/).filter((value) => /^\d+$/.test(value)).map(Number) ?? [];
-}
-
-// GRCh38 pseudoautosomal region bounds on chrX (PAR1 ends at 2,781,479;
-// PAR2 starts at 155,701,383). Inside the PARs a male is diploid.
-const GRCH38_PAR1_END = 2_781_479;
-const GRCH38_PAR2_START = 155_701_383;
-
-function normalizedTrioContig(chrom: string) {
-  const trimmed = chrom.replace(/^chr/i, "").toUpperCase();
-  return trimmed === "M" ? "MT" : trimmed;
-}
-
-function isNonParX(row: VariantRow) {
-  return normalizedTrioContig(row.chrom) === "X"
-    && row.pos > GRCH38_PAR1_END
-    && row.pos < GRCH38_PAR2_START;
-}
-
-/**
- * Sites with a single informative transmitting parent. A male proband is
- * hemizygous for non-PAR X (transmitting parent: mother) and for Y
- * (transmitting parent: father); mitochondrial variants are maternally
- * transmitted for probands of any sex. Applying the autosomal diploid
- * model there misclassifies the most common IEI presentation: an X-linked
- * de novo written as 1/1 hits the "hom-alt child" conflict branch, and a
- * true haploid 1 fails the heterozygous allele-balance gate at AB ~1.0.
- */
-function uniparentalContextFor(
-  row: VariantRow,
-  trio: TrioDefinition,
-): "x" | "y" | "mt" | null {
-  const contig = normalizedTrioContig(row.chrom);
-  if (contig === "MT") return "mt";
-  if (trio.probandSex !== "male") return null;
-  if (contig === "Y") return "y";
-  if (isNonParX(row)) return "x";
-  return null;
-}
-
-function isHomRef(evidence: GenotypeEvidence | null) {
-  const values = alleles(evidence);
-  return Boolean(evidence?.called && values.length > 0 && values.every((value) => value === 0));
-}
-
-function isHeterozygousCarrier(evidence: GenotypeEvidence | null) {
-  const values = alleles(evidence);
-  return Boolean(evidence?.carrier && values.length === 2 && values[0] !== values[1]);
-}
-
 function adequate(
   evidence: GenotypeEvidence | null,
   minDp: number,
@@ -230,6 +181,22 @@ function adequate(
   );
 }
 
+function compatiblePloidy(gt: string, context: ReturnType<typeof transmissionContext>) {
+  const tokens = gt.split(/[|/]/);
+  if (!tokens.every(value => /^\d+$/.test(value))) return false;
+  if (context === "diploid") return tokens.length === 2;
+  if (context === "uncertain") return false;
+  return tokens.length === 1 || (tokens.length === 2
+    && (context === "mitochondrial" || tokens[0] === tokens[1]));
+}
+
+function compatibleParent(row: VariantRow, gt: string, parent: "mother" | "father") {
+  // A Y-PAR record represents a shared X/Y locus for both parents.
+  const context = normalizedContig(row.chrom) === "Y" && transmissionContext(row, "male") === "diploid"
+    ? "diploid" : transmissionContext(row, parent === "mother" ? "female" : "male");
+  return compatiblePloidy(gt, context);
+}
+
 export function assessDeNovo(
   row: VariantRow,
   trio: TrioDefinition,
@@ -238,8 +205,10 @@ export function assessDeNovo(
   const evidence = row.sampleGenotypes ?? {};
   const child = evidence[trio.proband] ?? (row.sample === trio.proband ? {
     gt: row.genotype,
-    called: row.genotype !== "./." && row.genotype !== ".",
-    carrier: true,
+    called: row.genotype.split(/[|/]/).every(value => /^\d+$/.test(value)),
+    carrier: row.genotype.split(/[|/]/).some(value => Number(value) > 0),
+    genotypeClass: row.genotypeClass ?? "other",
+    genotypeFilter: row.genotypeFilter ?? "",
     dp: row.dp,
     gq: row.gq,
     adRef: row.adRef ?? null,
@@ -265,14 +234,31 @@ export function assessDeNovo(
   // informative: a male proband's X comes from the mother, his Y from the
   // father. The other parent's carrier state neither establishes
   // inheritance nor gates the de novo call.
-  const hemiContext = uniparentalContextFor(row, trio);
+  const context = transmissionContext(row, trio.probandSex);
+  const tokens = child.gt.split(/[|/]/);
+  if (context === "uncertain") {
+    return { ...base, status: "unassessed", reasons: ["The recorded proband sex does not establish the inheritance model at this sex-chromosome locus."] };
+  }
+  if (!child.called || !compatiblePloidy(child.gt, context)) {
+    return { ...base, status: "unassessed", reasons: [`Proband GT ${child.gt} is incomplete or inconsistent with the expected ploidy at this locus.`] };
+  }
   const relevantParents: Array<["mother" | "father", GenotypeEvidence | null]> =
-    hemiContext === "x" || hemiContext === "mt"
-      ? [["mother", mother]]
-      : hemiContext === "y"
-        ? [["father", father]]
-        : [["mother", mother], ["father", father]];
+    context === "maternal" || context === "mitochondrial" ? [["mother", mother]]
+      : context === "paternal" ? [["father", father]] : [["mother", mother], ["father", father]];
 
+  for (const [parent, call] of relevantParents) {
+    if (call?.called && !compatibleParent(row, call.gt, parent)) {
+      return { ...base, status: "unassessed", reasons: [`The ${parent}'s GT ${call.gt} is inconsistent with the expected ploidy at this locus.`] };
+    }
+  }
+  if (context === "diploid" && tokens[0] === tokens[1]) {
+    if (!relevantParents.every(([, parent]) => adequate(parent, thresholds.parentMinDp, thresholds.minGq))) {
+      return { ...base, status: "possible", reasons: ["Parental calls are insufficient to assess the homozygous ALT genotype."] };
+    }
+    if (relevantParents.some(([, parent]) => !parent?.carrier)) {
+      return { ...base, status: "mendelian_conflict", reasons: ["A homozygous ALT child requires a copy from each parent under the diploid inheritance model."] };
+    }
+  }
   const carrierParents = relevantParents
     .filter(([, evidence]) => evidence?.carrier);
   if (carrierParents.length) {
@@ -293,21 +279,6 @@ export function assessDeNovo(
       reasons: [`ALT evidence in the ${labels.join(" and ")} is below the parental quality thresholds; inheritance cannot be established from this callset.`],
     };
   }
-  if (
-    !hemiContext
-    && alleles(child).length === 2
-    && alleles(child).every((value) => value > 0)
-    && alleles(child)[0] === alleles(child)[1]
-  ) {
-    // Autosomes only: a hemizygous male X/Y call is routinely written as
-    // 1/1 by diploid-model callers and is the expected de novo shape, not
-    // a Mendelian conflict.
-    return {
-      ...base,
-      status: "mendelian_conflict",
-      reasons: ["A homozygous alternate child with two homozygous-reference parents is not a simple de novo model."],
-    };
-  }
   if (!adequate(child, thresholds.childMinDp, thresholds.minGq)) {
     return { ...base, status: "likely_artifact", reasons: ["Proband DP or GQ is below the configured threshold."] };
   }
@@ -317,7 +288,7 @@ export function assessDeNovo(
   if (
     child.alleleBalance === null
     || child.alleleBalance < thresholds.childAbMin
-    || (!hemiContext && child.alleleBalance > thresholds.childAbMax)
+    || (context === "diploid" && child.alleleBalance > thresholds.childAbMax)
   ) {
     return { ...base, status: "likely_artifact", reasons: ["Proband allele balance is missing or outside the configured range."] };
   }
@@ -328,10 +299,8 @@ export function assessDeNovo(
   if (missingParents.length) {
     return { ...base, status: "possible", reasons: [`No callable genotype for ${missingParents.join(" and ")} at this site.`] };
   }
-  if (relevantParents.some(([, evidence]) => !isHomRef(evidence))) {
-    return { ...base, status: "mendelian_conflict", reasons: ["Parental genotypes are not compatible with a simple de novo model."] };
-  }
-
+  // The remaining parents have called genotypes lacking this row's ALT.
+  // They may carry another ALT at the same site.
   const mosaicParents = relevantParents
     .filter(([, evidence]) => evidence?.alleleBalance !== null
       && evidence?.alleleBalance !== undefined
@@ -363,17 +332,13 @@ export function assessDeNovo(
     ...base,
     status: "high_confidence",
     reasons: [
-      hemiContext === "mt"
-        ? "Proband mitochondrial ALT with a well-supported reference call in the mother, the sole transmitting parent, in the loaded callset."
-        : hemiContext
-          ? "Proband hemizygous ALT with a well-supported homozygous-reference transmitting parent in the loaded callset."
-          : "Proband ALT and two well-supported homozygous-reference parental genotypes are present in the loaded callset.",
+      context === "mitochondrial"
+        ? "The proband carries this mitochondrial ALT. The mother's well-supported genotype lacks it."
+        : context !== "diploid"
+          ? "The proband carries this hemizygous ALT. The transmitting parent's well-supported genotype lacks it."
+          : "The proband carries this ALT. Both parents have well-supported genotypes that lack it.",
     ],
   };
-}
-
-function variantIdentity(row: VariantRow) {
-  return `${normalizedTrioContig(row.chrom)}:${row.pos}:${row.ref}:${row.alt}`;
 }
 
 function originFor(
@@ -389,14 +354,13 @@ function originFor(
   // thresholds — opposing DP=1/GQ=1 calls must not mint a confirmed
   // compound het, and a reviewer who tightened the panel's DP/GQ values
   // must see comphet origins judged by the same rule.
-  const solid = (parent: GenotypeEvidence | null) =>
-    adequate(parent, thresholds.parentMinDp, thresholds.minGq);
-  if (mother?.carrier && father?.carrier) return "both";
-  if (mother?.carrier && isHomRef(father)) {
-    return solid(mother) && solid(father) ? "maternal" : "unknown";
-  }
-  if (father?.carrier && isHomRef(mother)) {
-    return solid(father) && solid(mother) ? "paternal" : "unknown";
+  if (mother && father
+    && adequate(mother, thresholds.parentMinDp, thresholds.minGq)
+    && adequate(father, thresholds.parentMinDp, thresholds.minGq)
+    && compatibleParent(row, mother.gt, "mother") && compatibleParent(row, father.gt, "father")) {
+    if (mother.carrier && father.carrier) return "both";
+    if (mother?.carrier) return "maternal";
+    if (father?.carrier) return "paternal";
   }
   const deNovo = assessDeNovo(row, trio, thresholds);
   // "possible" covers the missing-parental-genotype case: converting "we do
@@ -406,14 +370,17 @@ function originFor(
   return "unknown";
 }
 
+export function sampleGeneAlleleKey(row: VariantRow) {
+  return JSON.stringify([row.sample, row.gene, normalizedVariantKey(row)]);
+}
+
 function representativeRows(rows: VariantRow[], trio: TrioDefinition) {
   const unique = new Map<string, VariantRow>();
   rows
     .filter((row) => row.sample === trio.proband)
-    .filter((row) => isHeterozygousCarrier(row.sampleGenotypes?.[trio.proband] ?? null)
-      || (!row.sampleGenotypes && row.genotype.split(/[|/]/).length === 2 && row.genotype.split(/[|/]/)[0] !== row.genotype.split(/[|/]/)[1]))
+    .filter((row) => isHeterozygousGenotype(row.genotype))
     .forEach((row) => {
-      const key = `${row.gene}:${variantIdentity(row)}`;
+      const key = sampleGeneAlleleKey(row);
       const previous = unique.get(key);
       if (!previous || (row.mane && !previous.mane) || (row.picked && !previous.mane && !previous.picked)) {
         unique.set(key, row);
@@ -439,20 +406,24 @@ export function compoundHetPairs(
       for (let secondIndex = firstIndex + 1; secondIndex < variants.length; secondIndex += 1) {
         const first = variants[firstIndex];
         const second = variants[secondIndex];
-        if (normalizedTrioContig(first.chrom) !== normalizedTrioContig(second.chrom)) continue;
-        const firstOrigin = originFor(first, trio, thresholds);
-        const secondOrigin = originFor(second, trio, thresholds);
+        if (normalizedContig(first.chrom) !== normalizedContig(second.chrom)) continue;
+        const firstContext = transmissionContext(first, trio.probandSex);
+        const secondContext = transmissionContext(second, trio.probandSex);
+        const diploid = firstContext === "diploid" && secondContext === "diploid";
+        const firstOrigin = diploid ? originFor(first, trio, thresholds) : "unknown";
+        const secondOrigin = diploid ? originFor(second, trio, thresholds) : "unknown";
         let phase: CompoundPhase = "phase_unknown";
         let reason = "Both variants qualify, but inheritance and phase do not establish trans configuration.";
-        if (trio.probandSex === "male" && (isNonParX(first) || isNonParX(second))) {
-          // One X haplotype: two alternate alleles cannot be in trans, and a
-          // heterozygous-appearing call here points to a genotyping artifact
-          // or an overlapping CNV rather than a compound heterozygote.
+        if (!diploid) {
+          const uncertain = firstContext === "uncertain" || secondContext === "uncertain";
+          const mt = firstContext === "mitochondrial";
           pairs.push({
-            key: `${trio.familyId}:${trio.proband}:${gene}:${variantIdentity(first)}:${variantIdentity(second)}`,
+            key: `${trio.familyId}:${trio.proband}:${gene}:${normalizedVariantKey(first)}:${normalizedVariantKey(second)}`,
             gene, first, second, firstOrigin, secondOrigin,
-            phase: "excluded_hemizygous",
-            reason: "A male proband is hemizygous for non-pseudoautosomal X: a compound heterozygote is not possible, and heterozygous-appearing calls here suggest artifact or an overlapping CNV.",
+            phase: uncertain || mt ? "excluded_ploidy" : "excluded_hemizygous",
+            reason: uncertain ? "The recorded proband sex does not establish diploidy at both loci."
+              : mt ? "Mitochondrial genotypes do not establish a diploid compound heterozygote."
+              : "At least one locus is hemizygous in the proband.",
           });
           continue;
         }
@@ -494,11 +465,25 @@ export function compoundHetPairs(
         }
 
         pairs.push({
-          key: `${trio.familyId}:${trio.proband}:${gene}:${variantIdentity(first)}:${variantIdentity(second)}`,
+          key: `${trio.familyId}:${trio.proband}:${gene}:${normalizedVariantKey(first)}:${normalizedVariantKey(second)}`,
           gene, first, second, firstOrigin, secondOrigin, phase, reason,
         });
       }
     }
   });
   return pairs;
+}
+
+export function isCandidatePair(pair: CompoundHetPair) {
+  return pair.phase !== "cis" && pair.phase !== "excluded_hemizygous" && pair.phase !== "excluded_ploidy";
+}
+
+export function trioCompoundRowKeys(rows: VariantRow[], candidatePairs: CompoundHetPair[]) {
+  // All passing transcripts of the participating record qualify. A duplicate
+  // record may carry a different GT or phase for the very same sample and ALT.
+  const recordKey = (row: VariantRow) => JSON.stringify([
+    row.source, row.sample, row.gene, row.chrom, row.pos, row.ref, row.alt, row.sourceRecordOrdinal,
+  ]);
+  const records = new Set(candidatePairs.flatMap(pair => [recordKey(pair.first), recordKey(pair.second)]));
+  return new Set(rows.filter(row => isHeterozygousGenotype(row.genotype) && records.has(recordKey(row))).map(row => row.key));
 }

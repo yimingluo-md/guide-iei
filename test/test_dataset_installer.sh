@@ -18,6 +18,7 @@ cp "$SOURCE_ROOT/docker/.dockerignore" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/Dockerfile" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/PromoterAI.pm" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/LoGoFunc.pm" "$TEST_ROOT/docker/"
+cp "$SOURCE_ROOT/docker/GuideAllele.pm" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/IndexedScores.pm" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/SpliceAIStarter.pm" "$TEST_ROOT/docker/"
 cp "$SOURCE_ROOT/docker/SpliceAI-MANE1.5-gene-map.json" "$TEST_ROOT/docker/"
@@ -135,6 +136,22 @@ PY
 chmod +x "$WORK/bin/docker" "$TEST_ROOT/docker/build.sh" \
   "$TEST_ROOT/scripts/download_references.sh" "$TEST_ROOT/scripts/fetch_clinvar.sh" \
   "$TEST_ROOT/scripts/update_clingen_erepo.sh"
+
+plan="$(bash "$TEST_ROOT/scripts/install_recommended_datasets.sh" "$TEST_ROOT/config/test.yaml" exome --print-missing)"
+[[ "$plan" == vep_cache,fasta,loftee,spliceai,repeatmasker,segdup,ccre,liftover,clinvar,clingen_erepo ]]
+# The service may admit a disjoint job after reserving this list. The worker
+# must never expand its reservation, even when other components are missing.
+bash "$TEST_ROOT/scripts/install_recommended_datasets.sh" "$TEST_ROOT/config/test.yaml" exome \
+  --components clingen_erepo > "$WORK/one-component.log"
+test -f "$TEST_ROOT/clingen.called"
+test ! -f "$TEST_ROOT/clinvar.called"
+test ! -f "$TEST_ROOT/build.args"
+rm "$TEST_ROOT/clingen.called"
+bash "$TEST_ROOT/scripts/install_recommended_datasets.sh" "$TEST_ROOT/config/test.yaml" exome \
+  --components "" > "$WORK/empty-plan.log"
+test ! -f "$TEST_ROOT/clingen.called"
+test ! -f "$TEST_ROOT/clinvar.called"
+test ! -f "$TEST_ROOT/build.args"
 
 PATH="$WORK/bin:$PATH" HTS_VIA_CONTAINER=1 \
   bash "$TEST_ROOT/scripts/install_recommended_datasets.sh" \

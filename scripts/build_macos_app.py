@@ -37,10 +37,15 @@ EXTRA_FILES |= {"THIRD_PARTY_NOTICES.md", "config/starter-licenses.json",
 EXTRA_FILES |= {"config/essential-annotations.json", "pipeline/starter_package.py",
                 "local_service/essential_setup.py", "local_service/desktop_setup.py",
                 "scripts/install_essential_annotations.py"}
-EXTRA_FILES |= {"docker/SpliceAIStarter.pm", "docker/SpliceAI-MANE1.5-gene-map.json",
+EXTRA_FILES |= {"docker/GuideAllele.pm", "docker/SpliceAIStarter.pm", "docker/SpliceAI-MANE1.5-gene-map.json",
                 "scripts/build_spliceai_gene_map.py"}
+EXTRA_FILES |= {"pipeline/vcf_io.py", "pipeline/numeric.py", "pipeline/gpn_star.py", "config/gpn-star-grch38.json", "config/gpn-star-v-exome.json"}
+EXTRA_FILES.add("config/gpn-star-reader-requirements.txt")
+EXTRA_FILES.add("pipeline/publish_annotation.py")
 EXTRA_FILES |= {"pipeline/spliceai_dataset.py", "config/spliceai-mane-v1.5.json"}
-EXTRA_FILES |= {"scripts/install_recommended_wgs.sh"}
+EXTRA_FILES |= {"scripts/install_recommended_wgs.sh", "local_service/gencc.py"}
+EXTRA_FILES |= {"local_service/desktop_endpoint.py", "local_service/element_gene_links.py", "local_service/custom_scores.py",
+                "scripts/install_encode_re2g.py", "config/encode-re2g-grch38.tsv"}
 
 
 def run(*args, **kwargs):
@@ -156,6 +161,8 @@ def main():
     archive = download(f"https://github.com/astral-sh/python-build-standalone/releases/download/{pins['PYTHON_BUILD_TAG']}/{name.replace('+', '%2B')}", py_hash, cache)
     wheel_url, wheel_hash = WHEELS[arch]
     wheel = download(wheel_url, wheel_hash, cache)
+    reader_pins = json.loads((ROOT / "config/gpn-star-mac-wheels.json").read_text())[arch]
+    reader_wheels = [download(item["url"], item["sha256"], cache) for item in reader_pins]
     with tempfile.TemporaryDirectory(prefix="guide-iei-app-build-") as temporary:
         stage = Path(temporary)
         app = stage / "GUIDE-IEI.app"
@@ -185,8 +192,9 @@ def main():
         (framework / "Python").symlink_to("Versions/Current/Python")
         (framework / "Resources").symlink_to("Versions/Current/Resources")
         python = runtime / "bin/python3"
-        run(python, "-s", "-B", "-m", "pip", "install", "--no-index", "--no-deps", "--no-compile", wheel)
+        run(python, "-s", "-B", "-m", "pip", "install", "--no-index", "--no-deps", "--no-compile", wheel, *reader_wheels)
         run(python, "-s", "-B", "-c", "import yaml,ssl,sqlite3; print('Bundled Python dependency check passed')")
+        (runtime / "Resources/gpn-parquet-bundled").touch()
         copy_source(application)
         if engine_manifest:
             shutil.copytree(engine_directory, application / "bundled-engine")
@@ -225,6 +233,7 @@ def main():
             "source_commit": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT).decode().strip(),
             "uncommitted_source": bool(dirty), "python_sha256": py_hash,
             "pyyaml_version": "6.0.2", "pyyaml_sha256": wheel_hash,
+            "gpn_star_reader_wheels": reader_pins,
             "bundled_engine": engine_manifest,
         }
         (application / "desktop-build.json").write_text(json.dumps(metadata, indent=2) + "\n")
@@ -249,6 +258,11 @@ def main():
         run("codesign", *options, framework)
         run("codesign", *options, app)
         run("codesign", "--verify", "--deep", "--strict", app)
+        # Imported native libraries must pass library validation in the *signed*
+        # interpreter. A successful import before codesign does not test this.
+        run(python, "-I", "-B", "-c", "import numpy, pyarrow as pa, pyarrow.parquet as pq; "
+            "out=pa.BufferOutputStream(); pq.write_table(pa.table({'pos':[1]}),out); "
+            "assert pq.ParquetFile(pa.BufferReader(out.getvalue())).read().num_rows == 1")
         if args.notary_profile:
             submission = stage / "notarize.zip"
             run("ditto", "-c", "-k", "--keepParent", app, submission)

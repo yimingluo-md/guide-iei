@@ -10,6 +10,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -17,6 +18,92 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from pipeline import avi_dataset as avi
+
+
+class AviAvailabilityTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.manifest = self.root / 'manifest.json'
+        self.files = [self.root / name for name in ('avi.grch38.vcf.gz', 'avi.grch38.vcf.gz.tbi')]
+        records = {}
+        for path in self.files:
+            path.write_bytes(b'synthetic data')
+            records[path.name] = {'size': path.stat().st_size, 'mtime_ns': 1,
+                                  'sha256': avi.digest(path)}
+        self.manifest.write_text(json.dumps({'schema': avi.SCHEMA, 'release': avi.RELEASE,
+            'assembly': 'GRCh38', 'rows': avi.EXPECTED_ROWS,
+            'positions': avi.EXPECTED_ROWS // 3, 'files': records}))
+        avi._identity_digest.cache_clear()
+        self.addCleanup(avi._identity_digest.cache_clear)
+
+    def test_availability_never_hashes_payload_with_changed_timestamps(self):
+        with patch.object(avi, 'digest', side_effect=AssertionError('UI must not hash')):
+            self.assertTrue(avi.bundle_present(self.manifest))
+            self.files[1].unlink()
+            self.assertFalse(avi.bundle_present(self.manifest))
+
+    def test_availability_rejects_truncation_and_bad_manifest(self):
+        self.files[0].write_bytes(b'truncated')
+        self.assertFalse(avi.bundle_present(self.manifest))
+        self.manifest.write_bytes(b'\xff')
+        self.assertFalse(avi.bundle_present(self.manifest))
+
+    def test_concurrent_verifications_hash_each_unchanged_file_once(self):
+        with patch.object(avi, 'digest', wraps=avi.digest) as digest:
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                self.assertTrue(all(executor.map(avi.valid_bundle, [self.manifest] * 8)))
+            self.assertEqual(digest.call_count, 2)
+            self.assertTrue(avi.valid_bundle(self.manifest, strict=True))
+            self.assertEqual(digest.call_count, 4)
+
+    def test_replacement_with_same_size_and_mtime_invalidates_cache(self):
+        self.assertTrue(avi.valid_bundle(self.manifest))
+        path = self.files[0]
+        before = path.stat()
+        replacement = self.root / 'replacement'
+        replacement.write_bytes(b'X' * before.st_size)
+        os.utime(replacement, ns=(before.st_atime_ns, before.st_mtime_ns))
+        os.replace(replacement, path)
+        self.assertFalse(avi.valid_bundle(self.manifest))
+
+    def test_changed_manifest_hash_is_not_masked_by_cache(self):
+        self.assertTrue(avi.valid_bundle(self.manifest))
+        value = json.loads(self.manifest.read_text())
+        value['files'][self.files[0].name]['sha256'] = '0' * 64
+        self.manifest.write_text(json.dumps(value))
+        self.assertFalse(avi.valid_bundle(self.manifest))
+
+    def test_in_place_edit_with_restored_mtime_invalidates_cache(self):
+        self.assertTrue(avi.valid_bundle(self.manifest))
+        path = self.files[0]
+        before = path.stat()
+        path.write_bytes(b'X' * before.st_size)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertFalse(avi.valid_bundle(self.manifest))
+
+    def test_strict_check_detects_same_size_corruption_even_with_manifest_mtime(self):
+        path = self.files[0]
+        value = json.loads(self.manifest.read_text())
+        value['files'][path.name]['mtime_ns'] = path.stat().st_mtime_ns
+        self.manifest.write_text(json.dumps(value))
+        self.assertTrue(avi.valid_bundle(self.manifest, strict=True))
+        before = path.stat()
+        path.write_bytes(b'X' * before.st_size)
+        os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertTrue(avi.bundle_present(self.manifest))  # Presence is not integrity.
+        self.assertFalse(avi.valid_bundle(self.manifest, strict=True))
+
+    def test_file_changing_during_hash_is_rejected_and_not_cached(self):
+        original = avi.digest
+        def change(path):
+            result = original(path)
+            path.write_bytes(b'X' * path.stat().st_size)
+            return result
+        with patch.object(avi, 'digest', side_effect=change):
+            self.assertFalse(avi.valid_bundle(self.manifest))
+        self.assertFalse(avi.valid_bundle(self.manifest))
 
 
 class AviTest(unittest.TestCase):
@@ -113,11 +200,28 @@ class AviTest(unittest.TestCase):
             self.assertEqual(result[-8:],['/avi_source/source.zip','100','25','chr1','3',
                                          '/avi_output/chr1.vcf.gz','/avi_output/stats.json','/avi_output/progress'])
             if runtime in ('docker','podman'):
-                for flag in ('--network=none','--pull=never','core=0:0'): self.assertIn(flag,result)
+                for flag in ('--init','--network=none','--pull=never','core=0:0'): self.assertIn(flag,result)
             self.assertNotIn('python3',result)
         command[-1] = str(self.root/'elsewhere/progress')
         with self.assertRaisesRegex(ValueError,'share a working directory'):
             avi.converter_command(command,True)
+
+    def test_recovery_keeps_worker_receipt_until_daemon_confirms_removal(self):
+        marker = self.root / ".avi-container-workers.json"
+        run_id = "1" * 32
+        avi.atomic_json(marker, {"runtime": "docker", "run_id": run_id})
+        for remaining in ("worker123", ""):
+            with patch.object(avi.subprocess, "check_output", side_effect=["worker123", remaining]) as query, \
+                    patch.object(avi.subprocess, "run") as remove:
+                if remaining:
+                    with self.assertRaisesRegex(RuntimeError, "still running"):
+                        avi.reclaim_avi_containers(marker)
+                    self.assertTrue(marker.exists())
+                else:
+                    avi.reclaim_avi_containers(marker)
+                    self.assertFalse(marker.exists())
+                self.assertIn(f"label=guide-iei.avi-run={run_id}", query.call_args.args[0])
+                self.assertEqual(remove.call_args.args[0], ["docker", "rm", "-f", "worker123"])
 
     def test_atomic_bundle_publication_and_verified_retry_preserve_source(self):
         path, identity = self.source('chr1\t1\tT\tA\t0\t1\nchr1\t1\tT\tC\t0\t2\nchr1\t1\tT\tG\t0\t3\n')

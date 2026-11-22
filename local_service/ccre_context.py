@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Iterable
 
 from local_service.cohort_store import HtsBackend, normalize_chromosome
+from local_service.element_gene_links import interval as affected_bed_interval
 
 
 PRIMARY_CONTIGS = {str(value) for value in range(1, 23)} | {"X", "Y", "MT"}
@@ -164,15 +165,18 @@ class CcreContextStore:
         return records
 
     def _overlaps(
-        self, path: Path, chrom: str, start: int, end: int,
+        self, path: Path, chrom: str, start0: int, end0: int,
     ) -> list[CcreRecord]:
         records: Iterable[CcreRecord] | None = None
         if self.hts_backend is not None and (
             Path(f"{path}.tbi").is_file() or Path(f"{path}.csi").is_file()
         ):
             try:
+                # Tabix needs a nonempty, 1-based closed region. For an
+                # insertion fetch its right flank, then check both flanks below.
+                start = start0 + 1
                 lines = self.hts_backend.iter_records(
-                    path, (f"{chrom}:{start}-{end}",)
+                    path, (f"{chrom}:{start}-{max(start, end0)}",)
                 )
                 records = _parse_ccre_lines(lines, chrom)
             except RuntimeError:
@@ -181,7 +185,7 @@ class CcreContextStore:
             records = self._fallback_contig(path, chrom)
         return [
             record for record in records
-            if record.start <= end and record.end >= start
+            if record.start - 1 < end0 and record.end > start0
         ]
 
     def _nearby_genes(
@@ -237,14 +241,15 @@ class CcreContextStore:
             raise ValueError("variant REF must be a sequence-resolved allele")
         if not alt:
             raise ValueError("variant ALT is required")
-        variant_end = pos + max(1, len(ref)) - 1
+        # Preserve the input VCF coordinates in the response. Only the
+        # overlap lookup uses the trimmed allele.
         base = {
             "assembly": "GRCh38",
             "resource_version": resource_version,
             "gene_source": gene_source,
             "gene_window_bp": window_bp,
             "variant": {
-                "chrom": normalized_chrom, "start": pos, "end": variant_end,
+                "chrom": normalized_chrom, "start": pos, "end": pos + len(ref) - 1,
                 "ref": ref, "alt": alt,
             },
             "interpretation_caveat": (
@@ -253,22 +258,30 @@ class CcreContextStore:
                 "context only, not predicted cCRE targets."
             ),
         }
+        gene_available = bool(gene_tss_path and gene_tss_path.is_file())
         if ccre_path is None or not ccre_path.is_file():
             return {
                 **base, "resource_available": False,
-                "gene_resource_available": bool(gene_tss_path and gene_tss_path.is_file()),
+                "gene_resource_available": gene_available,
                 "status": "resource_unavailable", "overlaps": [],
             }
-        if gene_tss_path is not None and gene_tss_path.is_file():
+        span = affected_bed_interval({
+            "chrom": normalized_chrom, "pos": pos, "ref": ref, "alt": alt,
+        })
+        if span is None:
+            return {
+                **base, "resource_available": True,
+                "gene_resource_available": gene_available,
+                "status": "unsupported", "overlaps": [],
+            }
+        if gene_tss_path is not None and gene_available:
             self._load_genes(gene_tss_path)
         else:
             with self._lock:
                 self._gene_key = None
                 self._genes = {}
                 self._gene_positions = {}
-        overlaps = self._overlaps(
-            ccre_path, normalized_chrom, pos, variant_end
-        )
+        overlaps = self._overlaps(ccre_path, *span)
         return {
             **base,
             "resource_available": True,

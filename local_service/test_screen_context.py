@@ -2,14 +2,18 @@
 import json
 import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from local_service.ccre_context import CcreContextStore
+from local_service.cohort_store import HtsBackend
 from local_service.screen_context import ScreenContextStore
 
 
@@ -121,7 +125,60 @@ class ScreenContextStoreTests(unittest.TestCase):
         # A missing local artifact must not silently use the previous copy.
         (relocated / "tissues.u8").unlink()
         with self.assertRaisesRegex(ValueError, "Retry the SCREEN download"):
-            ScreenContextStore().catalog(relocated / "contexts.json")
+            self.store.catalog(relocated / "contexts.json")
+
+    def test_replaced_manifest_refreshes_cached_catalog(self):
+        self.assertEqual(self.store.catalog(self.manifest)["registry"], "SCREEN Registry V4")
+        replacement = self.manifest.with_suffix(".new")
+        replacement.write_text(self.manifest.read_text().replace("Registry V4", "Registry V5"))
+        shutil.copystat(self.manifest, replacement)
+        replacement.replace(self.manifest)
+        self.assertEqual(self.store.catalog(self.manifest)["registry"], "SCREEN Registry V5")
+
+    def test_prepared_manifest_replacement_switches_detail_and_filter_matrix(self):
+        variant = dict(key="hit", chrom="1", pos=100, ref="A", alt="G")
+        selection = {"variants": [variant], "tissue_ids": ["tissue:0"]}
+        self.assertEqual(self.store.filter_variants(self.manifest, selection)["matching_keys"], ["hit"])
+        root = self.manifest.parent
+        (root / "revised.u8").write_bytes(bytes([0, 8]))
+        prepared = root / "prepared.json"
+        metadata = json.loads(prepared.read_text())
+        metadata["tissue_matrix"]["path"] = "revised.u8"
+        replacement = root / "prepared.new"
+        replacement.write_text(json.dumps(metadata))
+        replacement.replace(prepared)
+        tissues = self.store.evidence(self.manifest, variant)["overlaps"][0]["tissues"]
+        self.assertEqual([tissue["class"] for tissue in tissues], ["inactive", "TF"])
+        self.assertEqual(self.store.filter_variants(self.manifest, selection)["matching_keys"], [])
+
+    def test_catalog_edits_refresh_tissue_and_context_metadata(self):
+        self.store.catalog(self.manifest)
+        root = self.manifest.parent
+        with sqlite3.connect(root / "catalog.sqlite3") as connection:
+            connection.execute("UPDATE tissue SET name='marrow' WHERE tissue_index=0")
+        self.assertEqual(self.store.catalog(self.manifest)["tissues"][0]["name"], "marrow")
+        with sqlite3.connect(root / "contexts.sqlite3") as connection:
+            connection.execute("UPDATE context SET ontology_name='updated T cell'")
+        self.assertEqual(self.store.catalog(self.manifest)["immune_contexts"][0]["name"], "updated T cell")
+
+    def test_retargeted_matrix_link_revalidates_geometry_and_recovers(self):
+        root = self.manifest.parent
+        matrix = root / "tissues.u8"
+        original = root / "original.u8"
+        matrix.rename(original)
+        matrix.symlink_to(original)
+        self.assertTrue(self.store.catalog(self.manifest)["available"])
+
+        replacement = root / "updated.u8"
+        replacement.write_bytes(bytes([8]))
+        link = root / "updated.link"
+        link.symlink_to(replacement)
+        link.replace(matrix)
+        with self.assertRaisesRegex(ValueError, "bytes but its manifest shape"):
+            self.store.catalog(self.manifest)
+        replacement.write_bytes(bytes([8, 0]))
+        evidence = self.store.evidence(self.manifest, dict(chrom="1", pos=100, ref="A", alt="G"))
+        self.assertEqual(evidence["overlaps"][0]["tissues"][0]["class"], "TF")
 
     def test_relative_and_foreign_absolute_paths_resolve_inside_bundle(self):
         for prefix in ("", "/unavailable/producer/", "C:\\producer\\"):
@@ -172,6 +229,103 @@ class ScreenContextStoreTests(unittest.TestCase):
             "variants": variants, "tissue_ids": ["tissue:0", "tissue:1"], "mode": "all",
         })
         self.assertEqual(all_result["matching_keys"], [])
+
+    def test_invalid_catalog_row_indexes_fail_in_detail_and_filter(self):
+        variant = dict(key="hit", chrom="1", pos=100, ref="A", alt="G")
+        for index in (-1, 1, 2**63 - 1):
+            with self.subTest(index=index):
+                with sqlite3.connect(self.manifest.parent / "catalog.sqlite3") as connection:
+                    connection.execute("UPDATE ccre SET row_index=?", (index,))
+                message = f"row index {index} outside"
+                with self.assertRaisesRegex(ValueError, message):
+                    self.store.evidence(self.manifest, variant)
+                for selection in ({"tissue_ids": ["tissue:0"]}, {"immune_context_ids": ["immune:cl_1"]}):
+                    with self.assertRaisesRegex(ValueError, message):
+                        self.store.filter_variants(self.manifest, {"variants": [variant], **selection})
+
+    def test_invalid_class_anywhere_in_a_read_row_fails_in_detail_and_filter(self):
+        variant = dict(key="hit", chrom="1", pos=100, ref="A", alt="G")
+        for name, codes, selection in (
+            ("tissues.u8", [2, 9], {"tissue_ids": ["tissue:0"]}),
+            ("immune.u8", [1, 2, 255], {"immune_context_ids": ["immune:cl_1"]}),
+        ):
+            with self.subTest(name=name):
+                path = self.manifest.parent / name
+                original = path.read_bytes()
+                path.write_bytes(bytes(codes))
+                message = f"invalid SCREEN class code {codes[-1]} in matrix row 0"
+                with self.assertRaisesRegex(ValueError, message):
+                    self.store.evidence(self.manifest, variant)
+                with self.assertRaisesRegex(ValueError, message):
+                    self.store.filter_variants(self.manifest, {"variants": [variant], **selection})
+                path.write_bytes(original)
+
+    # The fixture cCRE covers bases 100 through 120 (BED [99, 120)).
+    boundary_cases = (
+        ("first base", 100, "A", "G", "overlap"),
+        ("last base", 120, "A", "G", "overlap"),
+        ("deletion reaches first base", 98, "ACG", "A", "overlap"),
+        ("deletion starts at last base", 119, "ACG", "A", "overlap"),
+        ("only deletion anchor inside", 120, "ACG", "A", "no_overlap"),
+        ("only shared suffix inside", 99, "AC", "C", "no_overlap"),
+        ("both ends padded", 98, "aCgt", "aTgt", "no_overlap"),
+        ("changed base inside padding", 99, "ACG", "ATG", "overlap"),
+        ("replacement reaches first base", 98, "ACGT", "ATT", "overlap"),
+        ("insertion at left edge", 99, "AC", "ATC", "no_overlap"),
+        ("insertion just inside left edge", 100, "AC", "ATC", "overlap"),
+        ("insertion just inside right edge", 119, "A", "AT", "overlap"),
+        ("insertion at right edge", 120, "A", "AT", "no_overlap"),
+        ("symbolic", 110, "N", "<DEL>", "unsupported"),
+        ("breakend", 110, "A", "A]2:20]", "unsupported"),
+        ("spanning deletion", 110, "A", "*", "unsupported"),
+        ("missing call", 110, "A", ".", "unsupported"),
+        ("identical alleles", 110, "AC", "ac", "unsupported"),
+    )
+
+    def test_screen_filter_and_evidence_at_allele_boundaries(self):
+        variants = []
+        expected_matches = []
+        for key, pos, ref, alt, status in self.boundary_cases:
+            variant = dict(key=key, chrom="chr1", pos=pos, ref=ref, alt=alt)
+            variants.append(variant)
+            if status == "overlap":
+                expected_matches.append(key)
+            with self.subTest(key=key):
+                evidence = self.store.evidence(self.manifest, variant)
+                self.assertEqual(evidence["status"], status)
+                self.assertEqual([row["accession"] for row in evidence["overlaps"]],
+                                 ["EH38E1"] if status == "overlap" else [])
+        filtered = self.store.filter_variants(self.manifest, {
+            "variants": variants, "tissue_ids": ["tissue:0"],
+        })
+        self.assertEqual(filtered["matching_keys"], expected_matches)
+
+    def check_ccre_details(self, store, bed):
+        for key, pos, ref, alt, status in self.boundary_cases:
+            with self.subTest(key=key):
+                result = store.query(
+                    chrom="chr1", pos=pos, ref=ref, alt=alt, ccre_path=bed,
+                    gene_tss_path=None, resource_version="test", gene_source="test",
+                )
+                self.assertEqual(result["status"], status)
+                self.assertEqual([row["accession"] for row in result["overlaps"]],
+                                 ["EH38E1"] if status == "overlap" else [])
+
+    def test_ccre_details_at_allele_boundaries(self):
+        bed = self.manifest.parent / "ccre.bed"
+        bed.write_text("1\t99\t120\tEH38E1\tpELS\n")
+        self.check_ccre_details(CcreContextStore(), bed)
+
+    @unittest.skipUnless(shutil.which("bgzip") and shutil.which("tabix"), "requires bgzip and tabix")
+    def test_indexed_ccre_details_at_allele_boundaries(self):
+        bed = self.manifest.parent / "ccre.bed.gz"
+        with bed.open("wb") as handle:
+            subprocess.run(["bgzip", "-c"], input=b"1\t99\t120\tEH38E1\tpELS\n",
+                           stdout=handle, check=True)
+        subprocess.run(["tabix", "-p", "bed", str(bed)], check=True)
+        store = CcreContextStore(HtsBackend(native_tools={"tabix": shutil.which("tabix")}))
+        with patch.object(store, "_fallback_contig", side_effect=AssertionError("expected indexed lookup")):
+            self.check_ccre_details(store, bed)
 
     def test_empty_or_stale_context_selection_is_an_error_not_zero_matches(self):
         for selection in ({}, {"tissue_ids": ["tissue:obsolete"]},

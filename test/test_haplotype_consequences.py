@@ -187,34 +187,57 @@ class PhaseClassificationTests(unittest.TestCase):
 
 
 class MultiAllelicGenotypeTests(unittest.TestCase):
-    def _parse(self, gt_field, fmt="GT"):
+    def _parse(self, gt_field, fmt="GT", record_id="v1"):
         with tempfile.TemporaryDirectory() as directory:
             candidate = pathlib.Path(directory) / "candidate.vcf"
             candidate.write_text(
                 "##fileformat=VCFv4.2\n"
                 "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
-                f"1\t100\tv1\tA\tAT,ATT\t99\tPASS\t.\t{fmt}\t{gt_field}\n",
+                f"1\t100\t{record_id}\tA\tAT,ATT\t99\tPASS\t.\t{fmt}\t{gt_field}\n",
                 encoding="utf-8",
             )
             genotypes, _ = parse_candidate_genotypes(candidate)
-            return genotypes["v1"]["S1"]
+            return {key: samples["S1"] for key, samples in genotypes.items()}
 
-    def test_two_different_alt_alleles_are_not_homozygous_alt(self):
-        parsed = self._parse("1/2")
-        self.assertFalse(parsed["homozygous_alt"])
-        self.assertIsNone(parsed["haplotypes"])
+    def test_distinct_called_alts_have_their_own_phase_and_length(self):
+        for record_id in ("v1", "."):
+            for gt, placements in [("1/2", [None, None]), ("1|2", [{0}, {1}]),
+                                   ("2|1", [{1}, {0}])]:
+                with self.subTest(record_id=record_id, gt=gt):
+                    parsed = self._parse(f"{gt}:7", fmt="GT:PS", record_id=record_id)
+                    self.assertEqual(set(parsed), {"1:100:A:AT", "1:100:A:ATT"})
+                    for key, placement, delta in zip(sorted(parsed), placements, [1, 2]):
+                        self.assertEqual(parsed[key]["haplotypes"], placement)
+                        self.assertEqual(parsed[key]["length_change"], delta)
+                        self.assertFalse(parsed[key]["homozygous_alt"])
+                        self.assertFalse(parsed[key]["incomplete"])
 
-    def test_phased_two_different_alt_alleles_have_unknown_placement(self):
-        # 1|2 places *some* alt on each copy but the record key covers only one
-        # of them, so the carrying haplotype is still unknown.
-        parsed = self._parse("1|2:7", fmt="GT:PS")
-        self.assertFalse(parsed["homozygous_alt"])
-        self.assertIsNone(parsed["haplotypes"])
+    def test_homozygous_alt_state_belongs_only_to_called_allele(self):
+        parsed = self._parse("2/2")
+        self.assertEqual(set(parsed), {"1:100:A:ATT"})
+        self.assertTrue(parsed["1:100:A:ATT"]["homozygous_alt"])
+        self.assertEqual(parsed["1:100:A:ATT"]["haplotypes"], {0, 1})
 
-    def test_true_homozygous_alt_still_detected(self):
-        parsed = self._parse("1/1")
-        self.assertTrue(parsed["homozygous_alt"])
-        self.assertEqual(parsed["haplotypes"], {0, 1})
+    def test_partial_gt_retains_only_known_alt_and_caps_restoration(self):
+        for gt in ("./2", "2/.", ".|2", "2|."):
+            with self.subTest(gt=gt):
+                parsed = self._parse(f"{gt}:7", fmt="GT:PS")
+                self.assertEqual(set(parsed), {"1:100:A:ATT"})
+                call = parsed["1:100:A:ATT"]
+                self.assertEqual(call["gt"], gt)
+                self.assertTrue(call["incomplete"])
+                self.assertFalse(call["homozygous_alt"])
+                self.assertIsNone(call["haplotypes"])
+                cis = state("0|1", {1}, phase_set="7")
+                trans = state("1|0", {0}, phase_set="7")
+                for partner in (state("1/1", {0, 1}, True), cis, trans, call):
+                    self.assertEqual(classify_phase([call, partner]), POSSIBLE)
+                self.assertIsNone(classify_phase([call, cis, trans]))
+
+    def test_missing_reference_only_and_invalid_gt_supply_no_alt(self):
+        for gt in (".", "./.", ".|.", "0/.", ".|0", "0/0", "1/x", "1/3", "1/"):
+            with self.subTest(gt=gt):
+                self.assertEqual(self._parse(gt), {})
 
     def test_one_two_pair_with_homozygous_partner_is_partial_not_confirmed(self):
         # Audit repro (CORE-2): GT 1/2 + GT 1/1 was previously reported
@@ -234,7 +257,7 @@ class MultiAllelicGenotypeTests(unittest.TestCase):
                 "transcript_id": "ENST1",
                 "protein_haplotypes": [{
                     "name": "ENSP1:34AB>CD",
-                    "contributing_variants": ["v1", "v2"],
+                    "contributing_variants": ["1:100:A:AT", "v2"],
                     "samples": {"S1": 1},
                     "has_indel": 1,
                     "flags": ["indel"],
@@ -267,7 +290,7 @@ class TruncatedContainerTests(unittest.TestCase):
                 "transcript_id": "ENST1",
                 "protein_haplotypes": [{
                     "name": "ENSP1:34AB>CD",
-                    "contributing_variants": ["v1", "v2"],
+                    "contributing_variants": ["1:100:A:AT", "v2"],
                     "samples": {"S1": 1},
                     "has_indel": 1,
                     "flags": ["indel"],
@@ -387,18 +410,17 @@ class KeyContractTests(unittest.TestCase):
             matched = annotate_vcf(original, output, events)
             self.assertEqual(matched, set())
 
-    def test_no_id_multi_allelic_candidate_registers_per_alt_keys(self):
+    def test_no_id_multi_allelic_candidate_registers_only_carried_raw_and_minimal_keys(self):
         with tempfile.TemporaryDirectory() as directory:
             candidate = pathlib.Path(directory) / "candidate.vcf"
             candidate.write_text(
                 "##fileformat=VCFv4.2\n"
                 "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
-                "1\t100\t.\tA\tAT,ATT\t99\tPASS\t.\tGT\t0/1\n",
+                "1\t100\t.\tCA\tCAT,CATT\t99\tPASS\t.\tGT\t0/1\n",
                 encoding="utf-8",
             )
             genotypes, _ = parse_candidate_genotypes(candidate)
-            self.assertIn("1:100:A:AT", genotypes)
-            self.assertIn("1:100:A:ATT", genotypes)
+            self.assertEqual(set(genotypes), {"1:100:CA:CAT", "1:101:A:AT"})
 
 
 class IntegrationTests(unittest.TestCase):
@@ -580,6 +602,31 @@ class ContributorCheckTests(unittest.TestCase):
         )
         self.assertEqual(counts[CONFIRMED], 1)
         self.assertEqual(set(events), {"1:100:A:AT", "1:200:AG:A"})
+
+    def test_partial_carriers_get_possible_evidence_only_on_the_called_alt(self):
+        insertion = "1:100:A:AT"
+        deletion = "1:200:AG:A"
+        annotated = [
+            "1\t100\t.\tA\tAC,AT\t99\tPASS\tCSQ=C|frameshift_variant|ENST1|1,"
+            "T|frameshift_variant|ENST1|2\tGT:PS\t.|2:7\n",
+            "1\t200\t.\tAG\tA\t99\tPASS\tCSQ=-|frameshift_variant|ENST1|1\tGT:PS\t1|1:7\n",
+        ]
+        # bcftools norm -m -any maps .|2 to .|0 and .|1, respectively.
+        candidates = [
+            "1\t100\t1:100:A:AC\tA\tAC\t99\tPASS\t.\tGT:PS\t.|0:7\n",
+            "1\t100\t1:100:A:AT\tA\tAT\t99\tPASS\t.\tGT:PS\t.|1:7\n",
+            "1\t200\t1:200:AG:A\tAG\tA\t99\tPASS\t.\tGT:PS\t1|1:7\n",
+        ]
+        events, counts = self._run(annotated, candidates, [insertion, deletion])
+        self.assertEqual(set(events), {insertion, deletion})
+        for entries in events.values():
+            self.assertEqual([event["status"] for event in entries], [POSSIBLE])
+        self.assertEqual(counts["incomplete_genotype_haplotypes"], 1)
+        self.assertEqual(counts["missing_genotype_haplotypes"], 0)
+
+        events, counts = self._run(annotated, candidates, ["1:100:A:AC", deletion])
+        self.assertFalse(events)
+        self.assertEqual(counts["missing_genotype_haplotypes"], 1)
 
     def test_frameshift_on_another_transcript_does_not_count(self):
         events, counts = self._run(

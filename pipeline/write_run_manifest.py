@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import gzip
 import hashlib
 import json
 import os
@@ -179,6 +180,7 @@ def main() -> int:
     parser.add_argument("--base-dir", required=True)
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--reported-output", help="Published path when reading a staged VCF")
     parser.add_argument("--plan-json", required=True)
     parser.add_argument("--runtime", required=True)
     parser.add_argument("--image", required=True)
@@ -243,9 +245,29 @@ def main() -> int:
         "predictor_registry": predictor_registry,
         "references": reference_metadata,
     }
+    if args.reported_output:
+        manifest["output"]["path"] = args.reported_output
     from spliceai_dataset import prefer_legacy
     splice = dict((cfg.get("plugins") or {}).get("SpliceAI") or {})
     prefer_legacy(splice, lambda p: Path(p) if Path(p).is_absolute() else Path(args.base_dir) / p)
+    from gpn_star import MODELS as gpn_models, REVISION as gpn_revision, ROOT as gpn_root
+    enabled_gpn = [model for key, model in gpn_models.items()
+                   if ((cfg.get("wgs_review") or {}).get(key) or {}).get("enabled")]
+    if enabled_gpn:
+        manifest["gpn_star"] = {"assembly": "GRCh38", "revision": gpn_revision, "models": enabled_gpn,
+                                "pin_manifest_sha256": sha256(str(gpn_root / "config/gpn-star-grch38.json"))}
+        opener = gzip.open if args.output.endswith(".gz") else open
+        with opener(args.output, "rt") as source:
+            for line in source:
+                if not line.startswith("##"):
+                    break
+                for model in enabled_gpn:
+                    prefix = f"##GPNStar_{model}_package="
+                    if line.startswith(prefix):
+                        package = line[len(prefix):].strip()
+                        manifest["gpn_star"].setdefault("packages", {})[model] = package
+                        if package == "v100-exome":
+                            manifest["gpn_star"]["exome_pin_sha256"] = sha256(str(gpn_root / "config/gpn-star-v-exome.json"))
     configured_splice = (cfg.get("plugins") or {}).get("SpliceAI") or {}
     if splice.get("enabled") and splice.get("snv") != configured_splice.get("snv"):
         manifest["references"].append(file_metadata(splice["snv"]))

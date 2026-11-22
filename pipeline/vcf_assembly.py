@@ -8,19 +8,18 @@ user choice rather than guessing from variant coordinates.
 from __future__ import annotations
 
 import argparse
-import gzip
 import json
 import re
 from pathlib import Path
 
+if __package__:
+    from .vcf_io import open_text as text_open
+else:
+    from vcf_io import open_text as text_open
+
 
 ASSEMBLIES = {"GRCh37", "GRCh38"}
 CHR1_LENGTHS = {"249250621": "GRCh37", "248956422": "GRCh38"}
-
-
-def text_open(path: str | Path):
-    value = str(path)
-    return gzip.open(value, "rt") if value.lower().endswith(".gz") else open(value, "rt")
 
 
 def assembly_from_reference(value: str) -> str | None:

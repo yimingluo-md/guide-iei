@@ -51,29 +51,30 @@ done
 [[ -n "$OUTPUT" ]] || die "need -o/--output VCF"
 [[ -f "$INPUT"  ]] || die "input not found: $INPUT"
 [[ -f "$CONFIG" ]] || die "config not found: $CONFIG"
-# Post-processing (PTC 50-bp, haplotypes, aa-match, ClinGen, QC) is
-# VCF-only; a tab run would produce output the rest of the pipeline cannot
-# consume. Refuse up front instead of failing midway. The real key is
-# output.format; run.format is also checked in case of older configs.
-for FORMAT_KEY in output.format run.format; do
-    RUN_FORMAT="$(yaml_get "$CONFIG" "$FORMAT_KEY")"
-    if [[ -n "$RUN_FORMAT" && "$RUN_FORMAT" != "vcf" ]]; then
-        die "${FORMAT_KEY}: ${RUN_FORMAT} is not supported by this runner — output is VCF-only"
-    fi
-done
+python3 - "$ROOT" "$CONFIG" "$OUTPUT" "$INPUT" <<'PYCONFIG'
+import sys, yaml
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + "/pipeline")
+from vcf_io import validate_output_path
+output = Path(sys.argv[3]).resolve()
+if output.exists() and output.samefile(sys.argv[4]):
+    sys.exit(f"ERROR input and output resolve to the same file: {output}")
+with open(sys.argv[2]) as stream:
+    config = yaml.safe_load(stream)
+for section in ("output", "run"):
+    fmt = (config.get(section) or {}).get("format")
+    if fmt and fmt != "vcf":
+        sys.exit(f"ERROR {section}.format: {fmt} is not supported by this runner — output is VCF-only")
+try:
+    validate_output_path(sys.argv[3], (config.get("output") or {}).get("compress"))
+except ValueError as exc:
+    sys.exit(f"ERROR {exc}")
+PYCONFIG
 INPUT="$(cd "$(dirname "$INPUT")" && pwd)/$(basename "$INPUT")"
-# INPUT is reassigned through liftover/normalisation/pre-filter stages; the
-# reproducibility manifest at the end records the file the operator supplied.
 SOURCE_INPUT="$INPUT"
 mkdir -p "$(dirname "$OUTPUT")"
 OUTPUT="$(cd "$(dirname "$OUTPUT")" && pwd)/$(basename "$OUTPUT")"
-# VEP is invoked with --force_overwrite: identical input and output paths
-# would truncate the only source VCF. String equality catches the direct
-# case; -ef additionally catches symlinks and hard links to the same file.
-if [[ "$INPUT" == "$OUTPUT" || "$INPUT" -ef "$OUTPUT" ]]; then
-    die "input and output resolve to the same file: $INPUT — the run would overwrite the source VCF"
-fi
-DELIVERABLE_SIDECAR="${OUTPUT}.deliverable"
+REQUESTED_OUTPUT="$OUTPUT"
 AAMATCH_FINAL="${OUTPUT%.vcf.gz}.aamatch.vcf.gz"
 [[ "$OUTPUT" == *.vcf.gz ]] || AAMATCH_FINAL="${OUTPUT%.vcf}.aamatch.vcf"
 if [[ "$INPUT" == "$AAMATCH_FINAL" || "$INPUT" -ef "$AAMATCH_FINAL" ]]; then
@@ -85,7 +86,7 @@ INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="$
 # Shared with UI preflight, but scan every row and the gzip trailer here.
 # No compression, indexing, liftover, or filtering may run on unchecked input.
 log "validating input VCF structure (complete file)"
-python3 "${ROOT}/pipeline/validate_input_vcf.py" --vcf "$INPUT" \
+OBSERVED_CONTIGS="$(python3 "${ROOT}/pipeline/validate_input_vcf.py" --vcf "$INPUT" --list-contigs)" \
     || die "input VCF validation failed; no annotation was started"
 
 # --- runtime / image from config ---------------------------------------------
@@ -226,6 +227,27 @@ else
 
 fi
 
+# Resolve aliases before deciding which records to keep. Reuse the complete
+# validation scan unless liftover has replaced the input with a different VCF.
+if [[ "$DRY" != 1 ]]; then
+    CHROM_MAP="${RUN_SCRATCH}/contigs.tsv"
+    EXTRA_HEADER="${RUN_SCRATCH}/missing-contigs.hdr"
+    MAP_ARGS=(--vcf "$INPUT" --output "$CHROM_MAP" --extra-header "$EXTRA_HEADER")
+    [[ -z "$REGION_BED" ]] || MAP_ARGS+=(--bed "$REGION_BED")
+    [[ "$INPUT" != "$SOURCE_INPUT" ]] || MAP_ARGS+=(--observed-stdin)
+    python3 "${ROOT}/pipeline/contig_map.py" "${MAP_ARGS[@]}" <<< "$OBSERVED_CONTIGS" || die "invalid chromosome mapping"
+    if [[ -s "$EXTRA_HEADER" || -s "$CHROM_MAP" ]]; then
+        NORMALIZED="${RUN_SCRATCH}/contigs-normalized.vcf.gz"
+        python3 "${ROOT}/pipeline/contig_map.py" --apply --vcf "$INPUT" --output "$CHROM_MAP" --extra-header "$EXTRA_HEADER" \
+            | HTS_STREAM_INPUT=1 hts bgzip -c > "$NORMALIZED" || die "contig-name normalization failed"
+        # A sorted source needs no second compression pass. Unsorted sources
+        # take the usual sort-and-index path below.
+        hts bcftools index -c "$NORMALIZED" >/dev/null 2>&1 || true
+        INPUT="$NORMALIZED"
+        log "prepared chromosome labels and declarations for annotation"
+    fi
+fi
+
 # Whole-genome intake always enters VEP through a validated coordinate-sorted
 # BGZF + tabix/CSI source. Reuse a valid source index; otherwise create an
 # indexed working copy without changing the submitted VCF.
@@ -277,24 +299,6 @@ if [[ ${#VIEW_ARGS[@]} -gt 0 ]]; then
     FILT="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.prefiltered.vcf.gz"
     POSTPROC_TMPS+=("$FILT")
     if [[ "$DRY" != "1" ]]; then
-        # Normalize only contig labels when a GRCh38 VCF uses UCSC chr1/chrM
-        # names but the Ensembl region BED/cache uses 1/MT (or vice versa).
-        # Coordinates, alleles, INFO and sample FORMAT fields are unchanged.
-        if [[ -n "$REGION_BED" ]]; then
-            CHROM_MAP="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.chr-map.tsv"
-            POSTPROC_TMPS+=("$CHROM_MAP")
-            python3 "${ROOT}/pipeline/contig_map.py" \
-                --vcf "$INPUT" --bed "$REGION_BED" --output "$CHROM_MAP"
-            if [[ -s "$CHROM_MAP" ]]; then
-                NORMALIZED="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.contigs-normalized.vcf.gz"
-                POSTPROC_TMPS+=("$NORMALIZED")
-                hts bcftools annotate --rename-chrs "$CHROM_MAP" -O z -o "$NORMALIZED" "$INPUT" \
-                    || die "contig-name normalization failed"
-                hts tabix -p vcf -f "$NORMALIZED"
-                INPUT="$NORMALIZED"
-                log "contig labels normalized to match the coding-region BED"
-            fi
-        fi
         # bcftools view -R needs an indexed input. PASS-only filtering can read
         # a plain or unindexed VCF directly.
         if [[ -n "$REGION_BED" ]] && [[ ! -f "${INPUT}.tbi" && ! -f "${INPUT}.csi" ]]; then
@@ -412,6 +416,7 @@ clinical_protein_labels_fingerprint() {
     echo "${line:-unknown}"
 }
 
+AA_REF_FORMAT="aa9-provenance-v2-mane-and-pick"
 AA_REF=""
 CLINGEN_AA_REF=""
 GENIA_AA_REF=""
@@ -440,7 +445,6 @@ if [[ "$DRY" != "1" ]] \
     # rebuild once even though the ClinVar release is unchanged — otherwise
     # the newer matching guards stay silently inactive until the next
     # release.
-    AA_REF_FORMAT="aa9-provenance-v1-pick-allele-gene"
     # Bind the stamp to the ClinVar CONTENT, not just its release string: a
     # replaced or damaged ClinVar VCF under an unchanged release name must
     # trigger a rebuild (the same rule the ClinGen updater applies).
@@ -497,7 +501,7 @@ ensure_clinical_protein_catalog() {
     # from: the annotation cannot run without it.
     cache_tag="$(vep_cache_tag "$cache_dir")" \
         || die "cannot identify the VEP cache for the $label protein-match catalog"
-    expected="${source_sha} aa9-provenance-v1-pick-allele-gene ${cache_tag} labels-$(clinical_protein_labels_fingerprint)"
+    expected="${source_sha} ${AA_REF_FORMAT} ${cache_tag} labels-$(clinical_protein_labels_fingerprint)"
     if [[ -s "$catalog_path" && -f "$stamp_path" ]] \
        && [[ "$(cat "$stamp_path" 2>/dev/null)" == "$expected" ]]; then
         CATALOG_SOURCE_SHA="$source_sha"
@@ -577,17 +581,36 @@ fi
 # ============================================================================ #
 # 2. Build VEP argv + mounts (JSON) from the config
 # ============================================================================ #
+GPN_STAGE=no
+GPN_PYTHON="${IEI_GPN_PYTHON:-${IEI_PYTHON_BIN:-python3}}"
+if [[ "$(yaml_get "$CONFIG" wgs_review.gpn_star_m.enabled)" == "true" || "$(yaml_get "$CONFIG" wgs_review.gpn_star_v.enabled)" == "true" ]]; then
+    GPN_STAGE=yes
+    log "=== Matching GPN-Star GRCh38 SNV scores ==="
+elif [[ "$DRY" != 1 ]]; then
+    GPN_STAGE="$("$GPN_PYTHON" "${ROOT}/pipeline/gpn_star.py" has-fields "$INPUT")" || die "Could not inspect GPN-Star headers"
+    if [[ "$GPN_STAGE" == yes ]]; then log "Removing previous GPN-Star scores (models disabled)"; fi
+fi
+if [[ "$GPN_STAGE" == yes ]]; then
+    GPN_SCOPE=whole_genome
+    if [[ "$WGS_MODE" != 1 ]]; then
+        GPN_SCOPE=exome
+        [[ "$(yaml_get "$CONFIG" wgs_review.gpn_star_m.enabled)" != "true" ]] || die "GPN-Star-M requires whole-genome mode"
+    fi
+    if [[ "$DRY" != 1 ]]; then
+        GPN_INPUT="${WORKDIR}/${INPUT_BASE}.${RUN_TOKEN}.gpn.vcf"
+        POSTPROC_TMPS+=("$GPN_INPUT" "${GPN_INPUT}.gz")
+        "$GPN_PYTHON" "${ROOT}/pipeline/gpn_star.py" annotate "$CONFIG" "$INPUT" --scope "$GPN_SCOPE" > "$GPN_INPUT" || die "GPN-Star annotation failed"
+        publish_bgzf "$GPN_INPUT" "${GPN_INPUT}.gz" vcf || die "Could not index GPN-Star annotated input"
+        INPUT="${GPN_INPUT}.gz"
+    fi
+fi
+
 log "=== building VEP command from config ==="
-# VEP writes to a run-scoped temporary name beside the deliverable; the file
-# is promoted to $OUTPUT only after validate_vep_output.py accepts it. A run
-# that is killed or fails validation therefore never leaves a partial,
-# look-alike VCF under the deliverable's name (audit M16). VEP derives its
-# _summary.html/_warnings.txt sidecars from the output name, so they are
-# renamed alongside.
+# Keep VEP's run-specific name visible to the progress tracker. Validated
+# output and VEP sidecars then enter private staging for post-processing.
 case "$OUTPUT" in
     *.vcf.gz) VEP_TMP="${OUTPUT%.vcf.gz}.${RUN_TOKEN}.vep-tmp.vcf.gz" ;;
     *.vcf)    VEP_TMP="${OUTPUT%.vcf}.${RUN_TOKEN}.vep-tmp.vcf" ;;
-    *)        VEP_TMP="${OUTPUT}.${RUN_TOKEN}.vep-tmp" ;;
 esac
 POSTPROC_TMPS+=("$VEP_TMP" "${VEP_TMP}_summary.html" "${VEP_TMP}_warnings.txt")
 # --verify-integrity: hash every indexed-score dataset against its manifest
@@ -699,7 +722,7 @@ fi
 
 # VEP only creates the warnings sidecar when warnings occur. Remove sidecars
 # from a prior failed/forced run so they cannot be mistaken for this run's.
-rm -f "${OUTPUT}_warnings.txt" "${VEP_TMP}_warnings.txt" "${VEP_TMP}_summary.html"
+rm -f "${VEP_TMP}_warnings.txt" "${VEP_TMP}_summary.html"
 # The workbench progress tracker follows this line to count records as
 # they are written (job_progress.py); keep its wording.
 log "VEP writing to $VEP_TMP"
@@ -709,11 +732,12 @@ log "VEP finished -> $VEP_TMP (validating before promotion)"
 python3 "${ROOT}/pipeline/validate_vep_output.py" \
     --config "$CONFIG" --vcf "$VEP_TMP" \
     || die "required annotation validation failed; the unvalidated VEP output was not promoted to $OUTPUT"
-# Point of no return: the deliverable is about to be (re)written, so a
-# previous run's deliverable sidecar is now stale. Until this moment a killed
-# run or a validation failure leaves the previous result and its pointer
-# intact.
-rm -f "$DELIVERABLE_SIDECAR"
+# Keep validated intermediates private until every required annotation succeeds.
+if [[ "$VEP_TMP" == *.gz ]]; then
+    bgzf_complete "$VEP_TMP" || die "validated VEP output is missing its BGZF EOF marker"
+fi
+mkdir "$RUN_SCRATCH/results"
+OUTPUT="$RUN_SCRATCH/results/$(basename "$REQUESTED_OUTPUT")"
 mv -f "$VEP_TMP" "$OUTPUT" || die "could not promote validated VEP output to $OUTPUT"
 [[ -e "${VEP_TMP}_summary.html" ]] && mv -f "${VEP_TMP}_summary.html" "${OUTPUT}_summary.html"
 [[ -e "${VEP_TMP}_warnings.txt" ]] && mv -f "${VEP_TMP}_warnings.txt" "${OUTPUT}_warnings.txt"
@@ -731,7 +755,7 @@ if [[ "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.enabled)" == "true" 
     PTC_AUDIT="${OUTPUT}.loftee_ptc50.audit.json"
     if python3 "${ROOT}/pipeline/loftee_ptc_50bp.py" \
         --config "$CONFIG" --input "$OUTPUT" --output "$PTC_TMP" \
-        --reported-output "$OUTPUT" --audit-json "$PTC_AUDIT"; then
+        --reported-output "$REQUESTED_OUTPUT" --audit-json "$PTC_AUDIT"; then
         if [[ "$OUTPUT" == *.gz ]]; then
             publish_bgzf "$PTC_TMP" "$OUTPUT" vcf || die "PTC 50-bp indexed publication failed"
         else
@@ -1009,7 +1033,7 @@ fi
 # ============================================================================ #
 if [[ "$(yaml_get "$CONFIG" annotation_qc.enabled)" != "false" ]]; then
     log "=== annotation coverage report ==="
-    QC_ARGS=( --config "$CONFIG" --vcf "$FINAL_OUTPUT" )
+    QC_ARGS=( --config "$CONFIG" --vcf "$FINAL_OUTPUT" --reported-vcf "$WORKDIR/$(basename "$FINAL_OUTPUT")" )
     [[ -n "$FILTER_POLICY_NOTE" ]] && QC_ARGS+=( --note "$FILTER_POLICY_NOTE" )
     python3 "${ROOT}/pipeline/annotation_qc.py" "${QC_ARGS[@]}" \
         || die "annotation coverage report generation failed"
@@ -1028,20 +1052,20 @@ else
     NOTICE_PRESENT="$(grep -c '^##GUIDE_IEI_notice=' "$FINAL_OUTPUT" || true)"
 fi
 if [[ "${NOTICE_PRESENT:-0}" -eq 0 ]]; then
-    NOTICE_HDR="${FINAL_OUTPUT%.gz}.notice.$$.hdr"
-    NOTICE_TMP="${FINAL_OUTPUT%.gz}.notice.$$.tmp.vcf.gz"
-    POSTPROC_TMPS+=("${FINAL_OUTPUT%.gz}.notice.$$.tmp")
-    printf '%s' "$NOTICE_HEADER_LINE" > "$NOTICE_HDR"
+    NOTICE_HDR="${RUN_SCRATCH}/notice.hdr"
+    printf '%s\n' "$NOTICE_HEADER_LINE" > "$NOTICE_HDR"
     if [[ "$FINAL_OUTPUT" == *.gz ]]; then
+        NOTICE_TMP="${RUN_SCRATCH}/notice.tmp.vcf.gz"
         if hts bcftools annotate -h "$NOTICE_HDR" -O z -o "$NOTICE_TMP" "$FINAL_OUTPUT" \
-            && bgzf_complete "$NOTICE_TMP" && hts tabix -p vcf -f "$NOTICE_TMP" \
-            && mv "${NOTICE_TMP}.tbi" "${FINAL_OUTPUT}.tbi" && mv "$NOTICE_TMP" "$FINAL_OUTPUT"; then
+            && bgzf_complete "$NOTICE_TMP"; then
+            rm -f "${FINAL_OUTPUT}.tbi"
+            mv "$NOTICE_TMP" "$FINAL_OUTPUT"
             log "research-use notice added to the VCF header"
         else
             warn "could not add the research-use notice header (the annotated VCF itself is complete)"
         fi
     else
-        NOTICE_PLAIN="${FINAL_OUTPUT}.notice.$$.tmp"
+        NOTICE_PLAIN="${RUN_SCRATCH}/notice.tmp.vcf"
         if awk -v notice="$(printf '%s' "$NOTICE_HEADER_LINE" | tr -d '\n')" '
             BEGIN { done = 0 }
             /^#CHROM/ && !done { print notice; done = 1 }
@@ -1067,13 +1091,19 @@ case "$RUNTIME" in
     docker|podman)
         IMAGE_ID="$("$RUNTIME" image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null || echo unknown)" ;;
 esac
-# The deliverable sidecar names the file this run actually produced, so the
-# service never has to guess from mtimes (equal timestamps on coarse
-# filesystems picked a stale .aamatch sibling).
-printf '%s\n' "$(basename "$FINAL_OUTPUT")" > "$DELIVERABLE_SIDECAR" || true
+# Post-processing may already have indexed the finished bytes. The VEP-only
+# and notice-rewrite paths still need an index. Use a fresh container path.
+if [[ "$FINAL_OUTPUT" == *.gz && ! -s "${FINAL_OUTPUT}.tbi" ]]; then
+    INDEX_INPUT="$RUN_SCRATCH/final-to-index.vcf.gz"
+    mv "$FINAL_OUTPUT" "$INDEX_INPUT"
+    index_bgzf "$INDEX_INPUT" vcf "$RUN_SCRATCH/final-index.log" || die "final VCF indexing failed"
+    mv "$INDEX_INPUT" "$FINAL_OUTPUT"
+    mv "${INDEX_INPUT}.tbi" "${FINAL_OUTPUT}.tbi"
+fi
+PUBLIC_FINAL="$WORKDIR/$(basename "$FINAL_OUTPUT")"
 if python3 "${ROOT}/pipeline/write_run_manifest.py" \
     --config "$CONFIG" --base-dir "$ROOT" \
-    --input "$SOURCE_INPUT" --output "$FINAL_OUTPUT" \
+    --input "$SOURCE_INPUT" --output "$FINAL_OUTPUT" --reported-output "$PUBLIC_FINAL" \
     --plan-json "$PLAN_JSON" \
     --runtime "$RUNTIME" --image "$IMAGE" --image-id "$IMAGE_ID" \
     --clinvar-release "${AA_MATCH_RELEASE:-$CLINVAR_RELEASE}" \
@@ -1081,9 +1111,12 @@ if python3 "${ROOT}/pipeline/write_run_manifest.py" \
     --resolved-assembly "$RESOLVED_ASSEMBLY" \
     --filter-policy "${FILTER_LABELS[*]:-none}" \
     --region-bed "${REGION_BED:-}"; then
-    log "run manifest -> ${FINAL_OUTPUT}.run_manifest.json"
+    log "run manifest prepared for ${PUBLIC_FINAL}.run_manifest.json"
 else
+    rm -f "${FINAL_OUTPUT}.run_manifest.json"
     warn "run manifest could not be written (the annotated VCF itself is complete)"
 fi
 
-log "DONE. Annotated VCF: $FINAL_OUTPUT"
+python3 "${ROOT}/pipeline/publish_annotation.py" "$FINAL_OUTPUT" "$REQUESTED_OUTPUT" \
+    || die "could not publish final annotated VCF"
+log "DONE. Annotated VCF: $PUBLIC_FINAL"

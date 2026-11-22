@@ -270,7 +270,7 @@ function proteinPositionFromHgvsp(value: string): string {
   return proteinChange.match(/(?:p\.)?[A-Za-z*?]*(\d+)/)?.[1] ?? "";
 }
 
-export type CohortCarrier = { sample: string; evidence: GenotypeEvidence };
+export type CohortCarrier = { sample: string; source?: string; evidence: GenotypeEvidence };
 
 export type PredictorObservation = {
   scope:
@@ -448,6 +448,10 @@ export function predictorBinaryClassification(
   };
 }
 
+export type TranscriptEvidence = Pick<VariantRow,
+  "key" | "gene" | "transcript" | "consequence" | "hgvsC" | "hgvsP" | "mane" | "maneSelect" | "picked"
+>;
+
 export type VariantRow = {
   key: string;
   source: string;
@@ -458,7 +462,7 @@ export type VariantRow = {
   /** True only for the MANE Select transcript (mane also covers Plus Clinical). */
   maneSelect?: boolean;
   /** One-row-per-variant display: the other transcript/gene rows collapsed into this one. */
-  collapsedTranscriptRows?: VariantRow[];
+  collapsedTranscriptRows?: TranscriptEvidence[];
   libraryDatasetId?: string;
   librarySampleId?: string;
   libraryIndividualId?: string | null;
@@ -469,7 +473,7 @@ export type VariantRow = {
   /** This browser row came from the bounded MANE/PICK/per-gene view. */
   compactTranscriptView?: boolean;
   /** Status of restoring every transcript annotation for this one variant. */
-  transcriptDetailStatus?: "loading" | "loaded" | "unavailable";
+  transcriptDetailStatus?: "loaded" | "unavailable";
   transcriptDetailError?: string;
   id: string;
   chrom: string;
@@ -487,6 +491,8 @@ export type VariantRow = {
   qual?: number | null;
   gene: string;
   geneId?: string;
+  featureType?: string;
+  transcriptStrand?: string;
   transcript?: string;
   biotype?: string;
   exon?: string;
@@ -522,7 +528,7 @@ export type VariantRow = {
   lofteeFlags: string;
   loftee50bp: string;
   loftee50bpOriginal: string;
-  loftee50bpChanged: boolean;
+  loftee50bpChanged: boolean | null;
   ptcDistanceFromLastExon: number | null;
   ptcCalcStatus: string;
   clinvar: string;
@@ -585,6 +591,7 @@ export type VariantRow = {
   duplicateRecordCount?: number;
   duplicateRecordKind?: "duplicate_record" | "liftover_collision";
   sourceRecordOrdinal?: number;
+  sourceRecordNumber?: number;
   sampleGenotypes?: Record<string, GenotypeEvidence>;
   siteDepth?: number | null;
   qd?: number | null;
@@ -603,6 +610,7 @@ export type VariantRow = {
 };
 
 export type ImportSummary = {
+  annotationFields?: string[];
   files: number;
   samples: number;
   cohortMode?: boolean;
@@ -737,6 +745,12 @@ export function genotypeQcFailures(
   return failures;
 }
 
+export function carrierQcFailures(
+  { evidence }: Pick<CohortCarrier, "evidence">, row: VariantRow, settings: VariantQcSettings,
+) {
+  return genotypeQcFailures({ ...evidence, genotype: evidence.gt }, row, settings);
+}
+
 export function variantQcFailures(
   row: VariantRow,
   settings: VariantQcSettings,
@@ -752,13 +766,7 @@ export function variantQcFailures(
   // passes when ANY carrier passes, and fails only when every carrier does.
   if (!row.carriers || row.carriers.length === 0) return own;
   for (const carrier of row.carriers) {
-    const evidence = carrier.evidence;
-    const failures = genotypeQcFailures({
-      dp: evidence.dp, gq: evidence.gq, adRef: evidence.adRef,
-      adAlt: evidence.adAlt, alleleBalance: evidence.alleleBalance,
-      genotype: evidence.gt, genotypeClass: evidence.genotypeClass,
-      genotypeFilter: evidence.genotypeFilter,
-    }, row, settings);
+    const failures = carrierQcFailures(carrier, row, settings);
     if (failures.length === 0) return [];
   }
   return [
@@ -791,8 +799,7 @@ export function isHeterozygousGenotype(genotype: string) {
 export function canonicalVariantKey(
   chrom: string, pos: number, ref: string, alt: string,
 ): string {
-  let contig = chrom.replace(/^chr/i, "").toUpperCase();
-  if (contig === "M") contig = "MT";
+  const contig = normalizedContig(chrom);
   let position = pos;
   let reference = ref.toUpperCase();
   let alternate = alt.toUpperCase();
@@ -814,24 +821,88 @@ export function canonicalVariantKey(
   return `${contig}:${position}:${reference}:${alternate}`;
 }
 
-export function candidateCompoundHetKeys(rows: VariantRow[]) {
-  const groups = new Map<string, Set<string>>();
-  rows.filter((row) => isHeterozygousGenotype(row.genotype)).forEach((row) => {
-    if (!row.gene || ["—", ".", "-"].includes(row.gene)) return;
-    const key = `${row.sample}:${row.gene}:${normalizedContig(row.chrom)}`;
-    if (!groups.has(key)) groups.set(key, new Set());
-    groups.get(key)!.add(`${normalizedContig(row.chrom)}:${row.pos}:${row.ref}:${row.alt}`);
-  });
-  return new Set(
-    [...groups.entries()]
-      .filter(([, variants]) => variants.size >= 2)
-      .map(([key]) => key.slice(0, key.lastIndexOf(":"))),
-  );
+export function normalizedVariantKey(row: Pick<VariantRow, "chrom" | "pos" | "ref" | "alt">) {
+  return canonicalVariantKey(row.chrom, row.pos, row.ref, row.alt);
+}
+
+export type SampleSex = "male" | "female" | "unknown";
+
+export function transmissionContext(row: Pick<VariantRow, "chrom" | "pos">, sex: SampleSex = "unknown") {
+  const contig = normalizedContig(row.chrom);
+  if (contig === "MT") return "mitochondrial";
+  if (contig !== "X" && contig !== "Y") return "diploid";
+  if (contig === "Y" && sex !== "male") return "uncertain";
+  // GRCh38 one-based, inclusive PAR intervals.
+  const [par2Start, par2End] = contig === "X"
+    ? [155_701_383, 156_030_895] : [56_887_903, 57_217_415];
+  if ((row.pos >= 10_001 && row.pos <= 2_781_479)
+    || (row.pos >= par2Start && row.pos <= par2End)) return "diploid";
+  if (contig === "Y") return "paternal";
+  if (sex === "unknown") return "uncertain";
+  return sex === "male" ? "maternal" : "diploid";
+}
+
+export function hasHomozygousCarrier(row: VariantRow, sex: SampleSex, qc?: VariantQcSettings) {
+  if (transmissionContext(row, sex) !== "diploid") return false;
+  const isHomAlt = (gt: string) => /^([1-9]\d*)[|/]\1$/.test(gt);
+  if (!row.carriers) return isHomAlt(row.genotype);
+  return row.carriers.some(({ evidence }) => evidence.called && evidence.carrier && isHomAlt(evidence.gt)
+    && (!qc || !carrierQcFailures({ evidence }, row, qc).length));
+}
+
+export function candidateCompoundHetKeys(rows: VariantRow[], qc?: VariantQcSettings) {
+  type Entry = { rowKey: string; allele: string; haplotype: string };
+  const groups = new Map<string, Entry[]>();
+  for (const row of rows) {
+    if (!row.gene || ["—", ".", "-"].includes(row.gene) || transmissionContext(row) !== "diploid") continue;
+    const allele = normalizedVariantKey(row);
+    const add = (sample: string, gt: string, phaseSet?: string, hap?: number | null, source?: string) => {
+      if (!isHeterozygousGenotype(gt)) return;
+      const key = JSON.stringify([sample, row.gene, normalizedContig(row.chrom)]);
+      const haplotype = source && gt.includes("|") && phaseSet && phaseSet !== "." && hap != null
+        ? JSON.stringify([source, phaseSet, hap]) : "";
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push({ rowKey: row.key, allele, haplotype });
+    };
+    if (row.carriers) {
+      for (const carrier of row.carriers) {
+        const { evidence } = carrier;
+        if (!evidence.called || !evidence.carrier || (qc && carrierQcFailures(carrier, row, qc).length)) continue;
+        add(carrier.sample, evidence.gt, evidence.phaseSet, evidence.phaseHaplotype, carrier.source);
+      }
+    } else {
+      add(row.sample, row.genotype, row.phaseSet, row.phaseHaplotype, row.source);
+    }
+  }
+  const keys = new Set<string>();
+  for (const entries of groups.values()) {
+    // Count distinct alleles inside and outside each phased haplotype.
+    // This avoids generating every pair for large unphased gene groups.
+    if (entries.length < 2) continue;
+    const haplotypes = new Map<string, Set<string>>();
+    for (const { allele, haplotype } of entries) {
+      if (!haplotypes.has(allele)) haplotypes.set(allele, new Set());
+      haplotypes.get(allele)!.add(haplotype);
+    }
+    if (haplotypes.size < 2) continue;
+    const exclusiveCounts = new Map<string, number>();
+    for (const haps of haplotypes.values()) {
+      if (haps.size !== 1) continue;
+      const [hap] = haps;
+      exclusiveCounts.set(hap, (exclusiveCounts.get(hap) ?? 0) + 1);
+    }
+    for (const { rowKey, allele, haplotype } of entries) {
+      const otherAllelesInCis = (exclusiveCounts.get(haplotype) ?? 0)
+        - Number(haplotypes.get(allele)!.size === 1);
+      if (!haplotype || otherAllelesInCis < haplotypes.size - 1) keys.add(rowKey);
+    }
+  }
+  return keys;
 }
 
 function transcriptGroupKey(row: VariantRow) {
   return [
-    row.source, row.chrom, row.pos, row.ref, row.alt, row.gene,
+    row.source, normalizedVariantKey(row), row.gene,
   ].join(":");
 }
 
@@ -841,6 +912,27 @@ function transcriptGroupKey(row: VariantRow) {
  * PICK=1 fallback selected by --flag_pick_allele_gene.
  */
 const IMPACT_SEVERITY: Record<string, number> = { HIGH: 0, MODERATE: 1, LOW: 2, MODIFIER: 3 };
+
+// Use the same normalized sample/allele identity in the variant table and gene summaries.
+export function reviewCallKey(row: VariantRow) {
+  return JSON.stringify([row.sample, normalizedVariantKey(row)]);
+}
+
+export function summarizeReviewGenes(rows: VariantRow[]) {
+  const genes = new Map<string, { calls: Set<string>; impact: VariantRow["impact"] }>();
+  for (const row of rows) {
+    if (!row.gene || ["—", ".", "-"].includes(row.gene)) continue;
+    let group = genes.get(row.gene);
+    if (!group) {
+      group = { calls: new Set(), impact: row.impact };
+      genes.set(row.gene, group);
+    }
+    group.calls.add(reviewCallKey(row));
+    if ((IMPACT_SEVERITY[row.impact] ?? 4) < (IMPACT_SEVERITY[group.impact] ?? 4)) group.impact = row.impact;
+  }
+  return Array.from(genes, ([gene, group]) => ({ gene, count: group.calls.size, impact: group.impact }))
+    .sort((a, b) => b.count - a.count || a.gene.localeCompare(b.gene));
+}
 
 /**
  * One-row-per-variant display collapse. Filters run on the full row set
@@ -853,8 +945,10 @@ const IMPACT_SEVERITY: Record<string, number> = { HIGH: 0, MODERATE: 1, LOW: 2, 
 export function collapseToOneRowPerVariant(rows: VariantRow[]): VariantRow[] {
   const groups = new Map<string, VariantRow[]>();
   for (const row of rows) {
-    const key = `${row.sample}:${row.chrom}:${row.pos}:${row.ref}:${row.alt}`;
-    groups.set(key, [...(groups.get(key) ?? []), row]);
+    const key = reviewCallKey(row);
+    const group = groups.get(key);
+    if (group) group.push(row);
+    else groups.set(key, [row]);
   }
   const rank = (row: VariantRow) => [
     row.maneSelect ? 0 : row.mane ? 1 : 2,
@@ -872,6 +966,20 @@ export function collapseToOneRowPerVariant(rows: VariantRow[]): VariantRow[] {
   });
 }
 
+export function withTranscriptEvidence(row: VariantRow, evidence: TranscriptEvidence[]): VariantRow {
+  // A restored record has its own file name and CSQ ordinals, so its row keys
+  // can differ from the compact review. Exclude only the annotation shown.
+  const shown = evidence.find((item) => item.gene === row.gene && item.transcript === row.transcript
+    && item.consequence === row.consequence && item.hgvsC === row.hgvsC && item.hgvsP === row.hgvsP);
+  return {
+    ...row,
+    compactTranscriptView: false,
+    transcriptDetailStatus: "loaded",
+    transcriptDetailError: undefined,
+    collapsedTranscriptRows: evidence.filter((item) => item !== shown),
+  };
+}
+
 export function preferredClinicalTranscriptRows(rows: VariantRow[]) {
   const maneGroups = new Set(
     rows.filter((row) => row.mane).map(transcriptGroupKey),
@@ -879,6 +987,16 @@ export function preferredClinicalTranscriptRows(rows: VariantRow[]) {
   return rows.filter(
     (row) => row.mane || (row.picked && !maneGroups.has(transcriptGroupKey(row))),
   );
+}
+
+const GENELESS_REGULATORY_TERMS = new Set([
+  "intergenic_variant", "regulatory_region_variant", "regulatory_region_ablation",
+  "regulatory_region_amplification", "TF_binding_site_variant", "TFBS_ablation", "TFBS_amplification",
+]);
+
+export function isGenelessRegulatoryConsequence(row: VariantRow) {
+  if ((row.gene && row.gene !== "—") || row.geneId || row.featureType === "Transcript") return false;
+  return row.consequence.split(/[&,]/).every(term => GENELESS_REGULATORY_TERMS.has(term));
 }
 
 const EMPTY = new Set(["", ".", "-"]);
@@ -925,6 +1043,10 @@ export type ParseVcfOptions = {
   clinicalTranscriptsOnly?: boolean;
 };
 
+function consequenceGene(record: Record<string, string>) {
+  return first(record, ["Gene", "SYMBOL", "HGNC"]);
+}
+
 function compactClinicalConsequences(
   consequences: Record<string, string>[],
   alleleInfo: Record<string, string>,
@@ -932,7 +1054,7 @@ function compactClinicalConsequences(
   const groups = new Map<string, Record<string, string>[]>();
   consequences.forEach((csq) => {
     const combined = { ...alleleInfo, ...csq };
-    const gene = first(combined, ["SYMBOL", "Gene", "HGNC"]) || "intergenic";
+    const gene = consequenceGene(combined) || "intergenic";
     groups.set(gene, [...(groups.get(gene) ?? []), csq]);
   });
   return [...groups.values()].flatMap((entries) => {
@@ -1111,10 +1233,7 @@ function infoMap(raw: string) {
   return map;
 }
 
-function alleleInfoReasons(
-  info: Record<string, string>, key: string, altIndex: number,
-) {
-  const value = (info[key] ?? "").split(",")[altIndex] ?? "";
+function alleleInfoReasons(value: string | undefined) {
   if (!value || EMPTY.has(value)) return [];
   return value.split("&").map(decode).filter((item) => item && !EMPTY.has(item));
 }
@@ -1302,6 +1421,7 @@ export const POPULATION_FREQUENCY_GROUPS: ReadonlyArray<
   ["max_af", ["MAX_AF"]],
   ["gnomad_global", ["gnomADg_AF", "gnomADe_AF", "gnomAD_AF"]],
 ];
+const populationFrequencyKeys = new Set(POPULATION_FREQUENCY_GROUPS.flatMap(([, keys]) => keys));
 export const POPULATION_FREQUENCY_SOURCE_LABELS: Record<PopulationFrequencySource, string> = {
   gnomad_popmax: "gnomAD popmax",
   max_af: "VEP MAX_AF (highest AF across 1000 Genomes, ESP and gnomAD)",
@@ -1312,9 +1432,14 @@ export const POPULATION_FREQUENCY_SOURCE_LABELS: Record<PopulationFrequencySourc
 
 export function populationFrequency(
   record: Record<string, string>,
+  transcripts: Record<string, string>[] = [],
 ): { value: number | null; source: PopulationFrequencySource } {
   for (const [source, keys] of POPULATION_FREQUENCY_GROUPS) {
-    const value = maximum(record, [...keys]);
+    let value = maximum(record, keys);
+    for (const transcript of transcripts) {
+      const af = maximum(transcript, keys);
+      if (af !== null && (value === null || af > value)) value = af;
+    }
     if (value !== null) return { value, source };
   }
   return { value: null, source: "" };
@@ -1328,7 +1453,7 @@ function first(record: Record<string, string>, keys: string[]) {
   return "";
 }
 
-function maximum(record: Record<string, string>, keys: string[]) {
+function maximum(record: Record<string, string>, keys: readonly string[]) {
   const values = keys.flatMap((key) =>
     (record[key] ?? "").split(/[,&]/).map(number).filter((v): v is number => v !== null),
   );
@@ -1352,26 +1477,42 @@ export function alphaGenomeAviScores(record: Record<string, string>) {
   };
 }
 
+export const GPN_STAR_MODELS = [
+  { id: "gpn_star_m", label: "GPN-Star-M", prefix: "GPNm447" },
+  { id: "gpn_star_v", label: "GPN-Star-V", prefix: "GPNv100" },
+] as const;
+
+function gpnStarScore(token: string | undefined) {
+  if (!token || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(token)) return null;
+  const value = Number(token);
+  return Number.isFinite(value) ? value : null;
+}
+
+// Older files can omit declarations for these known per-ALT fields.
+const legacyAltFields = new Set([
+  ...populationFrequencyKeys,
+  ...Object.values(PROTEIN_MATCH_FIELDS).flatMap(fields => Object.values(fields)),
+  ...GPN_STAR_MODELS.flatMap(({ prefix }) => [prefix + "_LLR", prefix + "_ABSLLR"]),
+  "IEI_UNSCORED_INDEL", "IEI_ORIGINAL_ALT",
+]);
+
 function alleleIndexedInfo(
-  info: Record<string, string>,
-  altIndex: number,
-  altCount: number,
+  info: Record<string, string>, numbers: ReadonlyMap<string, string>,
+  altIndex: number, altCount: number,
 ) {
-  // Record-level per-allele INFO fields (Number=A) carry one comma-separated
-  // value per ALT in ALT order. Reducing across that list with max() assigns
-  // the highest allele's value (e.g. a common allele's gnomAD AF) to every
-  // allele, which then removes the rare candidate via the popmax filter.
-  // Select this ALT's token when the comma arity matches the ALT count; any
-  // other shape cannot be attributed and is left as-is.
-  if (altCount <= 1) return info;
   const indexed: Record<string, string> = {};
   for (const [key, value] of Object.entries(info)) {
-    if (key === "CSQ") {
+    const frequency = populationFrequencyKeys.has(key) || /^gnomAD[eg]?_.*AF/i.test(key);
+    const number = numbers.get(key) ?? (legacyAltFields.has(key) || frequency ? "A" : undefined);
+    if (number === "A" || number === "R") {
+      const offset = number === "R" ? 1 : 0;
+      const slots = value.split(",");
+      if (slots.length === altCount + offset) indexed[key] = slots[altIndex + offset];
+    } else if (!(frequency && altCount > 1)) {
+      // Fixed, genotype-indexed and variable-length lists are record metadata.
+      // A record-wide AF cannot identify which ALT is common.
       indexed[key] = value;
-      continue;
     }
-    const tokens = value.split(",");
-    indexed[key] = tokens.length === altCount ? tokens[altIndex] : value;
   }
   return indexed;
 }
@@ -1395,15 +1536,23 @@ function vepAltAllele(ref: string, alt: string) {
 function consequenceMatchesAlt(
   consequence: Record<string, string>, ref: string, alts: string[], altIndex: number,
 ) {
-  const alleleNumber = Number(consequence.ALLELE_NUM || 0);
-  if (alleleNumber) return alleleNumber === altIndex + 1;
+  const alleleNumber = consequence.ALLELE_NUM;
+  if (/^\d+$/.test(alleleNumber)) return Number(alleleNumber) === altIndex + 1;
   const allele = consequence.Allele || "";
-  if (!allele) return true;
-  if (allele.toUpperCase() === alts[altIndex].toUpperCase()) return true;
-  const minimizedAlts = alts.map((alt) => vepAltAllele(ref, alt).toUpperCase());
-  const minimized = minimizedAlts[altIndex];
-  return allele.toUpperCase() === minimized
-    && minimizedAlts.filter((candidate) => candidate === minimized).length === 1;
+  if (!allele || allele === ".") return alts.length === 1;
+  const token = allele.toUpperCase();
+  // VEP 113 strips one common anchor across the record, including from
+  // same-length siblings of an indel. Star alleles keep their spelling.
+  const starAllele = (alt: string) => alt === "*" || alt === "<*>";
+  const stripAnchor = alts.length > 1 && /^[ACGTN]+$/i.test(ref)
+    && alts.some(alt => alt.length !== ref.length)
+    && alts.every(alt => starAllele(alt) || (/^[ACGTN]+$/i.test(alt)
+      && alt[0].toUpperCase() === ref[0].toUpperCase()));
+  const matches = (alt: string) => alt.toUpperCase() === token
+    || (stripAnchor && !starAllele(alt) && (alt.slice(1).toUpperCase() || "-") === token)
+    || vepAltAllele(ref, alt).toUpperCase() === token;
+  return matches(alts[altIndex])
+    && !alts.some((alt, index) => index !== altIndex && matches(alt));
 }
 
 function minimum(record: Record<string, string>, keys: string[]) {
@@ -1447,6 +1596,14 @@ function uniqueValues(value: string | undefined) {
       .map((item) => decode(item))
       .filter((item) => !EMPTY.has(item)),
   )];
+}
+
+// Duplicate records for a sample may spell the same allele differently.
+// Prefer a called genotype, then its quality, regardless of file order.
+function preferGenotype(evidence: GenotypeEvidence, previous?: GenotypeEvidence) {
+  return !previous || (evidence.called !== previous.called
+    ? evidence.called
+    : (evidence.gq ?? -1) > (previous.gq ?? -1));
 }
 
 function parseGenotype(
@@ -1566,8 +1723,8 @@ const GRCH38_CONTIG_LENGTHS: Record<string, number> = {
   MT: 16569,
 };
 
-function normalizedContig(contig: string) {
-  const normalized = contig.replace(/^chr/i, "");
+export function normalizedContig(contig: string) {
+  const normalized = contig.replace(/^chr/i, "").toUpperCase();
   return normalized === "M" ? "MT" : normalized;
 }
 
@@ -1588,6 +1745,10 @@ function contigDefinitions(lines: string[]) {
 
 function validRefAllele(allele: string) {
   return /^[ACGTN]+$/i.test(allele);
+}
+
+export function isPlaceholderAlt(alt: string) {
+  return alt === "*" || alt === "<*>" || alt === "<NON_REF>";
 }
 
 function validAltAllele(allele: string) {
@@ -1720,7 +1881,7 @@ async function* fileLines(file: File) {
   const signature = new Uint8Array(await file.slice(0, 64).arrayBuffer());
   const hasGzipMagic = signature[0] === 0x1f && signature[1] === 0x8b;
   const isBgzf = bgzfBlockSize(signature) !== null;
-  const namedAsGzip = file.name.toLowerCase().endsWith(".gz");
+  const namedAsGzip = /\.(?:gz|bgzf?)$/i.test(file.name);
 
   try {
     if (hasGzipMagic || namedAsGzip) {
@@ -1804,6 +1965,7 @@ export async function parseVcfFiles(
   let filesWithContigDefinitions = 0;
   let duplicateRecordOccurrences = 0;
   let fullTranscriptRows = 0;
+  const annotationFields = new Set<string>();
 
   for (const file of files) {
     // In-browser parsing materializes the decompressed VCF (roughly 10x the
@@ -1823,14 +1985,26 @@ export async function parseVcfFiles(
       );
     }
     const lines = await vcfHeaderLines(file);
-    const declaredInfoFields = new Set(lines.flatMap((line) => {
-      const match = line.match(/^##INFO=<ID=([^,>]+)/);
-      return match ? [match[1]] : [];
-    }));
-    const sourceTranscriptsCompacted = lines.some((line) => (
-      line.startsWith("##IEI_WGS_PREFILTER=<")
-      && line.includes("Transcripts=MANEThenPICKThenOnePerGene")
-    ));
+    const infoNumbers = new Map<string, string>();
+    let csqFields: string[] = [];
+    for (const line of lines) {
+      if (!line.startsWith("##INFO=<")) continue;
+      // Quoted descriptions may contain commas or text resembling attributes.
+      const attributes = Object.fromEntries(Array.from(
+        line.slice(8, -1).matchAll(/(?:^|,)([\w.]+)=("(?:\\.|[^"\\])*"|[^,]*)/g),
+        match => [match[1], match[2]],
+      ));
+      if (!attributes.ID) continue;
+      infoNumbers.set(attributes.ID, attributes.Number ?? "");
+      if (attributes.ID === "CSQ") {
+        const schema = attributes.Description?.match(/Format:\s*([^">]+)/i);
+        if (schema) csqFields = schema[1].trim().split("|");
+      }
+    }
+    const declaredInfoFields = new Set(infoNumbers.keys());
+    const wgsPrefilter = lines.find((line) => line.startsWith("##IEI_WGS_PREFILTER=<"));
+    const sourceTranscriptsCompacted = wgsPrefilter?.includes("Transcripts=MANEThenPICKThenOnePerGene");
+    const retainsLoGoFuncSource = wgsPrefilter?.includes("LoGoFunc=RetainStrictSource");
     const assembly = assemblyFromHeader(lines);
     if (assembly.assembly === "GRCh37") {
       throw new Error(
@@ -1845,7 +2019,6 @@ export async function parseVcfFiles(
         `${file.name}: GRCh38 cannot be confirmed from ##reference, pipeline provenance, or canonical contig lengths`,
       );
     }
-    let csqFields: string[] = [];
     let samples: string[] = [];
     const chromosomeHeaders = lines.filter((line) => line.startsWith("#CHROM"));
     if (chromosomeHeaders.length !== 1) {
@@ -1896,18 +2069,12 @@ export async function parseVcfFiles(
     const completedContigs = new Set<string>();
     let previousChrom = "";
     let previousPosition = -1;
+    let sourceRecordNumber = 0;
 
     for await (const line of fileLines(file)) {
-      if (line.startsWith("##INFO=<ID=CSQ")) {
-        const match = line.match(/Format:\s*([^">]+)/i);
-        if (match) csqFields = match[1].trim().split("|");
-        continue;
-      }
-      if (line.startsWith("#CHROM")) {
-        continue;
-      }
       if (!line || line.startsWith("#")) continue;
 
+      sourceRecordNumber += 1;
       const columns = line.split("\t");
       if (columns.length < 9 + samples.length) {
         throw new Error(
@@ -1989,12 +2156,15 @@ export async function parseVcfFiles(
       const consequences = transcriptRows(info.CSQ, csqFields);
       const fallbackSamples = samples;
       const sampleValues = columns.slice(9);
+      const retained = info.IEI_WGS_RETAINED?.split(",");
+      if (retained && (retained.length !== alts.length || retained.some((v) => v !== "0" && v !== "1"))) {
+        throw new Error(`${file.name}: invalid IEI_WGS_RETAINED at ${chrom}:${pos}`);
+      }
 
       alts.forEach((alt, altIndex) => {
-        // Contig naming must be normalized in the merge key, or a trio split
-        // across a chr-prefixed and an unprefixed VCF never merges evidence.
-        const variantEvidenceKey = `${normalizedContig(chrom)}:${posRaw}:${ref}:${alt}`;
-        const alleleInfo = alleleIndexedInfo(info, altIndex, alts.length);
+        if (isPlaceholderAlt(alt) || retained?.[altIndex] === "0") return;
+        const variantEvidenceKey = canonicalVariantKey(chrom, pos, ref, alt);
+        const alleleInfo = alleleIndexedInfo(info, infoNumbers, altIndex, alts.length);
         const sampleGenotypes = Object.fromEntries(fallbackSamples.map((sample, sampleIndex) => [
           sample,
           samples.length
@@ -2012,9 +2182,9 @@ export async function parseVcfFiles(
         ]));
         // Cohort mode: keep only the carriers per variant — an all-samples
         // map on every row is exactly the memory shape that cannot scale.
-        const cohortCarriers = cohortMode
+        const cohortCarriers: CohortCarrier[] | null = cohortMode
           ? fallbackSamples
-              .map((sampleName) => ({ sample: sampleName, evidence: sampleGenotypes[sampleName] }))
+              .map((sampleName) => ({ sample: sampleName, source: file.name, evidence: sampleGenotypes[sampleName] }))
               // A half-call (./1) is a demonstrated carrier and must not
               // vanish in cohort mode; only the no-genotype-data stub
               // (called false, no numeric allele) is excluded.
@@ -2034,17 +2204,9 @@ export async function parseVcfFiles(
             );
           }
         }
-        const mergedEvidence = evidenceByVariant.get(variantEvidenceKey) ?? {};
+        const mergedEvidence = evidenceByVariant.get(variantEvidenceKey) ?? Object.create(null);
         Object.entries(sampleGenotypes).forEach(([sample, evidence]) => {
-          const previous = mergedEvidence[sample];
-          // The GQ tiebreak must never let an uncalled genotype (./., which
-          // joint callers routinely emit with a non-trivial GQ) overwrite a
-          // real called genotype.
-          if (
-            !previous
-            || (!previous.called && evidence.called)
-            || (evidence.called === previous.called && (evidence.gq ?? -1) > (previous.gq ?? -1))
-          ) {
+          if (preferGenotype(evidence, mergedEvidence[sample])) {
             mergedEvidence[sample] = evidence;
           }
         });
@@ -2055,6 +2217,10 @@ export async function parseVcfFiles(
         // shared array those rows reference. The popmax decision is made
         // once per variant, at parse time, so the union of many exomes
         // stays bounded (an unavailable popmax always retains the variant).
+        const matching = alts.length === 1 ? consequences : consequences.filter(
+          (csq) => consequenceMatchesAlt(csq, ref, alts, altIndex),
+        );
+        const allSelected = matching.length ? matching : [{} as Record<string, string>];
         let effectiveCarriers = cohortCarriers;
         if (aggregatedCohort && cohortCarriers) {
           const existing = aggregatedVariants.get(variantEvidenceKey);
@@ -2071,8 +2237,7 @@ export async function parseVcfFiles(
           } else {
             const popmaxThreshold = options.aggregateMaxPopmax ?? null;
             if (popmaxThreshold !== null) {
-              const probe = { ...alleleIndexedInfo(info, altIndex, alts.length), ...(consequences[0] ?? {}) };
-              const variantPopmax = populationFrequency(probe).value;
+              const variantPopmax = populationFrequency(alleleInfo, matching).value;
               if (variantPopmax !== null && variantPopmax > popmaxThreshold) {
                 aggregatedVariants.set(variantEvidenceKey, { dropped: true });
                 return;
@@ -2098,32 +2263,25 @@ export async function parseVcfFiles(
         const rowSamples = cohortMode
           ? (cohortRepresentative ? [COHORT_ROW_SAMPLE] : [])
           : fallbackSamples;
+        // Index strict source consequences before selecting the clinical rows.
+        // This map lives only for the current record and ALT.
+        const loGoFuncByGene = new Map<string, Record<string, string>>();
+        for (const csq of matching) {
+          if (csq.LoGoFunc_match !== "allele_transcript_protein") continue;
+          const source = { ...alleleInfo, ...csq };
+          const gene = consequenceGene(source);
+          if (gene && !loGoFuncByGene.has(gene)) loGoFuncByGene.set(gene, source);
+        }
+        const selected = options.clinicalTranscriptsOnly || retainsLoGoFuncSource
+          ? compactClinicalConsequences(allSelected, alleleInfo)
+          : allSelected;
         rowSamples.forEach((sample) => {
           const genotype = cohortMode
             ? cohortRepresentative!.evidence
             : sampleGenotypes[sample];
           if (!genotype.carrier) return;
-          const unscoredIndelReasons = alleleInfoReasons(
-            info, "IEI_UNSCORED_INDEL", altIndex,
-          );
-          const matching = consequences.filter((csq) => (
-            consequenceMatchesAlt(csq, ref, alts, altIndex)
-          ));
-          // A single-ALT record's consequences necessarily describe this ALT
-          // even when VEP's minimised Allele string (e.g. "-" for indels)
-          // does not equal the raw ALT. On a multi-allelic record with no
-          // allele match, falling back to ALL consequences would attach the
-          // other alleles' genes, HGVS, and scores to this allele — emit one
-          // unannotated row instead so the carrier stays visible.
-          const allSelected = matching.length
-            ? matching
-            : alts.length === 1
-              ? consequences
-              : [{} as Record<string, string>];
+          const unscoredIndelReasons = alleleInfoReasons(alleleInfo.IEI_UNSCORED_INDEL);
           fullTranscriptRows += allSelected.length;
-          const selected = options.clinicalTranscriptsOnly
-            ? compactClinicalConsequences(allSelected, alleleInfo)
-            : allSelected;
           const recordTranscriptsCompacted = selected.length < allSelected.length;
           const legacyFallbackGenes = new Set<string>();
           if (!csqFields.includes("PICK")) {
@@ -2146,7 +2304,7 @@ export async function parseVcfFiles(
             const combined = { ...alleleInfo, ...csq };
             const currentVariant = `${chrom}:${posRaw}:${ref}:${alt}`;
             const haplotypeFrame = haplotypeFrameEvidence(
-              info.IEI_HAPLOTYPE_FRAME,
+              alleleInfo.IEI_HAPLOTYPE_FRAME,
               currentVariant,
               cohortMode ? cohortRepresentative!.sample : sample,
               first(combined, ["Feature"]),
@@ -2181,19 +2339,16 @@ export async function parseVcfFiles(
             ]);
             const starterAm = starterObservation(combined, "alphamissense");
             const starterCadd = starterObservation(combined, "cadd_coding");
-            const caddCoding = starterCadd !== null
-              ? (starterCadd.values.phred as number | undefined) ?? null
-              : maximum(combined, ["CADD_phred"]);
-            const cadd = caddWgs ?? caddCoding;
+            const starterPhred = starterCadd?.values.phred as number | undefined;
+            const cadd = caddWgs ?? starterPhred ?? maximum(combined, ["CADD_phred"]);
             const caddWgsRaw = maximum(combined, [
               "CADD_RAW", "CADD_WGS_CADD_RAW", "CADD_WGS_RAW",
             ]);
-            const caddCodingRaw = starterCadd !== null ? null : maximum(combined, ["CADD_raw"]);
-            const caddRaw = caddWgs !== null ? caddWgsRaw : (starterCadd !== null ? null : caddWgsRaw ?? caddCodingRaw);
-            const alphaMissense = starterAm !== null
-              ? (starterAm.values.score as number | undefined) ?? null
-              : maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]);
-            const alphaPrediction = starterAm !== null ? String(starterAm.values.prediction ?? "") : uniqueValues(
+            const caddRaw = caddWgs !== null ? caddWgsRaw
+              : starterPhred !== undefined ? null : maximum(combined, ["CADD_raw"]) ?? (cadd === null ? caddWgsRaw : null);
+            const starterAlpha = starterAm?.values.score as number | undefined;
+            const alphaMissense = starterAlpha ?? maximum(combined, ["AlphaMissense_score", "am_pathogenicity"]);
+            const alphaPrediction = starterAlpha !== undefined ? String(starterAm?.values.prediction ?? "") : uniqueValues(
               first(combined, ["AlphaMissense_pred", "am_class"]),
             ).join(" / ");
             const promoterAiEvidence = promoterAiObservation(combined);
@@ -2204,21 +2359,25 @@ export async function parseVcfFiles(
             const promoterAiStrand = promoterAiEvidence.strand;
             const promoterAiStatus: PredictorObservation["matchStatus"] =
               promoterAiEvidence.matchStatus;
-            const loGoFuncPrediction = first(combined, ["LoGoFunc_prediction"]);
-            const loGoFuncNeutral = maximum(combined, ["LoGoFunc_neutral"]);
-            const loGoFuncGof = maximum(combined, ["LoGoFunc_GOF"]);
-            const loGoFuncLof = maximum(combined, ["LoGoFunc_LOF"]);
-            const loGoFuncAlleleAvailable = truthy(first(combined, [
+            const siblingSource = csq.LoGoFunc_match !== "allele_transcript_protein"
+              ? loGoFuncByGene.get(consequenceGene(combined)) : undefined;
+            const loGoFunc = siblingSource ?? combined;
+            const loGoFuncPrediction = first(loGoFunc, ["LoGoFunc_prediction"]);
+            const loGoFuncNeutral = maximum(loGoFunc, ["LoGoFunc_neutral"]);
+            const loGoFuncGof = maximum(loGoFunc, ["LoGoFunc_GOF"]);
+            const loGoFuncLof = maximum(loGoFunc, ["LoGoFunc_LOF"]);
+            const loGoFuncAlleleAvailable = truthy(first(loGoFunc, [
               "LoGoFunc_allele_available",
             ]));
-            const loGoFuncSourceTranscript = first(combined, [
+            const loGoFuncSourceTranscript = first(loGoFunc, [
               "LoGoFunc_source_transcript",
             ]);
-            const loGoFuncSourceHgvsp = first(combined, ["LoGoFunc_source_HGVSp"]);
+            const loGoFuncSourceHgvsp = first(loGoFunc, ["LoGoFunc_source_HGVSp"]);
             const loGoFuncSourceProteinPosition = proteinPositionFromHgvsp(
               loGoFuncSourceHgvsp,
             );
-            const loGoFuncMatch = first(combined, ["LoGoFunc_match"]);
+            const loGoFuncMatch = first(loGoFunc, ["LoGoFunc_match"]);
+            const loGoFuncExact = loGoFuncMatch === "allele_transcript_protein";
             const funcVepCti = maximum(combined, ["FuncVEP_CTI"]);
             const avi = alphaGenomeAviScores(combined);
             const funcVepCte = maximum(combined, ["FuncVEP_CTE"]);
@@ -2252,15 +2411,15 @@ export async function parseVcfFiles(
               "GenIA", combined, declaredInfoFields, csqFields,
             );
             const clinGenAssertionTokens = clinGenErepoTokens(
-              info.ClinGen_ERepo, alt,
+              alleleInfo.ClinGen_ERepo, alt,
             );
             const clinGenAssertionsRaw = clinGenAssertionTokens.join("&");
             const clinGenAssertionCount = clinGenAssertionTokens.length || null;
             const clinGenCompactAssertions = clinGenErepoAssertions(
-              info.ClinGen_ERepo, alt,
+              alleleInfo.ClinGen_ERepo, alt,
             );
-            const geniaRecordTokens = geniaTokens(info.GenIA, alt);
-            const geniaCompactRecords = geniaRecords(info.GenIA, alt);
+            const geniaRecordTokens = geniaTokens(alleleInfo.GenIA, alt);
+            const geniaCompactRecords = geniaRecords(alleleInfo.GenIA, alt);
             const ptcCdsPosition = number(first(combined, ["PTC_cds_pos"]));
             const ptcAminoAcidPosition = number(first(combined, ["PTC_aa_pos"]));
             const ptcDistanceFromLastExon = number(first(combined, [
@@ -2448,6 +2607,13 @@ export async function parseVcfFiles(
             const transcriptTarget = transcript
               ? { ensembl_transcript: transcript }
               : undefined;
+            for (const { id, prefix } of GPN_STAR_MODELS) {
+              if (alleleInfo[prefix + "_LLR"] === undefined && alleleInfo[prefix + "_ABSLLR"] === undefined) continue;
+              addPrediction(id, "allele", ALLELE_MATCH_DIMENSIONS, {
+                llr: gpnStarScore(alleleInfo[prefix + "_LLR"]),
+                abs_llr: gpnStarScore(alleleInfo[prefix + "_ABSLLR"]),
+              });
+            }
             addPrediction("alphagenome_avi", "allele", ALLELE_MATCH_DIMENSIONS, avi);
             for (const evidence of [starterAm, starterCadd]) {
               if (!evidence || evidence.match_status === "unmatched") continue;
@@ -2464,11 +2630,10 @@ export async function parseVcfFiles(
               addPrediction("cadd_wgs", "allele", ALLELE_MATCH_DIMENSIONS, {
                 phred: caddWgs, raw: caddWgsRaw,
               });
-            } else {
-              addPrediction("cadd_coding", "allele", ALLELE_MATCH_DIMENSIONS, {
-                phred: maximum(combined, ["CADD_phred"]), raw: maximum(combined, ["CADD_raw"]),
-              });
             }
+            addPrediction("cadd_coding", "allele", ALLELE_MATCH_DIMENSIONS, {
+              phred: maximum(combined, ["CADD_phred"]), raw: maximum(combined, ["CADD_raw"]),
+            });
             const addTranscriptPrediction = (
               predictorId: string,
               values: Record<string, number | string | boolean | null | undefined>,
@@ -2564,7 +2729,7 @@ export async function parseVcfFiles(
             addPrediction(
               "logofunc",
               "allele_transcript_protein",
-              loGoFuncMatch === "allele_transcript_protein"
+              loGoFuncExact
                 ? [...TRANSCRIPT_MATCH_DIMENSIONS, "protein_position", "amino_acid_change"]
                 : ALLELE_MATCH_DIMENSIONS,
               {
@@ -2573,7 +2738,7 @@ export async function parseVcfFiles(
                 gof: loGoFuncGof,
                 lof: loGoFuncLof,
               },
-              loGoFuncMatch === "allele_transcript_protein"
+              loGoFuncExact
                 ? "exact"
                 : loGoFuncAlleleAvailable ? "partial" : "unmatched",
               {
@@ -2815,7 +2980,7 @@ export async function parseVcfFiles(
             });
 
             rows.push({
-              key: `${file.name}:${chrom}:${posRaw}:${ref}:${alt}:${sample}:${recordOccurrence}:${transcriptIndex}`,
+              key: JSON.stringify([file.name, chrom, pos, ref, alt, sample, sourceRecordNumber, transcriptIndex]),
               source: file.name,
               sample,
               id: id === "." ? `${chrom}-${posRaw}-${ref}-${alt}` : id,
@@ -2824,19 +2989,19 @@ export async function parseVcfFiles(
               ref,
               alt,
               liftedFromGrch37: assembly.liftedFromGrch37
-                || first(info, ["IEI_ORIGINAL_ASSEMBLY"]) === "GRCh37",
-              assemblyAlleleSwap: truthy(info.IEI_ASSEMBLY_ALLELE_SWAP),
+                || first(alleleInfo, ["IEI_ORIGINAL_ASSEMBLY"]) === "GRCh37",
+              assemblyAlleleSwap: truthy(alleleInfo.IEI_ASSEMBLY_ALLELE_SWAP),
               unscoredIndelReasons,
-              originalAssembly: first(info, ["IEI_ORIGINAL_ASSEMBLY"]),
-              originalChrom: first(info, ["IEI_ORIGINAL_CHROM"]),
-              originalPos: number(first(info, ["IEI_ORIGINAL_POS"])),
-              originalRef: first(info, ["IEI_ORIGINAL_REF"]),
-              originalAlt: (info.IEI_ORIGINAL_ALT ?? "").split(",")[altIndex]
-                ? decode((info.IEI_ORIGINAL_ALT ?? "").split(",")[altIndex])
-                : first(info, ["IEI_ORIGINAL_ALT"]),
+              originalAssembly: first(alleleInfo, ["IEI_ORIGINAL_ASSEMBLY"]),
+              originalChrom: first(alleleInfo, ["IEI_ORIGINAL_CHROM"]),
+              originalPos: number(first(alleleInfo, ["IEI_ORIGINAL_POS"])),
+              originalRef: first(alleleInfo, ["IEI_ORIGINAL_REF"]),
+              originalAlt: decode(first(alleleInfo, ["IEI_ORIGINAL_ALT"])),
               qual: number(qualRaw),
               gene: gene || "—",
               geneId: first(combined, ["Gene"]),
+              featureType: first(combined, ["Feature_type"]),
+              transcriptStrand: promoterAiNormalizedStrand(csq.STRAND || ""),
               transcript: first(combined, ["Feature"]),
               biotype: first(combined, ["BIOTYPE"]),
               exon: first(combined, ["EXON"]),
@@ -2875,9 +3040,7 @@ export async function parseVcfFiles(
               loftee50bpOriginal: first(combined, [
                 "LoF_50_BP_RULE_original", "50_BP_RULE_original",
               ]),
-              loftee50bpChanged: truthy(first(combined, [
-                "LoF_50_BP_RULE_changed", "50_BP_RULE_changed",
-              ])),
+              loftee50bpChanged: ptcRuleChangedRaw ? truthy(ptcRuleChangedRaw) : null,
               ptcDistanceFromLastExon: maximum(combined, [
                 "PTC_dist_from_last_exon",
               ]),
@@ -2902,14 +3065,14 @@ export async function parseVcfFiles(
               promoterAI: promoterAiEvidence.usableScore,
               alphaGenomeAviPhred: avi.phred,
               alphaGenomeAviRaw: avi.raw,
-              loGoFuncPrediction,
-              loGoFuncNeutral,
-              loGoFuncGof,
-              loGoFuncLof,
-              loGoFuncAlleleAvailable,
+              loGoFuncPrediction: loGoFuncExact ? loGoFuncPrediction : "",
+              loGoFuncNeutral: loGoFuncExact ? loGoFuncNeutral : null,
+              loGoFuncGof: loGoFuncExact ? loGoFuncGof : null,
+              loGoFuncLof: loGoFuncExact ? loGoFuncLof : null,
+              loGoFuncAlleleAvailable: loGoFuncExact || loGoFuncAlleleAvailable,
               loGoFuncSourceTranscript,
               loGoFuncSourceHgvsp,
-              loGoFuncMatch,
+              loGoFuncMatch: siblingSource ? "source_transcript_match_elsewhere" : loGoFuncMatch,
               funcVepCti: normalizedFuncVepStatus === "exact" ? funcVepCti : null,
               funcVepCte: normalizedFuncVepStatus === "exact" ? funcVepCte : null,
               funcVepSp: normalizedFuncVepStatus === "exact" ? funcVepSp : null,
@@ -2935,15 +3098,16 @@ export async function parseVcfFiles(
               genotypeClass: genotype.genotypeClass,
               genotypeFilter: genotype.genotypeFilter,
               sourceRecordOrdinal: recordOccurrence,
+              sourceRecordNumber,
               sampleGenotypes: carrierEvidenceMap ?? sampleGenotypes,
-              siteDepth: maximum(info, ["DP"]),
-              qd: maximum(info, ["QD"]),
-              mq: maximum(info, ["MQ"]),
-              fs: maximum(info, ["FS"]),
-              sor: maximum(info, ["SOR"]),
-              mqRankSum: maximum(info, ["MQRankSum"]),
-              readPosRankSum: maximum(info, ["ReadPosRankSum"]),
-              baseQRankSum: maximum(info, ["BaseQRankSum"]),
+              siteDepth: maximum(alleleInfo, ["DP"]),
+              qd: maximum(alleleInfo, ["QD"]),
+              mq: maximum(alleleInfo, ["MQ"]),
+              fs: maximum(alleleInfo, ["FS"]),
+              sor: maximum(alleleInfo, ["SOR"]),
+              mqRankSum: maximum(alleleInfo, ["MQRankSum"]),
+              readPosRankSum: maximum(alleleInfo, ["ReadPosRankSum"]),
+              baseQRankSum: maximum(alleleInfo, ["BaseQRankSum"]),
               mane,
               maneSelect: truthy(first(combined, ["MANE_SELECT"])),
               picked,
@@ -2961,6 +3125,8 @@ export async function parseVcfFiles(
         });
       });
     }
+    for (const field of csqFields) annotationFields.add(field);
+    for (const field of declaredInfoFields) annotationFields.add(field);
     if (!csqFields.length) {
       throw new Error(`${file.name}: no readable VEP CSQ Format schema was found`);
     }
@@ -2969,9 +3135,8 @@ export async function parseVcfFiles(
   rows.forEach((row) => {
     row.sampleGenotypes = {
       ...(row.sampleGenotypes ?? {}),
-      ...(evidenceByVariant.get(
-        `${normalizedContig(row.chrom)}:${row.pos}:${row.ref}:${row.alt}`,
-      ) ?? {}),
+      ...(evidenceByVariant.get(normalizedVariantKey(row)) ?? {}),
+      ...(row.sampleGenotypes?.[row.sample] ? { [row.sample]: row.sampleGenotypes[row.sample] } : {}),
     };
   });
 
@@ -2994,50 +3159,6 @@ export async function parseVcfFiles(
       row.duplicateRecordCount = sourceRecords.size;
       row.duplicateRecordKind = kind;
     });
-  });
-
-  // LoGoFunc is intentionally attached only to its exact source transcript by
-  // VEP. The review UI defaults to MANE, which may differ from that canonical
-  // source transcript, so carry the strict result to sibling UI rows for the
-  // same sample/allele/gene while retaining the source transcript explicitly.
-  // This changes only the review model; raw CSQ evidence remains transcript-local.
-  const loGoFuncEvidence = new Map<string, VariantRow>();
-  const loGoFuncKey = (row: VariantRow) => [
-    row.source, row.sample, row.chrom, row.pos, row.ref, row.alt, row.gene,
-  ].join(":");
-  rows.forEach((row) => {
-    if (row.loGoFuncMatch === "allele_transcript_protein") {
-      loGoFuncEvidence.set(loGoFuncKey(row), row);
-    }
-  });
-  rows.forEach((row) => {
-    const evidence = loGoFuncEvidence.get(loGoFuncKey(row));
-    if (!evidence || row === evidence) return;
-    row.loGoFuncPrediction = evidence.loGoFuncPrediction;
-    row.loGoFuncNeutral = evidence.loGoFuncNeutral;
-    row.loGoFuncGof = evidence.loGoFuncGof;
-    row.loGoFuncLof = evidence.loGoFuncLof;
-    row.loGoFuncAlleleAvailable = true;
-    row.loGoFuncSourceTranscript = evidence.loGoFuncSourceTranscript;
-    row.loGoFuncSourceHgvsp = evidence.loGoFuncSourceHgvsp;
-    row.loGoFuncMatch = row.transcript === evidence.loGoFuncSourceTranscript
-      ? "allele_transcript_protein"
-      : "source_transcript_match_elsewhere";
-    const normalized = evidence.predictions?.logofunc;
-    if (normalized) {
-      row.predictions = {
-        ...(row.predictions ?? {}),
-        logofunc: {
-          ...normalized,
-          matchedOn: [...normalized.matchedOn],
-          values: { ...normalized.values },
-          ...(normalized.target ? { target: { ...normalized.target } } : {}),
-          ...(normalized.provenance
-            ? { provenance: { ...normalized.provenance } }
-            : {}),
-        },
-      };
-    }
   });
 
   const intakeQc: IntakeQcCheck[] = [
@@ -3114,10 +3235,17 @@ export async function parseVcfFiles(
     // emitted; refresh the labels and carrier-keyed evidence maps once.
     for (const row of rows) {
       if (!row.carriers) continue;
+      const bySample: Record<string, GenotypeEvidence> = Object.create(null);
+      let duplicateCarrier = false;
+      for (const { sample, evidence } of row.carriers) {
+        if (bySample[sample]) duplicateCarrier = true;
+        if (preferGenotype(evidence, bySample[sample])) bySample[sample] = evidence;
+      }
+      if (duplicateCarrier) {
+        row.carriers = row.carriers.filter(({ sample, evidence }) => bySample[sample] === evidence);
+      }
       row.genotype = `${row.carriers.length} carry`;
-      row.sampleGenotypes = Object.fromEntries(
-        row.carriers.map((entry) => [entry.sample, entry.evidence]),
-      );
+      row.sampleGenotypes = bySample;
     }
     const releases = [...new Set(clinvarReleaseByFile.values())];
     if (releases.length > 1) {
@@ -3144,6 +3272,7 @@ export async function parseVcfFiles(
   return {
     rows,
     summary: {
+      annotationFields: [...annotationFields],
       files: files.length,
       samples: sampleNames.size,
       cohortMode: importCohortMode,

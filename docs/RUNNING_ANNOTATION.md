@@ -45,15 +45,20 @@ The run will:
 3. (re)build the ClinVar, ClinGen, and available GenIA P/LP protein-match
    catalogs when their source data or the VEP cache changes,
 4. build the VEP command from your config and run it in the container,
-5. write `results/sample.vep.vcf.gz`,
+5. validate the staged VEP output,
 6. recompute the frameshift PTC 50-bp rule and run sample-specific Haplosaurus
    consequence post-processing,
-7. write `results/sample.vep.aamatch.vcf.gz` (+ tabix index) with per-source
-   same-change, same-residue, and auditable match-detail fields,
+7. add per-source same-change, same-residue, and match-detail fields,
 8. attach locally installed ClinGen exact-allele assertions,
 9. attach optional GenIA records when its independently installed GRCh38
    variant component is available, then
-10. write annotation QC and the run manifest against that final VCF.
+10. generate annotation QC and the run manifest, then publish the completed
+    VCF at `-o`. When protein matching runs, the legacy `.aamatch.vcf.gz`
+    name contains identical data. Both compressed names have a tabix index.
+
+Use an output ending in `.vcf.gz` for `output.compress: bgzip` and `.vcf`
+for `output.compress: none`. Input can be plain VCF, ordinary gzip, or BGZF.
+BGZF input must include its end-of-file marker.
 
 GenIA processing is local and optional. It uses only the derived
 component-based SQLite database in Annotation datasets storage; no source

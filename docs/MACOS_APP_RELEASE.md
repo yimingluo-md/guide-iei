@@ -33,9 +33,15 @@ the preview label alone does not establish its signing status.
   reconnecting notice instead; reopening reconnects without automatic reload.
 
 Each package has a unique build ID in `desktop-build.json`. A second launch
-reopens an identified instance of the same package; different/older builds
-receive an explanatory dialog. An unrecognized occupied port never causes
-process termination. Lifecycle status exposes job counts, not patient names.
+uses the current account’s private endpoint file to verify the running instance.
+It reopens the same build and offers a choice for a verified different build.
+A new session tries the configured port (default 3000) on every launch. While
+that port is busy, the service tries the last saved fallback port if available
+and otherwise binds a free loopback port. The native controls and browser use
+the actual bound address. A per-account launch lock serializes desktop launches.
+An occupied port never causes process termination. Terminal/source launchers
+retain their existing configurable-port behavior. Lifecycle status exposes
+job counts, not patient names.
 The instance ID on a Quit request prevents accidentally stopping a replacement
 instance; it is not authentication (see the single-user security model).
 
@@ -51,14 +57,22 @@ A missing or corrupt bundle fails with repair guidance, never a local build.
 The native setup window also prepares essential annotation datasets in the
 selected storage location. Its **Also install recommended whole-genome datasets**
 checkbox is off by default and queues the existing recommended-WGS installer
-only after essentials are ready. It adds Full SpliceAI MANE 1.5, ENCODE SCREEN
-and AlphaGenome AVI, with missing-resource download and setup-space estimates.
+only after essentials are ready. It adds Full SpliceAI MANE 1.5, ENCODE SCREEN,
+ENCODE-rE2G and AlphaGenome AVI, with missing-resource download and setup-space estimates.
 The browser can open while optional WGS downloads continue. Their failure
 does not invalidate essential readiness; progress, logs and retry remain
 available in the native window and analysis workbench. Users may opt in later.
 PromoterAI and GenIA are described here but require files supplied separately
 inside the analysis workbench. Scrollable setup details leave the primary
 actions visible. These datasets remain separate downloads, not bundled assets.
+
+Essential startup readiness checks required datasets only. Optional AVI status
+checks validate the manifest, coverage, file presence and sizes without reading
+the 75 GB score payload. Changed timestamps after a copy or storage migration
+therefore do not trigger a full AVI checksum scan in a synchronous startup or
+dataset-panel request. Installation verifies checksums, and annotation still
+runs the strict job-start integrity check. Non-strict checksum checks cache only
+unchanged file identities in memory; strict verification always reads the bytes.
 
 Existing selected Docker Desktop/Colima engines are started without changing
 their configuration. On a clean Mac, setup installs pinned user-space
@@ -267,3 +281,5 @@ Publish both with the matching installer. The user's app download remains
 small; the approximately 1.38 GB source companion is an optional download.
 
 Apple notarization checks software security; it is not clinical validation.
+
+The macOS packager installs the pinned NumPy and PyArrow wheels before signing the framework. Its post-sign smoke test writes and reads Parquet using the hardened Python executable. GPN-Star scores are downloaded separately in Import & QC.

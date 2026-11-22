@@ -24,13 +24,17 @@ import tempfile
 import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 from urllib.parse import unquote, urlsplit
 
+from local_service.element_gene_links import region_matcher, target_regions
 from local_service.errors import CohortMergeBusyError
+from pipeline.genia_alleles import csq_allele_index
+from pipeline.numeric import finite_float
+
 from pipeline.predictor_registry import (
     MatchDimension,
     MatchScope,
@@ -41,6 +45,7 @@ from pipeline.predictor_registry import (
 )
 from pipeline.promoterai_evidence import promoterai_observation
 from pipeline.starter_evidence import starter_observation
+from pipeline.vcf_io import COMPRESSED_SUFFIXES, VCF_SUFFIXES
 from pipeline.vcf_assembly import detect_vcf_assembly
 
 
@@ -413,7 +418,7 @@ def is_bgzf(path: Path) -> bool:
 
 
 def read_vcf_header(path: Path) -> VcfHeader:
-    opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+    opener = gzip.open if path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
     samples: tuple[str, ...] = ()
     csq_fields: tuple[str, ...] = ()
     contigs: list[str] = []
@@ -474,7 +479,7 @@ def read_vcf_header(path: Path) -> VcfHeader:
 
 def read_vcf_header_lines(path: Path) -> list[str]:
     """Read the complete VCF header without decompressing the variant body."""
-    opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+    opener = gzip.open if path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
     lines: list[str] = []
     with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
         for line in handle:
@@ -647,7 +652,7 @@ def parse_number(value: str | None) -> float | None:
     if not value or value in EMPTY:
         return None
     try:
-        parsed = float(value.split("&", 1)[0])
+        parsed = finite_float(value.split("&", 1)[0])
     except ValueError:
         return None
     return parsed
@@ -780,11 +785,20 @@ def _genia_records_for_alt(
     return selected
 
 
+GPN_INFO_FIELDS = tuple(metric.field for predictor in PREDICTOR_REGISTRY.predictors
+                        if predictor.annotator_id in {"gpn_star_m", "gpn_star_v"}
+                        for metric in predictor.metrics)
+
+
 def _prediction_info_for_alt(
     info: dict[str, str], *, alt: str, alt_index: int, alts: tuple[str, ...],
 ) -> dict[str, str]:
     """Return INFO fields whose predictor evidence belongs to one ALT."""
     selected = dict(info)
+    for key in GPN_INFO_FIELDS:
+        if key in info:
+            slots = info[key].split(",")
+            selected[key] = slots[alt_index] if len(slots) == len(alts) else ""
     for key in _PROTEIN_MATCH_ALLELE_FIELDS:
         if key in info:
             selected[key] = allele_info_value(info, key, alt_index)
@@ -855,28 +869,21 @@ def truthy(value: str) -> bool:
     return value not in EMPTY and value != "0"
 
 
-# GRCh38 pseudoautosomal bounds: outside them X and Y are single-copy in a
-# male, so a diploid-encoded homozygous call and a haploid hemizygous call
-# describe the same state. Mirrors pipeline/haplotype_consequences.py.
-GRCH38_X_PAR1_END = 2_781_479
-GRCH38_X_PAR2_START = 155_701_383
-GRCH38_Y_PAR1_END = 2_781_479
-GRCH38_Y_PAR2_START = 56_887_903
-SINGLE_COPY_LOCUS_SQL = (
-    f"((v.chrom = 'X' AND v.pos > {GRCH38_X_PAR1_END} "
-    f"AND v.pos < {GRCH38_X_PAR2_START}) "
-    f"OR (v.chrom = 'Y' AND v.pos > {GRCH38_Y_PAR1_END} "
-    f"AND v.pos < {GRCH38_Y_PAR2_START}))"
-)
+# One-based, inclusive GRCh38 pseudoautosomal intervals.
+GRCH38_PAR = {
+    "X": ((10_001, 2_781_479), (155_701_383, 156_030_895)),
+    "Y": ((10_001, 2_781_479), (56_887_903, 57_217_415)),
+}
+PAR_LOCUS_SQL = "(" + " OR ".join(
+    f"(v.chrom = '{chrom}' AND v.pos BETWEEN {start} AND {end})"
+    for chrom, intervals in GRCH38_PAR.items() for start, end in intervals
+) + ")"
 
 
 def single_copy_locus(chrom: str, pos: int) -> bool:
-    normalized = normalize_chromosome(str(chrom))
-    if normalized == "X":
-        return GRCH38_X_PAR1_END < int(pos) < GRCH38_X_PAR2_START
-    if normalized == "Y":
-        return GRCH38_Y_PAR1_END < int(pos) < GRCH38_Y_PAR2_START
-    return False
+    """Whether the GRCh38 locus is on non-PAR X or Y."""
+    intervals = GRCH38_PAR.get(normalize_chromosome(str(chrom)))
+    return bool(intervals and all(not start <= int(pos) <= end for start, end in intervals))
 
 
 # Population-frequency sources, in preference order (review M9). The value the
@@ -1012,42 +1019,21 @@ def parse_csq_entries(raw: str, fields: list[str]) -> list[dict[str, str]]:
     return entries
 
 
-def _vep_alt_allele(ref: str, alt: str) -> str:
-    """Return VEP's minimized CSQ Allele representation for a small variant."""
-    if not re.fullmatch(r"[ACGTN]+", ref, re.IGNORECASE) or not re.fullmatch(
-        r"[ACGTN]+", alt, re.IGNORECASE
-    ):
-        return alt
-    ref_sequence = ref.upper()
-    alt_sequence = alt.upper()
-    while ref_sequence and alt_sequence and ref_sequence[-1] == alt_sequence[-1]:
-        ref_sequence = ref_sequence[:-1]
-        alt_sequence = alt_sequence[:-1]
-    while ref_sequence and alt_sequence and ref_sequence[0] == alt_sequence[0]:
-        ref_sequence = ref_sequence[1:]
-        alt_sequence = alt_sequence[1:]
-    return alt_sequence or "-"
-
-
-def _consequence_matches_alt(
+def consequence_matches_alt(
     consequence: dict[str, str], *, ref: str, alts: tuple[str, ...], alt_index: int,
 ) -> bool:
-    """Attribute a CSQ entry without borrowing an ambiguous minimized allele."""
-    allele_number = consequence.get("ALLELE_NUM", "")
-    if allele_number.isdigit():
-        return int(allele_number) == alt_index + 1
-    allele = consequence.get("Allele", "")
-    if not allele:
-        return True
-    if allele.upper() == alts[alt_index].upper():
-        return True
-    minimized_alts = tuple(_vep_alt_allele(ref, alt) for alt in alts)
-    minimized = minimized_alts[alt_index]
-    return (
-        allele.upper() == minimized.upper()
-        and sum(candidate.upper() == minimized.upper() for candidate in minimized_alts)
-        == 1
-    )
+    return csq_allele_index(consequence, ref, alts) == alt_index
+
+
+def wgs_retained_alts(info: dict[str, str], alt_count: int) -> list[str] | None:
+    raw = info.get("IEI_WGS_RETAINED")
+    if raw is None:
+        return None
+    mask = raw.split(",")
+    if len(mask) != alt_count or any(bit not in {"0", "1"} for bit in mask):
+        raise ValueError("invalid IEI_WGS_RETAINED: expected one 0 or 1 per ALT")
+    return mask
+
 
 
 _VARIANT_MATCH_DIMENSIONS = {
@@ -1258,6 +1244,7 @@ def _canonical_prediction_target_key(
     alt: str,
     sample: str = "",
 ) -> str:
+    pos, ref, alt = minimal_representation(int(pos), ref, alt)
     genomic: dict[MatchDimension, object] = {
         MatchDimension.CHROMOSOME: normalize_chromosome(chrom),
         MatchDimension.POSITION: int(pos),
@@ -1729,11 +1716,15 @@ def annotation_from(
     promoter_observation = promoterai_observation(record, decode=decode)
     starter_am = starter_observation(record, "alphamissense")
     starter_cadd = starter_observation(record, "cadd_coding")
-    coding_cadd = (
-        starter_cadd["values"].get("phred") if starter_cadd is not None
-        else maximum(record, ("CADD_phred",))
-    )
+    coding_cadd = starter_cadd["values"].get("phred") if starter_cadd else None
+    if coding_cadd is None:
+        coding_cadd = maximum(record, ("CADD_phred",))
+    alpha = starter_am["values"].get("score") if starter_am else None
+    if alpha is None:
+        alpha = maximum(record, ("AlphaMissense_score", "am_pathogenicity"))
     wgs_cadd = maximum(record, ("CADD_PHRED", "CADD_WGS_CADD_PHRED", "CADD_WGS_PHRED"))
+    logofunc_match = first(record, ("LoGoFunc_match",))
+    logofunc_exact = logofunc_match == "allele_transcript_protein"
     annotation = {
         "gene": (first(record, ("SYMBOL", "HGNC")) or "—").upper(),
         "gene_id": first(record, ("Gene",)),
@@ -1746,13 +1737,10 @@ def annotation_from(
         "gnomad_popmax_source": frequency_source,
         # When both sources exist on a coding SNV, the explicitly selected
         # genome-wide v1.7 plugin is authoritative. Otherwise use the declared
-        # starter provider, or legacy dbNSFP if starter fields are absent.
+        # starter provider, or a dbNSFP score when the starter has no match.
         # Do not combine sources by taking the numerically larger score.
         "cadd": wgs_cadd if wgs_cadd is not None else coding_cadd,
-        "alpha_missense": (
-            starter_am["values"].get("score") if starter_am is not None
-            else maximum(record, ("AlphaMissense_score", "am_pathogenicity"))
-        ),
+        "alpha_missense": alpha,
         "spliceai": maximum(record, (
             "SpliceAI_pred_DS_AG", "SpliceAI_pred_DS_AL",
             "SpliceAI_pred_DS_DG", "SpliceAI_pred_DS_DL",
@@ -1762,14 +1750,14 @@ def annotation_from(
         # only ever holds a score whose transcript/TSS provenance is complete,
         # exactly like the normalised observation and the browser parser.
         "promoterai": promoter_observation.usable_score,
-        "logofunc_prediction": first(record, ("LoGoFunc_prediction",)),
-        "logofunc_neutral": parse_number(first(record, ("LoGoFunc_neutral",))),
-        "logofunc_gof": parse_number(first(record, ("LoGoFunc_GOF",))),
-        "logofunc_lof": parse_number(first(record, ("LoGoFunc_LOF",))),
+        "logofunc_prediction": first(record, ("LoGoFunc_prediction",)) if logofunc_exact else "",
+        "logofunc_neutral": parse_number(first(record, ("LoGoFunc_neutral",))) if logofunc_exact else None,
+        "logofunc_gof": parse_number(first(record, ("LoGoFunc_GOF",))) if logofunc_exact else None,
+        "logofunc_lof": parse_number(first(record, ("LoGoFunc_LOF",))) if logofunc_exact else None,
         "logofunc_allele_available": int(truthy(first(record, ("LoGoFunc_allele_available",)))),
         "logofunc_source_transcript": first(record, ("LoGoFunc_source_transcript",)),
         "logofunc_source_hgvsp": first(record, ("LoGoFunc_source_HGVSp",)),
-        "logofunc_match": first(record, ("LoGoFunc_match",)),
+        "logofunc_match": logofunc_match,
         "clinvar": first(record, ("ClinVar_CLNSIG", "CLNSIG")),
         "clinvar_conflicting": first(
             record, ("ClinVar_CLNSIGCONF", "CLNSIGCONF")
@@ -1807,6 +1795,25 @@ STAGE_ANNOTATION_COLUMNS = (
     "clinvar", "clinvar_conflicting", "loftee", "loftee_50bp",
     "loftee_50bp_original", "loftee_50bp_changed", "ptc_distance",
     "ptc_calc_status", "mane", "picked", "repeat_masker", "segdup",
+)
+# Historical summary rows store both missing and unchanged flags as zero.
+# Prefer the typed observation. Equal recorded verdicts also establish an
+# unchanged result when an older index lacks normalized observations.
+_SUMMARY_RULE_CHANGED = """
+    COALESCE((
+        SELECT MAX(pv.boolean_value)
+        FROM prediction_observations po
+        JOIN prediction_values pv ON pv.observation_id = po.id AND pv.metric = 'rule_changed'
+        WHERE po.annotation_id = a.id AND po.predictor_id = 'loftee_ptc_50bp'
+          AND po.match_status = 'exact'
+    ), CASE WHEN a.loftee_50bp_changed = 1 THEN 1
+            WHEN a.loftee_50bp IN ('PASS', 'FAIL') AND a.loftee_50bp = a.loftee_50bp_original THEN 0 END)
+"""
+# Order also defines the on-disk source-score array (v1).
+SOURCE_SCORE_COLUMNS = (
+    "cadd", "alpha_missense", "spliceai", "promoterai", "logofunc_prediction",
+    "logofunc_neutral", "logofunc_gof", "logofunc_lof", "logofunc_allele_available",
+    "logofunc_source_transcript", "logofunc_source_hgvsp", "logofunc_match",
 )
 STAGE_GENOTYPE_COLUMNS = (
     "variant_key", "sample_name", "genotype", "zygosity", "phased",
@@ -2020,6 +2027,9 @@ MERGE_JOURNALS: dict[str, tuple[str, tuple[str, ...]]] = {
 }
 
 COHORT_SECONDARY_INDEXES = {
+    "cohort_ref_span_idx": (
+        "CREATE INDEX cohort_ref_span_idx ON cohort_variants(chrom, length(ref) DESC) WHERE length(ref)>1"
+    ),
     "cohort_variants_locus_idx": (
         "CREATE INDEX cohort_variants_locus_idx "
         "ON cohort_variants(chrom, pos, ref, alt)"
@@ -2299,7 +2309,10 @@ def _stage_vcf_records(
             qual = parse_number(qual_raw)
 
             alts = tuple(alt_raw.split(","))
+            retained = wgs_retained_alts(info, len(alts))
             for alt_index, alt in enumerate(alts):
+                if retained is not None and retained[alt_index] == "0":
+                    continue
                 carriers: list[tuple[str, dict]] = []
                 for sample_index, sample_name in selected_samples:
                     genotype = parse_genotype(
@@ -2347,7 +2360,7 @@ def _stage_vcf_records(
                 matching = [
                     consequence
                     for consequence in consequences
-                    if _consequence_matches_alt(
+                    if consequence_matches_alt(
                         consequence, ref=ref, alts=alts, alt_index=alt_index
                     )
                 ]
@@ -2552,9 +2565,7 @@ class CohortStore:
         self._import_jobs: dict[str, dict] = {}
         self._import_jobs_lock = threading.Lock()
         self._maintenance_lock = threading.Lock()
-        # One chunked merge at a time per process: the merge journal and the
-        # merge_cleanup_pending marker describe a single merge.
-        self._merge_lock = threading.Lock()
+        self._direct_imports = 0
         self._read_context = threading.local()
         self._initialize()
 
@@ -2707,6 +2718,14 @@ class CohortStore:
                     UNIQUE(variant_id, gene, transcript, hgvsc, hgvsp, consequence)
                 );
 
+                CREATE TABLE IF NOT EXISTS cohort_source_scores (
+                    annotation_id INTEGER NOT NULL REFERENCES cohort_annotations(id) ON DELETE CASCADE,
+                    file_id INTEGER NOT NULL REFERENCES cohort_files(id) ON DELETE CASCADE,
+                    scores TEXT NOT NULL,
+                    PRIMARY KEY(annotation_id,file_id)
+                ) WITHOUT ROWID;
+                CREATE INDEX IF NOT EXISTS cohort_source_scores_file_idx ON cohort_source_scores(file_id);
+
                 CREATE TABLE IF NOT EXISTS cohort_genotypes (
                     id INTEGER PRIMARY KEY,
                     variant_id INTEGER NOT NULL REFERENCES cohort_variants(id) ON DELETE CASCADE,
@@ -2843,6 +2862,8 @@ class CohortStore:
                     value_type, numeric_value, text_value, boolean_value, unit
                 );
 
+                CREATE INDEX IF NOT EXISTS cohort_ref_span_idx
+                    ON cohort_variants(chrom, length(ref) DESC) WHERE length(ref)>1;
                 CREATE INDEX IF NOT EXISTS cohort_variants_locus_idx
                     ON cohort_variants(chrom, pos, ref, alt);
                 CREATE INDEX IF NOT EXISTS cohort_variants_rsid_idx
@@ -3028,9 +3049,54 @@ class CohortStore:
             # Seed (or advance) the file-id allocator so databases created
             # before cohort_meta existed continue above every id ever issued.
             self._advance_file_id_allocator(connection)
+            connection.execute("""
+                INSERT OR IGNORE INTO cohort_meta(key,value)
+                SELECT 'source_score_first_file',value FROM cohort_meta WHERE key='next_file_id'
+            """)
             self._migrate_variant_keys(connection)
             self._reconcile_legacy_columns(connection)
         self._recover_interrupted_merges()
+        with self._session() as connection:
+            self._migrate_prediction_keys(connection)
+
+    @staticmethod
+    def _migrate_prediction_keys(connection):
+        if connection.execute("SELECT 1 FROM cohort_meta WHERE key='minimal_prediction_keys'").fetchone():
+            return
+        # Materialize only mismatches so changes to observation keys cannot
+        # affect iteration. Preserve releases, source identities and match scope.
+        connection.execute("""
+            CREATE TEMP TABLE padded_keys AS
+            SELECT o.id, o.target_key, v.pos, v.ref, v.alt
+            FROM prediction_observations o JOIN cohort_variants v ON v.id=o.variant_id
+            WHERE CASE WHEN json_valid(o.target_key) THEN
+              json_extract(o.target_key,'$.position') != v.pos OR
+              json_extract(o.target_key,'$.reference') != v.ref OR
+              json_extract(o.target_key,'$.alternate') != v.alt END
+        """)
+        for row in connection.execute("SELECT * FROM padded_keys ORDER BY id"):
+            target = json.loads(row["target_key"])
+            for key, value in (("position", row["pos"]), ("reference", row["ref"]), ("alternate", row["alt"])):
+                if key in target:
+                    target[key] = value
+            key = json.dumps(target, sort_keys=True, separators=(",", ":"))
+            matches = connection.execute("""
+                SELECT other.id, other.match_status FROM prediction_observations old
+                JOIN prediction_observations other USING(release_id,predictor_id,variant_id,target_scope,source_identity)
+                WHERE old.id=? AND (other.id=old.id OR other.target_key=?)
+                ORDER BY (other.match_status='exact') DESC, (other.target_key=?) DESC
+            """, (row["id"], key, key)).fetchall()
+            if not matches:
+                continue
+            winner = matches[0]
+            for duplicate in matches[1:]:
+                if winner["match_status"] == duplicate["match_status"]:
+                    connection.execute("UPDATE OR IGNORE prediction_values SET observation_id=? WHERE observation_id=?",
+                                       (winner["id"], duplicate["id"]))
+                connection.execute("DELETE FROM prediction_observations WHERE id=?", (duplicate["id"],))
+            connection.execute("UPDATE prediction_observations SET target_key=? WHERE id=?", (key, winner["id"]))
+        connection.execute("INSERT INTO cohort_meta(key,value) VALUES('minimal_prediction_keys','1')")
+
 
     def _phenotype_sex_available(self) -> bool:
         """True when the phenotype store's tables share this database (the
@@ -4223,10 +4289,22 @@ class CohortStore:
 
     def has_active_import(self) -> bool:
         with self._import_jobs_lock:
-            return any(
+            return bool(self._direct_imports) or any(
                 job["status"] in {"queued", "running"}
                 for job in self._import_jobs.values()
             )
+
+    @contextmanager
+    def maintenance(self, action: str):
+        message = f"wait for the active cohort import or maintenance operation before {action}"
+        if not self._maintenance_lock.acquire(blocking=False):
+            raise ValueError(message)
+        try:
+            if self.has_active_import():
+                raise ValueError(message)
+            yield
+        finally:
+            self._maintenance_lock.release()
 
     def profiles(self) -> list[dict]:
         """Return import profiles without deriving cohort allele frequencies."""
@@ -4284,14 +4362,6 @@ class CohortStore:
 
     def remove_samples(self, sample_ids: list[int]) -> dict:
         """Remove selected sample entries and reclaim variants with no carriers."""
-        with self._import_jobs_lock:
-            if any(
-                job["status"] in {"queued", "running"}
-                for job in self._import_jobs.values()
-            ):
-                raise ValueError(
-                    "wait for the active cohort import to finish before removing samples"
-                )
         if not isinstance(sample_ids, list):
             raise ValueError("sample_ids must be a list")
         try:
@@ -4302,28 +4372,8 @@ class CohortStore:
             raise ValueError("select at least one sample to remove")
         if len(selected) > 5_000:
             raise ValueError("a single removal is limited to 5,000 sample entries")
-        # Non-blocking acquire keeps the fast-fail contract while making the
-        # exclusion real: the import worker's write phase holds this same
-        # lock, so an import submitted between the early check above and this
-        # point either blocks before writing or makes this raise — it can no
-        # longer write genotypes for variants the removal is deleting.
-        if not self._maintenance_lock.acquire(blocking=False):
-            raise ValueError(
-                "wait for the active cohort import or maintenance operation "
-                "to finish before removing samples"
-            )
-        try:
-            with self._import_jobs_lock:
-                if any(
-                    job["status"] in {"queued", "running"}
-                    for job in self._import_jobs.values()
-                ):
-                    raise ValueError(
-                        "wait for the active cohort import to finish before removing samples"
-                    )
+        with self.maintenance("removing samples"):
             return self._remove_samples(selected)
-        finally:
-            self._maintenance_lock.release()
 
     def _reset_cohort_tables(self) -> None:
         """Quickly clear the cohort index while preserving phenotype tables.
@@ -4339,6 +4389,7 @@ class CohortStore:
             connection.executescript(
                 """
                 BEGIN EXCLUSIVE;
+                DROP TABLE cohort_source_scores;
                 DROP TABLE prediction_values;
                 DROP TABLE prediction_observations;
                 DROP TABLE cohort_genotypes;
@@ -4357,6 +4408,151 @@ class CohortStore:
         self._initialize()
         with self._session() as connection:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+
+    @staticmethod
+    def _capture_retiring_variants(connection, sample_query, parameters=()):
+        """Remember carriers before a cascading deletion. Temp state follows the transaction."""
+        connection.execute("CREATE TEMP TABLE IF NOT EXISTS retiring_variants(id INTEGER PRIMARY KEY)")
+        connection.execute("DELETE FROM retiring_variants")
+        connection.execute(f"""
+            INSERT OR IGNORE INTO retiring_variants
+            SELECT variant_id FROM cohort_genotypes WHERE sample_id IN ({sample_query})
+        """, parameters)
+
+    @staticmethod
+    def _prune_retired_source_scores(connection, low, high):
+        scope = "SELECT id FROM retiring_variants WHERE id > ? AND id <= ?"
+        connection.execute(f"""
+            DELETE FROM cohort_source_scores WHERE annotation_id IN (
+                SELECT id FROM cohort_annotations WHERE variant_id IN ({scope})
+            ) AND NOT EXISTS (
+                SELECT 1 FROM cohort_annotations a JOIN cohort_genotypes g ON g.variant_id=a.variant_id
+                JOIN cohort_samples s ON s.id=g.sample_id
+                WHERE a.id=cohort_source_scores.annotation_id AND s.file_id=cohort_source_scores.file_id
+            )
+        """, (low, high))
+
+    @staticmethod
+    def _restore_carried_scores(connection, low, high):
+        """Rebuild display scores on surviving alleles from the remaining source observations."""
+        bounds = (low, high)
+        scope = "SELECT id FROM retiring_variants WHERE id > ? AND id <= ?"
+        connection.execute(f"""
+            DELETE FROM prediction_observations
+            WHERE variant_id IN ({scope}) AND source_file_id IS NOT NULL
+              AND NOT EXISTS (
+                SELECT 1 FROM cohort_genotypes g JOIN cohort_samples s ON s.id=g.sample_id
+                WHERE g.variant_id=prediction_observations.variant_id
+                  AND s.file_id=prediction_observations.source_file_id
+              )
+        """, bounds)
+        annotations = connection.execute(f"""
+            SELECT id, variant_id, gene, transcript FROM cohort_annotations a
+            WHERE variant_id IN ({scope}) AND EXISTS (
+                SELECT 1 FROM cohort_genotypes g JOIN cohort_samples s ON s.id=g.sample_id
+                WHERE g.variant_id=a.variant_id)
+        """, bounds).fetchall()
+        if not annotations:
+            return
+        metrics = {
+            "cadd_coding": {"phred": "cadd"}, "starter_cadd": {"phred": "cadd"},
+            "cadd_wgs": {"phred": "cadd"}, "alphamissense": {"score": "alpha_missense"},
+            "starter_alphamissense": {"score": "alpha_missense"},
+            "promoterai": {"score": "promoterai"},
+            "logofunc": {"prediction": "logofunc_prediction", "neutral": "logofunc_neutral",
+                         "gof": "logofunc_gof", "lof": "logofunc_lof"},
+        }
+        blank = dict.fromkeys(SOURCE_SCORE_COLUMNS)
+        blank["logofunc_allele_available"] = 0
+        by_variant = {}
+        for annotation in annotations:
+            by_variant.setdefault(annotation["variant_id"], []).append(annotation)
+        source_scores = {}
+        # Older files lack per-CSQ display snapshots. Use their source-bound
+        # observations where the provider and target can be recovered.
+        first_tracked = int(connection.execute(
+            "SELECT value FROM cohort_meta WHERE key='source_score_first_file'"
+        ).fetchone()[0])
+        observations = connection.execute(f"""
+            SELECT o.id, o.source_file_id, o.variant_id, o.annotation_id, o.predictor_id, o.gene_symbol, o.match_status,
+                   o.transcript_id, o.protein_change, o.provenance_json, v.metric,
+                   COALESCE(v.numeric_value, v.text_value) AS value
+            FROM prediction_observations o LEFT JOIN prediction_values v ON v.observation_id=o.id
+            WHERE o.variant_id IN ({scope}) AND o.source_file_id < ?
+              AND o.predictor_id IN ('cadd_coding','starter_cadd','cadd_wgs','alphamissense',
+                                     'starter_alphamissense','spliceai','promoterai','logofunc')
+            ORDER BY o.source_file_id, CASE o.predictor_id WHEN 'cadd_wgs' THEN 2
+              WHEN 'starter_cadd' THEN 1 WHEN 'starter_alphamissense' THEN 1 ELSE 0 END, o.id
+        """, (*bounds, first_tracked))
+        splice_observation = {}
+        for obs in observations:
+            predictor = obs["predictor_id"]
+            for annotation in by_variant.get(obs["variant_id"], ()):
+                source_key = (obs["source_file_id"], annotation["id"])
+                scores = source_scores.setdefault(source_key, {})
+                if predictor == "logofunc":
+                    scores["logofunc_allele_available"] = 1
+                if obs["match_status"] != "exact":
+                    continue
+                if predictor == "spliceai":
+                    if obs["gene_symbol"] != annotation["gene"] or not str(obs["metric"]).startswith("delta_"):
+                        continue
+                    if obs["metric"].startswith("delta_position") or obs["value"] is None:
+                        continue
+                    if splice_observation.get(annotation["id"]) != obs["id"]:
+                        scores["spliceai"] = None
+                        splice_observation[annotation["id"]] = obs["id"]
+                    scores["spliceai"] = max(scores.get("spliceai") or 0, obs["value"])
+                    continue
+                if predictor not in {"cadd_coding", "starter_cadd", "cadd_wgs"} and obs["annotation_id"] != annotation["id"]:
+                    continue
+                column = metrics[predictor].get(obs["metric"])
+                if column and obs["value"] is not None:
+                    scores[column] = obs["value"]
+                if predictor == "logofunc":
+                    scores["logofunc_source_transcript"] = obs["transcript_id"]
+                    scores["logofunc_source_hgvsp"] = obs["protein_change"]
+                    scores["logofunc_match"] = json.loads(obs["provenance_json"]).get("match")
+        for rec in connection.execute(f"""
+            SELECT src.file_id,src.annotation_id,src.scores FROM cohort_annotations a
+            JOIN cohort_source_scores src ON src.annotation_id=a.id
+            WHERE a.variant_id IN ({scope})
+        """, bounds):
+            source_scores[rec["file_id"], rec["annotation_id"]] = dict(zip(SOURCE_SCORE_COLUMNS, json.loads(rec["scores"])))
+        by_annotation = {row["id"]: blank.copy() for row in annotations}
+        for (_, annotation_id), contribution in sorted(source_scores.items()):
+            scores = by_annotation.get(annotation_id)
+            if scores is None:
+                continue
+            for col, value in contribution.items():
+                if col == "logofunc_allele_available":
+                    scores[col] = max(scores[col], value or 0)
+                elif value is not None and value != "":
+                    scores[col] = value
+        setters = ", ".join(f"{column}=:{column}" for column in blank)
+        connection.executemany(
+            f"UPDATE cohort_annotations SET {setters} WHERE id=:id",
+            (dict(scores, id=key) for key, scores in by_annotation.items()),
+        )
+
+    def _restore_retiring_variants(self, connection, *, chunked=False, restore=True):
+        low = 0
+        while True:
+            row = connection.execute(
+                "SELECT MAX(id) FROM (SELECT id FROM retiring_variants WHERE id>? ORDER BY id LIMIT ?)",
+                (low, MERGE_CHUNK_VARIANTS),
+            ).fetchone()
+            high = row[0]
+            if high is None:
+                return
+            transaction = self._write_transaction(connection) if chunked else nullcontext()
+            with transaction:
+                self._prune_retired_source_scores(connection, low, high)
+                if restore:
+                    self._restore_carried_scores(connection, low, high)
+            if chunked:
+                self._yield_to_waiting_writers()
+            low = high
 
     def _remove_samples(self, selected: list[int]) -> dict:
         placeholders = ",".join("?" for _ in selected)
@@ -4394,6 +4590,7 @@ class CohortStore:
 
         with self._session() as connection:
             file_ids = sorted({row["file_id"] for row in rows})
+            self._capture_retiring_variants(connection, f"SELECT id FROM cohort_samples WHERE id IN ({placeholders})", selected)
             connection.execute(
                 f"DELETE FROM cohort_samples WHERE id IN ({placeholders})",
                 selected,
@@ -4427,6 +4624,7 @@ class CohortStore:
                             counts["carrier_count"], file_id,
                         ),
                     )
+            self._restore_retiring_variants(connection)
             orphaned = connection.execute(
                 """
                 SELECT COUNT(*) FROM cohort_variants v
@@ -4466,7 +4664,7 @@ class CohortStore:
                 raise ValueError(f"cohort input path does not exist: {path}")
         selected = sorted({
             path for path in candidates
-            if path.name.lower().endswith((".vcf", ".vcf.gz"))
+            if path.name.lower().endswith(VCF_SUFFIXES)
         })
         if not selected:
             raise ValueError("no .vcf or .vcf.gz files were found")
@@ -4737,7 +4935,7 @@ class CohortStore:
                     self._update_import_job(job_id, **changes)
 
                 try:
-                    result = self.import_vcf(
+                    result = self._import_vcf_locked(
                         import_path,
                         force=force,
                         allow_unknown_assembly=allow_unknown_assembly,
@@ -4879,6 +5077,7 @@ class CohortStore:
         with self._session() as connection:
             connection.execute("BEGIN IMMEDIATE")
             if existing:
+                self._capture_retiring_variants(connection, "SELECT id FROM cohort_samples WHERE file_id=?", (existing["id"],))
                 connection.execute("DELETE FROM cohort_files WHERE id = ?", (existing["id"],))
             file_id = self._allocate_file_id(connection)
             connection.execute(
@@ -5005,7 +5204,10 @@ class CohortStore:
                         qual = parse_number(qual_raw)
 
                         alts = tuple(alt_raw.split(","))
+                        retained = wgs_retained_alts(info, len(alts))
                         for alt_index, alt in enumerate(alts):
+                            if retained is not None and retained[alt_index] == "0":
+                                continue
                             carrier_rows = []
                             for sample_index, sample_id in enumerate(sample_ids):
                                 genotype = parse_genotype(
@@ -5097,7 +5299,7 @@ class CohortStore:
                             matching = [
                                 consequence
                                 for consequence in consequences
-                                if _consequence_matches_alt(
+                                if consequence_matches_alt(
                                     consequence,
                                     ref=ref,
                                     alts=alts,
@@ -5224,6 +5426,11 @@ class CohortStore:
                                     """,
                                     annotation_key,
                                 ).fetchone()[0]
+                                scores = [annotation[col] for col in SOURCE_SCORE_COLUMNS]
+                                if any(value not in (None, "") for col, value in zip(SOURCE_SCORE_COLUMNS, scores)
+                                       if col != "logofunc_allele_available") or annotation["logofunc_allele_available"]:
+                                    connection.execute("INSERT OR IGNORE INTO cohort_source_scores VALUES(?,?,?)",
+                                                       (annotation_id, file_id, json.dumps(scores, separators=(",", ":"))))
                                 self._write_embedded_predictions(
                                     connection,
                                     variant_id=variant_id,
@@ -5325,6 +5532,8 @@ class CohortStore:
                     raise ValueError("VEP CSQ Format header was not found")
                 # Same rule as the staged merge: a withheld PromoterAI score
                 # must not survive behind the annotation upsert's COALESCE.
+                if existing:
+                    self._restore_retiring_variants(connection)
                 self._reconcile_withheld_promoterai(connection)
 
                 variant_count = connection.execute(
@@ -5436,7 +5645,7 @@ class CohortStore:
         cache_dir = self.prepared_dir / fingerprint
         cache_dir.mkdir(parents=True, exist_ok=True)
         source_name = path.name
-        for suffix in (".vcf.gz", ".vcf", ".gz"):
+        for suffix in VCF_SUFFIXES + COMPRESSED_SUFFIXES:
             if source_name.lower().endswith(suffix):
                 source_name = source_name[:-len(suffix)]
                 break
@@ -5531,7 +5740,7 @@ class CohortStore:
         source = source.resolve()
         destination_directory.mkdir(parents=True, exist_ok=True)
         snapshot_suffix = (
-            ".vcf.gz" if source.name.lower().endswith((".gz", ".bgz")) else ".vcf"
+            ".vcf.gz" if source.name.lower().endswith(COMPRESSED_SUFFIXES) else ".vcf"
         )
         snapshot = destination_directory / (
             f".{content_key}.{uuid.uuid4().hex}.snapshot{snapshot_suffix}"
@@ -5571,7 +5780,7 @@ class CohortStore:
                 snapshot, content_hint=content_key, content_addressed=True,
                 display_name=source.name,
             )
-        compressed = prepared.path.name.lower().endswith((".gz", ".bgz"))
+        compressed = prepared.path.name.lower().endswith(COMPRESSED_SUFFIXES)
         destination = destination_directory / (
             f"{content_key}.vcf.gz" if compressed else f"{content_key}.vcf"
         )
@@ -5613,7 +5822,7 @@ class CohortStore:
                 # The snapshot holds the same verified bytes whenever no
                 # re-encoding happened — fall back to it.
                 if snapshot.is_file() and (
-                    snapshot.name.lower().endswith((".gz", ".bgz")) == compressed
+                    snapshot.name.lower().endswith(COMPRESSED_SUFFIXES) == compressed
                 ):
                     shutil.copy2(snapshot, temporary)
                 else:
@@ -5677,7 +5886,7 @@ class CohortStore:
     @staticmethod
     def _compressed_position(handle, path: Path) -> int:
         try:
-            if path.name.lower().endswith((".gz", ".bgz")):
+            if path.name.lower().endswith(COMPRESSED_SUFFIXES):
                 return int(handle.buffer.fileobj.tell())
             return int(handle.buffer.tell())
         except (AttributeError, OSError, ValueError):
@@ -5691,7 +5900,7 @@ class CohortStore:
         progress: Callable[[dict], None] | None,
         sample_indices: tuple[int, ...] | None = None,
     ) -> dict:
-        opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+        opener = gzip.open if path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
         with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
             return _stage_vcf_records(
                 handle,
@@ -6366,6 +6575,12 @@ class CohortStore:
         genotypes and observations written for an unpublished merge, and
         those of a file replaced at publication. Then drop variants no
         carrier references. Bounded transactions throughout."""
+        # Orphan genotypes identify retired samples across process restarts.
+        # A rollback already restored annotation pre-images from its journal.
+        self._capture_retiring_variants(connection,
+            "SELECT DISTINCT sample_id FROM cohort_genotypes WHERE sample_id NOT IN (SELECT id FROM cohort_samples)")
+        published = self._pending_merge_state(connection)[0] == "published"
+        self._restore_retiring_variants(connection, chunked=True, restore=published)
         connection.execute("PRAGMA foreign_keys=OFF")
         self._delete_in_chunks(
             connection, "cohort_genotypes",
@@ -6420,7 +6635,7 @@ class CohortStore:
             and existing["analysis_scope"] == analysis_scope
             and existing["prefilter_options"] == prefilter_options_json
             and existing["size_bytes"] == stat.st_size
-            and existing["mtime_ns"] == stat.st_mtime_ns
+            and existing["mtime_ns"] in (-1, stat.st_mtime_ns)
             and (
                 (content_sha256 and existing["content_sha256"] == content_sha256)
                 or (
@@ -6435,6 +6650,12 @@ class CohortStore:
         file_id = 0
         rebuild_secondary_indexes = False
         try:
+            if sample_names and existing is not None and not append_to_existing:
+                remaining = {row[0] for row in connection.execute(
+                    "SELECT name FROM cohort_samples WHERE file_id=?", (existing["id"],)
+                )} - set(sample_names)
+                if remaining:
+                    raise ValueError("The indexed file or its settings changed. Re-import the complete callset to replace it.")
             for alias, stage in zip(aliases, stages):
                 connection.execute(
                     f"ATTACH DATABASE ? AS {alias}", (stage["stage_path"],)
@@ -6857,6 +7078,17 @@ class CohortStore:
               repeat_masker=MAX(excluded.repeat_masker, cohort_annotations.repeat_masker),
               segdup=MAX(excluded.segdup, cohort_annotations.segdup)
         """, key_range)
+        source_columns = ",".join("s." + col for col in SOURCE_SCORE_COLUMNS)
+        has_score = " OR ".join("NULLIF(s." + col + ",'') IS NOT NULL" for col in SOURCE_SCORE_COLUMNS
+                                if col != "logofunc_allele_available")
+        connection.execute(f"""
+            INSERT OR IGNORE INTO cohort_source_scores(annotation_id,file_id,scores)
+            SELECT a.id, ?, json_array({source_columns})
+            FROM {alias}.stage_annotations s CROSS JOIN cohort_variants v ON v.variant_key=s.variant_key
+            CROSS JOIN cohort_annotations a ON a.variant_id=v.id AND a.gene=s.gene AND a.transcript=s.transcript
+              AND a.hgvsc=s.hgvsc AND a.hgvsp=s.hgvsp AND a.consequence=s.consequence
+            WHERE s.variant_key>? AND s.variant_key<=? AND (s.logofunc_allele_available OR {has_score})
+        """, (file_id, low, high))
         if merge_predictions:
             self._merge_stage_predictions(
                 connection, alias, file_id,
@@ -6923,6 +7155,30 @@ class CohortStore:
         full-WGS reindex of one dataset whose original VCF also carries
         siblings that must stay indexed exactly once.
         """
+        with self._import_jobs_lock:
+            self._direct_imports += 1
+        try:
+            with self._maintenance_lock:
+                return self._import_vcf_locked(
+                    path, force=force, allow_unknown_assembly=allow_unknown_assembly,
+                    progress=progress, source_path=source_path, import_profile=import_profile,
+                    analysis_scope=analysis_scope, prefilter_options=prefilter_options,
+                    prefilter_metadata=prefilter_metadata, restrict_samples=restrict_samples,
+                )
+        finally:
+            with self._import_jobs_lock:
+                self._direct_imports -= 1
+
+    def _import_vcf_locked(
+        self, path: Path, force: bool = False, allow_unknown_assembly: bool = False,
+        progress: Callable[[dict], None] | None = None,
+        source_path: Path | None = None,
+        import_profile: str = "full",
+        analysis_scope: str = "exome",
+        prefilter_options: dict | None = None,
+        prefilter_metadata: dict | None = None,
+        restrict_samples: Iterable[str] | None = None,
+    ) -> dict:
         if import_profile not in {"full", "prefiltered"}:
             raise ValueError("import_profile must be 'full' or 'prefiltered'")
         if analysis_scope not in {"exome", "whole_genome"}:
@@ -6945,6 +7201,11 @@ class CohortStore:
         path = path.resolve()
         source_path = (source_path or path).resolve()
         prefilter_metadata = prefilter_metadata or {}
+        if "review_format_version" in prefilter_metadata:
+            prefilter_options = {
+                **(prefilter_options or {}),
+                "review_format_version": prefilter_metadata["review_format_version"],
+            }
         prefilter_options_json = json.dumps(
             prefilter_options or {}, sort_keys=True, separators=(",", ":")
         )
@@ -7095,24 +7356,23 @@ class CohortStore:
                     "carrier_count": sum(stage["carrier_count"] for stage in stages),
                     "reader_count": reader_count,
                 })
-            with self._merge_lock:
-                file_id, variant_count = self._merge_stages(
-                    source_path=source_path,
-                    prepared=prepared,
-                    assembly=assembly,
-                    header=header,
-                    stages=stages,
-                    existing=existing,
-                    import_mode=import_mode,
-                    reader_count=reader_count,
-                    import_profile=import_profile,
-                    analysis_scope=analysis_scope,
-                    prefilter_options_json=prefilter_options_json,
-                    prefilter_metadata=prefilter_metadata,
-                    content_probe=content_probe,
-                    content_sha256=content_sha,
-                    sample_names=restricted,
-                )
+            file_id, variant_count = self._merge_stages(
+                source_path=source_path,
+                prepared=prepared,
+                assembly=assembly,
+                header=header,
+                stages=stages,
+                existing=existing,
+                import_mode=import_mode,
+                reader_count=reader_count,
+                import_profile=import_profile,
+                analysis_scope=analysis_scope,
+                prefilter_options_json=prefilter_options_json,
+                prefilter_metadata=prefilter_metadata,
+                content_probe=content_probe,
+                content_sha256=content_sha,
+                sample_names=restricted,
+            )
 
         pass_records = sum(stage["pass_records"] for stage in stages)
         excluded_records = sum(stage["excluded_records"] for stage in stages)
@@ -7172,13 +7432,13 @@ class CohortStore:
             return "v.chrom = ? AND v.pos = ?", [normalize_chromosome(chrom), int(pos)]
         return None
 
-    def query(self, payload: dict, *, explain_plan: bool = False) -> dict:
+    def query(self, payload: dict, *, explain_plan: bool = False, links_path: Path | None = None) -> dict:
         """Run a Cohort Search. With ``explain_plan`` the assembled statement
         is not executed; its EXPLAIN QUERY PLAN lines are returned instead so
         tests can guard the REAL query against table scans."""
         mode = str(payload.get("mode") or "variant")
-        if mode not in {"variant", "gene", "gene_list", "region"}:
-            raise ValueError("mode must be 'variant', 'gene', 'gene_list', or 'region'")
+        if mode not in {"variant", "gene", "gene_list", "region", "target_gene"}:
+            raise ValueError("mode must be 'variant', 'gene', 'gene_list', 'region', or 'target_gene'")
         limit = max(1, min(int(payload.get("limit") or 500), 5000))
         variant_conditions: list[str] = []
         variant_parameters: list = []
@@ -7207,6 +7467,11 @@ class CohortStore:
                     "WHERE variant_key = ? COLLATE NOCASE)"
                 )
                 variant_parameters.extend([query, query])
+        elif mode == "target_gene":
+            if links_path is None:
+                raise ValueError("Element–gene link index unavailable")
+            regions = target_regions(links_path, str(payload.get("gene") or "").strip())
+            variant_conditions.append("v.id IN (SELECT id FROM target_gene_matches)")
         elif mode == "region":
             raw = str(payload.get("region") or payload.get("query") or "").strip()
             match = re.fullmatch(
@@ -7256,11 +7521,12 @@ class CohortStore:
             annotation_parameters.append(gene)
 
         # Qualifying-variant filters apply to the gene and region modes.
-        if mode in ("gene", "gene_list", "region"):
-            impacts = [
-                str(value).upper() for value in payload.get("impacts", ["HIGH", "MODERATE"])
+        if mode in ("gene", "gene_list", "region", "target_gene"):
+            coding_query = mode in ("gene", "gene_list")
+            impacts = sorted({
+                str(value).upper() for value in payload.get("impacts", ["HIGH", "MODERATE"] if coding_query else [])
                 if str(value).upper() in ALLOWED_IMPACTS
-            ]
+            })
             if impacts:
                 annotation_conditions.append(
                     "a.impact IN (" + ",".join("?" for _ in impacts) + ")"
@@ -7270,7 +7536,7 @@ class CohortStore:
                 annotation_conditions.append(
                     "(a.gnomad_popmax IS NULL OR a.gnomad_popmax <= ?)"
                 )
-                annotation_parameters.append(float(payload["max_popmax"]))
+                annotation_parameters.append(finite_float(payload["max_popmax"]))
             for key, column in (
                 ("min_cadd", "a.cadd"),
                 ("min_alpha_missense", "a.alpha_missense"),
@@ -7278,7 +7544,7 @@ class CohortStore:
             ):
                 if payload.get(key) is not None:
                     annotation_conditions.append(f"{column} >= ?")
-                    annotation_parameters.append(float(payload[key]))
+                    annotation_parameters.append(finite_float(payload[key]))
             logofunc_class = str(payload.get("logofunc_class") or "").strip()
             if logofunc_class:
                 if logofunc_class not in {"GOF", "LOF", "Neutral"}:
@@ -7299,10 +7565,10 @@ class CohortStore:
                 if payload.get("min_logofunc_probability") is not None:
                     clause += f" AND lf_filter.{logofunc_score_column} >= ?"
                     annotation_parameters.append(
-                        float(payload["min_logofunc_probability"])
+                        finite_float(payload["min_logofunc_probability"])
                     )
                 annotation_conditions.append(clause + ")")
-            if payload.get("mane_only", True):
+            if payload.get("mane_only", coding_query):
                 annotation_conditions.append(
                     "(a.mane = 1 OR (a.picked = 1 AND NOT EXISTS ("
                     "SELECT 1 FROM cohort_annotations preferred_mane "
@@ -7335,64 +7601,56 @@ class CohortStore:
         if zygosity != "all":
             if zygosity not in {"heterozygous", "homozygous", "hemizygous"}:
                 raise ValueError("unsupported zygosity filter")
-            if zygosity in {"homozygous", "hemizygous"}:
-                # Review M9: on non-PAR X and Y a male's single copy is
-                # written either haploid ("1" -> hemizygous) or diploid-style
-                # ("1/1" -> homozygous) depending on the caller, and the
-                # stored class follows the encoding. The two searches are
-                # therefore widened to each other AT SINGLE-COPY LOCI ONLY;
-                # stored genotypes are never rewritten from sex_at_birth.
-                # Each row still reports its own zygosity and genotype.
-                #
-                # Recorded sex narrows the widening where it is known: a
-                # diploid-encoded 1/1 on non-PAR X in an individual recorded
-                # as female is a genuine two-copy call and is NOT pulled into
-                # a hemizygous search; male, other, unknown and unlinked
-                # samples keep the widening. A haploid call is single-copy
-                # whatever the recorded sex, so the homozygous search always
-                # includes it.
-                counterpart = (
-                    "hemizygous" if zygosity == "homozygous" else "homozygous"
-                )
-                female_guard = ""
-                if zygosity == "hemizygous" and self._phenotype_sex_available():
-                    female_guard = (
-                        " AND NOT EXISTS ("
-                        "SELECT 1 FROM phenotype_sample_links AS link "
-                        "JOIN phenotype_individuals AS individual "
-                        "ON individual.individual_id = link.individual_id "
-                        "WHERE link.sample_id = s.name "
-                        "AND individual.sex_at_birth = 'female')"
-                    )
-                genotype_conditions.append(
-                    "(g.zygosity = ? OR (g.zygosity = ? AND "
-                    + SINGLE_COPY_LOCUS_SQL + female_guard + "))"
-                )
-                genotype_parameters.extend([zygosity, counterpart])
-            else:
+            if zygosity == "heterozygous":
                 genotype_conditions.append("g.zygosity = ?")
                 genotype_parameters.append(zygosity)
+            else:
+                # A stored 1/1 can represent a male's single X/Y copy.
+                # Resolve that ambiguity only with a linked, recorded sex.
+                sex = "NULL"
+                if self._phenotype_sex_available():
+                    sex = (
+                        "(SELECT CASE WHEN COUNT(*) = 1 THEN MIN(individual.sex_at_birth) END "
+                        "FROM phenotype_sample_links AS link "
+                        "JOIN phenotype_individuals AS individual "
+                        "ON individual.individual_id = link.individual_id WHERE link.sample_id = s.name)"
+                    )
+                diploid_gt = (
+                    "g.zygosity = 'homozygous' AND "
+                    "length(g.genotype) - length(replace(replace(g.genotype, '/', ''), '|', '')) = 1"
+                )
+                if zygosity == "homozygous":
+                    genotype_conditions.append(
+                        f"({diploid_gt} AND (v.chrom NOT IN ('X','Y','MT') "
+                        f"OR (v.chrom = 'X' AND ({PAR_LOCUS_SQL} OR {sex} = 'female')) "
+                        f"OR (v.chrom = 'Y' AND {PAR_LOCUS_SQL} AND {sex} = 'male')))"
+                    )
+                else:
+                    genotype_conditions.append(
+                        "(g.zygosity = 'hemizygous' AND g.genotype NOT GLOB '*[^0-9]*' "
+                        f"OR ({diploid_gt} AND v.chrom IN ('X','Y') AND NOT {PAR_LOCUS_SQL} "
+                        f"AND {sex} = 'male'))"
+                    )
 
-        analysis_scopes = [
+        analysis_scopes = sorted({
             str(value) for value in payload.get("analysis_scopes", [])
             if str(value) in {"exome", "whole_genome"}
-        ]
+        })
         if analysis_scopes:
             genotype_conditions.append(
                 "f.analysis_scope IN (" + ",".join("?" for _ in analysis_scopes) + ")"
             )
             genotype_parameters.extend(analysis_scopes)
-        profile_hashes = [
+        profile_hashes = sorted({
             str(value).strip() for value in payload.get("profile_hashes", [])
             if str(value).strip()
-        ]
+        })
         if profile_hashes:
             genotype_conditions.append(
                 "COALESCE(NULLIF(f.profile_hash, ''), "
-                "f.import_profile || ':' || f.analysis_scope) IN ("
-                + ",".join("?" for _ in profile_hashes) + ")"
+                "f.import_profile || ':' || f.analysis_scope) IN (SELECT value FROM json_each(?))"
             )
-            genotype_parameters.extend(profile_hashes)
+            genotype_parameters.append(json.dumps(profile_hashes))
 
         variant_where = " AND ".join(variant_conditions) if variant_conditions else "1"
         annotation_where = (
@@ -7402,7 +7660,12 @@ class CohortStore:
         parameters = (
             variant_parameters + annotation_parameters + genotype_parameters
         )
-        partition = "a.variant_id, a.gene" if mode == "gene" else "a.variant_id"
+        partition = "a.variant_id, a.gene" if mode in {"gene", "gene_list"} else "a.variant_id"
+        sample_count = (
+            "DENSE_RANK() OVER (PARTITION BY s.id ORDER BY v.id) + "
+            "DENSE_RANK() OVER (PARTITION BY s.id ORDER BY v.id DESC) - 1"
+            if mode == "gene_list" else "COUNT(*) OVER (PARTITION BY s.id)"
+        )
         ranking = f"""
           ROW_NUMBER() OVER (
             PARTITION BY {partition}
@@ -7445,11 +7708,8 @@ class CohortStore:
             a.gene, a.gene_id, a.transcript, a.hgvsc, a.hgvsp,
             a.consequence, a.impact, a.gnomad_popmax, a.gnomad_popmax_source, a.cadd,
             a.alpha_missense, a.spliceai, a.promoterai,
-            COALESCE(NULLIF(a.logofunc_prediction, ''), lf.logofunc_prediction) AS logofunc_prediction,
-            COALESCE(a.logofunc_neutral, lf.logofunc_neutral) AS logofunc_neutral,
-            COALESCE(a.logofunc_gof, lf.logofunc_gof) AS logofunc_gof,
-            COALESCE(a.logofunc_lof, lf.logofunc_lof) AS logofunc_lof,
-            MAX(a.logofunc_allele_available, COALESCE(lf.logofunc_allele_available, 0)) AS logofunc_allele_available,
+            lf.logofunc_prediction, lf.logofunc_neutral, lf.logofunc_gof, lf.logofunc_lof,
+            MAX(a.logofunc_allele_available, lf.id IS NOT NULL) AS logofunc_allele_available,
             COALESCE(lf.logofunc_source_transcript, a.logofunc_source_transcript) AS logofunc_source_transcript,
             COALESCE(lf.logofunc_source_hgvsp, a.logofunc_source_hgvsp) AS logofunc_source_hgvsp,
             CASE WHEN lf.id IS NOT NULL AND a.id != lf.id
@@ -7457,7 +7717,7 @@ class CohortStore:
               ELSE COALESCE(a.logofunc_match, lf.logofunc_match) END AS logofunc_match,
             a.clinvar,
             a.clinvar_conflicting, a.loftee,
-            a.loftee_50bp, a.loftee_50bp_original, a.loftee_50bp_changed,
+            a.loftee_50bp, a.loftee_50bp_original, {_SUMMARY_RULE_CHANGED} AS loftee_50bp_changed,
             a.ptc_distance, a.ptc_calc_status,
             a.mane, a.picked, a.repeat_masker, a.segdup,
             s.id AS sample_entry_id, s.name AS sample,
@@ -7467,12 +7727,13 @@ class CohortStore:
             g.allele_balance, g.qual, g.haplotype_frame_status,
             g.haplotype_frame_partners, g.haplotype_protein_change,
             g.haplotype_transcript,
-            COUNT(*) OVER (PARTITION BY s.id) AS sample_qualifying_variant_count
+            {sample_count} AS sample_qualifying_variant_count
           FROM cohort_genotypes g
           JOIN matched_variants v ON v.id = g.variant_id
           JOIN ranked a ON a.variant_id = v.id AND a.annotation_rank = 1
           LEFT JOIN logofunc lf ON lf.variant_id = a.variant_id
-            AND lf.gene = a.gene AND lf.logofunc_rank = 1
+            AND lf.gene = a.gene AND CASE WHEN a.logofunc_match = 'allele_transcript_protein'
+              THEN lf.id = a.id ELSE lf.logofunc_rank = 1 END
           JOIN cohort_samples s ON s.id = g.sample_id
           JOIN cohort_files f ON f.id = s.file_id
           WHERE {genotype_where}
@@ -7496,23 +7757,41 @@ class CohortStore:
                    COUNT(DISTINCT variant_key) AS variants
             FROM ({base})
         """
-        if explain_plan:
-            with self._read_session() as connection:
-                return {
-                    "mode": mode,
-                    "sql": ordered,
-                    "plan": [
-                        str(row[-1]) for row in connection.execute(
-                            "EXPLAIN QUERY PLAN " + ordered, (*parameters, limit)
-                        )
-                    ],
-                    "totals_plan": [
-                        str(row[-1]) for row in connection.execute(
-                            "EXPLAIN QUERY PLAN " + totals_statement, parameters
-                        )
-                    ],
-                }
         with self._read_session() as connection:
+            candidate_plan = []
+            if mode == "target_gene":
+                connection.execute("CREATE TEMP TABLE IF NOT EXISTS target_gene_matches(id INTEGER PRIMARY KEY)")
+                connection.execute("DELETE FROM target_gene_matches")
+                connection.create_function("re2g_overlap", 4, region_matcher(regions), deterministic=True)
+                shortlist = """SELECT v.id FROM cohort_variants v
+                    WHERE v.chrom=? AND v.pos BETWEEN ? AND ? AND re2g_overlap(v.chrom,v.pos,v.ref,v.alt)"""
+                for chrom, (starts, ends) in regions.items():
+                    longest = connection.execute(
+                        "SELECT length(ref) FROM cohort_variants WHERE chrom=? AND length(ref)>1 ORDER BY length(ref) DESC LIMIT 1",
+                        (chrom,),
+                    ).fetchone()
+                    span = longest[0] if longest else 1
+                    ranges = []
+                    for start, end in zip(starts, ends):
+                        low, high = max(1, start - span), end + 1
+                        if ranges and ranges[-1][1] + 1 >= low:
+                            ranges[-1][1] = max(ranges[-1][1], high)
+                        else:
+                            ranges.append([low, high])
+                    if explain_plan and ranges:
+                        candidate_plan.extend(str(row[-1]) for row in connection.execute(
+                            "EXPLAIN QUERY PLAN " + shortlist, (chrom, *ranges[0])))
+                    else:
+                        connection.executemany("INSERT OR IGNORE INTO target_gene_matches " + shortlist,
+                                               ((chrom, low, high) for low, high in ranges))
+            if explain_plan:
+                return {
+                    "mode": mode, "sql": ordered,
+                    "plan": candidate_plan + [str(row[-1]) for row in connection.execute(
+                        "EXPLAIN QUERY PLAN " + ordered, (*parameters, limit))],
+                    "totals_plan": [str(row[-1]) for row in connection.execute(
+                        "EXPLAIN QUERY PLAN " + totals_statement, parameters)],
+                }
             rows = [
                 self._serialize_query_row(row)
                 for row in connection.execute(ordered, (*parameters, limit)).fetchall()
@@ -7557,7 +7836,7 @@ class CohortStore:
             raise ValueError("variant is not present in the cohort index")
         with self._read_session() as connection:
             annotations = connection.execute(
-                """
+                f"""
                 SELECT a.gene, a.gene_id, a.transcript, a.hgvsc, a.hgvsp,
                        a.consequence, a.impact, a.gnomad_popmax,
                        a.gnomad_popmax_source, a.cadd,
@@ -7568,7 +7847,7 @@ class CohortStore:
                        a.logofunc_source_transcript, a.logofunc_source_hgvsp,
                        a.logofunc_match, a.clinvar,
                        a.clinvar_conflicting, a.loftee, a.loftee_50bp,
-                       a.loftee_50bp_original, a.loftee_50bp_changed,
+                       a.loftee_50bp_original, {_SUMMARY_RULE_CHANGED} AS loftee_50bp_changed,
                        a.ptc_distance, a.ptc_calc_status, a.mane, a.picked,
                        a.repeat_masker, a.segdup
                 FROM cohort_annotations a
@@ -7769,7 +8048,7 @@ class CohortStore:
                     )]
                     if records:
                         review_name = f"cohort-{source_file_id}-{source_path.name}"
-                        for suffix in (".vcf.gz", ".vcf.bgz", ".vcf", ".gz", ".bgz"):
+                        for suffix in VCF_SUFFIXES + COMPRESSED_SUFFIXES:
                             if review_name.lower().endswith(suffix):
                                 review_name = review_name[:-len(suffix)]
                                 break
@@ -7947,7 +8226,7 @@ class CohortStore:
             export_path = self.review_export_dir / f"{export_token}.{file_index}.vcf"
             export_paths.append(export_path)
             record_count = 0
-            opener = gzip.open if prepared_path.name.lower().endswith((".gz", ".bgz")) else open
+            opener = gzip.open if prepared_path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
             try:
                 # Binary writes: the budget is a byte budget, and a text-mode
                 # write() reports characters, which undercounts every
@@ -7972,12 +8251,17 @@ class CohortStore:
                         if len(columns) < 10 or columns[6] not in ("PASS", "."):
                             continue
                         alternate_count = len(columns[4].split(","))
+                        retained = (
+                            wgs_retained_alts(info_map(columns[7]), alternate_count)
+                            if "IEI_WGS_RETAINED=" in columns[7] else None
+                        )
                         carries = False
                         for sample in selected_samples:
                             sample_value = columns[sample_column[sample]]
                             if any(
                                 parse_genotype(columns[8], sample_value, alt_index)["carrier"]
                                 for alt_index in range(alternate_count)
+                                if retained is None or retained[alt_index] == "1"
                             ):
                                 carries = True
                                 break
@@ -8012,7 +8296,7 @@ class CohortStore:
                     f"{source_path.name}: stored prefilter settings could not be decoded"
                 )
             review_name = f"cohort-samples-{source_file_id}-{source_path.name}"
-            for suffix in (".vcf.gz", ".vcf.bgz", ".vcf", ".gz", ".bgz"):
+            for suffix in VCF_SUFFIXES + COMPRESSED_SUFFIXES:
                 if review_name.lower().endswith(suffix):
                     review_name = review_name[:-len(suffix)]
                     break
@@ -8067,15 +8351,22 @@ class CohortStore:
             "mane", "picked", "repeat_masker", "segdup", "phased",
             "loftee_50bp_changed", "logofunc_allele_available",
         ):
-            result[key] = bool(result[key])
+            if result[key] is not None:
+                result[key] = bool(result[key])
         return result
 
     @staticmethod
     def _serialize_annotation_row(row: sqlite3.Row) -> dict:
         result = dict(row)
+        if result["logofunc_match"] != "allele_transcript_protein":
+            result.update(
+                logofunc_prediction="", logofunc_gof=None,
+                logofunc_lof=None, logofunc_neutral=None,
+            )
         for key in (
             "mane", "picked", "repeat_masker", "segdup",
             "loftee_50bp_changed", "logofunc_allele_available",
         ):
-            result[key] = bool(result[key])
+            if result[key] is not None:
+                result[key] = bool(result[key])
         return result

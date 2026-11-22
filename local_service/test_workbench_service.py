@@ -17,6 +17,7 @@ from dataclasses import replace
 from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import Mock, patch
+from urllib.parse import urlencode
 
 import subprocess
 import sys
@@ -37,11 +38,25 @@ from local_service.workbench_service import (
     JobStore,
     SERVICE_VERSION,
     ServiceAlreadyRunningError,
+    _OmimRedirectHandler,
     create_server,
 )
 
 
 class AnnotationJobServiceTests(unittest.TestCase):
+    def test_http_numeric_input_and_legacy_response(self):
+        import io
+        from local_service.workbench_service import WorkbenchRequestHandler
+        handler = Mock()
+        for raw in (b'{"threshold":NaN}', b'{"threshold":1e999}'):
+            handler.headers = {"Content-Length": str(len(raw))}
+            handler.rfile = io.BytesIO(raw)
+            with self.assertRaises(ValueError):
+                WorkbenchRequestHandler._body(handler)
+        handler.wfile = io.BytesIO()
+        WorkbenchRequestHandler._json(handler, {"scores": [0, float("inf"), float("nan")]})
+        self.assertEqual(handler.wfile.getvalue(), b'{"scores": [0, null, null]}')
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name) / "pipeline"
@@ -353,12 +368,16 @@ class AnnotationJobServiceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "previous dataset version"):
             self.service.sample_library.reindex(first["datasets"][0]["id"])
 
+        excluded = updated["datasets"][1]
+        self.service.sample_library.exclude_from_cohort(excluded["id"])
         restored = self.service.sample_library.activate_version(
             first["datasets"][0]["id"]
         )
         self.assertFalse(restored["already_current"])
         self.assertTrue(all(item["is_current"] for item in restored["datasets"]))
-        self.assertEqual(self.service.cohort.stats()["sample_entries"], 2)
+        self.assertEqual(self.service.cohort.stats()["sample_entries"], 1)
+        for item in restored["datasets"]:
+            self.assertEqual(bool(item["include_in_cohort"]), item["vcf_sample_name"] != excluded["vcf_sample_name"])
 
     def test_sample_library_requires_decision_for_changed_overlapping_callset(self):
         review = self.root / "initial-callset.vcf"
@@ -432,7 +451,7 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 job["id"]: job for job in self.service.resource_downloads()
             }
             job = jobs[job_id]
-            if job["status"] in {"succeeded", "failed", "interrupted"}:
+            if job["status"] in {"succeeded", "partial", "failed", "interrupted"}:
                 return job
             time.sleep(0.02)
         self.fail("resource download did not finish")
@@ -682,6 +701,86 @@ class AnnotationJobServiceTests(unittest.TestCase):
         finally:
             reopened.shutdown()
 
+    def test_temporary_migration_only_rewrites_copied_paths(self):
+        scratch = Path(self.temp.name) / "new-scratch"
+        managed = self.state / "sample-library/files/managed.vcf"
+        upload = self.state / "uploads/input.vcf"
+        for path in (managed, upload):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            write_vcf(path)
+        self.service.cohort.hts_backend = None
+        for path in (managed, upload):
+            self.service.cohort.import_vcf(path)
+        self.service._copy_temporary_root_verified(self.state, scratch, lambda _: None)
+        self.service._rewrite_temporary_paths(self.state.resolve(), scratch.resolve())
+        with self.service.cohort._session() as c:
+            paths = {Path(r[0]) for r in c.execute("SELECT path FROM cohort_files")}
+        self.assertEqual(paths, {managed.resolve(), (scratch / "uploads/input.vcf").resolve()})
+        self.assertTrue(all(path.exists() for path in paths))
+
+    def test_live_wal_rows_survive_data_migration(self):
+        source = Path(self.temp.name) / "source"
+        dest = Path(self.temp.name) / "dest"
+        source.mkdir()
+        for name in ("bulk-intake.sqlite3", "spliceai-lookup-cache.sqlite3"):
+            with closing(sqlite3.connect(source / name)) as writer:
+                writer.execute("CREATE TABLE retained(value INTEGER)")
+                writer.commit()
+                writer.execute("PRAGMA journal_mode=WAL")
+                writer.execute("PRAGMA wal_autocheckpoint=0")
+                writer.execute("INSERT INTO retained VALUES(1)")
+                writer.commit()
+                self.service._copy_data_root_verified(source, dest, lambda _: None)
+                with closing(sqlite3.connect(dest / name)) as copy:
+                    self.assertEqual(copy.execute("SELECT value FROM retained").fetchall(), [(1,)])
+
+    def test_cancel_wins_at_job_start_spawn_and_terminal_transitions(self):
+        service = self.service
+        for boundary in ("start", "spawn", "succeeded", "failed"):
+            with self.subTest(boundary=boundary):
+                service.store.create(dict(id=boundary, created_at="now", updated_at="now", status="queued",
+                    profile="local", input_path="in", output_path=str(self.output), config_path="config",
+                    log_path=str(self.root / (boundary + ".log"))))
+                reached, resume = threading.Event(), threading.Event()
+                marker = self.root / (boundary + ".started")
+                command = [sys.executable, "-c", "import pathlib,sys; pathlib.Path(sys.argv[1]).touch(); sys.exit(int(sys.argv[2]))",
+                           str(marker), "1" if boundary == "failed" else "0"]
+                worker = threading.Thread(target=service._run_job, args=(boundary,))
+                def pause():
+                    reached.set()
+                    if not resume.wait(5):
+                        raise TimeoutError(boundary)
+                lock = service._process_lock
+                class SpawnGate:
+                    def __enter__(self):
+                        if boundary == "spawn" and threading.current_thread() is worker and not reached.is_set():
+                            pause()
+                        return lock.__enter__()
+                    def __exit__(self, *args):
+                        return lock.__exit__(*args)
+                update = service.store.update
+                def guarded_update(job_id, **values):
+                    transition = values.get("status")
+                    if threading.current_thread() is worker and (transition == boundary or
+                            (boundary == "start" and transition == "running")):
+                        pause()
+                    return update(job_id, **values)
+                with patch.object(service, "_commands", return_value=[command]), \
+                     patch.object(service, "_process_lock", SpawnGate()), \
+                     patch.object(service.store, "update", side_effect=guarded_update):
+                    worker.start()
+                    try:
+                        self.assertTrue(reached.wait(5))
+                        self.assertEqual(service.cancel(boundary)["status"], "cancelled")
+                    finally:
+                        resume.set()
+                        worker.join(5)
+                self.assertFalse(worker.is_alive())
+                self.assertEqual(marker.exists(), boundary in {"succeeded","failed"})
+                job = service.store.get(boundary)
+                self.assertEqual(job["status"], "cancelled")
+                self.assertIsNone(job["pid"])
+
     def test_data_migration_copies_library_and_rewrites_managed_paths(self):
         review = self.root / "review-storage.vcf"
         write_vcf(review)
@@ -710,6 +809,43 @@ class AnnotationJobServiceTests(unittest.TestCase):
         history = self.service.storage_migrations()
         history_record = next(item for item in history if item["id"] == job["id"])
         self.assertTrue(history_record["original_retained"])
+
+    def test_data_migration_preserves_records_with_uri_characters_in_source_path(self):
+        review = self.root / "review.vcf"
+        write_vcf(review)
+        names = ["Lab#1", "Lab%201"]
+        if os.name != "nt":  # A question mark is a valid macOS/Linux filename character.
+            names.append("Lab?1")
+        for i, name in enumerate(names):
+            with self.subTest(name=name):
+                self.service.shutdown()
+                root = Path(self.temp.name) / f"migration-{i}"
+                source = root / name / "iei-data"
+                source.mkdir(parents=True)
+                self.service = AnnotationJobService(self.root, source, start_worker=False)
+                self.service.cohort.hts_backend = None
+                imported = self.service.import_sample_library({
+                    "sources": [{"path": str(review)}], "analysis_scope": "exome", "include_in_cohort": False,
+                })
+                dataset_id = imported["datasets"][0]["id"]
+                self.service.store.create({
+                    "id": "previous-job", "status": "succeeded", "profile": "exome",
+                    "created_at": "now", "updated_at": "now", "input_path": str(review),
+                    "output_path": "", "config_path": "", "log_path": "",
+                })
+                target = root / "migrated-data"
+                job = self.service.start_storage_migration({"kind": "data", "path": str(target)})
+                completed = self._wait_storage(job["id"])
+                self.assertEqual(completed["status"], "succeeded", completed.get("error"))
+                registry_path = self.service.storage_registry.registry_path
+                self.service.shutdown()
+                registry = StorageLocationRegistry(self.root, source, registry_path=registry_path, persist=True)
+                self.assertEqual(registry.root("data"), target.resolve())
+                self.service = AnnotationJobService(self.root, registry.root("data"), start_worker=False,
+                                                    storage_registry=registry)
+                self.assertIsNotNone(self.service.sample_library.get(dataset_id))
+                self.assertEqual(self.service.store.get("previous-job")["status"], "succeeded")
+                self.assertFalse((root / "Lab").exists())
 
     def test_sample_library_paths_inside_data_root_are_portable(self):
         source = self.state / "uploads" / "patient.vcf"
@@ -856,6 +992,16 @@ class AnnotationJobServiceTests(unittest.TestCase):
             hardware["max_vep_workers"],
         )
 
+    def test_bgzf_filename_extensions_can_be_staged_and_queued(self):
+        data = self.input.read_bytes()
+        for extension in ("bgz", "bgzf"):
+            name = f"example.vcf.{extension}"
+            staged = self.service.stage_file(name, name, extension, len(data), io.BytesIO(data))
+            self.assertEqual(Path(staged["path"]).read_bytes(), data)
+            job = self.service.submit({"input_path": staged["path"],
+                                       "output_path": str(self.root / f"{extension}.out.vcf.gz")})
+            self.assertEqual(job["input_path"], staged["path"])
+
     def test_rejects_invalid_output_and_missing_input(self):
         with self.assertRaisesRegex(ValueError, "does not exist"):
             self.service.submit(
@@ -870,7 +1016,7 @@ class AnnotationJobServiceTests(unittest.TestCase):
             )
         invalid_input = self.root / "patient.txt"
         invalid_input.write_text("not a VCF")
-        with self.assertRaisesRegex(ValueError, "must end in .vcf or .vcf.gz"):
+        with self.assertRaisesRegex(ValueError, "must end in .vcf, .vcf.gz"):
             self.service.submit(
                 {"input_path": str(invalid_input), "output_path": str(self.output)}
             )
@@ -910,6 +1056,29 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertTrue(path.is_file())
         self.assertEqual(path.read_bytes(), payload)
         self.assertEqual(staged["relative_path"], "batch-folder/case.vcf.gz")
+
+    def test_staged_basename_uses_the_directory_character_rules(self):
+        filename = "Family #2 (A)!\t.VCF.gz"
+        safe_name = "Family 2 (A).VCF.gz"
+        batch = self.service.workspace_dir / "uploads" / "batch"
+        for relative_path, directory in (("", ""), ("Run #2/other.vcf", "Run 2")):
+            with self.subTest(relative_path=relative_path):
+                staged = self.service.stage_file(filename, relative_path, "batch", 1, io.BytesIO(b"x"))
+                relative = Path(directory) / safe_name
+                self.assertEqual(staged["filename"], safe_name)
+                self.assertEqual(staged["relative_path"], str(relative))
+                self.assertEqual(Path(staged["path"]), (batch / relative).resolve())
+                self.assertEqual((batch / relative).read_bytes(), b"x")
+
+    def test_staging_checks_original_suffix_and_resolved_destination(self):
+        with self.assertRaisesRegex(ValueError, "only .vcf"):
+            self.service.stage_file("case.vcf!", "case.vcf", "batch", 1, io.BytesIO(b"x"))
+        batch = self.service.workspace_dir / "uploads" / "batch"
+        batch.mkdir(parents=True)
+        (batch / "folder").symlink_to(self.root, target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "invalid relative file path"):
+            self.service.stage_file("case.vcf", "folder/case.vcf", "batch", 1, io.BytesIO(b"x"))
+        self.assertFalse((self.root / "case.vcf").exists())
 
     def test_ui_annotation_options_create_a_per_job_config(self):
         dbnsfp = self.root / "references" / "dbnsfp.vcf.gz"
@@ -1117,11 +1286,11 @@ class AnnotationJobServiceTests(unittest.TestCase):
         start_job.assert_called_once()
         self.assertEqual(result["status"], "queued")
 
-    def test_wgs_recommendation_is_only_three_additions(self):
+    def test_wgs_recommendation_includes_element_gene_links(self):
         profile = self.service._annotation_profile()
         wgs = profile["recommended_profiles"]["whole_genome"]
-        self.assertEqual(wgs["missing"], ["spliceai", "screen_context", "alphagenome_avi"])
-        self.assertEqual(wgs["setup_bytes"], 117 * 1024 ** 3)
+        self.assertEqual(wgs["missing"], ["spliceai", "screen_context", "alphagenome_avi", "encode_re2g"])
+        self.assertEqual(wgs["setup_bytes"], 149 * 1024 ** 3)
         self.assertGreater(wgs["download_bytes"], 111 * 10 ** 9)
         sources = {source["id"]: source for source in profile["sources"]}
         self.assertEqual(sources["genia"]["recommendation"], "recommended")
@@ -1170,6 +1339,65 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.service.start_recommended_wgs_setup({"confirm": True})
                 start.assert_not_called()
+
+    def test_bulk_refresh_activates_gencc_from_managed_annotation_storage(self):
+        scripts = Path(__file__).resolve().parents[1] / "scripts"
+        self._write_script("update_refreshable_datasets.sh", (scripts / "update_refreshable_datasets.sh").read_text())
+        self._write_script("update_clingen_erepo.sh", 'test -s "$1"\n')
+        self._write_script("update_gene_knowledge.sh", '''set -eu
+mkdir -p "$(dirname "$1")"
+cp "$(dirname "$0")/snapshot.sqlite3" "$1"
+printf '{}' > "$2"
+''')
+        with closing(sqlite3.connect(self.root / "scripts/snapshot.sqlite3")) as db:
+            db.execute("CREATE TABLE resources(id TEXT, release TEXT, record_count INTEGER)")
+            db.execute("INSERT INTO resources VALUES ('gencc','test release',17)")
+            db.commit()
+
+        def card():
+            return next(row for row in self.service._annotation_profile()["sources"] if row["id"] == "gencc")
+
+        self.assertFalse(card()["installed"])
+        with patch.object(self.service, "_ensure_annotation_download_space"):
+            job = self.service.start_resource_download("refresh_updates")
+            completed = self._wait_resource(job["id"])
+        self.assertEqual(completed["status"], "succeeded", completed["error"])
+        refreshed = card()
+        self.assertTrue(refreshed["installed"])
+        self.assertEqual(refreshed["size_hint"], "17 submissions")
+        self.assertEqual(refreshed["version"], "test release")
+        self.assertEqual(refreshed["download_id"], "gene_knowledge")
+        self.assertEqual(refreshed["recommendation"], "included")
+        self.assertTrue((self.service.annotation_root / "gene-knowledge/manifest.json").is_file())
+
+    def test_partial_refresh_preserves_updates_and_identifies_each_stage(self):
+        script = Path(__file__).resolve().parents[1] / "scripts/update_refreshable_datasets.sh"
+        self._write_script(script.name, script.read_text())
+        self._write_script("update_clingen_erepo.sh", 'test -s "$1"')
+        self._write_script("update_gene_knowledge.sh", "exit 7")
+        previous = self.service.gene_knowledge.public_database
+        with patch.object(self.service, "_ensure_annotation_download_space"):
+            job = self._wait_resource(self.service.start_resource_download("refresh_updates")["id"])
+            self.assertEqual(job["status"], "partial")
+            self.assertIn("ClinVar: updated. ClinGen ERepo: updated.", job["message"])
+            self.assertIn("GenCC): failed", job["message"])
+            self.assertEqual(self.service.gene_knowledge.public_database, previous)
+            self._write_script("fetch_clinvar.sh", "exit 7")
+            failed = self._wait_resource(self.service.start_resource_download("refresh_updates")["id"])
+            self.assertEqual(failed["status"], "failed")
+            self.assertIn("ClinGen ERepo: skipped", failed["error"])
+
+            self._write_script("update_gene_knowledge.sh", 'mkdir -p "$(dirname "$1")"; cp "$(dirname "$0")/source.sqlite3" "$1"')
+            with closing(sqlite3.connect(self.root / "scripts/source.sqlite3")) as db:
+                db.execute("CREATE TABLE resources(id TEXT, release TEXT, record_count INTEGER)")
+                db.execute("INSERT INTO resources VALUES ('gencc', 'offline fixture', 9)")
+                db.commit()
+            independent = self._wait_resource(self.service.start_resource_download("refresh_updates")["id"])
+            self.assertEqual(independent["status"], "partial")
+            self.assertIn("GenCC): updated", independent["message"])
+            resources, error = self.service.gene_knowledge.public_resources()
+            self.assertFalse(error)
+            self.assertEqual(resources[0]["release"], "offline fixture")
 
     def test_wgs_download_dispatches_missing_additions_only(self):
         profile = {"recommended_profiles": {"whole_genome": {
@@ -1943,6 +2171,88 @@ class AnnotationJobServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "cannot be downloaded"):
                 self.service.start_resource_download("dbnsfp")
 
+    def test_composite_conflicts_use_both_start_paths_and_release_on_completion(self):
+        with patch("local_service.workbench_service.threading.Thread"), patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ):
+            refresh = self.service.start_resource_download("refresh_updates")
+            self.assertNotIn("_components", refresh)
+            for component in ("clinvar", "clingen_erepo", "gene_knowledge"):
+                with self.subTest(component=component), self.assertRaises(ValueError):
+                    self.service._start_internal_resource_job(component, "installation", Mock())
+            # Private OMIM can run alongside a refresh of public gene knowledge.
+            omim = self.service._start_internal_resource_job("omim", "installation", Mock())
+            self.assertNotEqual(omim["id"], refresh["id"])
+            self.service._update_resource_job(refresh["id"], status="partial")
+            single = self.service._start_internal_resource_job("clinvar", "installation", Mock())
+            self.service._update_resource_job(single["id"], status="running")
+            with self.assertRaisesRegex(ValueError, "clinvar"):
+                self.service.start_resource_download("refresh_updates")
+            self.service._update_resource_job(single["id"], status="failed")
+            self.assertNotEqual(refresh["id"], self.service.start_resource_download("refresh_updates")["id"])
+            self.service._start_internal_resource_job("custom_scores", "installation", Mock())
+            with self.assertRaisesRegex(ValueError, "active custom score import"):
+                self.service._start_internal_resource_job("custom_scores", "installation", Mock())
+
+    def test_partial_wgs_and_exome_jobs_reserve_only_the_planned_components(self):
+        self._write_script("install_recommended_datasets.sh",
+                           'test "$2" = exome && test "$3" = --print-missing || exit 1\necho ccre,liftover\n')
+        wgs = {"installed": False, "missing": ["screen_context", "alphagenome_avi", "encode_re2g"]}
+        profile = {"recommended_profiles": {"whole_genome": wgs, "exome": {"installed": True}}}
+        with patch("local_service.workbench_service.threading.Thread"), patch.object(
+            self.service, "_annotation_profile", return_value=profile
+        ), patch.object(self.service, "_ensure_annotation_download_space"):
+            exome = self.service.start_resource_download("recommended_exome")
+            command = self.service._resource_jobs[exome["id"]]["_command"]
+            self.assertEqual(command[-2:], ["--components", "ccre,liftover"])
+            batch = self.service.start_resource_download("recommended_wgs")
+            spliceai = self.service.start_resource_download("spliceai")
+            self.assertNotEqual(spliceai["id"], batch["id"])
+            for component in ("screen_context", "screen_context_build", "alphagenome_avi",
+                              "encode_re2g", "ccre", "liftover"):
+                with self.subTest(component=component), self.assertRaises(ValueError):
+                    self.service.start_resource_download(component)
+            # A retry joins the existing WGS job even if the plan has changed.
+            wgs["missing"] = ["spliceai"]
+            self.assertEqual(self.service.start_resource_download("recommended_wgs")["id"], batch["id"])
+            self.service._update_resource_job(batch["id"], status="succeeded")
+            with self.assertRaisesRegex(ValueError, "spliceai"):
+                self.service.start_resource_download("recommended_wgs")
+            wgs["missing"] = []
+            self.service.start_resource_download("recommended_wgs")
+            self.service.start_resource_download("screen_context_build")
+            with self.assertRaisesRegex(ValueError, "screen_context"):
+                self.service.start_resource_download("screen_context")
+
+    def test_direct_resource_shell_inherits_service_interpreter(self):
+        self._write_script("fetch_clinvar.sh", '''set -eu
+test "$IEI_PYTHON_BIN" = "$EXPECTED_PYTHON"
+python3 -c 'import os, sys; assert os.path.samefile(sys.prefix, os.environ["EXPECTED_PREFIX"])'
+''')
+        with patch.dict(os.environ, {"IEI_PYTHON_BIN": "/unusable", "PATH": "/usr/bin:/bin",
+                                     "EXPECTED_PYTHON": sys.executable, "EXPECTED_PREFIX": sys.prefix}), patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ):
+            job = self._wait_resource(self.service.start_resource_download("clinvar")["id"])
+        self.assertEqual(job["status"], "succeeded", job["log"])
+
+    def test_wgs_registers_screen_only_when_selected(self):
+        self._write_script("install_recommended_wgs.sh", "exit 0\n")
+        manifest = self.service.annotation_root / "screen-context/prepared/screen.registry-v4.immune-contexts.json"
+        manifest.parent.mkdir(parents=True)
+        manifest.touch()
+        profile = {"recommended_profiles": {"whole_genome": {"installed": True, "missing": []}}}
+        with patch.object(self.service, "_annotation_profile", return_value=profile), patch.object(
+            self.service, "_ensure_annotation_download_space"
+        ), patch.object(self.service, "install_screen_context") as register:
+            job = self._wait_resource(self.service.start_resource_download("recommended_wgs")["id"])
+            self.assertEqual(job["status"], "succeeded", job["error"])
+            register.assert_not_called()
+            profile["recommended_profiles"]["whole_genome"] = {"installed": False, "missing": ["screen_context"]}
+            job = self._wait_resource(self.service.start_resource_download("recommended_wgs")["id"])
+            self.assertEqual(job["status"], "succeeded", job["error"])
+            register.assert_called_once_with({"manifest_path": str(manifest)})
+
     def test_read_loop_failure_stops_and_reaps_the_download_child(self):
         """Audit repro (M24): a failure while reading the downloader's output
         marked the job failed and dropped its tracking, but the child kept
@@ -2010,6 +2320,32 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertEqual(completed["operation"], "preparation")
         self.assertEqual(completed["status"], "succeeded")
         self.assertEqual(completed["progress"], 100.0)
+
+    def test_omim_redirect_uses_validated_destination(self):
+        filename = "genemap2.txt"
+        request = urllib.request.Request(f"https://omim.org/{filename}")
+        handler = _OmimRedirectHandler(filename)
+        target = f"https://data.omim.org/downloads/{filename}?key=synthetic"
+        wrapped = "https://nam02.safelinks.protection.outlook.com/?" + urlencode(
+            {"url": target + "#section", "data": "tracking"}
+        )
+        for location in (target, target + "#section", wrapped):
+            with self.subTest(location=location):
+                redirected = handler.redirect_request(request, None, 302, "Found", {}, location)
+                self.assertEqual(redirected.full_url, target)
+
+    def test_omim_redirect_rejects_wrong_host_or_filename_privately(self):
+        filename = "genemap2.txt"
+        request = urllib.request.Request(f"https://omim.org/{filename}")
+        handler = _OmimRedirectHandler(filename)
+        for location in (
+            f"https://example.invalid/{filename}?key=synthetic",
+            "https://data.omim.org/morbidmap.txt?key=synthetic",
+        ):
+            with self.subTest(location=location):
+                with self.assertRaises(urllib.error.HTTPError) as raised:
+                    handler.redirect_request(request, None, 302, "Found", {}, location)
+                self.assertNotIn("synthetic", str(raised.exception))
 
     def test_omim_email_block_download_stays_out_of_jobs_and_logs(self):
         secret = "private-omim-account-key"
@@ -2215,6 +2551,36 @@ class AnnotationJobServiceTests(unittest.TestCase):
         self.assertTrue(source.is_file())
         with self.assertRaisesRegex(ValueError,"Download / resume"):
             self.service.start_avi_preparation({"source_path":str(source)})
+
+    def test_gpn_packages_are_optional_and_scope_aware(self):
+        with patch.object(self.service, "_container_image_status", return_value={"available": False, "state": "missing", "message": "test"}):
+            profile = self.service._annotation_profile()
+        for key in ("gpn_star_m", "gpn_star_v"):
+            source = next(s for s in profile["sources"] if s["id"] == key)
+            self.assertEqual(source["available_in"], ["whole_genome"] if key == "gpn_star_m" else ["exome", "whole_genome"])
+            self.assertEqual(source["recommendation"], "optional")
+            self.assertEqual(source["download_id"], key)
+            self.assertNotIn(key, profile["recommended_profiles"]["whole_genome"]["missing"])
+            with patch.object(self.service, "_start_resource_job", return_value={}) as start, patch.object(
+                    self.service, "_ensure_annotation_download_space"):
+                self.service.start_resource_download(key)
+            _, command, _ = start.call_args.args
+            self.assertEqual(command[2], "install")
+            self.assertEqual(command[-1], key)
+            config = self.service._load_config(Path(command[3]))
+            self.assertEqual(config["wgs_review"][key]["directory"], str(self.service.annotation_root / "gpn-star"))
+
+        self.assertFalse(source["exome_setup"]["available"])
+        self.assertNotIn("gpn_star_v", profile["recommended_profiles"]["exome"]["missing"])
+        with patch.object(self.service, "_start_resource_job", return_value={}) as start, patch.object(
+                self.service, "_ensure_annotation_download_space"):
+            self.service.start_resource_download("gpn_star_v_exome")
+        self.assertEqual(start.call_args.args[1][-1], "gpn_star_v_exome")
+        cfg_path = self.service.pipeline_root / "config/annotation.config.yaml"
+        result = self.service._write_job_config("gpn-exome", cfg_path, {"analysis_scope": "exome", "gpn_star_v": True})
+        self.assertTrue(self.service._load_config(result)["wgs_review"]["gpn_star_v"]["enabled"])
+        with self.assertRaisesRegex(ValueError, "whole-genome"):
+            self.service._write_job_config("bad-model", cfg_path, {"analysis_scope": "exome", "gpn_star_m": True})
 
     def test_avi_is_wgs_recommended_but_not_required(self):
         with patch.object(self.service, "_container_image_status", return_value={"available":False,"state":"missing","message":"test"}):

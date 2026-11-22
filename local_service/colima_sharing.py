@@ -27,9 +27,11 @@ class SharingError(RuntimeError):
 
 
 def probe(docker, image, root, env):
+    # Docker parses --mount as CSV, including the entire source= field.
+    source = str(root).replace('"', '""')
     try:
         return subprocess.run([docker, "run", "--rm", "--pull=never", "--network=none",
-            "--mount", f"type=bind,source={root},target=/probe,readonly",
+            "--mount", f'type=bind,"source={source}",target=/probe,readonly',
             "--entrypoint", "sh", image, "-c", "test -r /probe/scripts/setup_environment.sh"],
             env=env, capture_output=True, timeout=15, check=False).returncode == 0
     except (OSError, subprocess.TimeoutExpired):
@@ -38,19 +40,26 @@ def probe(docker, image, root, env):
 
 def mount_plan(config, root, home, *, writable=False):
     """Add an identity-mapped mount without replacing custom ones."""
+    root = Path(root).resolve()
     result = copy.deepcopy(config)
     mounts = result.get("mounts") or []
     if not isinstance(mounts, list) or any(not isinstance(item, dict) or not isinstance(item.get("location"), str) for item in mounts):
         raise SharingError("The Colima sharing settings could not be read safely. Open Log for details; no settings were changed.")
     if not mounts:
         mounts = [{"location": str(home), "writable": True}, {"location": "/tmp/colima", "writable": True}]
+    def expand_home(location):
+        path = Path(location)
+        return home.joinpath(*path.parts[1:]) if path.parts[:1] == ("~",) else path
+
     for mount in mounts:
-        location = mount["location"]
-        if location == "~" or location.startswith("~/"):
-            location = str(home) + location[1:]
-        source = Path(location)
-        target = Path(mount.get("mountPoint") or location)
-        if source.is_absolute() and target == source and (source == root or source in root.parents):
+        location = expand_home(mount["location"])
+        if not location.is_absolute():
+            continue
+        source = location.resolve()
+        target = expand_home(mount["mountPoint"]) if mount.get("mountPoint") else location
+        # mountPoint is in the guest. Host symlinks at a custom target do
+        # not make a remapped mount an identity mapping in the VM.
+        if target in (location, source) and (source == root or source in root.parents):
             if writable and not mount.get("writable", False):
                 if source != root:
                     raise SharingError(f"The existing Colima mount {source} is read-only. Allow writes to {root} in your container manager, then Retry preparation; no broader permissions were changed.")

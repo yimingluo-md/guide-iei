@@ -24,7 +24,7 @@ retry or uncheck it before interpreting results. Missing reference data must
 not be interpreted as absence of a gene association or constraint.
 
 **Saved candidates are session-only**, including for Sample Library reviews.
-Export the Saved view as TSV before loading another dataset, refreshing, or
+A star saves the displayed transcript row for its sample or cohort. To star another transcript, turn off **One row per variant** and select its star. **Saved** lists one row per star across all review filters. **Export saved TSV** includes every starred row. Export before loading another dataset, refreshing, or
 closing the tab. Earlier browser-persisted candidate lists are removed when
 the updated workbench opens; they are not migrated into a new store.
 
@@ -36,10 +36,9 @@ retain important source files in the Sample Library.
 
 ![Evidence sections of a variant page: predictors, call quality, ClinVar, ClinGen, and the transcript block](../assets/img/variant-evidence-sections.png)
 
-For WGS review, **Prediction scores → AlphaGenome AVI Phred ≥** applies an
-optional minimum score. Leave it empty for no AVI filter; zero is valid.
-While a minimum is set, variants without an AVI score (including indels) are
-excluded from this view. This does not change WGS intake or stored variants.
+Under **Prediction scores**, choose **Add predictor filter**, search for a metric, then choose a comparison and enter a value. The picker uses the annotations in the loaded files. You can filter on a metric even when its detail card is hidden. For SpliceAI, choose **SpliceAI max**, the largest of the four delta scores for the review row.
+
+Numeric metrics support **≥**, **≤**, **between** (inclusive), and **|score| ≥**, including zero and signed values. Categorical metrics support **is one of**. Choose **has a value** or **is missing** to inspect coverage. Each rule shows how many loaded review rows have a value. Comparisons exclude missing values, and every active rule must pass. **Remove** clears an individual rule.
 
 **Require SCREEN regulatory activity** checks the selected contexts in batches.
 Confirmed matches appear as each batch finishes, with an **incomplete results**
@@ -102,9 +101,9 @@ Variants in overlapping genes similarly carry one consequence per gene.
 The variant list's **One row per variant** display (on by default) shows
 each variant once, represented by its highest-priority transcript, with a
 **+N** chip counting the collapsed rows — hover the chip to see them, or
-open the variant for the complete transcript table. Turning the toggle
-off restores one row per transcript and gene. Nothing is filtered either
-way; this is presentation only.
+open the variant to inspect the annotations. Rows group by normalized allele within each sample, or within the cohort in cohort review. Turning the toggle off shows all matching transcript and gene rows. **Export TSV** includes every matching transcript row in either display mode, including rows beyond the table’s display limit. The Genes view counts each matching allele call once per gene and reports that gene’s strongest matching VEP impact.
+
+Variant and Cohort TSV exports start with the research-use notice, followed by the column headers. Within cells, backslash, tab, carriage return and newline are written as `\\`, `\t`, `\r` and `\n`, respectively.
 
 ## Loss-of-function evidence
 
@@ -122,7 +121,9 @@ splice), three layers are presented:
   GUIDE-IEI recalculates it at the **premature termination codon the
   shifted reading frame actually generates**, recording both results with
   provenance. Where the two disagree, the PTC-based value carries the main
-  annotation.
+  annotation. At a splice boundary, the recalculation requires an edit that
+  can be placed in the coding sequence. If the placement is ambiguous,
+  GUIDE-IEI keeps the original LOFTEE value and records the gap in annotation QC.
 - **Frame-restoring haplotypes.** When a sample carries nearby indels that
   jointly restore the reading frame, the combined consequence is evaluated
   per haplotype. Fully restored, phase-confirmed events are excluded from
@@ -196,6 +197,9 @@ applicable, the genome-wide sources on every annotation:
   from human/primate population frequency. Score 0–1, higher = more
   likely pathogenic; the authors' three-way call (likely benign /
   ambiguous / likely pathogenic) is shown as their label, not ours.
+  The card identifies the starter when the transcript and protein change match.
+  If the starter has no score, the card can display the dbNSFP score on that
+  transcript’s VCF annotation.
   A blank score for the selected MANE transcript can be a normal source-data
   limitation and is not evidence that the variant is benign. GUIDE-IEI does
   not substitute a score from another transcript. See the
@@ -210,6 +214,10 @@ applicable, the genome-wide sources on every annotation:
   region, and non-coding positions. The PHRED value is a rank: 20 means
   the top 1% of all possible SNVs, 30 the top 0.1%. Whole-genome imports
   can use the optional **CADD_WGS** track so non-coding records are scored too.
+  When several sources cover an allele, the card uses genome-wide CADD first,
+  then an exact starter score, then dbNSFP. A displayed Phred score and raw score
+  come from the same provider.
+- **GPN-Star-M and GPN-Star-V.** Exome review supports V, and whole-genome review supports both models. The Predictors cards show the calibrated LLR for an exact chromosome, position, reference and alternate match. More negative LLR indicates greater predicted constraint. The second value, calibrated absLLR, compares effect magnitude with a neutral substitution and can itself be negative. Both values come directly from the source. The M and V models can have different coverage. Indels and uncovered SNVs have no score. Use **Display settings** to choose which models to show. [Official score definitions](https://huggingface.co/datasets/songlab/gpn-star-scores)
 - **AlphaGenome AVI** — genome-wide SNV impact predictions from the separately
   installed AVI dataset. AVI Phred is shown by default in WGS review; raw
   scores are optional in Display settings. Matching is by the exact GRCh38
@@ -420,7 +428,9 @@ applies to whole-genome analysis only.
 For each available source, GUIDE-IEI also looks for a P/LP missense record
 with the **same protein change** or a **different substitution at the same
 residue**. The comparison requires the same gene, Ensembl transcript stable
-ID, protein position, and reference amino acid. Evidence found only on another
+ID, protein position, and reference amino acid. The source catalogs include
+missense changes on both MANE Select and MANE Plus Clinical transcripts.
+Evidence found only on another
 transcript is not shown as a match for the selected MANE transcript. The
 expandable match lists retain the source record, classification, transcript,
 source allele, and disease when provided.
@@ -446,7 +456,11 @@ combined, so a row must satisfy each one that is turned on.
 
 The Gene tab joins the bundled knowledge: gnomAD constraint (the gene's
 depletion for LoF and missense variation in the population), IUIS IEI
-classification and disease association, and ClinGen gene–disease validity.
+classification and disease association, ClinGen gene–disease validity, and GenCC submissions.
+
+In **Gene → GenCC gene–disease validity**, expand a disease and inheritance pattern to see which groups curated it, the classifications they assigned, and when they evaluated it. **Conflicting submissions** flags a disagreement under GenCC’s published criteria. Open a submission ID for the exact version or **Submitter report** for the original evidence. A ClinGen submission may also appear in the ClinGen validity panel. In whole-genome review, the same panel is available through **Element–gene links → Gene knowledge** for a predicted target. [GenCC classifications and definitions](https://thegencc.org/faq)
+
+
 Optional GenIA components can add GEI or IEI-marked catalog relationships and
 reported disease–phenotype observations. A separately installed phenotype
 vocabulary enriches those observations but does not assert a gene relationship
@@ -512,6 +526,8 @@ regulatory signature in selected reference tissues or cell types. This does
 not establish the target gene, the direction of effect, pathogenicity, or
 activity in the patient. Those questions require converging evidence and,
 where feasible, functional study.
+
+In a whole-genome review, open **Regulatory evidence → Element–gene links** to see which genes ENCODE-rE2G predicts an overlapping element regulates. Expand a target to see its score in each reference biosample or open its gene evidence. The [whole-genome guide](05-whole-genome.md#predicted-regulatory-target-genes) covers immune contexts, filters and cohort searches.
 
 Technical reference: [Annotation sources](../ANNOTATIONS.md) — dataset
 provenance, versions, and preparation for every source above — and

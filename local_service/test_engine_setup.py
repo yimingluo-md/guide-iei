@@ -36,6 +36,51 @@ class EngineSetupTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Windows"):
                 self.service.start_engine_setup({"confirm": True})
 
+    def test_legacy_startup_ignores_optional_avi_but_checks_required_sources(self):
+        import yaml
+        config_path = self.root / 'config/annotation.config.yaml'
+        config = yaml.safe_load(config_path.read_text())
+        fasta = self.root / 'references/test.fa'
+        fasta.write_text('>1\nA\n')
+        config['reference']['fasta'] = {'path': str(fasta)}
+        config['plugins']['dbNSFP'] = {'enabled': True, 'path': str(fasta) + '.dbnsfp.gz'}
+        config['custom_tracks'] = {'AlphaGenomeAVI': {'enabled': True, 'required': False}}
+        config_path.write_text(yaml.safe_dump(config))
+        # Legacy fallback must still reject a missing required provider.
+        # An optional AVI/GenIA inspection would fail this regression outright.
+        with patch('local_service.workbench_service.avi_bundle_present', side_effect=AssertionError('optional AVI inspected')), \
+                patch.object(self.service.genia, 'status', side_effect=AssertionError('optional GenIA inspected')), \
+                patch('local_service.workbench_service.missing_resources', return_value=['ClinVar']), \
+                patch.object(self.service, 'annotation_engine_status', return_value={'available': True}):
+            self.assertFalse(self.service.essential_setup_status()['available'])
+            db = Path(config['plugins']['dbNSFP']['path'])
+            db.write_bytes(b'data')
+            Path(str(db) + '.tbi').write_bytes(b'index')
+            status = self.service.essential_setup_status()
+            self.assertTrue(status['legacy_ready'])
+            self.assertTrue(status['available'])
+            Path(str(db) + '.tbi').unlink()
+            self.assertFalse(self.service.essential_setup_status()['available'])
+
+    def test_wgs_status_and_full_profile_do_not_hash_avi(self):
+        from pipeline import avi_dataset as avi
+        directory = self.service.annotation_root / 'alphagenome-avi/releases' / avi.RELEASE
+        directory.mkdir(parents=True)
+        records = {}
+        for name in ('avi.grch38.vcf.gz', 'avi.grch38.vcf.gz.tbi'):
+            path = directory / name
+            path.write_bytes(b'synthetic')
+            records[name] = {'size': path.stat().st_size, 'mtime_ns': 1, 'sha256': avi.digest(path)}
+        (directory / 'manifest.json').write_text(json.dumps({
+            'schema': avi.SCHEMA, 'release': avi.RELEASE, 'assembly': 'GRCh38',
+            'rows': avi.EXPECTED_ROWS, 'positions': avi.EXPECTED_ROWS // 3, 'files': records}))
+        with patch.object(avi, 'digest', side_effect=AssertionError('status read the payload')):
+            status = self.service.recommended_wgs_status()
+            self.assertTrue(status['known'])
+            self.assertNotIn('alphagenome_avi', status['missing'])
+            (directory / 'avi.grch38.vcf.gz.tbi').unlink()
+            self.assertIn('alphagenome_avi', self.service.recommended_wgs_status()['missing'])
+
     def test_essential_setup_uses_one_reserved_worker_and_selected_storage(self):
         ready = {"available": True, "missing": [], "package": {"available": True},
                  "free_bytes": 1000, "estimated_required_bytes": 500}

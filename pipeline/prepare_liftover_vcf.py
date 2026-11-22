@@ -8,13 +8,17 @@ separate reviewable VCF with an explicit rejection reason.
 from __future__ import annotations
 
 import argparse
-import gzip
 import json
 import math
 import re
 from collections import Counter
 from pathlib import Path
 from urllib.parse import quote
+
+if __package__:
+    from .vcf_io import open_text as text_open
+else:
+    from vcf_io import open_text as text_open
 
 
 PRIMARY_CONTIG = re.compile(r"^(?:chr)?(?:[1-9]|1[0-9]|2[0-2]|X|Y|M|MT)$", re.I)
@@ -37,10 +41,6 @@ MT_CONVENTIONS = ("auto", "rcrs", "hg19")
 MT_PASSTHROUGH_HEADER = (
     '##INFO=<ID=IEI_MT_PASSTHROUGH,Number=0,Type=Flag,Description="Mitochondrial record already on the rCRS/GRCh38 MT sequence; coordinates were carried over without the hg19 chain">\n'
 )
-
-
-def text_open(path: str):
-    return gzip.open(path, "rt") if path.lower().endswith(".gz") else open(path, "rt")
 
 
 def rejection_reason(chrom: str, ref: str, alts: list[str], max_length: int) -> str | None:

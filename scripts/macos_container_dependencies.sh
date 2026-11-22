@@ -3,12 +3,22 @@
 # Keep --check read-only and preserve unrelated user executables.
 start_managed_colima() {
     local colima="$1" workspace="$2" cpus="$3" memory="$4"
-    local extra_mount=()
+    local extra_mount=() external_workspace
     # Explicit mounts replace the defaults. Application code stays on the
     # host; containers only need user data/work paths, never /Applications.
-    case "$workspace" in "$HOME"|"$HOME"/*|/tmp/colima|/tmp/colima/*) ;;
-        *) extra_mount=(--mount "$workspace:w") ;;
-    esac
+    external_workspace="$("${PYTHON_BIN:-python3}" - "$workspace" "$HOME" <<'PY'
+import sys
+from pathlib import Path
+
+workspace = Path(sys.argv[1]).expanduser().resolve()
+defaults = (Path(sys.argv[2]).resolve(), Path("/tmp/colima").resolve())
+if not any(workspace.is_relative_to(root) for root in defaults):
+    print(workspace)
+PY
+    )" || return 1
+    if [[ -n "$external_workspace" ]]; then
+        extra_mount=(--mount "$external_workspace:w")
+    fi
     "$colima" start --cpu "$cpus" --memory "$memory" --disk 120 \
         --mount "$HOME:w" --mount /tmp/colima:w ${extra_mount[@]+"${extra_mount[@]}"}
 }

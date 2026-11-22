@@ -10,11 +10,11 @@ nav_order: 5
 
 ## Which files should I open and keep?
 
-Use **Open results** on the completed job, or the final filename printed in
-the log's `DONE. Annotated VCF:` line. Do not choose a sibling VCF by newest
-timestamp: a previous run may have left one behind. The small
-`<requested-output>.deliverable` text file names this run's final VCF in the
-same directory (often an `.aamatch.vcf.gz` file when protein matching runs).
+Use **Open results** on the completed job or open the VCF you requested with
+`-o`. It contains all annotations from the completed run. When protein
+matching runs, the existing `.aamatch` filename also contains that same VCF.
+The `<requested-output>.deliverable` file and the log's `DONE. Annotated VCF:`
+line give the filename used for this run's QC and manifest.
 
 | Artifact | Purpose |
 |---|---|

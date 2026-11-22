@@ -142,6 +142,27 @@ def test_starter_activation_preserves_installed_full_sources_and_explicit_provid
     assert config["plugins"]["CADDStarter"]["enabled"]
 
 
+def test_full_dbnsfp_is_optional_to_select_but_validated_when_selected(tmp_path):
+    import yaml
+    from local_service.workbench_service import AnnotationJobService
+    from pipeline.validate_vep_output import validate
+
+    table = tmp_path / "scores.gz"
+    table.touch()
+    Path(str(table) + ".tbi").touch()
+    config = {"plugins": {"dbNSFP": {"path": str(table), "enabled": True, "columns": ["CADD_phred"]}}}
+    apply_starters(config, {kind: tmp_path / kind for kind in ("alphamissense", "cadd", "spliceai")},
+                   lambda value: Path(value) if value else None)
+    assert "dbnsfp" not in AnnotationJobService._required_sources(config)
+    assert config["plugins"]["dbNSFP"]["required"]
+    job = tmp_path / "job.yaml"
+    job.write_text(yaml.safe_dump(config))
+    vcf = tmp_path / "result.vcf"
+    vcf.write_text('##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|StarterCADD_phred">\n')
+    with pytest.raises(ValueError, match="required dbNSFP annotations.*CADD_phred"):
+        validate(job, vcf)
+
+
 @pytest.mark.parametrize("name", ["AlphaMissenseStarter", "CADDStarter"])
 def test_explicit_disabled_pathless_starter_stays_disabled(tmp_path, name):
     cfg = {"plugins": {name: {"enabled": False}}}

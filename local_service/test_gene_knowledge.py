@@ -1,14 +1,24 @@
 import csv
+import hashlib
+import json
+import os
+import shutil
 import sqlite3
+import subprocess
 import tempfile
 import unittest
+from contextlib import closing, redirect_stdout
+from io import StringIO
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import quote
 
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from local_service import gencc
+from scripts.build_gene_knowledge import fetch_gencc, gencc_release, main as refresh_gene_knowledge
 from local_service.gene_knowledge import (
     GeneKnowledgeStore, build_omim_database, build_public_database,
     extract_omim_download_urls,
@@ -68,6 +78,176 @@ class GeneKnowledgeTests(unittest.TestCase):
         self.assertEqual(result["clingen_validity"][0]["classification"], "Definitive")
         self.assertEqual(result["clingen_dosage"]["hi_score"], "3")
         self.assertFalse(result["omim_installed"])
+
+    def test_gencc_validators_preserve_case_legacy_cache_and_checksums(self):
+        source, headers = self.root / "data.csv", self.root / "headers"
+        source.write_bytes(b"test export")
+        md5 = hashlib.md5(source.read_bytes()).hexdigest()
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        previous = self.root / "cached.sqlite3"
+        for stored, expected in [(md5, f'"{md5}"'), (f'W/"{md5}"', f'W/"{md5}"'),
+                                 (f'"{md5}-3"', f'"{md5}-3"'), ('"MiXeD.r2"', '"MiXeD.r2"')]:
+            with self.subTest(stored=stored):
+                headers.write_text(f"HTTP/1.1 200 OK\nETag: {expected}\n")
+                metadata = gencc_release(source, headers, "snapshot")
+                self.assertEqual((metadata["etag"], metadata["source_sha256"]), (expected, digest))
+                with sqlite3.connect(previous) as db:
+                    db.execute("CREATE TABLE IF NOT EXISTS resources(id,release,source_sha256,source_url)")
+                    db.execute("CREATE TABLE IF NOT EXISTS metadata(key PRIMARY KEY,value)")
+                    db.execute("DELETE FROM resources")
+                    db.execute("INSERT INTO resources VALUES('gencc','snapshot',?,?)", (digest, gencc.EXPORT_URL))
+                    db.execute("INSERT OR REPLACE INTO metadata VALUES('gencc_etag',?)", (stored,))
+                with patch("scripts.build_gene_knowledge.subprocess.run") as run:
+                    run.return_value.stdout = "304"
+                    cached, meta, reused = fetch_gencc(self.root, previous, "today")
+                    self.assertTrue(reused)
+                    self.assertEqual((cached, meta["source_sha256"]), (previous, digest))
+                    self.assertIn(f"If-None-Match: {expected}", run.call_args.args[0])
+        headers.write_text(f'ETag: "{md5}"')
+        source.write_bytes(b"different")
+        with self.assertRaisesRegex(ValueError, "checksum"):
+            gencc_release(source, headers, "snapshot")
+
+    def test_gencc_versions_conflicts_withdrawals_and_failed_refresh(self):
+        export = self.root / "gencc.csv"
+        store = GeneKnowledgeStore(self.public, self.root / "private.sqlite")
+        self.assertFalse(store.gene("EBP1")["gencc"]["available"])  # Older bundle.
+        def submission(id_, classification, submitter, *, version=1, moi="HP:0000006", disease="MONDO:1"):
+            return dict(sgc_id=f"SGC-{id_}", version_number=version, gene_curie="HGNC:1",
+                        gene_symbol="OLD", disease_curie=disease, disease_title="Condition",
+                        disease_original_curie="OMIM:123456", disease_original_title="Original name",
+                        moi_curie=moi, moi_title="Inheritance", classification_curie="GENCC:" + classification,
+                        classification_title=classification, submitter_curie=submitter, submitter_title=submitter,
+                        submitted_as_date="2025-10-10", submitted_as_public_report_url="https://example.org",
+                        submitted_as_disease_id="OMIM:123456", submitted_as_disease_name="Source disease",
+                        submitted_as_pmids="1")
+        def rebuild(rows):
+            with export.open("w", newline="") as handle:
+                writer = csv.DictWriter(handle, gencc.COLUMNS)
+                writer.writeheader()
+                writer.writerows(rows)
+            build_public_database(hgnc=self.hgnc, iuis=self.iuis, clingen_validity=self.validity,
+                                  clingen_dosage=self.dosage, gencc_source=export, destination=self.public,
+                                  releases={"gencc": {"release": "test", "source_url": gencc.EXPORT_URL}})
+        high = submission(100, "100001", "ClinGen", version=2)
+        low = submission(101, "100004", "Other")
+        supportive = submission(102, "100009", "Third")
+        rec = submission(103, "100005", "Other", moi="HP:0000007")
+        second = submission(104, "100006", "Other", disease="MONDO:2")
+        legacy = self.root / "legacy.sqlite3"
+        shutil.copyfile(self.public, legacy)
+        rebuild([high, submission(100, "100004", "ClinGen"), low, supportive, rec, second])
+        groups = store.gene("EBP1")["gencc"]["groups"]
+        self.assertEqual(len(groups), 3)
+        with closing(sqlite3.connect(self.public)) as db:
+            for factory in (None, sqlite3.Row, lambda cursor, row: {"custom": row}):
+                with self.subTest(factory=factory):
+                    db.row_factory = factory
+                    result = gencc.gene(db, "HGNC:1")
+                    self.assertEqual(result, {"available": True, "release": "test", "groups": groups})
+                    self.assertIs(db.row_factory, factory)
+        upgraded = GeneKnowledgeStore(legacy, self.root / "private.sqlite", bundled_database=self.public)
+        self.assertEqual(upgraded.gene("EBP1")["gencc"]["groups"], groups)
+        self.assertEqual([r["id"] for r in upgraded.status()["resources"]].count("gencc"), 1)
+        self.assertEqual(upgraded.public_database, legacy)
+        flagged, = [g for g in groups if g["conflict"]]
+        self.assertEqual(len(flagged["submissions"]), 3)
+        self.assertEqual(next(r for r in flagged["submissions"] if r["sgc_id"]=="SGC-100")["version_number"], 2)
+        self.assertEqual(store.gene("UNRESOLVED")["gencc"]["groups"], [])
+        with self.assertRaisesRegex(ValueError, "Duplicate"):
+            rebuild([high, high])
+        self.assertEqual(store.gene("HGNC:1")["gencc"]["groups"], groups)
+        prior_bundle = self.root / "prior-bundle.sqlite3"
+        shutil.copyfile(self.public, prior_bundle)
+        rebuild([supportive, high])
+        # A newer override takes precedence over the older bundled submissions.
+        preferred = GeneKnowledgeStore(self.public, self.root / "private.sqlite", bundled_database=prior_bundle)
+        self.assertEqual(preferred.gene("EBP1")["gencc"], store.gene("EBP1")["gencc"])
+        refreshed, = store.gene("ENSG00000109320")["gencc"]["groups"]
+        self.assertFalse(refreshed["conflict"])
+        self.assertEqual(len(refreshed["submissions"]), 2)
+
+    def test_cli_replaces_unusable_cache_and_reuses_healthy_cache(self):
+        argv = ["build_gene_knowledge", "--fetch-gencc", "--release-date", "today",
+                "--output", str(self.public), "--hgnc", str(self.hgnc), "--iuis", str(self.iuis),
+                "--clingen-validity", str(self.validity), "--clingen-dosage", str(self.dosage)]
+        export = StringIO()
+        writer = csv.DictWriter(export, gencc.COLUMNS)
+        writer.writeheader()
+        submission = dict.fromkeys(gencc.COLUMNS, "fixture")
+        submission.update(sgc_id="SGC-1", version_number=1, gene_curie="HGNC:1")
+        writer.writerow(submission)
+        validator = 'If-None-Match: W/"r1"'
+        source = self.root / "source.csv"
+        source.write_bytes(export.getvalue().encode())
+        healthy = self.root / "healthy.sqlite3"
+        build_public_database(hgnc=self.hgnc, iuis=self.iuis, clingen_validity=self.validity,
+                              clingen_dosage=self.dosage, destination=healthy, gencc_source=source,
+                              releases={"gencc": {"release": "cached", "source_url": gencc.EXPORT_URL,
+                                                  "etag": 'W/"r1"'}})
+
+        def download(command, **kwargs):
+            if "-H" in command:
+                return subprocess.CompletedProcess(command, 0, stdout="304")
+            Path(command[command.index("-D") + 1]).write_text('ETag: W/"r1"\n')
+            Path(command[command.index("-o") + 1]).write_bytes(export.getvalue().encode())
+            return subprocess.CompletedProcess(command, 0, stdout="200")
+
+        for case, damage, expected in (
+            ("non-SQLite file", None, [None]),
+            ("obsolete metadata", "DROP TABLE metadata", [None]),
+            ("invalid validator type", "UPDATE metadata SET value=x'01' WHERE key='gencc_etag'", [None]),
+            ("invalid digest", "UPDATE resources SET source_sha256='' WHERE id='gencc'", [None]),
+            ("incompatible submissions", "ALTER TABLE gencc RENAME TO old_submissions", [validator, None]),
+            ("missing submissions", "DELETE FROM gencc", [validator, None]),
+            ("healthy cache", "", [validator]),
+        ):
+            with self.subTest(case=case):
+                shutil.copyfile(healthy, self.public)
+                if damage is None:
+                    self.public.write_bytes(b"corrupt previous database")
+                elif damage:
+                    with closing(sqlite3.connect(self.public)) as db:
+                        db.execute(damage)
+                        db.commit()
+                with patch.object(sys, "argv", argv), redirect_stdout(StringIO()), patch(
+                    "scripts.build_gene_knowledge.subprocess.run", side_effect=download
+                ) as run:
+                    refresh_gene_knowledge()
+                commands = [call.args[0] for call in run.call_args_list]
+                self.assertEqual([cmd[cmd.index("-H") + 1] if "-H" in cmd else None for cmd in commands], expected)
+                with closing(sqlite3.connect(self.public)) as db:
+                    result = gencc.gene(db, "HGNC:1")
+                    self.assertEqual(result["release"], "cached" if case == "healthy cache" else "today")
+                    group, = result["groups"]
+                    self.assertEqual(group["submissions"][0]["sgc_id"], "SGC-1")
+                manifest = json.loads((self.root / "manifest.json").read_text())
+                self.assertEqual(manifest["resources"]["gencc"]["source_sha256"],
+                                 hashlib.sha256(export.getvalue().encode()).hexdigest())
+
+        # If the unconditional replacement is invalid too, keep both published files.
+        with closing(sqlite3.connect(self.public)) as db:
+            db.execute("DROP TABLE gencc")
+            db.commit()
+        manifest_path = self.root / "manifest.json"
+        previous_files = self.public.read_bytes(), manifest_path.read_bytes()
+        export = StringIO("invalid CSV")
+        with patch.object(sys, "argv", argv), patch("scripts.build_gene_knowledge.subprocess.run", side_effect=download):
+            with self.assertRaisesRegex(ValueError, "Missing GenCC export columns"):
+                refresh_gene_knowledge()
+        self.assertEqual((self.public.read_bytes(), manifest_path.read_bytes()), previous_files)
+
+    def test_cli_refresh_destination_follows_annotation_storage(self):
+        from scripts.build_gene_knowledge import managed_public_database
+        registry = self.root / "storage.json"
+        managed = self.root / "selected data"
+        managed.mkdir()
+        registry.write_text(json.dumps({"version": 1, "annotation_root": str(managed)}))
+        with patch.dict(os.environ, {"IEI_WORKBENCH_STORAGE_REGISTRY": str(registry)}):
+            self.assertEqual(managed_public_database(), managed.resolve() / "gene-knowledge/gene_knowledge_public.sqlite3")
+            managed.rmdir()
+            with self.assertRaisesRegex(ValueError, "unavailable"):
+                managed_public_database()
 
     def test_filter_catalog_keeps_source_specific_gene_sets(self):
         catalog = GeneKnowledgeStore(self.public, self.root / "private.sqlite3").filter_catalog()

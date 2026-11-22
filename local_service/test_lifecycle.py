@@ -138,9 +138,10 @@ class LifecycleTests(unittest.TestCase):
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
         try:
-            self.assertEqual(desktop_app.existing_instance(base, self.root), desktop_app.EXISTING_BUILD)
+            self.assertEqual(desktop_app.existing_instance(base, self.root, self.service._instance_id), desktop_app.EXISTING_BUILD)
+            self.assertEqual(desktop_app.existing_instance(base, self.root, "stale-instance"), desktop_app.OCCUPIED_PORT)
             with tempfile.TemporaryDirectory() as directory:
-                self.assertEqual(desktop_app.existing_instance(base, Path(directory)), desktop_app.OTHER_BUILD)
+                self.assertEqual(desktop_app.existing_instance(base, Path(directory), self.service._instance_id), desktop_app.OTHER_BUILD)
             self.assertFalse(self.service._quit_requested)  # GET never stops work.
             body = json.dumps(self.payload()).encode()
             cross_site = urllib.request.Request(base + "/api/service/quit", data=body,
@@ -252,9 +253,9 @@ class LifecycleTests(unittest.TestCase):
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            for mode, expected in (("unknown", 44), ("legacy", 43), ("redirect", 44)):
+            for mode, expected in (("unknown", 44), ("legacy", 44), ("redirect", 44)):
                 Handler.mode = mode
-                self.assertEqual(desktop_app.existing_instance(f"http://127.0.0.1:{server.server_port}", self.root), expected)
+                self.assertEqual(desktop_app.existing_instance(f"http://127.0.0.1:{server.server_port}", self.root, "saved-desktop-instance"), expected)
             self.assertNotIn("/do-not-follow", Handler.paths)
         finally:
             server.shutdown()

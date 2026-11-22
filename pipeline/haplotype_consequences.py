@@ -3,7 +3,7 @@
 
 Haplosaurus reports transcript/protein haplotypes, but it may combine unphased
 heterozygous variants.  This postprocessor therefore re-checks GT and phase in
-the candidate VCF before assigning one of two deliberately distinct statuses:
+the candidate VCF before assigning one of three statuses:
 
 * FRAME_RESTORED_CONFIRMED
 * FRAME_RESTORATION_PARTIAL_CONFIRMED
@@ -132,28 +132,18 @@ def parse_candidate_genotypes(
                 columns[4],
             )
             alt_alleles = alt.split(",")
-            if record_id not in {"", "."}:
-                # Candidate records carry one ALT after ``norm -m -any``; the
-                # ID names that allele, so its length change is well defined.
-                keys = [record_id]
-                key_length_change = {
-                    record_id: allele_length_change(ref, alt_alleles[0])
-                    if len(alt_alleles) == 1 else None
-                }
-            else:
-                # No ID: register per-ALT keys (raw and minimal) so a
-                # multi-allelic record is reachable from per-allele lookups
-                # instead of an unmatchable comma-joined key.
-                keys = []
-                key_length_change = {}
-                for alt_allele in alt_alleles:
-                    raw_key = variant_id(chrom, pos, ref, alt_allele)
-                    keys.append(raw_key)
-                    key_length_change[raw_key] = allele_length_change(ref, alt_allele)
-                    trimmed = minimal_variant_id(chrom, pos, ref, alt_allele)
-                    if trimmed != raw_key:
-                        keys.append(trimmed)
-                        key_length_change[trimmed] = key_length_change[raw_key]
+            # Only a biallelic record's ID unambiguously names an allele.
+            # For unsplit records, use the same per-ALT keys as the CSQ index.
+            allele_details = {}
+            for index, alt_allele in enumerate(alt_alleles, start=1):
+                if len(alt_alleles) == 1 and record_id not in {"", "."}:
+                    keys = {record_id}
+                else:
+                    keys = {
+                        variant_id(chrom, pos, ref, alt_allele),
+                        minimal_variant_id(chrom, pos, ref, alt_allele),
+                    }
+                allele_details[str(index)] = (keys, allele_length_change(ref, alt_allele))
             format_fields = columns[8].split(":")
             for sample, sample_value in zip(samples, columns[9:]):
                 values = sample_value.split(":")
@@ -163,58 +153,34 @@ def parse_candidate_genotypes(
                 }
                 gt = fields.get("GT", "./.")
                 alleles = gt.replace("|", "/").split("/")
-                if not alleles or any(not value.isdigit() for value in alleles):
+                called_alts = set(alleles) - {"0", "."}
+                if not called_alts or not called_alts.issubset(allele_details):
                     continue
-                alt_copies = sum(value != "0" for value in alleles)
-                if alt_copies == 0:
-                    continue
-                non_ref_indexes = {value for value in alleles if value != "0"}
-                homozygous_alt = (
-                    len(alleles) == 2
-                    and alt_copies == 2
-                    and len(non_ref_indexes) == 1
-                )
+                incomplete = "." in alleles
                 phased = "|" in gt
-                haplotypes: set[int] | None = None
-                if len(non_ref_indexes) > 1:
-                    # Two different ALT indexes (e.g. 1/2 or 1|2): the record's
-                    # key covers only one of them and the GT alone cannot say
-                    # which haplotype carries it, so its placement is unknown.
+                single_copy = len(alleles) == 1 and haploid_single_copy_locus(chrom, pos)
+                phase_set = next((fields[key] for key in ("PS", "PID")
+                                  if fields.get(key) not in (None, "", ".")), "")
+                for allele in called_alts:
+                    keys, length_change = allele_details[allele]
+                    homozygous_alt = single_copy or alleles == [allele, allele]
                     haplotypes = None
-                elif homozygous_alt:
-                    haplotypes = {0, 1}
-                elif phased and len(alleles) == 2:
-                    haplotypes = {
-                        index for index, allele in enumerate(gt.split("|"))
-                        if allele != "0"
+                    if homozygous_alt:
+                        # A haploid non-PAR X/Y ALT also occupies every copy.
+                        haplotypes = {0, 1}
+                    elif phased and len(alleles) == 2 and not incomplete:
+                        haplotypes = {i for i, value in enumerate(alleles) if value == allele}
+                    sample_state = {
+                        "gt": gt,
+                        "incomplete": incomplete,
+                        "homozygous_alt": homozygous_alt,
+                        "phased": phased,
+                        "haplotypes": haplotypes,
+                        "phase_set": phase_set,
+                        "length_change": length_change,
                     }
-                if (
-                    len(alleles) == 1
-                    and alt_copies == 1
-                    and haploid_single_copy_locus(chrom, pos)
-                ):
-                    # Decision D4 (cis-by-construction): a haploid call on
-                    # non-PAR X/Y occupies the sample's ONLY copy of the
-                    # contig, so it is necessarily in cis with anything else
-                    # the sample carries there — matching how the same call
-                    # written diploid-style (1/1) already classifies. PAR
-                    # loci and haploid calls on other contigs keep the
-                    # conservative unknown placement.
-                    homozygous_alt = True  # occupies every copy (there is one)
-                    haplotypes = {0, 1}
-                sample_state = {
-                    "gt": gt,
-                    "homozygous_alt": homozygous_alt,
-                    "phased": phased,
-                    "haplotypes": haplotypes,
-                    "phase_set": next((fields[key] for key in ("PS", "PID")
-                                       if fields.get(key) not in (None, "", ".")), ""),
-                }
-                for key in keys:
-                    result[key][sample] = {
-                        **sample_state,
-                        "length_change": key_length_change.get(key),
-                    }
+                    for key in keys:
+                        result[key][sample] = sample_state
     return result, samples
 
 
@@ -294,6 +260,13 @@ def classify_phase(states: list[dict[str, object]]) -> str | None:
     """Classify whether all variants can be placed on a common haplotype."""
     if not states:
         return None
+    complete = [state for state in states if not state.get("incomplete")]
+    if len(complete) < len(states):
+        # A missing copy leaves the ALT dosage unresolved, even with PS or a
+        # homozygous partner. A trans pair of complete calls still excludes cis.
+        if complete and classify_phase(complete) is None:
+            return None
+        return POSSIBLE
     non_homozygous = [state for state in states if not state["homozygous_alt"]]
     if not non_homozygous:
         return CONFIRMED  # every variant occupies both copies
@@ -460,6 +433,8 @@ def restoring_events(
                     if status is None:
                         counters["confirmed_trans_haplotypes"] += 1
                         continue
+                    if any(state.get("incomplete") for state in states if state):
+                        counters["incomplete_genotype_haplotypes"] += 1
                     counters[status] += 1
                     protein = str(haplotype.get("name") or "")
                     for key in variants:

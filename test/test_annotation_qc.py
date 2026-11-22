@@ -232,6 +232,32 @@ def write_funcvep_vcf(
     )
 
 
+def test_gpn_coverage_for_mixed_records_and_zero_hits(tmp_path):
+    config = tmp_path / "config.yaml"
+    config.write_text("wgs_review: {gpn_star_v: {enabled: true}}")
+    header = ('##fileformat=VCFv4.2\n'
+              '##GPNStar_v100_coverage=Custom BED targets beyond the compact intervals require genome-wide V scores.\n'
+              '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence">\n'
+              '##INFO=<ID=GPNv100_LLR,Number=A,Type=Float,Description="LLR">\n'
+              '##INFO=<ID=GPNv100_ABSLLR,Number=A,Type=Float,Description="Absolute LLR">\n'
+              '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n')
+    vcf = tmp_path / "data.vcf"
+    for alts, info, counts in (
+        ("A,CT", "GPNv100_LLR=.,0;GPNv100_ABSLLR=.,0", (1, 1, "PASS")),
+        ("A,CT", "GPNv100_LLR=.,0;GPNv100_ABSLLR=.,NaN", (1, 0, "WARN")),
+        ("A,CT", "GPNv100_LLR=.,-inf;GPNv100_ABSLLR=.,0", (1, 0, "WARN")),
+        ("A,CT", ".", (1, 0, "WARN")),
+        ("A,GC", ".", (0, 0, "NOT_APPLICABLE")),
+    ):
+        vcf.write_text(header + f"21\t100\t.\tAT\t{alts}\t.\tPASS\t{info}\n")
+        report = build_report(config, vcf)
+        item = next(m for m in report["metrics"] if m["name"].startswith("GPN-Star-V"))
+        assert (item["eligible_records"], item["annotated_records"], item["status"]) == counts
+        assert "require genome-wide V scores" in render_html(report)
+        if counts[-1] == "WARN":
+            assert "No eligible SNV received a score" in render_html(report)
+
+
 def test_compact_spliceai_does_not_expect_scores_on_every_mane_snv(tmp_path):
     config = tmp_path / "config.yaml"
     vcf = tmp_path / "test.vcf"
@@ -356,6 +382,24 @@ def test_deliberate_ptc_skips_are_not_missing_coverage(tmp_path):
     assert ptc["recomputed_records"] == 1
     assert ptc["not_applicable_records"] == 1
     assert "LOFTEE_PTC_50BP" not in report["details"]["missing_examples"]
+
+
+def test_outside_cds_counts_as_incomplete_even_with_a_scored_sibling(tmp_path):
+    config, vcf = tmp_path / "config.yaml", tmp_path / "review.vcf"
+    write_config(config)
+    ok = csq("T", "frameshift_variant", "G", "", "", "", "HC", "", "", "",
+             "0", "0", "0", "0", "", "", "", "100", "PASS", "PASS", "ok")
+    missing = ok.split("|")
+    missing[FIELDS.index("PTC_calc_status")] = "outside_cds"
+    vcf.write_text(
+        '##fileformat=VCFv4.2\n##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(FIELDS) + '">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS\n'
+        + f"1\t100\t.\tAT\tA\t99\tPASS\tCSQ={ok},{'|'.join(missing)}\tGT\t0/1\n"
+    )
+    details = build_report(config, vcf)["details"]
+    ptc = details["loftee_ptc_50bp"]
+    assert (ptc["eligible_frameshift_records"], ptc["recomputed_records"]) == (1, 0)
+    assert details["missing_examples"]["LOFTEE_PTC_50BP"]
 
 
 def test_selenoprotein_skip_is_deliberate_not_missing_coverage(tmp_path):
@@ -707,6 +751,7 @@ if __name__ == "__main__":
         test_missing_critical_missense_annotation_warns_and_records_example,
         test_logofunc_class_comes_from_mane_entry_not_file_order,
         test_deliberate_ptc_skips_are_not_missing_coverage,
+        test_outside_cds_counts_as_incomplete_even_with_a_scored_sibling,
         test_selenoprotein_skip_is_deliberate_not_missing_coverage,
         test_clinvar_reference_release_is_read_from_the_generated_header,
         test_critical_field_outside_configured_columns_is_still_counted,

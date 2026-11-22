@@ -3,17 +3,27 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import ts from "typescript";
 
+function typeScriptUrl(source) {
+  const compiled = ts.transpileModule(source, {
+    compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
+  }).outputText;
+  return `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
+}
+
+const parser = await readFile(new URL("../app/vcf.ts", import.meta.url), "utf8");
+const registryUrl = new URL("../../config/predictor-registry.json", import.meta.url);
+const parserUrl = typeScriptUrl(parser.replace(
+  '"../../config/predictor-registry.json"', `"${registryUrl.href}" with { type: "json" }`,
+));
+const { parseVcfFiles, collapseToOneRowPerVariant, candidateCompoundHetKeys } = await import(parserUrl);
 const source = await readFile(new URL("../app/trio.ts", import.meta.url), "utf8");
-const compiled = ts.transpileModule(source, {
-  compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
-}).outputText;
-const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
 const {
   DEFAULT_TRIO_THRESHOLDS,
   assessDeNovo,
-  compoundHetPairs,
+  compoundHetPairs, isCandidatePair, trioCompoundRowKeys,
+  sampleGeneAlleleKey,
   parsePedigree,
-} = await import(moduleUrl);
+} = await import(typeScriptUrl(source.replace('"./vcf"', JSON.stringify(parserUrl))));
 
 const trio = {
   familyId: "F1",
@@ -30,7 +40,7 @@ function evidence(gt, dp, gq, adRef, adAlt, options = {}) {
   return {
     gt,
     called,
-    carrier: called && alleles.some((allele) => allele > 0),
+    carrier: alleles.some((allele) => allele > 0),
     dp,
     gq,
     adRef,
@@ -131,6 +141,42 @@ test("a 1/2 child is not labelled homozygous alternate", () => {
     ...evidence("1/2", 30, 99, 0, 15), alleleBalance: 0.5,
   };
   assert.notEqual(assessDeNovo(variant, trio).status, "mendelian_conflict");
+});
+
+async function parseMultiallelicTrio(child, mother, father) {
+  const vcf = [
+    "##fileformat=VCFv4.2",
+    "##reference=GRCh38",
+    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|SYMBOL">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tCHILD\tMOTHER\tFATHER",
+    ["1", "100", ".", "T", "A,G", "99", "PASS", "CSQ=A|GENE1,G|GENE1",
+      "GT:DP:GQ:AD", child, mother, father].join("\t"),
+  ].join("\n");
+  const { rows } = await parseVcfFiles([new File([vcf], "trio.vcf")]);
+  return rows.filter((row) => row.sample === trio.proband);
+}
+
+test("de novo assessment uses the queried ALT in parental calls and reads", async () => {
+  for (const [mother, status] of [
+    ["0/2:30:99:15,0,15", "high_confidence"],
+    ["./2:30:99:15,0,15", "possible"],
+    ["0/2:30:10:15,0,15", "possible"],
+    ["0/2:30:99:15,.,15", "possible"],
+    ["0/2:30:99:14,1,15", "possible_parental_mosaicism"],
+  ]) {
+    const [alt1] = await parseMultiallelicTrio("0/1:30:99:15,15,0", mother, "0/0:30:99:30,0,0");
+    assert.equal(alt1.alt, "A");
+    assert.equal(assessDeNovo(alt1, trio).status, status, mother);
+  }
+});
+
+test("a 1/2 child's ALTs can be inherited from opposite parents at one site", async () => {
+  const rows = await parseMultiallelicTrio("1/2:30:99:0,15,15", "0/1:30:99:15,15,0", "0/2:30:99:15,0,15");
+  for (const row of rows) assert.equal(assessDeNovo(row, trio).status, "inherited");
+  const [pair] = compoundHetPairs(rows, trio);
+  assert.deepEqual({ [pair.first.alt]: pair.firstOrigin, [pair.second.alt]: pair.secondOrigin },
+    { A: "maternal", G: "paternal" });
+  assert.equal(pair.phase, "confirmed_trans_inheritance");
 });
 
 test("PED trios cannot reuse the child or the same parent sample", () => {
@@ -458,4 +504,82 @@ test("configured trio thresholds gate compound-het origins too", () => {
     ...DEFAULT_TRIO_THRESHOLDS, parentMinDp: 25, minGq: 60,
   });
   assert.notEqual(strict[0].phase, "confirmed_trans_inheritance");
+});
+
+test("split trio files match padded alleles without pairing a duplicate or renumbering a call", async () => {
+  function file(sample, records) {
+    return new File([[
+      "##fileformat=VCFv4.2", "##reference=GRCh38",
+      '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|SYMBOL">',
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample,
+      ...records.map(([chrom, pos, ref, alt, csq, call]) => [
+        chrom, pos, ".", ref, alt, 99, "PASS", "CSQ=" + csq, "GT:DP:GQ:AD", call,
+      ].join("\t")),
+    ].join("\n")], sample + ".vcf");
+  }
+  const { rows } = await parseVcfFiles([
+    file("MOTHER", [
+      ["1", 100, "T", "G", "G|1|GENE", "0/1:30:99:15,15"],
+      ["1", 100, "T", "C", "C|1|GENE", "0/0:30:99:30,0"],
+    ]),
+    file("CHILD", [
+      ["chr1", 99, "AT", "AG,AC", "AG|1|GENE,AC|2|GENE", "1/2:30:99:0,12,18"],
+      ["chr1", 100, "t", "g", "g|1|GENE", "0/1:30:90:15,15"],
+    ]),
+    file("FATHER", [
+      ["1", 100, "T", "C,G", "C|1|GENE,G|2|GENE", "0/1:30:99:15,15,0"],
+    ]),
+  ]);
+  const child = rows.filter(r => r.sample === "CHILD");
+  assert.deepEqual(child.slice(0, 2).map(r => [r.genotype, r.adAlt, r.alleleBalance]),
+    [["1/2", 12, 0.4], ["1/2", 18, 0.6]]);
+  assert.deepEqual(child.map(r => assessDeNovo(r, trio).status), ["inherited", "inherited", "inherited"]);
+  const sameAllele = [child[0], child[2]];
+  assert.equal(sampleGeneAlleleKey(child[0]), sampleGeneAlleleKey(child[2]));
+  assert.notEqual(sampleGeneAlleleKey(child[0]), sampleGeneAlleleKey(rows.find(r => r.sample === "MOTHER")));
+  assert.equal(collapseToOneRowPerVariant(rows).length, 4); // two child alleles, one per parent
+  assert.equal(candidateCompoundHetKeys(sameAllele).size, 0);
+  assert.deepEqual(compoundHetPairs(sameAllele, trio), []);
+  assert.deepEqual([...candidateCompoundHetKeys(child)], child.map(row => row.key));
+  const pairs = compoundHetPairs(rows, trio);
+  assert.deepEqual(pairs.map(p => [p.firstOrigin, p.secondOrigin, p.phase]),
+    [["maternal", "paternal", "confirmed_trans_inheritance"]]);
+});
+
+test("Y PAR, non-PAR Y, unknown sex and incompatible child ploidy use explicit models", () => {
+  function variant(chrom, pos, gt, father, mother) {
+    return row({ chrom, pos, genotype: gt, sampleGenotypes: {
+      CHILD: evidence(gt, 30, 99, 15, 15), MOTHER: evidence(mother, 30, 99, 30, 0),
+      FATHER: evidence(father, 30, 99, 30, 0),
+    } });
+  }
+  const y = variant("chrY", 3000000, "1", "0", "1/1");
+  assert.equal(assessDeNovo(y, maleTrio).status, "high_confidence");
+  assert.equal(assessDeNovo(variant("Y", 3000000, "1", "1", "0/0"), maleTrio).status, "inherited");
+  assert.equal(assessDeNovo(variant("Y", 56887903, "0/1", "0/0", "0/1"), maleTrio).status, "inherited");
+  for (const sex of ["unknown", "female"]) {
+    assert.equal(assessDeNovo(y, { ...trio, probandSex: sex }).status, "unassessed");
+  }
+  for (const [chrom, pos, gt, sex] of [["1", 100, "1", "female"], ["X", 3000000, "0/1", "male"],
+    ["X", 3000000, "1/1", "unknown"], ["Y", 10001, "1", "male"], ["1", 100, "1/.", "male"]]) {
+    const v = variant(chrom, pos, gt, "0/0", "0/0");
+    assert.equal(assessDeNovo(v, { ...trio, probandSex: sex }).status, "unassessed", [chrom, pos, gt, sex].join(" "));
+  }
+});
+
+test("trio badges cover surviving transcripts of candidate pair members only", () => {
+  const first = row({ key: "first", sourceRecordOrdinal: 1 });
+  const second = row({ key: "second", pos: 200, sourceRecordOrdinal: 2 });
+  const rows = [first, { ...first, key: "other-transcript" }, second,
+    { ...first, sample: "MOTHER", key: "parent" }, { ...first, key: "hom-duplicate", genotype: "1/1", sourceRecordOrdinal: 3 },
+    { ...first, key: "half", genotype: "1/.", pos: 300, sampleGenotypes: undefined }];
+  const candidates = compoundHetPairs(rows, trio).filter(isCandidatePair);
+  assert.deepEqual([...trioCompoundRowKeys(rows, candidates)], ["first", "other-transcript", "second"]);
+  for (const [chrom, sex] of [["chrM", "female"], ["chrY", "male"], ["X", "unknown"], ["Y", "female"]]) {
+    const pairRows = [first, second].map((r, i) => ({ ...r, chrom, pos: 3_000_000 + i }));
+    const pairs = compoundHetPairs(pairRows, { ...trio, probandSex: sex });
+    assert.equal(pairs.length, 1);
+    assert.equal(isCandidatePair(pairs[0]), false);
+    assert.deepEqual([...trioCompoundRowKeys(pairRows, pairs.filter(isCandidatePair))], []);
+  }
 });

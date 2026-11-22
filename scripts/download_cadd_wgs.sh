@@ -44,10 +44,7 @@ for target in "$SNV" "$INDELS"; do
 done
 
 checksum() {
-    local sidecar="$1" value
-    value="$(awk 'NF { print tolower($1); exit }' "$sidecar")"
-    [[ "$value" =~ ^[0-9a-f]{32}$ ]] || die "invalid CADD MD5 sidecar: $sidecar"
-    printf '%s\n' "$value"
+    read_md5_sidecar "$1" || die "invalid CADD MD5 sidecar: $1"
 }
 
 # Resolve every checksum via plain assignments FIRST: `die` inside a command

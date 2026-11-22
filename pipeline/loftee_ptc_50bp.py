@@ -29,6 +29,11 @@ from urllib.parse import unquote
 
 import yaml
 
+if __package__:
+    from .genia_alleles import csq_allele_index
+else:
+    from genia_alleles import csq_allele_index
+
 
 STOP_CODONS = {"TAA", "TAG", "TGA"}
 # PTC_calc_status for transcripts whose CDS carries an annotated UGA-encoded
@@ -473,18 +478,48 @@ def empty_result(status: str) -> dict:
     }
 
 
-def trim_deletion_anchor(pos: int, ref: str, alt: str) -> tuple[int, str, str, bool]:
-    if len(alt) == 1 and len(ref) > 1 and ref[0] == alt[0]:
-        return pos + 1, ref[1:], "", True
-    return pos, ref, alt, False
-
-
 def score_edit(
     model: Transcript, pos: int, ref: str, alt: str, threshold: int
 ) -> dict:
+    # Validate every coding REF base, including any shared VCF padding that
+    # will be trimmed. Intronic sequence is not available in this model.
+    for offset, base in enumerate(ref):
+        cds_pos = genomic_to_cds(model, pos + offset)
+        if cds_pos is not None:
+            expected = model.cds[cds_pos - 1]
+            if base != (expected if model.strand == 1 else revcomp(expected)):
+                return empty_result("ref_mismatch")
+    while ref and alt and ref[0] == alt[0]:
+        ref, alt, pos = ref[1:], alt[1:], pos + 1
+    while ref and alt and ref[-1] == alt[-1]:
+        ref, alt = ref[:-1], alt[:-1]
+    if not ref and not alt:
+        return empty_result("unsupported_allele")
+
     if not ref:
-        c1 = genomic_to_cds(model, pos)
-        c2 = c1
+        # pos is the genomic base to the right of the insertion. If one
+        # flank is intronic or UTR, move into the CDS only when the repeat
+        # sequence proves the shifted insertion produces the same haplotype.
+        left = genomic_to_cds(model, pos - 1)
+        right = genomic_to_cds(model, pos)
+        if left is None and right is not None:
+            base = model.cds[right - 1]
+            base = base if model.strand == 1 else revcomp(base)
+            if not alt.startswith(base):
+                return empty_result("outside_cds")
+            alt = alt[1:] + base
+            left, right = right, genomic_to_cds(model, pos + 1)
+        elif right is None and left is not None:
+            base = model.cds[left - 1]
+            base = base if model.strand == 1 else revcomp(base)
+            if not alt.endswith(base):
+                return empty_result("outside_cds")
+            alt = base + alt[:-1]
+            left, right = genomic_to_cds(model, pos - 2), left
+        if left is None or right is None:
+            return empty_result("outside_cds")
+        # The cut precedes the later of the two bases in transcript order.
+        c1 = c2 = max(left, right)
     else:
         c1 = genomic_to_cds(model, pos)
         c2 = genomic_to_cds(model, pos + len(ref) - 1)
@@ -596,36 +631,23 @@ def calculate(
     if not ref or not alt or alt.startswith("<") or "*" in alt:
         return empty_result("unsupported_allele")
 
-    result = score_edit(model, pos, ref.upper(), alt.upper(), threshold)
-    if result["status"] == "outside_cds":
-        new_pos, new_ref, new_alt, trimmed = trim_deletion_anchor(
-            pos, ref.upper(), alt.upper()
-        )
-        if trimmed:
-            fallback = score_edit(model, new_pos, new_ref, new_alt, threshold)
-            if fallback["status"].startswith("ok"):
-                return fallback
-    return result
+    return score_edit(model, pos, ref.upper(), alt.upper(), threshold)
 
 
 def allele_index(entry: dict[str, str], ref: str, alts: list[str]) -> int | None:
-    raw_number = entry.get("ALLELE_NUM", "")
-    if raw_number.isdigit() and 1 <= int(raw_number) <= len(alts):
-        return int(raw_number) - 1
-    allele = entry.get("Allele", "")
-    exact = [index for index, alt in enumerate(alts) if alt == allele]
-    if len(exact) == 1:
-        return exact[0]
-    candidates = []
-    for index, alt in enumerate(alts):
-        ref_min, alt_min = ref, alt
-        while ref_min and alt_min and ref_min[0] == alt_min[0]:
-            ref_min, alt_min = ref_min[1:], alt_min[1:]
-        while ref_min and alt_min and ref_min[-1] == alt_min[-1]:
-            ref_min, alt_min = ref_min[:-1], alt_min[:-1]
-        if (alt_min or "-") == allele:
-            candidates.append(index)
-    return candidates[0] if len(candidates) == 1 else None
+    if len(alts) != 1 or entry.get("ALLELE_NUM", "").isdigit():
+        return csq_allele_index(entry, ref, alts)
+    # Preserve the prefix-first minimal spelling used by biallelic PTC inputs.
+    allele = entry.get("Allele", "").upper()
+    alt = alts[0].upper()
+    if alt == allele:
+        return 0
+    ref = ref.upper()
+    while ref and alt and ref[0] == alt[0]:
+        ref, alt = ref[1:], alt[1:]
+    while ref and alt and ref[-1] == alt[-1]:
+        ref, alt = ref[:-1], alt[:-1]
+    return 0 if (alt or "-") == allele else None
 
 
 def collect_transcripts(vcf_path: Path) -> tuple[set[str], list[str]]:

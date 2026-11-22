@@ -29,7 +29,7 @@ def test_stable_gene_matching_and_overlap_safety(tmp_path):
         {package VF; sub ref_allele_string {$_[0]{ref}} sub strand {1} }
         {package TVA;
           sub transcript { bless {_gene_stable_id=>$_[0]{gene},_gene_symbol=>($_[0]{symbol}||'')}, 'Tx' }
-          sub variation_feature { bless {chr=>($_[0]{chr}||'4'),start=>6070055,end=>6070055,ref=>($_[0]{ref}||'A')}, 'VF' }
+          sub variation_feature { bless {chr=>($_[0]{chr}||'4'),start=>6070055,end=>($_[0]{end}||6070055),ref=>($_[0]{ref}||'A')}, 'VF' }
           sub variation_feature_seq { $_[0]{alt} || 'C' }
         }
         sub query { my %v=@_; return bless {gene=>'ENSG00000284684.1',%v}, 'TVA' }
@@ -40,6 +40,7 @@ def test_stable_gene_matching_and_overlap_safety(tmp_path):
         my %r=(missing_symbol=>$p->run(query()), renamed_symbol=>$p->run(query(symbol=>'NEW_NAME')),
           other_gene=>$p->run(query(gene=>'ENSG00000152969',symbol=>'AC092442.3')),
           missing_gene=>$p->run(query(gene=>'',symbol=>'AC092442.3')),
+          padded_snv=>$p->run(query(ref=>'at',alt=>'ct',end=>6070056)),
           wrong_alt=>$p->run(query(alt=>'G')), wrong_ref=>$p->run(query(ref=>'G')),
           indel=>$p->run(query(alt=>'AC')), wrong_chrom=>$p->run(query(chr=>'7')));
         $p->{rows}=[$row,$row]; $r{duplicate}=$p->run(query());
@@ -59,7 +60,7 @@ def test_stable_gene_matching_and_overlap_safety(tmp_path):
     command = ["perl", f"-I{tmp_path}", f"-I{ROOT / 'docker'}", str(script), str(source)]
     result = subprocess.run(command, capture_output=True, text=True, check=True)
     rows = json.loads(result.stdout)
-    for key in ("missing_symbol", "renamed_symbol", "duplicate", "agreeing_aliases", "multi_gene"):
+    for key in ("missing_symbol", "renamed_symbol", "padded_snv", "duplicate", "agreeing_aliases", "multi_gene"):
         assert float(rows[key]["SpliceAI_pred_DS_DL"]) == .99, key
         assert rows[key]["SpliceAI_pred_SYMBOL"] == "AC092442.3"
     assert float(rows["neighbor"]["SpliceAI_pred_DS_DL"]) == .19

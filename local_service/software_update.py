@@ -34,6 +34,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import urllib.request
 import zipfile
@@ -110,7 +111,7 @@ def _safe_relative_path(value: str) -> str:
         or path.startswith(("/", "\\"))
         or "\\" in path
         or re.match(r"^[A-Za-z]:", path)
-        or any(part in ("..", "") for part in path.split("/"))
+        or any(part in (".", "..", "") for part in path.split("/"))
     ):
         raise ValueError(f"unsafe path in release payload: {value!r}")
     if path in FORBIDDEN_RELEASE_PATHS:
@@ -320,23 +321,17 @@ class SoftwareUpdater:
                     f"file(s), e.g. {missing[0]!r} — refusing a partial "
                     "install"
                 )
-            wrong_kind = [
-                path for path in manifest
-                if (self.repo_root / path).is_dir()
-            ]
-            if wrong_kind:
-                raise ValueError(
-                    f"a folder sits where the release ships a file "
-                    f"({wrong_kind[0]}); move it aside and install again"
-                )
-            old_manifest = self._installed_manifest()
+            baseline = self.rollback_dir / "pre-update-manifest.txt"
+            if preserve_rollback and baseline.is_file():
+                old_manifest = self._read_manifest(baseline, allow_empty=True)
+            else:
+                old_manifest = self._installed_manifest()
+            self._check_layout(self.repo_root, manifest, old_manifest or [])
             self._sentinel.write_text(info["latest_version"] + "\n")
             summary = self._apply(staging, manifest, old_manifest,
                                   preserve_rollback=preserve_rollback)
 
-        (self.updates_dir / "installed-manifest.txt").write_text(
-            "\n".join(manifest) + "\n"
-        )
+        self._replace_file(("\n".join(manifest) + "\n").encode(), self.updates_dir / "installed-manifest.txt")
         summary.update({
             "ok": True,
             "installed_version": info["latest_version"],
@@ -366,6 +361,12 @@ class SoftwareUpdater:
         self._validate_rollback_files(restored)
         dependency_before = self._dependency_bytes()
         container_before = self._container_bytes()
+        added = self._read_manifest(
+            self.rollback_dir / "rollback-added.txt", allow_empty=True,
+            allow_missing=True,
+        )
+        self._check_layout(self.repo_root, restored, added)
+        self._remove_retired(self.repo_root, restored, added)
         for path in restored:
             source = self.rollback_dir / "files" / path
             if not source.is_file():
@@ -378,20 +379,6 @@ class SoftwareUpdater:
                 continue
             self._replace_file(source.read_bytes(), destination,
                                mode=source.stat().st_mode & 0o777)
-        added = self._read_manifest(
-            self.rollback_dir / "rollback-added.txt", allow_empty=True,
-            allow_missing=True,
-        )
-        for path in added:
-            target = self.repo_root / path
-            try:
-                target.unlink(missing_ok=True)
-            except OSError:
-                # A directory or permission oddity at an added path must
-                # not strand the rollback; the file list below reports
-                # exactly what was restored.
-                continue
-        self._prune_empty_dirs(added, self.repo_root)
         # A stale ".new" config from the rolled-back release would invite
         # merging keys for a version no longer installed.
         for path in PRESERVED_USER_FILES:
@@ -406,12 +393,12 @@ class SoftwareUpdater:
         dependencies_changed = dependency_before != self._dependency_bytes()
         container_changed = container_before != self._container_bytes()
         if dependencies_changed:
-            (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
+            self._replace_file(b"1\n", self.repo_root / "webui" / ".dependencies-updated")
         # A rollback changes application code even when package manifests are
         # identical. The next start must not serve a stale production build.
         web_changed = any(path.startswith("webui/") for path in [*restored, *added])
         if web_changed:
-            (self.repo_root / "webui" / ".build-required").write_text("1\n")
+            self._replace_file(b"1\n", self.repo_root / "webui" / ".build-required")
         synced = self._sync_wsl_origin(
             origin, restored, [*restored, *added]
         )
@@ -530,6 +517,23 @@ class SoftwareUpdater:
         stored = self.updates_dir / "installed-manifest.txt"
         if stored.is_file():
             return self._read_manifest(stored)
+        baseline = self.repo_root / MANIFEST_NAME
+        if baseline.is_file() and not baseline.is_symlink():
+            return self._read_manifest(baseline)
+        if (self.repo_root / ".git").exists():
+            # Source clones have no packaged manifest. Retire only files owned
+            # by the checked-out commit whose working copies are unmodified.
+            def git_paths(*args):
+                data = subprocess.check_output(
+                    ["git", "-C", str(self.repo_root), *args], stderr=subprocess.DEVNULL,
+                )
+                return {os.fsdecode(entry) for entry in data.split(b"\0") if entry}
+            try:
+                tracked = git_paths("ls-tree", "-r", "--name-only", "-z", "HEAD")
+                changed = git_paths("diff", "--no-renames", "--no-ext-diff", "--name-only", "-z", "HEAD", "--")
+            except (OSError, subprocess.CalledProcessError):
+                return None
+            return sorted(_safe_relative_path(path) for path in tracked - changed)
         return None
 
     def _dependency_bytes(self) -> tuple[bytes, ...]:
@@ -549,13 +553,13 @@ class SoftwareUpdater:
     @staticmethod
     def _replace_file(content: bytes, destination: Path, mode: int | None = None) -> None:
         destination.parent.mkdir(parents=True, exist_ok=True)
-        temporary = destination.with_name(
-            f".{destination.name}.{os.getpid()}.update-tmp"
-        )
+        handle = tempfile.NamedTemporaryFile(dir=destination.parent, delete=False)
+        temporary = Path(handle.name)
         try:
-            temporary.write_bytes(content)
-            if mode:
-                os.chmod(temporary, mode)
+            with handle:
+                handle.write(content)
+                if mode is not None:
+                    os.fchmod(handle.fileno(), mode)
             os.replace(temporary, destination)
         finally:
             temporary.unlink(missing_ok=True)
@@ -570,9 +574,53 @@ class SoftwareUpdater:
             while parent != root and root in parent.parents:
                 try:
                     parent.rmdir()
+                except FileNotFoundError:
+                    pass
                 except OSError:
                     break
                 parent = parent.parent
+
+    @staticmethod
+    def _check_layout(root, incoming, previous):
+        """Reject unowned file/directory blockers before changing the live tree."""
+        incoming = set(incoming)
+        retired = set(previous) - incoming - set(PRESERVED_USER_FILES)
+        owned_dirs = {parent.as_posix() for entry in retired for parent in Path(entry).parents}
+        sidecars = {p + ".new" for p in PRESERVED_USER_FILES}
+        sidecars.update(("webui/.dependencies-updated", "webui/.build-required"))
+        for name in incoming | set(previous) | sidecars:
+            path = root
+            for part in Path(name).parts:
+                path = path / part
+                if path.is_symlink():
+                    raise ValueError(f"update path contains a symbolic link: {path.relative_to(root)}")
+        for name in incoming:
+            path = root / name
+            for parent in Path(name).parents:
+                if parent == Path("."):
+                    break
+                if parent.as_posix() in incoming or (
+                    (root / parent).is_file() and parent.as_posix() not in retired
+                ):
+                    raise ValueError(f"file blocks a release directory: {parent}")
+            if path.is_dir():
+                if name not in owned_dirs:
+                    raise ValueError(f"a folder sits where the release ships a file ({name}); move it aside")
+                for child in path.rglob("*"):
+                    relative = child.relative_to(root).as_posix()
+                    owned = relative in (owned_dirs if child.is_dir() else retired)
+                    if child.is_symlink() or not owned:
+                        raise ValueError(f"a folder sits where the release ships a file ({name}); preserve {relative} first")
+
+    def _remove_retired(self, root, incoming, previous):
+        keep = set(incoming) | set(PRESERVED_USER_FILES)
+        removed = []
+        for name in previous:
+            if name not in keep and (root / name).is_file():
+                (root / name).unlink()
+                removed.append(name)
+        self._prune_empty_dirs([name for name in previous if name not in keep], root)
+        return removed
 
     def _apply(self, staging: Path, manifest: list[str],
                old_manifest: list[str] | None, *, preserve_rollback: bool = False) -> dict:
@@ -590,8 +638,17 @@ class SoftwareUpdater:
             files_dir = self.rollback_dir / "files"
             touched = list(dict.fromkeys([*manifest, *(old_manifest or [])]))
             snapshotted, added = [], []
+            new_names = set(manifest)
+            retired_spellings = {p.casefold(): p for p in old_manifest or [] if p not in new_names}
             for path in touched:
                 existing = self.repo_root / path
+                old_spelling = retired_spellings.get(path.casefold())
+                if old_spelling and path != old_spelling and existing.is_file():
+                    old_path = self.repo_root / old_spelling
+                    if old_path.is_file() and existing.samefile(old_path):
+                        # Only the old spelling existed. Rollback must recreate it.
+                        added.append(path)
+                        continue
                 if existing.is_file():
                     backup = files_dir / path
                     backup.parent.mkdir(parents=True, exist_ok=True)
@@ -606,6 +663,7 @@ class SoftwareUpdater:
             (self.rollback_dir / "rollback-added.txt").write_text(
                 "\n".join(added) + ("\n" if added else "")
             )
+            (self.rollback_dir / "pre-update-manifest.txt").write_text("\n".join(old_manifest or []))
             stored = self.updates_dir / "installed-manifest.txt"
             if stored.is_file():
                 shutil.copy2(
@@ -617,13 +675,14 @@ class SoftwareUpdater:
             (self.rollback_dir / "rollback-version.txt").write_text(
                 self.current_version() + "\n"
             )
-        deps_changed = False
-        web_changed = False
-        container_changed = False
         config_review: list[str] = []
         # VERSION is applied LAST: a crash mid-swap must leave a tree that
         # still reports the OLD version, so check() keeps offering the
         # update and a retry repairs instead of "already up to date".
+        removed = self._remove_retired(self.repo_root, manifest, old_manifest or [])
+        web_changed = any(p.startswith("webui/") for p in removed)
+        deps_changed = any(p in DEPENDENCY_FILES for p in removed)
+        container_changed = any(p in CONTAINER_FILES for p in removed)
         ordered = sorted(manifest, key=lambda path: path == "VERSION")
         for path in ordered:
             staged = staging / path
@@ -642,50 +701,23 @@ class SoftwareUpdater:
                     )
                     config_review.append(path)
                 continue
-            if path in DEPENDENCY_FILES and (
-                not destination.is_file()
-                or destination.read_bytes() != new_bytes
-            ):
+            if path in DEPENDENCY_FILES and content_changed:
                 deps_changed = True
-            if path in CONTAINER_FILES and (
-                not destination.is_file()
-                or destination.read_bytes() != new_bytes
-            ):
+            if path in CONTAINER_FILES and content_changed:
                 container_changed = True
             self._replace_file(
                 new_bytes, destination, mode=staged.stat().st_mode & 0o777
             )
 
-        removed = []
-        if old_manifest is not None:
-            preserved = set(PRESERVED_USER_FILES)
-            # Case-insensitive comparison: on the case-insensitive
-            # filesystems clinicians run (APFS, NTFS), deleting the OLD
-            # spelling of a case-only rename would delete the file the
-            # install just wrote.
-            new_lower = {path.lower() for path in manifest}
-            for path in old_manifest:
-                if path.lower() in new_lower or path in preserved:
-                    continue
-                target = self.repo_root / path
-                if target.is_file():
-                    target.unlink()
-                    removed.append(path)
-                    if path.startswith("webui/"):
-                        web_changed = True
-                    if path in CONTAINER_FILES:
-                        container_changed = True
-            self._prune_empty_dirs(removed, self.repo_root)
-
         if deps_changed:
             # The launcher runs npm ci on the next full start when
             # this flag exists; the UI directs a full relaunch.
-            (self.repo_root / "webui" / ".dependencies-updated").write_text("1\n")
+            self._replace_file(b"1\n", self.repo_root / "webui" / ".dependencies-updated")
         if web_changed:
             # start_workbench.sh rebuilds the production Next.js output before
             # it reopens the browser, so application updates cannot serve old
             # JavaScript from a previous release.
-            (self.repo_root / "webui" / ".build-required").write_text("1\n")
+            self._replace_file(b"1\n", self.repo_root / "webui" / ".build-required")
         return {
             "config_review_needed": config_review,
             "dependencies_changed": deps_changed,
@@ -720,6 +752,8 @@ class SoftwareUpdater:
         if origin is None:
             return None
         try:
+            self._check_layout(origin, manifest, old_manifest or [])
+            self._remove_retired(origin, manifest, old_manifest or [])
             for path in manifest:
                 source = self.repo_root / path
                 if path in PRESERVED_USER_FILES or not source.is_file():
@@ -728,14 +762,6 @@ class SoftwareUpdater:
                     source.read_bytes(), origin / path,
                     mode=source.stat().st_mode & 0o777,
                 )
-            removed = []
-            new_lower = {path.lower() for path in manifest}
-            for path in old_manifest or []:
-                if path.lower() in new_lower or path in PRESERVED_USER_FILES:
-                    continue
-                (origin / path).unlink(missing_ok=True)
-                removed.append(path)
-            self._prune_empty_dirs(removed, origin)
-        except OSError:
+        except (OSError, ValueError):
             return False
         return True

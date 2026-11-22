@@ -7,12 +7,17 @@ find an external data drive without falling back to a fresh default database.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import logging
 import os
 import platform
 import shutil
 import subprocess
+import threading
 import uuid
+from contextlib import contextmanager
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
@@ -152,9 +157,23 @@ class StorageLocationRegistry:
         self.registry_path = _resolved(registry_path or default_registry_path())
         self.backup_path = self.registry_path.with_name(self.registry_path.name + ".backup")
         self.persist = persist
-        self._data = self._load()
-        if self.persist and self.registry_path.is_file() and not self.backup_path.exists():
-            self._atomic_write(self.backup_path, self._data)
+        self._lock = threading.Lock()
+        with self._writer_lock():
+            self._data = self._load(repair=self.persist)
+
+    @contextmanager
+    def _writer_lock(self):
+        with self._lock:
+            if not self.persist:
+                yield
+                return
+            # Neither JSON inode is stable across atomic replacements.
+            lock_path = self.registry_path.with_name(self.registry_path.name + ".lock")
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "r+b") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                yield
 
     def _defaults(self) -> dict:
         return {
@@ -173,7 +192,7 @@ class StorageLocationRegistry:
             "migrations": [],
         }
 
-    def _load(self) -> dict:
+    def _load(self, *, repair: bool = False) -> dict:
         defaults = self._defaults()
         try:
             registry_exists = self.registry_path.exists()
@@ -215,8 +234,7 @@ class StorageLocationRegistry:
             _selected_path, loaded = max(
                 valid, key=lambda item: int(item[1].get("revision") or 0)
             )
-            if self.persist:
-                # Heal a missing, stale, or corrupt peer copy immediately.
+            if repair:
                 self._atomic_write(self.backup_path, loaded)
                 self._atomic_write(self.registry_path, loaded)
             return loaded
@@ -252,24 +270,37 @@ class StorageLocationRegistry:
         finally:
             temporary.unlink(missing_ok=True)
 
-    def _save(self) -> None:
-        if not self.persist:
-            return
-        self._data["revision"] = int(self._data.get("revision") or 0) + 1
-        # Keep two independently atomic copies. A truncated/deleted primary is
-        # recovered from the backup instead of silently selecting defaults.
-        self._atomic_write(self.backup_path, self._data)
-        self._atomic_write(self.registry_path, self._data)
+    @contextmanager
+    def _update(self):
+        with self._writer_lock():
+            previous = self._load() if self.persist else self._data
+            data = dict(previous)
+            yield data
+            if self.persist and data != previous:
+                data["revision"] += 1
+                self._atomic_write(self.backup_path, data)
+                try:
+                    self._atomic_write(self.registry_path, data)
+                except OSError:
+                    # Recovery selects the newest revision. Once the backup
+                    # commits, callers must not roll back a storage migration.
+                    logging.getLogger(__name__).warning(
+                        "Storage changes saved to backup only: %s", self.backup_path, exc_info=True
+                    )
+            self._data = data
 
     def root(self, kind: StorageKind) -> Path:
+        return self._root(kind, self._data)
+
+    def _root(self, kind: StorageKind, data: dict) -> Path:
         if kind not in STORAGE_KINDS:
             raise ValueError(f"unsupported storage location: {kind}")
         if kind == "annotation":
-            return _resolved(self._data["annotation_root"] or self.default_annotation_root)
+            return _resolved(data["annotation_root"] or self.default_annotation_root)
         if kind == "data":
-            return _resolved(self._data["data_root"] or self.default_data_root)
-        configured = self._data.get("temporary_root", "")
-        return _resolved(configured) if configured else self.root("data")
+            return _resolved(data["data_root"] or self.default_data_root)
+        configured = data.get("temporary_root", "")
+        return _resolved(configured) if configured else self._root("data", data)
 
     def set_root(
         self, kind: StorageKind, path: Path | str | None, *, storage_id: str | None = None
@@ -277,19 +308,15 @@ class StorageLocationRegistry:
         if kind not in STORAGE_KINDS:
             raise ValueError(f"unsupported storage location: {kind}")
         key = f"{kind}_root"
-        if kind == "temporary" and path is None:
-            self._data[key] = ""
-            self._data["temporary_storage_id"] = ""
-            self._save()
-            return self.root(kind)
-        if path is None:
+        if path is None and kind != "temporary":
             raise ValueError("a storage path is required")
-        resolved = _resolved(path)
-        self._data[key] = str(resolved)
-        if storage_id is not None:
-            self._data[f"{kind}_storage_id"] = storage_id
-        self._save()
-        return resolved
+        with self._update() as data:
+            data[key] = str(_resolved(path)) if path is not None else ""
+            if path is None:
+                data[f"{kind}_storage_id"] = ""
+            elif storage_id is not None:
+                data[f"{kind}_storage_id"] = storage_id
+            return self._root(kind, data)
 
     def storage_id(self, kind: StorageKind) -> str:
         return str(self._data.get(f"{kind}_storage_id") or "")
@@ -332,6 +359,9 @@ class StorageLocationRegistry:
         return identity
 
     def validate_marker(self, kind: StorageKind, path: Path, *, required: bool) -> dict | None:
+        return self._validate_marker(kind, path, required, self.storage_id(kind))
+
+    def _validate_marker(self, kind, path, required, expected):
         value = self.marker(path)
         if value is None:
             if required:
@@ -344,7 +374,6 @@ class StorageLocationRegistry:
             raise StorageRegistryError(
                 f"configured {kind} storage has a {value.get('kind') or 'different'} marker: {path}"
             )
-        expected = self.storage_id(kind)
         observed = str(value.get("storage_id") or "")
         if expected and observed != expected:
             raise StorageRegistryError(
@@ -355,42 +384,50 @@ class StorageLocationRegistry:
     def ensure_marker_identity(
         self, kind: StorageKind, path: Path, *, required: bool, service: str = ""
     ) -> dict | None:
-        value = self.validate_marker(kind, path, required=required)
-        if value is None:
-            return None
-        observed = str(value.get("storage_id") or "")
-        if not observed:
-            if not os.access(path, os.W_OK):
-                if required:
-                    raise StorageRegistryError(
-                        f"legacy {kind} storage marker cannot be upgraded because the folder is read-only: {path}"
-                    )
-                return value
-            observed = self.write_marker(path, kind, service=service)
-            value = self.marker(path)
-        if not self.storage_id(kind):
-            self.set_root(kind, path, storage_id=observed)
-        return value
+        with self._update() as data:
+            if self._root(kind, data) != _resolved(path):
+                raise StorageRegistryError(f"The configured {kind} root changed before validating {path}.")
+            key = f"{kind}_storage_id"
+            value = self._validate_marker(kind, path, required, data[key])
+            if value is None:
+                return None
+            observed = str(value.get("storage_id") or "")
+            if not observed:
+                if not os.access(path, os.W_OK):
+                    if required:
+                        raise StorageRegistryError(
+                            f"legacy {kind} storage marker cannot be upgraded because the folder is read-only: {path}"
+                        )
+                    return value
+                observed = self.write_marker(path, kind, service=service)
+                value = self.marker(path)
+            data[key] = observed
+            return value
 
     def record_migration(self, record: dict) -> None:
         """Retain a compact migration record so the preserved source is visible."""
-        entries = [item for item in self._data.get("migrations", []) if isinstance(item, dict)]
-        entries = [item for item in entries if item.get("id") != record.get("id")]
-        entries.insert(0, dict(record))
-        self._data["migrations"] = entries[:20]
-        self._save()
+        with self._update() as data:
+            entries = [item for item in data["migrations"]
+                       if isinstance(item, dict) and item.get("id") != record.get("id")]
+            data["migrations"] = [deepcopy(record), *entries[:19]]
 
     def migration_history(self) -> list[dict]:
-        return [dict(item) for item in self._data.get("migrations", []) if isinstance(item, dict)]
+        return [deepcopy(item) for item in self._data["migrations"] if isinstance(item, dict)]
 
     def is_default(self, kind: StorageKind) -> bool:
+        return self._is_default(kind, self._data)
+
+    def _is_default(self, kind: StorageKind, data: dict) -> bool:
         if kind == "temporary":
-            return not bool(self._data.get("temporary_root"))
+            return not bool(data.get("temporary_root"))
         default = self.default_annotation_root if kind == "annotation" else self.default_data_root
-        return self.root(kind) == default
+        return self._root(kind, data) == default
 
     def describe(self, kind: StorageKind, *, active_path: Path | None = None) -> dict:
-        root = self.root(kind)
+        return self._describe(kind, active_path, self._data)
+
+    def _describe(self, kind: StorageKind, active_path: Path | None, data: dict) -> dict:
+        root = self._root(kind, data)
         exists = path_is_dir(root)
         writable = False
         readable = False
@@ -417,19 +454,20 @@ class StorageLocationRegistry:
             "free_bytes": free_bytes,
             "total_bytes": total_bytes,
             "warning": warning,
-            "uses_default": self.is_default(kind),
-            "follows_data_root": kind == "temporary" and not self._data.get("temporary_root"),
+            "uses_default": self._is_default(kind, data),
+            "follows_data_root": kind == "temporary" and not data.get("temporary_root"),
             "active_path": str(active) if active else str(root),
             "restart_required": bool(active and active != root),
             "windows_path": _windows_path(root),
         }
 
     def as_dict(self, *, active_data_root: Path, active_annotation_root: Path, active_temporary_root: Path) -> dict:
+        data = self._data
         return {
             "registry_path": str(self.registry_path),
             "locations": [
-                self.describe("annotation", active_path=active_annotation_root),
-                self.describe("data", active_path=active_data_root),
-                self.describe("temporary", active_path=active_temporary_root),
+                self._describe("annotation", active_annotation_root, data),
+                self._describe("data", active_data_root, data),
+                self._describe("temporary", active_temporary_root, data),
             ],
         }

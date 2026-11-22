@@ -12,6 +12,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from pipeline.loftee_ptc_50bp import (
     SELENOPROTEIN_SKIP_STATUS,
     Transcript,
+    allele_index,
     calculate,
     collect_transcripts,
     load_transcripts,
@@ -43,6 +44,43 @@ def model() -> Transcript:
         last_coding_exon_cds=1,
         last_exon_junction_cds=100,
     )
+
+
+def test_boundary_insertions_use_the_transcript_side_of_the_cut():
+    tx = model()
+    tx.blocks = [(100, 102, 0), (200, 214, 3)]
+    tx.last_exon_junction_cds = 4
+    # Both edits insert at the transcript cut ATG|AAA... . Moving a
+    # repeat-equivalent insertion into its exon preserves the junction side.
+    plus = calculate(tx, 199, "G", "GAT", "frameshift_variant", "", 50)
+    assert (plus["ptc_cds"], plus["dist"]) == (22, 4 - 22)
+    tx.strand = -1
+    tx.blocks = [(201, 203, 0), (100, 114, 3)]
+    minus = calculate(tx, 200, "G", "GCA", "frameshift_variant", "", 50)
+    assert (minus["ptc_cds"], minus["dist"]) == (4, 6 - 4)
+    # A non-repeat insertion at the splice boundary has no equivalent
+    # within-CDS placement. Keep the missing calculation visible.
+    ambiguous = calculate(tx, 200, "G", "GAA", "frameshift_variant", "", 50)
+    assert ambiguous["status"] == "outside_cds" and not ambiguous["rule"]
+
+
+def test_padding_outside_cds_does_not_change_a_coding_edit():
+    tx = model()
+    for ref, alt in (("AT", "A"), ("AT", "G")):
+        unpadded = calculate(tx, 100, ref, alt, "frameshift_variant", "", 50)
+        padded = calculate(tx, 99, "C" + ref + "G", "C" + alt + "G", "frameshift_variant", "", 50)
+        assert padded == unpadded
+        assert padded["status"] == "ok"
+
+
+def test_record_wide_csq_indel_anchor():
+    alts = ["A", "ATT"]
+    assert allele_index({"Allele": "-"}, "AT", alts) == 0
+    assert allele_index({"Allele": "TT"}, "AT", alts) == 1
+    assert allele_index({"Allele": "TT", "ALLELE_NUM": "1"}, "AT", alts) == 0
+    assert allele_index({"Allele": "TT"}, "AT", ["ATT", "ATTT"]) is None
+    # AT is the stripped form of AAT and the suffix-trimmed form of ATA.
+    assert allele_index({"Allele": "AT"}, "A", ["AAT", "ATA"]) is None
 
 
 def test_frameshift_is_scored_at_downstream_ptc():
@@ -438,6 +476,9 @@ def test_selenoprotein_site_maps_on_the_minus_strand(tmp_path):
 if __name__ == "__main__":
     tests = [
         test_frameshift_is_scored_at_downstream_ptc,
+        test_boundary_insertions_use_the_transcript_side_of_the_cut,
+        test_padding_outside_cds_does_not_change_a_coding_edit,
+        test_record_wide_csq_indel_anchor,
         test_successful_recomputation_replaces_lof_info_and_preserves_original,
         test_unscored_transcript_does_not_get_fabricated_lof_info,
         test_single_coding_block_has_no_coding_anchor,

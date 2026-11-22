@@ -82,8 +82,7 @@ printf '=== dbNSFP %s published checksum ===\n' "$VERSION"
 curl -fsSL --connect-timeout 30 --retry 3 --retry-delay 5 \
     --config "$MD5_CURL_CONFIG" --output "${OUT}.md5.part" \
     || die "the dbNSFP checksum could not be downloaded; request a fresh academic link if it expired"
-WANT_MD5="$(awk 'NF { print tolower($1); exit }' "${OUT}.md5.part")"
-[[ "$WANT_MD5" =~ ^[0-9a-f]{32}$ ]] \
+WANT_MD5="$(read_md5_sidecar "${OUT}.md5.part")" \
     || die "the dbNSFP checksum response was not a valid MD5 sidecar; request a fresh academic link"
 mv -f "${OUT}.md5.part" "${OUT}.md5"
 

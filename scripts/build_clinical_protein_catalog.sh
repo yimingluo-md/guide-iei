@@ -49,9 +49,9 @@ python3 "${ROOT}/pipeline/prepare_clinical_protein_catalog.py" export \
 
 VEP_INNER="vep -i /w/source.vcf -o /w/source.vep.tsv \
   --offline --cache --dir_cache /cache --species homo_sapiens --assembly ${ASSEMBLY} \
-  --pick_allele_gene --pick_order mane_select,mane_plus_clinical,canonical,rank,biotype,ccds,length \
+  --mane --flag_pick_allele_gene --pick_order mane_select,mane_plus_clinical,canonical,rank,biotype,ccds,length \
   --symbol --tab --force_overwrite --no_stats \
-  --fields Uploaded_variation,SYMBOL,Protein_position,Consequence,Amino_acids,Feature"
+  --fields Uploaded_variation,SYMBOL,Protein_position,Consequence,Amino_acids,Feature,PICK,MANE_SELECT,MANE_PLUS_CLINICAL"
 
 case "$RUNTIME" in
   docker|podman)

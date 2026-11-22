@@ -1,5 +1,5 @@
 """Existing-profile repair tests use only synthetic YAML and fake processes."""
-import json
+import csv
 from pathlib import Path
 import subprocess
 import sys
@@ -105,6 +105,27 @@ class ColimaSharingTests(unittest.TestCase):
     def test_different_guest_mountpoint_does_not_falsely_cover_app(self):
         planned = sharing.mount_plan({"mounts": [{"location": "/Applications", "mountPoint": "/other"}]}, self.root, self.home)
         self.assertEqual(len(planned["mounts"]), 2)
+
+    def test_aliases_and_tilde_reuse_existing_mount(self):
+        directory = self.home / "data"
+        directory.mkdir()
+        alias = self.home / "alias"
+        alias.symlink_to(directory, target_is_directory=True)
+        mount = {"location": "~/alias", "mountPoint": "~/alias", "writable": False}
+        config = {"mounts": [mount]}
+        planned = sharing.mount_plan(config, directory, self.home, writable=True)
+        self.assertEqual(planned["mounts"], [{**mount, "writable": True}])
+        with self.assertRaisesRegex(sharing.SharingError, "read-only"):
+            sharing.mount_plan(config, directory / "child", self.home, writable=True)
+        self.assertFalse(mount["writable"])
+
+    def test_probe_passes_comma_and_quote_as_part_of_the_source(self):
+        root = self.home / 'GUIDE, "IEI".app'
+        with patch.object(sharing.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertTrue(sharing.probe("docker", "image", root, self.env))
+        args = run.call_args.args[0]
+        fields, = csv.reader([args[args.index("--mount") + 1]], strict=True)
+        self.assertEqual(fields, ["type=bind", f"source={root}", "target=/probe", "readonly"])
 
     def test_kubernetes_invalid_yaml_and_symlinks_do_not_restart(self):
         for content in ("kubernetes:\n  enabled: true\n", "[", "[]"):

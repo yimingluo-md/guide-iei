@@ -1,6 +1,6 @@
 """Versioned local gene-level knowledge resources.
 
-Public HGNC, IUIS, and ClinGen assertions are kept separate from optional,
+Public HGNC, IUIS, ClinGen, and GenCC assertions are kept separate from optional,
 locally licensed OMIM data.  Nothing in this module writes gene annotations
 back into a VCF: resource updates therefore do not require VEP reannotation.
 """
@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlparse
 
+from local_service import gencc
 from local_service.genia import GeniaStore
 
 
@@ -34,7 +35,7 @@ def _open_ro(path):
     return sqlite3.connect(f"{_Path(path).resolve().as_uri()}?mode=ro&immutable=1", uri=True)
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 OMIM_FILES = ("mim2gene.txt", "mimTitles.txt", "genemap2.txt", "morbidmap.txt")
 OMIM_SCHEMA_VERSION = 4
 OMIM_DOWNLOAD_HOSTS = frozenset({"omim.org", "www.omim.org", "data.omim.org"})
@@ -296,6 +297,7 @@ CREATE TABLE clingen_dosage(
 def build_public_database(
     *, hgnc: Path, iuis: Path, clingen_validity: Path, clingen_dosage: Path,
     destination: Path, releases: dict[str, dict[str, str]],
+    gencc_source: Path | None = None, reuse_gencc: bool = False,
 ) -> dict[str, object]:
     """Build a deterministic public SQLite bundle from official/clean sources."""
     for path in (hgnc, iuis, clingen_validity, clingen_dosage):
@@ -310,7 +312,7 @@ def build_public_database(
     counts: dict[str, int] = {}
     try:
         connection.executescript(PUBLIC_SCHEMA)
-        connection.execute("INSERT INTO metadata VALUES('schema_version',?)", (str(SCHEMA_VERSION),))
+        connection.execute("INSERT INTO metadata VALUES('schema_version',?)", (str(SCHEMA_VERSION if gencc_source else 2),))
         connection.execute("INSERT INTO metadata VALUES('generated_at',?)", (utc_now(),))
 
         hgnc_rows = _dict_rows(hgnc)
@@ -403,19 +405,31 @@ def build_public_database(
             "clingen_dosage": connection.execute("SELECT count(*) FROM clingen_dosage").fetchone()[0],
         }
         paths = {"hgnc": hgnc, "iuis": iuis, "clingen_validity": clingen_validity, "clingen_dosage": clingen_dosage}
+        if gencc_source is not None:
+            prior_digest = releases["gencc"]["source_sha256"] if reuse_gencc else ""
+            counts["gencc"] = gencc.populate(connection, gencc_source, prior_digest)
+            paths["gencc"] = gencc_source
         for resource_id, path in paths.items():
             release = releases.get(resource_id, {})
             connection.execute(
                 "INSERT INTO resources VALUES(?,?,?,?,?,?)",
                 (resource_id, release.get("release", ""), release.get("source_url", ""),
-                 sha256(path), counts[resource_id], utc_now()),
+                 release.get("source_sha256") or sha256(path), counts[resource_id], utc_now()),
             )
+        etag = releases.get("gencc", {}).get("etag")
+        if etag:
+            connection.execute("INSERT INTO metadata VALUES('gencc_etag',?)", (etag,))
+        if connection.execute("PRAGMA quick_check").fetchone()[0] != "ok":
+            raise ValueError("Public gene-knowledge database failed its integrity check")
         connection.commit()
         connection.execute("PRAGMA optimize")
-    finally:
+    except BaseException:
         connection.close()
+        temporary.unlink(missing_ok=True)
+        raise
+    connection.close()
     temporary.replace(destination)
-    return {"schema_version": SCHEMA_VERSION, "counts": counts, "path": str(destination)}
+    return {"schema_version": SCHEMA_VERSION if gencc_source else 2, "counts": counts, "path": str(destination)}
 
 
 OMIM_SCHEMA = """
@@ -579,7 +593,9 @@ class GeneKnowledgeStore:
         private_database: Path,
         genia_database: Path | None = None,
         genia_reference_fasta: Path | None = None,
+        *, bundled_database: Path | None = None,
     ):
+        self.bundled_database = bundled_database
         self.public_database = public_database
         self.private_database = private_database
         self.genia = GeniaStore(
@@ -592,17 +608,27 @@ class GeneKnowledgeStore:
         connection.row_factory = sqlite3.Row
         return [dict(row) for row in connection.execute(query, parameters).fetchall()]
 
-    def status(self) -> dict[str, object]:
+    def _has_separate_bundle(self) -> bool:
+        return bool(self.bundled_database and self.bundled_database != self.public_database and self.bundled_database.is_file())
+
+    def public_resources(self) -> tuple[list[dict], str]:
         resources: list[dict] = []
         error = ""
         if self.public_database.is_file():
             try:
                 with closing(_open_ro(self.public_database)) as connection:
                     resources = self._rows(connection, "SELECT * FROM resources ORDER BY id")
+                if self._has_separate_bundle() and not any(r["id"] == "gencc" for r in resources):
+                    with closing(_open_ro(self.bundled_database)) as bundle:
+                        resources.extend(self._rows(bundle, "SELECT * FROM resources WHERE id='gencc'"))
             except sqlite3.Error as exc:
                 error = f"Public gene-knowledge database could not be read: {exc}"
         else:
             error = "Bundled gene-knowledge database is missing"
+        return resources, error
+
+    def status(self) -> dict[str, object]:
+        resources, error = self.public_resources()
         omim: dict[str, object] = {"installed": False, "license": "User installation required; OMIM data are not shipped"}
         if self.private_database.is_file():
             try:
@@ -668,6 +694,7 @@ class GeneKnowledgeStore:
         result: dict[str, object] = {
             "query": identifier, "found": False, "identity": None, "aliases": [],
             "iuis": [], "clingen_validity": [], "clingen_dosage": None,
+            "gencc": {"available": False, "groups": []},
             "omim": [], "omim_installed": self.private_database.is_file(),
             "genia": self._genia_gene(identifier),
         }
@@ -684,6 +711,16 @@ class GeneKnowledgeStore:
                 "iuis": self._rows(connection, "SELECT * FROM iuis_assertions WHERE gene_symbol=? COLLATE NOCASE ORDER BY major_category,disease", (symbol,)),
                 "clingen_validity": self._rows(connection, "SELECT * FROM clingen_validity WHERE gene_symbol=? COLLATE NOCASE ORDER BY disease,moi", (symbol,)),
             })
+            hgnc_id = (identity or {}).get("hgnc_id", identifier.upper() if identifier.upper().startswith("HGNC:") else "")
+            result["gencc"] = gencc.gene(connection, hgnc_id)
+            if not result["gencc"]["available"] and self._has_separate_bundle():
+                with closing(_open_ro(self.bundled_database)) as bundle:
+                    bundle.row_factory = sqlite3.Row
+                    if not hgnc_id:
+                        hgnc_id = (self._identity(bundle, identifier) or {}).get("hgnc_id", "")
+                    result["gencc"] = gencc.gene(bundle, hgnc_id)
+            if result["gencc"]["groups"]:
+                result["found"] = True
             dosage = self._rows(connection, "SELECT * FROM clingen_dosage WHERE gene_symbol=? COLLATE NOCASE", (symbol,))
             result["clingen_dosage"] = dosage[0] if dosage else None
         if self.private_database.is_file():

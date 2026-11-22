@@ -140,7 +140,7 @@ COPY --chown=vep:vep SpliceAIStarter.pm SpliceAI-MANE1.5-gene-map.json /plugins/
 # Manifest-driven lookup for local indexed predictors. Resource selection is
 # supplied as adapter data, so new predictors do not require Perl wrappers.
 # Neither the FuncVEP ZIP nor its prepared scores are copied into the image.
-COPY --chown=vep:vep IndexedScores.pm /plugins/IndexedScores.pm
+COPY --chown=vep:vep GuideAllele.pm IndexedScores.pm /plugins/
 
 # Retain only the Kent source subset actually linked into BigFile, plus its
 # permission notice. Fail if jkOwnLib symbols occur in retained native code.

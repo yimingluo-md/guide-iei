@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+from functools import lru_cache
 import gzip
 import hashlib
 import json
@@ -19,6 +20,7 @@ import signal
 import struct
 import subprocess
 import time
+import threading
 import uuid
 import zipfile
 import zlib
@@ -136,7 +138,53 @@ def vcf_header() -> bytes:
     return ('\n'.join(lines)+'\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n').encode()
 
 
+def _file_identity(path: Path) -> tuple:
+    stat = path.stat()
+    return (str(path.resolve()), stat.st_dev, stat.st_ino, stat.st_size,
+            stat.st_mtime_ns, stat.st_ctime_ns)
+
+
+_digest_lock = threading.Lock()
+
+
+@lru_cache(maxsize=32)
+def _identity_digest(identity: tuple) -> str:
+    path = Path(identity[0])
+    result = digest(path)
+    if _file_identity(path) != identity:
+        raise ValueError('AVI file changed during checksum verification')
+    return result
+
+
+def _verified_digest(path: Path, *, strict: bool) -> str:
+    identity = _file_identity(path)
+    if strict:
+        # Job-start verification must always read the bytes, even after a
+        # successful status/install check in this process.
+        result = digest(path)
+    else:
+        # Serialize cache misses so concurrent callers do not each read 75 GB.
+        with _digest_lock:
+            result = _identity_digest(identity)
+    if _file_identity(path) != identity:
+        raise ValueError('AVI file changed during checksum verification')
+    return result
+
+
+def bundle_present(manifest: Path) -> bool:
+    """Cheap UI availability only, not an integrity certificate.
+
+    Check schema, release, coverage, file types and sizes without reading the
+    score payload. Installation and annotation must use valid_bundle instead.
+    """
+    return _check_bundle(manifest, metadata_only=True)
+
+
 def valid_bundle(manifest: Path, *, strict: bool = False) -> bool:
+    return _check_bundle(manifest, strict=strict)
+
+
+def _check_bundle(manifest: Path, *, strict: bool = False, metadata_only: bool = False) -> bool:
     try:
         value=json.loads(manifest.read_text(encoding='utf-8'))
         if value.get('schema')!=SCHEMA or value.get('release')!=RELEASE or value.get('assembly')!='GRCh38': return False
@@ -144,8 +192,10 @@ def valid_bundle(manifest: Path, *, strict: bool = False) -> bool:
         for name in ('avi.grch38.vcf.gz','avi.grch38.vcf.gz.tbi'):
             record=value['files'][name]; path=manifest.parent/name; stat=path.stat()
             if stat.st_size!=record['size'] or not path.is_file(): return False
-            if strict or stat.st_mtime_ns!=record.get('mtime_ns'):
-                if digest(path)!=record['sha256']: return False
+            checksum = record['sha256']
+            if not isinstance(checksum, str) or len(checksum) != 64 or any(c not in '0123456789abcdef' for c in checksum): return False
+            if not metadata_only and (strict or stat.st_mtime_ns!=record.get('mtime_ns')):
+                if _verified_digest(path, strict=strict)!=checksum: return False
         return True
     except (OSError,ValueError,KeyError,TypeError,AttributeError): return False
 
@@ -165,7 +215,7 @@ def _tabix(path: Path) -> None:
     subprocess.run(command,check=True)
 
 
-def converter_command(command: list[str], container: bool = False) -> list[str]:
+def converter_command(command: list[str], container: bool = False, *, run_id: str | None = None) -> list[str]:
     """Only the compiled converter runs in Linux; orchestration stays on host.
 
     Mount the staged binary/source archive read-only and the chromosome output
@@ -190,12 +240,31 @@ def converter_command(command: list[str], container: bool = False) -> list[str]:
             mapped[index] = target + '/' + path.name
         mounts.append(f'{directory}:{target}:{mode}')
     if runtime in {'docker','podman'}:
-        result = [runtime,'run','--rm','--pull=never','--network=none','--ulimit','core=0:0']
+        result = [runtime,'run','--init','--rm','--pull=never','--network=none','--ulimit','core=0:0']
+        if run_id:
+            result += ["--label", f"guide-iei.avi-run={run_id}"]
         for mount in mounts: result += ['-v',mount]
         return result + ['--entrypoint',mapped[0],image] + mapped[1:]
     result = [runtime,'exec']
     for mount in mounts: result += ['--bind',mount]
     return result + [image] + mapped
+
+
+def reclaim_avi_containers(marker: Path) -> None:
+    """Confirm the daemon has no workers for this preparation before reuse."""
+    state = json.loads(marker.read_text())
+    runtime = state["runtime"]
+    run_id = uuid.UUID(state["run_id"]).hex
+    if runtime not in {"docker", "podman"}:
+        raise ValueError("Invalid AVI worker runtime")
+    query = [runtime, "ps", "-aq", "--filter", f"label=guide-iei.avi-run={run_id}"]
+    ids = subprocess.check_output(query, text=True, timeout=30).split()
+    if ids:
+        # An --rm worker can finish between listing and removal.
+        subprocess.run([runtime, "rm", "-f", *ids], timeout=60, check=False)
+        if subprocess.check_output(query, text=True, timeout=30).strip():
+            raise RuntimeError("AVI workers are still running. Retry preparation after the container engine is ready.")
+    marker.unlink()
 
 
 def prepare(archive: Path, root: Path, converter: Path, workers: int, *, container_converter: bool = False) -> Path:
@@ -207,6 +276,9 @@ def prepare(archive: Path, root: Path, converter: Path, workers: int, *, contain
 
 
 def _prepare_locked(archive: Path, root: Path, converter: Path, workers: int, *, container_converter: bool = False) -> Path:
+    marker = root / ".avi-container-workers.json"
+    if marker.exists():
+        reclaim_avi_containers(marker)
     before=archive.stat(); identity=inspect_archive(archive)
     final=root/'releases'/RELEASE
     if valid_bundle(final/'manifest.json',strict=True):
@@ -241,20 +313,40 @@ def _prepare_locked(archive: Path, root: Path, converter: Path, workers: int, *,
             except (ValueError,KeyError,OSError): pass
         jobs.append((ref,output,stats,done))
     active=[]
+    cancelled = False
+    interruptible = False
+
     def stop(*_):
-        for p in active:
-            if p.poll() is None: p.terminate()
-        raise KeyboardInterrupt
-    previous=signal.signal(signal.SIGTERM,stop)
+        # Interrupt long hashes and sleeps immediately. During launch or
+        # cleanup, defer the exception until worker ownership is settled.
+        nonlocal cancelled
+        cancelled = True
+        if interruptible:
+            raise KeyboardInterrupt
+
+    runtime = os.environ.get("RUNTIME") or "docker"
+    run_id = None
+    if container_converter and runtime in {"docker", "podman"}:
+        run_id = uuid.uuid4().hex
+        atomic_json(marker, {"runtime": runtime, "run_id": run_id})
+    previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT)}
     try:
         pending=[j for j in jobs if not j[3]]; completed=sum(j[0]['rows'] for j in jobs if j[3])
         while pending or active:
+            if cancelled:
+                raise KeyboardInterrupt
             while pending and len(active)<workers:
                 ref,output,stats,_=pending.pop(0); stats.unlink(missing_ok=True)
                 progress=work/(ref['chrom']+'.progress'); progress.unlink(missing_ok=True)
                 virtual=ref['virtual_start']
                 cmd=[str(converter),str(archive),str(identity['member_offset']+(virtual>>16)),str(virtual&65535),ref['chrom'],str(ref['rows']),str(output),str(stats),str(progress)]
-                p=subprocess.Popen(converter_command(cmd,container_converter)); p.avi_job=(ref,output,stats,progress); active.append(p)
+                interruptible = False
+                p = subprocess.Popen(converter_command(cmd, container_converter, run_id=run_id))
+                p.avi_job = (ref, output, stats, progress)
+                active.append(p)
+                interruptible = True
+                if cancelled:
+                    raise KeyboardInterrupt
             visible=completed
             for p in list(active):
                 ref,output,stats,progress=p.avi_job
@@ -266,14 +358,27 @@ def _prepare_locked(archive: Path, root: Path, converter: Path, workers: int, *,
                     try: visible+=min(ref['rows'],int(progress.read_text()))
                     except (OSError,ValueError): pass
             print(f'{85*visible/EXPECTED_ROWS:.1f}% Preparing AlphaGenome AVI: {visible:,} / {EXPECTED_ROWS:,} SNV scores',flush=True)
-            if active: time.sleep(10)
+            if active:
+                time.sleep(10)
     finally:
-        for p in active:
-            if p.poll() is None: p.terminate()
-        for p in active:
-            try: p.wait(timeout=10)
-            except subprocess.TimeoutExpired: p.kill(); p.wait()
-        signal.signal(signal.SIGTERM,previous)
+        interruptible = False
+        try:
+            for p in active:
+                if p.poll() is None:
+                    p.terminate()
+            for p in active:
+                try:
+                    p.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+            if run_id:
+                reclaim_avi_containers(marker)
+        finally:
+            for sig, handler in previous.items():
+                signal.signal(sig, handler)
+    if cancelled:
+        raise KeyboardInterrupt
     bundle=work/'bundle'; bundle.mkdir(exist_ok=True)
     scores=bundle/'avi.grch38.vcf.gz'
     print('86% Combining verified AlphaGenome AVI chromosome blocks',flush=True)

@@ -81,8 +81,12 @@ the network only in these cases, none of which sends patient, sample, variant,
 phenotype, or analysis data unless stated:
 
 - **Dataset and reference downloads** that you start from the dataset screen
-  (Ensembl, UCSC, NCBI ClinVar, Zenodo, ENCODE, the project's reference
-  mirror, and licensed sources you supply a link for). The ClinVar refresh at
+  (Ensembl, UCSC, NCBI ClinVar, Zenodo, ENCODE, Hugging Face and its download
+  servers for upstream datasets and project mirrors, and licensed sources you
+  supply a link for). Gene-knowledge refreshes download public records from
+  GenCC (`thegencc.org`), HGNC (`storage.googleapis.com`) and ClinGen
+  (`search.clinicalgenome.org` and `ftp.clinicalgenome.org`). ClinGen variant
+  classifications come from `erepo.clinicalgenome.org`. The ClinVar refresh at
   the start of an annotation run is on by default and is labelled as such
   ("Refresh ClinVar before run"); it downloads a public file and sends
   nothing.
@@ -93,6 +97,11 @@ phenotype, or analysis data unless stated:
   agreed to it once; the agreement is remembered in the browser.
 - **First-launch runtime downloads** (Python, Node.js, the container tooling)
   and the container image build, which fetch published software.
+- **GPN-Star reader setup in source installations** downloads NumPy and
+  PyArrow wheels using pip's configured index (by default `pypi.org` and
+  `files.pythonhosted.org`). GUIDE-IEI pins the versions and verifies the
+  downloaded wheels against SHA-256 hashes shipped with the software.
+  The standalone macOS app includes its reader.
 
 The interface loads no fonts, analytics, or scripts from the internet, and no
 telemetry is collected.
@@ -112,6 +121,12 @@ telemetry is collected.
   individual records; treat them as patient-derived. The launcher window
   prints one line per request, including query strings such as a gene
   symbol or a variant locus.
+- **Custom score tables** are read locally. Under the annotation storage
+  root, `custom-scores/` holds allele coordinates, mapped context, selected
+  values and import metadata including the original filenames. The original
+  tables stay where you chose them. Anyone with read access to a shared
+  annotation folder can read these indexes. Use private annotation storage
+  for tables containing patient-derived data.
 - **The browser's local storage** (per browser profile, on this computer)
   holds display preferences, custom gene lists, the SpliceAI-lookup
   agreement. **Candidate stars are kept only in memory**, not in localStorage

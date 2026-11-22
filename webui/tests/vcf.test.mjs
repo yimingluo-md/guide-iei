@@ -23,12 +23,12 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString(
 const {
   ADDITIONAL_DBNSFP_PREDICTORS,
   alphaGenomeAviScores,
-  candidateCompoundHetKeys,
+  candidateCompoundHetKeys, hasHomozygousCarrier, transmissionContext,
   canonicalVariantKey,
   hasClinGenPathogenicEvidence,
   hasGeniaPathogenicEvidence,
   isHeterozygousGenotype,
-  STANDARD_VARIANT_QC,
+  STANDARD_VARIANT_QC, NO_VARIANT_QC,
   ReviewRowLimitError,
   parseVcfFiles,
   proteinMatchAppliesToTranscript,
@@ -37,7 +37,8 @@ const {
   populationFrequency,
   promoterAiObservation,
   starterObservation,
-  collapseToOneRowPerVariant,
+  collapseToOneRowPerVariant, summarizeReviewGenes,
+  withTranscriptEvidence,
   preferredClinicalTranscriptRows,
   variantQcFailures,
 } = await import(moduleUrl);
@@ -73,7 +74,7 @@ test("starter providers populate the existing review cards without cross-transcr
     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS",
     `1\t100\t.\tT\tA,G\t99\tPASS\tCSQ=${[
       entry("A", "1", {}),
-      entry("A", "1", { Feature: "ENST9999", HGVSp: "ENSP2:p.Ala9Val" }),
+      entry("A", "1", { Feature: "ENST9999", HGVSp: "ENSP2:p.Ala9Val", StarterCADD_phred: "" }),
       entry("G", "2", { StarterAM_match_status: "partial", StarterCADD_phred: "0" }),
     ].join(",")}\tGT\t1/2`, ""].join("\n");
   const { rows } = await parseVcfFiles([new File([vcf], "starter.vcf")]);
@@ -85,9 +86,14 @@ test("starter providers populate the existing review cards without cross-transcr
   assert.equal(exact.predictions.starter_alphamissense.scope, "allele_transcript_protein");
   assert.equal(exact.predictions.starter_alphamissense.values.score, 0.1201);
   assert.equal(exact.predictions.alphamissense.values.score, 0.99); // source kept separately
-  assert.equal(rows.find((r) => r.transcript === "ENST9999").alphaMissense, null);
+  const fallback = rows.find((r) => r.transcript === "ENST9999");
+  assert.equal(fallback.alphaMissense, 0.99);
+  assert.equal(fallback.cadd, 50);
+  assert.equal(fallback.caddRaw, 4);
+  assert.equal(fallback.predictions.starter_alphamissense?.values.score, undefined);
   const otherAlt = rows.find((r) => r.alt === "G");
-  assert.equal(otherAlt.alphaMissense, null);
+  assert.equal(otherAlt.alphaMissense, 0.99);
+  assert.equal(otherAlt.predictions.starter_alphamissense?.values.score, undefined);
   assert.equal(otherAlt.cadd, 0);
 });
 
@@ -134,13 +140,13 @@ test("canonical variant keys match the service's minimal-allele form", () => {
 });
 
 test("compound-het candidates exclude missing genes and unrelated contigs", () => {
-  const base = { sample: "S", gene: "G", genotype: "0/1", chrom: "1", pos: 100, ref: "A", alt: "G" };
+  const base = { key: "first", sample: "S", gene: "G", genotype: "0/1", chrom: "1", pos: 100, ref: "A", alt: "G" };
   for (const gene of ["", "—", ".", "-"]) {
     assert.equal(candidateCompoundHetKeys([{ ...base, gene }, { ...base, gene, pos: 200 }]).size, 0);
   }
   assert.equal(candidateCompoundHetKeys([base, { ...base, chrom: "2", pos: 200 }]).size, 0);
   assert.equal(candidateCompoundHetKeys([base, { ...base, chrom: "chr1" }]).size, 0);
-  assert.deepEqual([...candidateCompoundHetKeys([base, { ...base, chrom: "chr1", pos: 200 }])], ["S:G"]);
+  assert.deepEqual([...candidateCompoundHetKeys([base, { ...base, key: "second", chrom: "chr1", pos: 200 }])], ["first", "second"]);
 });
 
 test("missing PS does not mask PID or become a usable phase block", async () => {
@@ -375,7 +381,7 @@ test("row limit distinguishes variants from transcripts and retained reviews com
 test("cohort files parse variant-centrically: one row per variant with carriers", async () => {
   const samples = Array.from({ length: 20 }, (_, i) => `S${i + 1}`);
   const genotypes1 = samples.map((s) => (s === "S1" ? "0/1:30:99:15,15" : "0/0:30:99:30,0"));
-  const genotypes2 = samples.map((s) => (s === "S2" || s === "S3" ? "0/1:25:80:12,13" : "0/0:25:80:25,0"));
+  const genotypes2 = samples.map(s => s === "S2" ? "0/1:25:80:12,13" : s === "S3" ? "1/1:25:70:0,25" : "0/0:25:80:25,0");
   const vcf = "##fileformat=VCFv4.2\n"
     + "##reference=GRCh38\n"
     + "##contig=<ID=1,length=248956422>\n"
@@ -396,6 +402,8 @@ test("cohort files parse variant-centrically: one row per variant with carriers"
   assert.equal(first.carriers[0].evidence.dp, 30);
   assert.equal(first.cohortSampleCount, 20);
   assert.equal(second.genotype, "2/20 carry");
+  assert.equal(hasHomozygousCarrier(first, "unknown", STANDARD_VARIANT_QC), false);
+  assert.equal(hasHomozygousCarrier(second, "unknown", STANDARD_VARIANT_QC), true);
   assert.deepEqual(second.carriers.map((c) => c.sample).sort(), ["S2", "S3"]);
   // The carriers-only evidence map replaces the all-samples map.
   assert.deepEqual(Object.keys(first.sampleGenotypes), ["S1"]);
@@ -437,6 +445,29 @@ test("a joint cohort file mixed with other files aggregates without a denominato
   assert.equal(shared.genotype, "2 carry");
   assert.deepEqual(shared.carriers.map((c) => c.sample).sort(), ["PATIENT", "S1"]);
   assert.equal(shared.cohortSampleCount, undefined);
+});
+
+test("cohort intake gates each ALT independently of CSQ order across 16 files", async () => {
+  function file(i, reverse = false, mask = "") {
+    const multi = i === 0;
+    const entries = multi ? ["G|1|0.5", "T|2|0"] : ["T|1|0"];
+    const csq = (reverse ? entries.reverse() : entries).join(",");
+    return new File([[
+      "##fileformat=VCFv4.2", "##reference=GRCh38",
+      '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|gnomADg_AF_popmax">',
+      '##INFO=<ID=IEI_WGS_RETAINED,Number=A,Type=Integer,Description="Eligible ALT">',
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS" + i,
+      ["1", "100", ".", "A", multi ? "G,T" : "T", "99", "PASS", "CSQ=" + csq + mask,
+        "GT:AD", multi ? "1|2:0,12,18" : "0/1:16,15"].join("\t"), "",
+    ].join("\n")], i + ".vcf");
+  }
+  for (const reverse of [false, true]) {
+    const files = Array.from({ length: 16 }, (_, i) => file(i, reverse));
+    const { rows } = await parseVcfFiles(files, { aggregateMaxPopmax: 0.01 });
+    assert.deepEqual(rows.map((r) => [r.alt, r.gnomadPopmax, r.carriers.length]), [["T", 0, 16]]);
+  }
+  const { rows } = await parseVcfFiles([file(0, false, ";IEI_WGS_RETAINED=0,1")]);
+  assert.deepEqual(rows.map((r) => [r.alt, r.genotype, r.adAlt]), [["T", "1|2", 18]]);
 });
 
 test("separately-called files aggregate: N carry, popmax at parse, drift warning", async () => {
@@ -575,6 +606,34 @@ test("one-row-per-variant collapse prefers MANE Select and keeps the rest as a c
   assert.deepEqual(merged.collapsedTranscriptRows.map((row) => row.key).sort(), ["b", "c"]);
   const twoSamples = collapseToOneRowPerVariant([maneSelect, { ...manePlus, sample: "P2" }]);
   assert.equal(twoSamples.length, 2);
+});
+
+test("gene counts and strongest impact use all matching transcripts before display collapse", () => {
+  const base = { source: "one.vcf", sample: "P1", chrom: "1", pos: 100, ref: "A", alt: "G",
+    gene: "GENE1", impact: "LOW", maneSelect: true };
+  const rows = [base, { ...base, impact: "MODERATE", maneSelect: false },
+    { ...base, gene: "GENE2", impact: "MODIFIER" }, { ...base, gene: "—" },
+    { ...base, sample: "P2" }, { ...base, source: "two.vcf" }, { ...base, sourceRecordNumber: 2 }];
+  assert.equal(collapseToOneRowPerVariant(rows).length, 2);
+  assert.deepEqual(summarizeReviewGenes(rows), [
+    { gene: "GENE1", count: 2, impact: "MODERATE" }, { gene: "GENE2", count: 1, impact: "MODIFIER" },
+  ]);
+});
+
+test("restored transcript evidence keeps each representative and all other annotations", () => {
+  const evidence = [
+    { key: "source:0", gene: "A", transcript: "T1", consequence: "missense_variant" },
+    { key: "source:1", gene: "B", transcript: "T2", consequence: "stop_gained" },
+    { key: "source:2", gene: "B", transcript: "T2", consequence: "splice_region_variant" },
+  ];
+  for (const annotation of [...evidence, { gene: "B", transcript: "T3" }]) {
+    const selected = { ...annotation, key: "compact:" + annotation.transcript, sample: "proband",
+      libraryDatasetId: "current", genotype: "0/1", compactTranscriptView: true };
+    assert.deepEqual(withTranscriptEvidence(selected, evidence), {
+      ...selected, compactTranscriptView: false, transcriptDetailStatus: "loaded",
+      transcriptDetailError: undefined, collapsedTranscriptRows: evidence.filter(row => row !== annotation),
+    });
+  }
 });
 
 test("preserves separate disease-specific ClinGen expert assertions", async () => {
@@ -1148,17 +1207,19 @@ test("parses strict LoGoFunc evidence and exposes it beside the MANE transcript"
     "ENSP_SOURCE:p.Lys1Arg", "", "", "GOF", "0.05", "0.9", "0.05", "1",
     "ENST_SOURCE", "ENSP_SOURCE:p.Lys1Arg", "allele_transcript_protein",
   ].join("|");
+  const otherGene = mane.replace("GENE1|ENSG1", "GENE2|ENSG2");
+  const otherAlt = mane.replace(/^G\|/, "T|");
   const vcf = [
     "##fileformat=VCFv4.2",
     "##reference=GRCh38",
     "##contig=<ID=1,length=248956422>",
     `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
-    `1\t150\t.\tA\tG\t99\tPASS\tCSQ=${mane},${sourceMatch}\tGT:DP:GQ:AD\t0/1:30:99:15,15`,
+    `1\t150\t.\tA\tG,T\t99\tPASS\tCSQ=${mane},${otherGene},${otherAlt},${sourceMatch}\tGT:DP:GQ:AD\t1/2:30:99:0,15,15`,
     "",
   ].join("\n");
   const result = await parseVcfFiles([new File([vcf], "logofunc.vcf")]);
-  const maneRow = result.rows.find((row) => row.transcript === "ENST_MANE");
+  assert.equal(result.rows.length, 4);
   const sourceRow = result.rows.find((row) => row.transcript === "ENST_SOURCE");
 
   assert.equal(sourceRow.loGoFuncMatch, "allele_transcript_protein");
@@ -1182,10 +1243,37 @@ test("parses strict LoGoFunc evidence and exposes it beside the MANE transcript"
       match: "allele_transcript_protein",
     },
   });
-  assert.equal(maneRow.loGoFuncPrediction, "GOF");
-  assert.equal(maneRow.loGoFuncSourceTranscript, "ENST_SOURCE");
-  assert.equal(maneRow.loGoFuncMatch, "source_transcript_match_elsewhere");
-  assert.deepEqual(maneRow.predictions.logofunc, sourceRow.predictions.logofunc);
+  const compact = await parseVcfFiles([new File([vcf], "logofunc.vcf")], {
+    clinicalTranscriptsOnly: true, rowCap: 3,
+  });
+  const preparedVcf = vcf.replace("#CHROM", [
+    "##IEI_WGS_PREFILTER=<Transcripts=MANEThenPICKThenOnePerGene,LoGoFunc=RetainStrictSource>",
+    "#CHROM",
+  ].join("\n"));
+  const prepared = await parseVcfFiles([new File([preparedVcf], "prepared.review.vcf")], {
+    intake: "prepared-review", rowCap: 3,
+  });
+  for (const view of [compact, prepared]) {
+    assert.equal(view.rows.length, 3);
+    assert.ok(view.rows.every((row) => row.mane));
+  }
+  for (const { rows } of [result, compact, prepared]) {
+    const maneRow = rows.find((row) => row.mane && row.alt === "G" && row.gene === "GENE1");
+    assert.equal(maneRow.loGoFuncPrediction, "GOF");
+    assert.equal(maneRow.loGoFuncGof, 0.9);
+    assert.equal(maneRow.loGoFuncNeutral, 0.05);
+    assert.equal(maneRow.loGoFuncLof, 0.05);
+    assert.equal(maneRow.loGoFuncSourceTranscript, "ENST_SOURCE");
+    assert.equal(maneRow.loGoFuncSourceHgvsp, "ENSP_SOURCE:p.Lys1Arg");
+    assert.equal(maneRow.loGoFuncMatch, "source_transcript_match_elsewhere");
+    assert.deepEqual(maneRow.predictions.logofunc, sourceRow.predictions.logofunc);
+    for (const row of rows.filter((row) => row.gene === "GENE2" || row.alt === "T")) {
+      assert.equal(row.loGoFuncMatch, "allele_only");
+      assert.equal(row.loGoFuncGof, null);
+      assert.equal(row.predictions.logofunc.matchStatus, "partial");
+      assert.deepEqual(row.predictions.logofunc.values, {});
+    }
+  }
 });
 
 test("retains allele-only LoGoFunc provenance without assigning a score", async () => {
@@ -1210,6 +1298,18 @@ test("retains allele-only LoGoFunc provenance without assigning a score", async 
     "",
   ].join("\n");
   const result = await parseVcfFiles([new File([vcf], "logofunc-partial.vcf")]);
+  // Older annotations can carry scores even when the match is missing or allele-only.
+  const stale = consequence.replace("|1|||||1|ENST_SOURCE", "|1|GOF|0.05|0.9|0.05|1|ENST_SOURCE");
+  for (const match of ["allele_only", ""]) {
+    const legacyVcf = vcf.replace(consequence, stale.replace("allele_only", match));
+    const { rows: [row] } = await parseVcfFiles([new File([legacyVcf], "legacy.vcf")]);
+    assert.equal(row.loGoFuncPrediction, "");
+    assert.deepEqual([row.loGoFuncNeutral, row.loGoFuncGof, row.loGoFuncLof], [null, null, null]);
+    assert.equal(row.loGoFuncSourceTranscript, "ENST_SOURCE");
+    assert.equal(row.loGoFuncMatch, match);
+    assert.deepEqual(row.predictions.logofunc.values, {});
+    assert.equal(row.predictions.logofunc.provenance.withheld_metrics, "gof,lof,neutral,prediction");
+  }
   assert.deepEqual(result.rows[0].predictions.logofunc, {
     scope: "allele_transcript_protein",
     matchStatus: "partial",
@@ -1431,12 +1531,13 @@ test("retains transcript-specific LOFTEE reasons, flags, and PTC recalculation",
     "##contig=<ID=19,length=58617616>",
     `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
-    "19\t44274643\t.\tGT\tG\t99\tPASS\tCSQ=-|frameshift_variant|HIGH|ZNF233|ENST00000683810|1|LC|END_TRUNC%26ANC_ALLELE|PHYLOCSF_WEAK|FAIL|PASS|1|-1874|ok\tGT:DP:GQ:AD\t1/1:85:99:0,85",
+    "19\t44274643\t.\tGT\tG\t99\tPASS\tCSQ=-|frameshift_variant|HIGH|ZNF233|ENST00000683810|1|LC|END_TRUNC%2CANC_ALLELE|PHYLOCSF_WEAK|FAIL|PASS|1|-1874|ok\tGT:DP:GQ:AD\t1/1:85:99:0,85",
     "",
   ].join("\n");
   const result = await parseVcfFiles([new File([lofteeVcf], "loftee.vcf")]);
   assert.equal(result.rows[0].loftee, "LC");
-  assert.equal(result.rows[0].lofteeFilter, "END_TRUNC&ANC_ALLELE");
+  assert.equal(result.rows[0].lofteeFilter, "END_TRUNC,ANC_ALLELE");
+  assert.equal(result.rows[0].predictions.loftee.values.filter, "END_TRUNC,ANC_ALLELE");
   assert.equal(result.rows[0].lofteeFlags, "PHYLOCSF_WEAK");
   assert.equal(result.rows[0].loftee50bp, "FAIL");
   assert.equal(result.rows[0].ptcDistanceFromLastExon, -1874);
@@ -1522,11 +1623,11 @@ test("compound-het grouping requires two distinct eligible variants", () => {
     ref: "C",
     alt: "T",
   };
-  const missense = { ...base, pos: 1004329 };
-  const commonSynonymous = { ...base, pos: 1002080 };
+  const missense = { ...base, key: "first", pos: 1004329 };
+  const commonSynonymous = { ...base, key: "second", pos: 1002080 };
 
   assert.equal(candidateCompoundHetKeys([missense]).size, 0);
-  assert(candidateCompoundHetKeys([missense, commonSynonymous]).has("PATIENT:IDUA"));
+  assert.deepEqual([...candidateCompoundHetKeys([missense, commonSynonymous])], ["first", "second"]);
   assert.equal(candidateCompoundHetKeys([missense, { ...missense }]).size, 0);
 });
 
@@ -1778,6 +1879,29 @@ test("matches unique VEP-minimized alleles on multi-allelic indels", async () =>
   assert.equal(byAlt.get("AG"), "GENEB");
 });
 
+test("attributes VEP 113 record-wide indel alleles to a unique ALT", async () => {
+  const parse = async (alts, csq, numbered = false) => {
+    const vcf = [
+      "##fileformat=VCFv4.2",
+      "##reference=GRCh38",
+      "##contig=<ID=1,length=248956422>",
+      `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|SYMBOL${numbered ? "|ALLELE_NUM" : ""}">`,
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+      `1\t100\t.\tAT\t${alts}\t99\tPASS\tCSQ=${csq}\tGT\t1/2`,
+    ].join("\n");
+    const { rows } = await parseVcfFiles([new File([vcf], "record-anchor.vcf")]);
+    return Object.fromEntries(rows.map(row => [row.alt, row.gene]));
+  };
+  assert.deepEqual(await parse("A,ATT", "TT|INS,-|DEL"), { A: "DEL", ATT: "INS" });
+  assert.deepEqual(await parse("A,ATT,*", "TT|INS,-|DEL"), { A: "DEL", ATT: "INS" });
+  assert.deepEqual(await parse("A,ATT,<*>", "TT|INS,-|DEL"), { A: "DEL", ATT: "INS" });
+  // The third ALT prevents record-wide stripping, even though it isn't carried.
+  assert.deepEqual(await parse("A,ATT,G", "TT|INS"), { A: "—", ATT: "—" });
+  // TT is both the stripped form of ATT and the minimal form of ATTT.
+  assert.deepEqual(await parse("ATT,ATTT", "TT|AMBIG"), { ATT: "—", ATTT: "—" });
+  assert.deepEqual(await parse("A,ATT", "TT|NUMBERED|1", true), { A: "NUMBERED", ATT: "—" });
+});
+
 test("emits a row for a half-called carrier genotype", async () => {
   // Audit UI-6: ./1 was treated as a non-carrier and silently dropped.
   const vcf = VCF.replace("\tGT:DP:GQ:AD\t0/1:40:99:20,20", "\tGT:DP:GQ:AD\t./1:40:99:20,20");
@@ -1828,10 +1952,10 @@ test("counts 1/2 as heterozygous for compound-het candidacy", () => {
   assert.equal(isHeterozygousGenotype("1/1"), false);
   assert.equal(isHeterozygousGenotype("./1"), false);
   const rows = [
-    { sample: "S", gene: "G1", genotype: "1/2", chrom: "1", pos: 100, ref: "A", alt: "G" },
-    { sample: "S", gene: "G1", genotype: "1/2", chrom: "1", pos: 100, ref: "A", alt: "T" },
+    { key: "G", sample: "S", gene: "G1", genotype: "1/2", chrom: "1", pos: 100, ref: "A", alt: "G" },
+    { key: "T", sample: "S", gene: "G1", genotype: "1/2", chrom: "1", pos: 100, ref: "A", alt: "T" },
   ];
-  assert.equal(candidateCompoundHetKeys(rows).has("S:G1"), true);
+  assert.deepEqual([...candidateCompoundHetKeys(rows)], ["G", "T"]);
 });
 
 test("QC genotype-class fallback does not classify uncalled or ref genotypes as hom-alt", () => {
@@ -1881,4 +2005,148 @@ test("merges genotype evidence across chr-prefixed and unprefixed files", async 
   const childRow = result.rows.find((row) => row.sample === "CHILD");
   assert.ok(childRow.sampleGenotypes.MOTHER, "mother evidence merged across naming styles");
   assert.equal(childRow.sampleGenotypes.MOTHER.gt, "0/0");
+});
+
+test("GPN-Star INFO scores follow each ALT and preserve signed calibrated magnitudes", async () => {
+  const input = [
+    "##fileformat=VCFv4.2", "##reference=GRCh38",
+    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|Consequence|IMPACT">',
+    ...["GPNm447_LLR","GPNm447_ABSLLR","GPNv100_LLR","GPNv100_ABSLLR"].map(id =>
+      `##INFO=<ID=${id},Number=A,Type=Float,Description="test">`),
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS",
+    "1\t100\t.\tA\tG,T\t60\tPASS\tGPNm447_LLR=0,-2;GPNm447_ABSLLR=-0.5,0.7;GPNv100_LLR=.,-1;GPNv100_ABSLLR=.,0;CSQ=G|1|intergenic_variant|MODIFIER,T|2|intergenic_variant|MODIFIER\tGT\t1/2",
+    "",
+  ].join("\n");
+  const { rows } = await parseVcfFiles([new File([input], "gpn.vcf")]);
+  const g = rows.find(row => row.alt === "G").predictions;
+  const t = rows.find(row => row.alt === "T").predictions;
+  assert.deepEqual(g.gpn_star_m.values, {llr: 0, abs_llr: -0.5});
+  assert.equal(g.gpn_star_v, undefined);
+  assert.deepEqual(t.gpn_star_m.values, {llr: -2, abs_llr: 0.7});
+  assert.deepEqual(t.gpn_star_v.values, {llr: -1, abs_llr: 0});
+});
+
+test("custom score matching uses strand from the selected CSQ transcript", async () => {
+  const lines = ["##fileformat=VCFv4.2", "##reference=GRCh38",
+    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Feature|Consequence|IMPACT|STRAND">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS",
+    "1\t10\t.\tA\tC\t99\tPASS\tSTRAND=1;CSQ=C|TX1|intron_variant|MODIFIER|1,C|TX2|intron_variant|MODIFIER|-1,C|TX3|intron_variant|MODIFIER|\tGT\t0/1"];
+  const {rows} = await parseVcfFiles([new File([lines.join("\n")], "synthetic.vcf")]);
+  assert.deepEqual(Object.fromEntries(rows.map(r => [r.transcript, r.transcriptStrand])), {TX1:"+", TX2:"-", TX3:""});
+});
+
+test("placeholder calls keep their ALT slots and never produce review rows", async () => {
+  for (const placeholder of ["*", "<*>", "<NON_REF>"]) {
+    const file = new File([[
+      "##fileformat=VCFv4.2", "##reference=GRCh38",
+      '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|SYMBOL">',
+      '##INFO=<ID=MAX_AF,Number=A,Type=Float,Description="ALT frequency">',
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS",
+      `1\t100\t.\tA\t${placeholder},G\t99\tPASS\tMAX_AF=0.9,0.001;CSQ=G|2|GENE1,${placeholder}|1|OTHER\tGT:AD:PS\t1|2:2,18,20:123`,
+      `1\t101\t.\tA\t${placeholder}\t99\tPASS\tCSQ=${placeholder}|1|OTHER\tGT:AD\t0/1:20,20`,
+    ].join("\n")], "placeholders.vcf");
+    const { rows } = await parseVcfFiles([file]);
+    assert.deepEqual(rows.map(r => [
+      r.alt, r.gene, r.genotype, r.adRef, r.adAlt, r.alleleBalance, r.phaseHaplotype, r.gnomadPopmax,
+    ]), [["G", "GENE1", "1|2", 2, 20, 0.5, 1, 0.001]]);
+  }
+});
+
+test("INFO projection follows each file's Number, including biallelic R and malformed vectors", async () => {
+  function file(sample, number, alts, gt, af, extra = "") {
+    return new File([[
+      "##fileformat=VCFv4.2", "##reference=GRCh38",
+      '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|SYMBOL">',
+      `##INFO=<ID=MAX_AF,Description="Includes,Number=A, in prose",Type=Float,Number=${number}>`,
+      '##INFO=<ID=CLNDN,Number=.,Type=String,Description="Diseases at site">',
+      '##INFO=<ID=CLNREVSTAT,Number=2,Type=String,Description="Review metadata">',
+      '##INFO=<ID=CLNSIGCONF,Number=G,Type=String,Description="Genotype metadata">',
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t" + sample,
+      ["1", "100", ".", "A", alts, "99", "PASS", "MAX_AF=" + af + extra, "GT", gt].join("\t"),
+    ].join("\n")], sample + ".vcf");
+  }
+  const files = [
+    file("A", "A", "G,T", "1/2", "0.1,0.02", ";CLNDN=one,two;CLNREVSTAT=x,y;CLNSIGCONF=a,b,c,d,e,f"),
+    file("R", "R", "G,T", "1/2", "0.8,0.03,0.04"),
+    file("biallelic", "R", "G", "0/1", "0.98,0.02"),
+    file("malformedA", "A", "G,T", "1/2", "0.75"),
+    file("malformedR", "R", "G,T", "1/2", "0.8,0.2"),
+    file("unattributed", ".", "G,T", "1/2", "0.1,0.2"),
+  ];
+  const { rows } = await parseVcfFiles(files);
+  assert.deepEqual(rows.map(r => [r.sample, r.alt, r.gnomadPopmax]), [
+    ["A", "G", 0.1], ["A", "T", 0.02], ["R", "G", 0.03], ["R", "T", 0.04],
+    ["biallelic", "G", 0.02], ["malformedA", "G", null], ["malformedA", "T", null],
+    ["malformedR", "G", null], ["malformedR", "T", null],
+    ["unattributed", "G", null], ["unattributed", "T", null],
+  ]);
+  for (const row of rows.filter(r => r.sample === "A")) {
+    assert.equal(row.clinvarDisease, "one,two");
+    assert.equal(row.clinvarReviewStatus, "x,y");
+    assert.equal(row.clinvarConflictingEvidence, "a,b,c,d,e,f");
+  }
+});
+
+test("browser cohort aggregation counts a carrier once across equivalent allele representations", async () => {
+  const files = Array.from({ length: 16 }, (_, i) => {
+    const records = [];
+    if (i === 0) records.push("chr1\t99\t.\tAT\tAG\t99\tPASS\tCSQ=AG|GENE\tGT:GQ\t0/1:10");
+    records.push([i === 0 ? "chr1" : "1", 100, ".", "T", "G", 99, "PASS",
+      "CSQ=G|GENE", "GT:GQ", "0/1:99"].join("\t"));
+    return new File([[
+      "##fileformat=VCFv4.2", "##reference=GRCh38",
+      '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|SYMBOL">',
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS" + i, ...records,
+    ].join("\n")], i + ".vcf");
+  });
+  const { rows } = await parseVcfFiles(files);
+  assert.deepEqual(rows.map(r => [r.genotype, r.carriers.length]), [["16 carry", 16]]);
+  assert.equal(rows[0].sampleGenotypes.S0.gq, 99);
+});
+
+test("unconfigured compound review returns only eligible transcript rows, respecting phase", () => {
+  const base = { key: "a", source: "calls.vcf", sample: "S", gene: "G", chrom: "1",
+    pos: 100, ref: "C", alt: "T", genotype: "0|1", phaseSet: "1", phaseHaplotype: 1 };
+  const partner = { ...base, key: "b", pos: 200 };
+  const unrelated = [
+    { ...base, key: "hom", genotype: "1/1" }, { ...base, key: "partial", genotype: "1/." },
+    { ...base, key: "other-contig", chrom: "2" }, { ...base, key: "other-sample", sample: "S2" },
+  ];
+  assert.deepEqual([...candidateCompoundHetKeys([base, partner, ...unrelated])], []);
+  const duplicate = { ...base, key: "transcript2" };
+  for (const change of [{ phaseHaplotype: 0, genotype: "1|0" }, { source: "other.vcf" }, { phaseSet: "." }]) {
+    assert.deepEqual([...candidateCompoundHetKeys([base, duplicate, { ...partner, ...change }, ...unrelated])],
+      ["a", "transcript2", "b"]);
+  }
+});
+
+test("cohort compound and homozygous filters require one carrier satisfying genotype and active QC", () => {
+  const carrier = (sample, gt, dp = 30) => ({ sample, evidence: { gt, dp, called: !gt.includes("."), carrier: true } });
+  const first = { key: "a", sample: "Cohort", gene: "G", chrom: "1", pos: 100, ref: "C", alt: "A",
+    genotype: "2/20 carry", carriers: [carrier("s1", "0/1"), carrier("s2", "2|2", 1)] };
+  const qc = { ...NO_VARIANT_QC, minDp: 10 };
+  assert.equal(hasHomozygousCarrier(first, "unknown"), true);
+  assert.equal(hasHomozygousCarrier(first, "unknown", qc), false);
+  for (const gt of ["1", "1/.", "1/2", "./.", "0/0"]) {
+    assert.equal(hasHomozygousCarrier({ ...first, carriers: [carrier("s2", gt)] }, "unknown"), false);
+  }
+  const second = { ...first, key: "b", pos: 200, carriers: [carrier("s2", "0/1"), carrier("s1", "0/1", 1)] };
+  assert.deepEqual([...candidateCompoundHetKeys([first, second], qc)], []);
+  assert.deepEqual([...candidateCompoundHetKeys([first, second])], ["a", "b"]);
+  assert.deepEqual([...candidateCompoundHetKeys([first, { ...second, carriers: [carrier("s3", "0/1")] }])], []);
+});
+
+test("GRCh38 PAR intervals are inclusive and single-copy or uncertain loci cannot pass diploid filters", () => {
+  for (const [chrom, start2, end2] of [["chrX", 155701383, 156030895], ["chrY", 56887903, 57217415]]) {
+    for (const pos of [10001, 2781479, start2, end2]) assert.equal(transmissionContext({ chrom, pos }, "male"), "diploid");
+    for (const pos of [10000, 2781480, start2 - 1, end2 + 1]) assert.notEqual(transmissionContext({ chrom, pos }, "male"), "diploid");
+  }
+  for (const chrom of ["chrX", "Y", "chrM", "MT"]) {
+    const base = { key: "a", sample: "S", gene: "G", chrom, pos: 3000000, ref: "A", alt: "C", genotype: "1/1" };
+    assert.equal(hasHomozygousCarrier(base, "male"), false);
+    assert.equal(hasHomozygousCarrier(base, "unknown"), false);
+    assert.equal(hasHomozygousCarrier(base, "female"), chrom === "chrX");
+    const het = { ...base, genotype: "0/1" };
+    assert.equal(candidateCompoundHetKeys([het, { ...het, key: "b", pos: het.pos + 1 }]).size, 0);
+  }
 });

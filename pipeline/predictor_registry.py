@@ -63,6 +63,7 @@ class Adapter(str, Enum):
     VEP_PLUGIN = "vep_plugin"
     GENERIC_INDEXED_LOOKUP = "generic_indexed_lookup"
     VEP_CUSTOM_TRACK = "vep_custom_track"
+    BATCH_PARQUET_LOOKUP = "batch_parquet_lookup"
     POSTPROCESSOR = "postprocessor"
     SERVICE_LOOKUP = "service_lookup"
 

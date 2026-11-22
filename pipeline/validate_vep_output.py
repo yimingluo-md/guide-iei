@@ -28,9 +28,38 @@ def csq_fields(vcf_path: Path) -> list[str]:
 def validate(config_path: Path, vcf_path: Path) -> None:
     config = yaml.safe_load(config_path.read_text()) or {}
     fields = set(csq_fields(vcf_path))
+    enabled_gpn_fields = {
+        f"GPN{model}_{field}" for key, model in (("gpn_star_m", "m447"), ("gpn_star_v", "v100"))
+        if ((config.get("wgs_review") or {}).get(key) or {}).get("enabled")
+        for field in ("LLR", "ABSLLR")
+    }
+    if enabled_gpn_fields:
+        opener = gzip.open if vcf_path.suffix == ".gz" else open
+        with opener(vcf_path, "rt") as handle:
+            for line in handle:
+                if line.startswith("#CHROM"):
+                    break
+                match = re.match(r"##INFO=<ID=([^,]+),Number=A,Type=Float,", line)
+                if match:
+                    enabled_gpn_fields.discard(match.group(1))
+        if enabled_gpn_fields:
+            raise ValueError("Missing GPN-Star allele INFO fields: " + ", ".join(sorted(enabled_gpn_fields)))
+
     dbnsfp = ((config.get("plugins") or {}).get("dbNSFP") or {})
     if dbnsfp.get("enabled") and dbnsfp.get("required"):
-        expected = set(dbnsfp.get("columns") or [])
+        columns = dbnsfp.get("columns") or []
+        expected = {columns} if isinstance(columns, str) else set(columns)
+        if "ALL" in expected:
+            # VEP expands the wildcard into actual CSQ fields.
+            if __package__:
+                from .predictor_registry import load_registry
+            else:
+                from predictor_registry import load_registry
+            registry_fields = {m.field for p in load_registry().predictors if p.resource_id == "dbnsfp"
+                               for m in p.metrics}
+            if not fields.intersection(registry_fields):
+                raise ValueError("required dbNSFP annotations are absent from CSQ")
+            expected.remove("ALL")
         missing = sorted(expected - fields)
         if missing:
             raise ValueError(

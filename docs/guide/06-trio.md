@@ -83,18 +83,18 @@ explicitly:
   genotype gates the de novo call, the hemizygous genotype shapes are
   accepted, and the allele-balance upper bound is waived. Inside the
   pseudoautosomal regions the diploid model applies, as it should.
-- On **Y**, only the father's genotype is informative.
+- On **non-PAR Y in a male proband**, only the father's genotype is informative.
+  GRCh38 Y PAR loci use the diploid model.
 - **Mitochondrial** variants are treated as maternally transmitted for a
   proband of either sex — a paternal call never marks one inherited — with
   allele-balance gating relaxed for heteroplasmy.
 
-Proband sex is taken from the PED file or set in the mapping panel; left
-unknown, the conservative diploid model applies. One consequence for
-compound heterozygotes follows directly: in a male proband, a
-"compound het" on non-PAR X is biologically impossible — one haplotype —
-so such pairs are excluded with that stated reason rather than offered as
-candidates; heterozygous-appearing calls there usually mean artifact or an
-overlapping CNV.
+Set proband sex in the PED file or the mapping panel. Unknown sex leaves
+non-PAR X and Y inheritance unassessed. A Y call in a proband recorded
+as female or a genotype with unexpected ploidy also requires review.
+The compound filter excludes mitochondrial pairs and pairs where either
+locus is single-copy or has unresolved ploidy. Open **Show cis and
+excluded pairs** in Family analysis to see the reason.
 
 ## Compound heterozygotes: reading phase
 

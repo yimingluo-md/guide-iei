@@ -37,6 +37,44 @@ class HttpBoundaryTests(unittest.TestCase):
             handler.do_GET()
             self.assertEqual(handler._json.call_args.args[1], 400)
 
+    def test_opaque_routes_dispatch_only_one_decoded_segment(self):
+        routes = (
+            ("GET", "/api/jobs/{}/log", "log_tail"),
+            ("POST", "/api/jobs/{}/cancel", "cancel"),
+            ("POST", "/api/sample-library/{}/cohort/remove", "sample_library.exclude_from_cohort"),
+            ("GET", "/api/sample-library/{}/phenotype", "sample_library.phenotype"),
+            ("GET", "/api/cohort/import-jobs/{}", "cohort.get_import_job"),
+            ("GET", "/api/wgs-review/{}", "get_wgs_review_job"),
+            ("GET", "/api/bulk-intake/{}", "bulk_intake_snapshot"),
+            ("POST", "/api/resource-downloads/{}", "start_resource_download"),
+        )
+        for method, route, name in routes:
+            for segment in ("opaque%2Did_1", "", "..", "%2e", "%2F", "%5C", "%00", "%252F", "a/b"):
+                with self.subTest(route=route, segment=segment):
+                    handler = self.handler()
+                    handler.path = route.format(segment)
+                    operation = handler.service
+                    for part in name.split("."):
+                        operation = getattr(operation, part)
+                    getattr(handler, "do_" + method)()
+                    if segment == "opaque%2Did_1":
+                        operation.assert_called_once_with("opaque-id_1")
+                    else:
+                        operation.assert_not_called()
+                        self.assertIn(handler._json.call_args.args[1], (400, 404))
+
+    def test_phenotype_paging_and_exact_lookup(self):
+        handler = self.handler()
+        handler.path = "/api/phenotypes?query=group&limit=50&offset=500"
+        handler.do_GET()
+        handler.service.phenotypes.list_page.assert_called_once_with(query="group", limit=50, offset=500)
+        handler.path = "/api/phenotypes?individual_id=Case%20%2F%20A"
+        handler.do_GET()
+        handler.service.phenotypes.get.assert_called_once_with("Case / A")
+        handler.path = "/api/phenotypes/ids"
+        handler.do_GET()
+        handler.service.phenotypes.individual_ids.assert_called_once_with()
+
     def test_unicode_download_names_are_valid_http_headers(self):
         with tempfile.TemporaryDirectory() as directory:
             filename = '研究 "sample".vcf.gz'

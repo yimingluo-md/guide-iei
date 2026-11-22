@@ -13,16 +13,25 @@
 @interface SmokeGuide : GuideApp
 @property(nonatomic, copy) NSDictionary *snapshot;
 @property(nonatomic, copy) NSDictionary *plan;
+@property(nonatomic, copy) NSDictionary *storageLocation;
 @property(nonatomic, copy) NSString *postError;
-@property(nonatomic, copy) NSString *lastAction;
+@property(nonatomic, copy) NSDictionary *lastControl;
+@property(nonatomic, copy) NSString *lastAlert;
+@property BOOL restarting;
 @property NSUInteger posts;
 @end
 @implementation SmokeGuide
 - (NSDictionary *)startupStatus { return self.snapshot; }
-- (void)startupAction:(NSString *)action { self.lastAction = action; }
+- (BOOL)writeStartupControl:(NSDictionary *)message { self.lastControl = message; return YES; }
+- (void)alert:(NSString *)message { self.lastAlert = message; }
 - (void)request:(NSString *)route body:(NSDictionary *)body done:(void (^)(NSDictionary *, NSString *))done {
     if ([route isEqual:@"/api/service/status"]) {
-        done(@{@"instance_id": @"smoke", @"blockers": @[], @"annotations": @0, @"downloads": @0}, nil);
+        done(@{@"instance_id": @"smoke", @"blockers": @[], @"annotations": @0, @"downloads": @0,
+               @"restarting": @(self.restarting)}, nil);
+    } else if ([route isEqual:@"/api/service/restart"]) {
+        done(@{}, nil);
+    } else if ([route isEqual:@"/api/storage/locations"]) {
+        done(@{@"locations": @[self.storageLocation]}, nil);
     } else if ([route isEqual:@"/api/recommended-wgs/status"]) {
         NSCAssert(!body, @"Status polls must be read-only"); done(self.plan, nil);
     } else if ([route isEqual:@"/api/recommended-wgs/setup"]) {
@@ -74,9 +83,26 @@ int main(int argc, const char *argv[]) {
             [capture waitUntilExit];
             NSCAssert(capture.terminationStatus == 0, @"Window capture failed (screen-recording permission may be needed)");
         }
+        // On first launch, Change… opens Storage before Prepare creates the folder.
+        NSMutableDictionary *location = [@{@"id": @"annotation", @"path": @"/Synthetic/references",
+            @"exists": @NO, @"free_bytes": NSNull.null} mutableCopy];
+        guide.storageLocation = location;
+        [guide showStorage:nil];
+        NSCAssert([guide.storageLabel.stringValue isEqual:@"/Synthetic/references\nFolder unavailable"]
+            && guide.changeStorageButton.enabled, @"A missing folder must allow location changes");
+        location[@"exists"] = @YES;
+        guide.storageLocation = location; [guide refreshStorage:nil];
+        NSCAssert([guide.storageLabel.stringValue isEqual:@"/Synthetic/references\nFree space unavailable"], @"Disk usage query failed");
+        location[@"free_bytes"] = @0;
+        guide.storageLocation = location; [guide refreshStorage:nil];
+        NSCAssert([guide.storageLabel.stringValue isEqual:@"/Synthetic/references\n0.0 GiB free"], @"A full disk reports zero");
+        location[@"free_bytes"] = @1610612736;
+        guide.storageLocation = location; [guide refreshStorage:nil];
+        NSCAssert([guide.storageLabel.stringValue isEqual:@"/Synthetic/references\n1.5 GiB free"], @"Known capacity is shown in GiB");
+        [guide.tabs selectTabViewItemAtIndex:0];
         guide.wgsChoice.state = NSControlStateValueOn;
         [guide prepareSetup:nil];
-        NSCAssert(guide.wgsQueued && [guide.lastAction isEqual:@"prepare"] && guide.posts == 0, @"Essentials before WGS");
+        NSCAssert(guide.wgsQueued && [guide.lastControl[@"action"] isEqual:@"prepare"] && guide.posts == 0, @"Essentials before WGS");
         guide.snapshot = @{@"phase": @"preparing"}; [guide refreshStatus:nil];
         NSCAssert(guide.posts == 0 && !guide.openButton.enabled, @"Do not bypass essentials");
         guide.snapshot = @{@"phase": @"ready"}; [guide refreshStatus:nil];
@@ -101,8 +127,42 @@ int main(int argc, const char *argv[]) {
         NSCAssert(!guide.retryButton.enabled && guide.openButton.enabled, @"Unknown WGS state does not block essentials");
         guide.plan = @{@"known": @YES, @"installed": @YES}; [guide refreshStatus:nil];
         NSCAssert(!guide.retryButton.enabled && !guide.wgsChoice.enabled, @"Installed datasets are reused");
+        [guide restartStorage:nil];
+        guide.restarting = YES;
+        [guide refreshStatus:nil]; // Late ready snapshot from the previous service
+        NSCAssert(!guide.openButton.enabled, @"Keep review closed while the old service is restarting");
+        guide.restarting = NO;
+        guide.snapshot = @{@"phase": @"waiting", @"can_prepare": @YES};
+        [guide refreshStatus:nil];
+        NSCAssert(guide.preparing && !guide.openButton.enabled, @"Restart must honor the new setup phase");
+        NSCAssert([guide.retryButton.title isEqual:@"Prepare GUIDE-IEI"] && guide.retryButton.enabled,
+                  @"A fresh storage root must offer Prepare");
+        // With setup disabled the supervisor publishes checking, then ready after health succeeds.
+        [guide restartStorage:nil];
+        guide.snapshot = @{@"phase": @"checking"}; [guide refreshStatus:nil];
+        NSCAssert(!guide.openButton.enabled, @"Wait for the replacement service to be healthy");
+        guide.snapshot = @{@"phase": @"ready"}; [guide refreshStatus:nil];
+        NSCAssert(!guide.preparing && guide.openButton.enabled, @"Restore Open Workbench after an offline restart");
+
+        // The native window can still be in setup when the supervisor has reached ready.
+        guide.preparing = YES; guide.quitting = YES;
+        NSCAssert([guide requestSetupQuit] == NSTerminateLater, @"Wait for the setup Quit response");
+        NSString *firstQuit = guide.lastControl[@"request_id"];
+        NSCAssert(firstQuit.length && [guide.lastControl[@"action"] isEqual:@"quit"], @"Identify each Quit request");
+        guide.snapshot = @{@"phase": @"ready", @"quit_request_id": firstQuit, @"quit_error": @"Migration active"};
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        NSCAssert(!guide.quitting && [guide.lastAlert isEqual:@"Migration active"], @"Show the current blocker");
+        guide.lastAlert = nil; guide.preparing = YES; guide.quitting = YES;
+        NSCAssert([guide requestSetupQuit] == NSTerminateLater, @"Allow a new Quit attempt");
+        NSString *secondQuit = guide.lastControl[@"request_id"];
+        NSCAssert(secondQuit.length && ![firstQuit isEqual:secondQuit], @"A retry has its own ID");
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+        NSCAssert(guide.quitting && !guide.lastAlert, @"An old rejection cannot cancel the pending Quit");
+        guide.snapshot = @{@"phase": @"ready", @"quit_request_id": secondQuit, @"quit_error": @"Migration active"};
+        [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.7]];
+        NSCAssert(!guide.quitting && [guide.lastAlert isEqual:@"Migration active"], @"Report a repeated blocker for the new request");
         [guide.window orderOut:nil];
-        puts("NATIVE WGS SETUP PASSED: default off, scroll layout, essential handoff, later opt-in, progress, failure, retry, installed reuse");
+        puts("NATIVE WGS SETUP PASSED: default off, scroll layout, essential handoff, later opt-in, progress, failure, retry, installed reuse, storage restart, correlated quit replies");
     }
     return 0;
 }

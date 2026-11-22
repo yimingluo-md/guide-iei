@@ -20,7 +20,7 @@ def test_notice_text_is_shared_with_the_workbench_and_the_readme():
         "webui/app/VariantWorkbench.tsx RESEARCH_USE_NOTICE must equal pipeline/research_use_notice.py"
     )
     # Both TSV exports carry the notice as their first row.
-    assert workbench.count("researchUseNoticeRow(), headers.join") == 2
+    assert workbench.count("reviewTsvBlob(RESEARCH_USE_NOTICE, headers, rows") == 2
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     assert "- **Not a cloud service.**" in readme
     assert "- **Not an automated classification or reporting system.**" in readme

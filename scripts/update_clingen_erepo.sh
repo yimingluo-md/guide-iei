@@ -45,6 +45,7 @@ fi
 # rebuild once.
 if [[ -s "${DEST}/manifest.json" ]] && python3 - "$SOURCE" "${DEST}/manifest.json" "$CLINVAR" "$FASTA" "${DEST}/clingen_erepo.sqlite3" "${DEST}/clingen_erepo.GRCh38.vcf" <<'PY'
 import hashlib,json,sys
+from pathlib import Path
 source,manifest,clinvar,fasta,database,installed_vcf=sys.argv[1:]
 def sha(path):
     digest=hashlib.sha256()
@@ -54,6 +55,9 @@ def sha(path):
     return digest.hexdigest()
 try: value=json.load(open(manifest))
 except Exception: raise SystemExit(1)
+# Older snapshots recorded paths inside the temporary build directory.
+if value.get('sqlite') != Path(database).name or value.get('vcf') != Path(installed_vcf).name:
+    raise SystemExit(1)
 if sha(source) != value.get('source_sha256',''): raise SystemExit(1)
 for key, path in (("clinvar_sha256", clinvar), ("fasta_sha256", fasta),
                   ("sqlite_sha256", database), ("vcf_sha256", installed_vcf)):

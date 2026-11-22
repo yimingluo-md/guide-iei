@@ -107,6 +107,14 @@ export type ServiceCapabilities = {
       installed: boolean;
       configured_paths: string[];
       compact_coverage?: boolean;
+      exome_setup?: {
+        description: string;
+        installed: boolean;
+        available: boolean;
+        download_id: string | null;
+        size_hint: string;
+        instructions: string[];
+      };
       version: string;
       available_in: ("exome" | "whole_genome")[];
       access: "public" | "bundled" | "registration" | "license" | "terms";
@@ -141,9 +149,9 @@ export type AnnotationOptions = Record<string, boolean | number | string | strin
 
 export type ResourceDownloadJob = {
   id: string;
-  resource_id: "annotation_engine" | "essential_setup" | "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "alphagenome_avi" | "screen_context" | "screen_context_build" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "genia" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
+  resource_id: "custom_scores" | "annotation_engine" | "essential_setup" | "dbnsfp" | "spliceai" | "cadd_wgs" | "clinvar" | "liftover" | "promoterai" | "logofunc" | "funcvep" | "alphagenome_avi" | "gpn_star_m" | "gpn_star_v" | "gpn_star_v_exome" | "screen_context" | "screen_context_build" | "encode_re2g" | "ccre" | "loftee" | "repeatmasker" | "segdup" | "gene_knowledge" | "clingen_erepo" | "omim" | "genia" | "recommended_exome" | "recommended_wgs" | "refresh_updates";
   operation?: "download" | "preparation" | "installation";
-  status: "queued" | "running" | "succeeded" | "failed" | "interrupted";
+  status: "queued" | "running" | "succeeded" | "partial" | "failed" | "interrupted";
   progress: number | null;
   message: string;
   created_at: string;
@@ -157,7 +165,7 @@ export type ResourceDownloadJob = {
 };
 
 export type GeneKnowledgeResource = {
-  id: "hgnc" | "iuis" | "clingen_validity" | "clingen_dosage";
+  id: "hgnc" | "iuis" | "clingen_validity" | "clingen_dosage" | "gencc";
   release: string;
   source_url: string;
   source_sha256: string;
@@ -278,6 +286,18 @@ export type GeneKnowledgeGene = {
     associated_features: string;
     major_category: string; subcategory: string; source_gene: string;
   }[];
+  gencc?: {
+    available: boolean; release?: string;
+    groups: {
+      disease: string; disease_id: string; inheritance: string; inheritance_id: string;
+      classifications: string[]; conflict: boolean;
+      submissions: {
+        sgc_id: string; version_number: number; submitter_title: string; classification_title: string;
+        submitted_as_date: string; submitted_as_public_report_url: string;
+        disease_original_curie: string; disease_original_title: string;
+      }[];
+    }[];
+  };
   clingen_validity: {
     disease: string; mondo_id: string; moi: string; sop: string;
     classification: string; report_url: string; classification_date: string; expert_panel: string;
@@ -398,7 +418,7 @@ export type CcreContext = {
   gene_resource_available: boolean;
   gene_source: string;
   gene_window_bp: number;
-  status: "overlap" | "no_overlap" | "resource_unavailable";
+  status: "overlap" | "no_overlap" | "unsupported" | "resource_unavailable";
   interpretation_caveat: string;
   variant: { chrom: string; start: number; end: number; ref: string; alt: string };
   overlaps: CcreOverlap[];
@@ -468,7 +488,7 @@ export type ScreenContextCatalog = {
 
 export type ScreenContextEvidence = {
   available: boolean;
-  status: "overlap" | "no_overlap" | "resource_unavailable";
+  status: "overlap" | "no_overlap" | "unsupported" | "resource_unavailable";
   registry?: string;
   assembly?: "GRCh38";
   overlaps: {
@@ -636,7 +656,7 @@ export type CohortQueryRow = {
   loftee: string;
   loftee_50bp: string;
   loftee_50bp_original: string;
-  loftee_50bp_changed: boolean;
+  loftee_50bp_changed: boolean | null;
   ptc_distance: number | null;
   ptc_calc_status: string;
   mane: boolean;
@@ -666,7 +686,7 @@ export type CohortQueryRow = {
 };
 
 export type CohortQueryResult = {
-  mode: "variant" | "gene" | "gene_list" | "region";
+  mode: "variant" | "gene" | "gene_list" | "region" | "target_gene";
   total: number;
   limit: number;
   truncated: boolean;
@@ -753,7 +773,7 @@ export type CohortSampleReview = {
 };
 
 export type CohortQuery = {
-  mode: "variant" | "gene" | "gene_list" | "region";
+  mode: "variant" | "gene" | "gene_list" | "region" | "target_gene";
   query?: string;
   gene?: string;
   genes?: string[];
@@ -1081,6 +1101,13 @@ export type PhenotypeUploadPayload = {
 
 const SERVICE_URL = process.env.NEXT_PUBLIC_IEI_SERVICE_URL ?? "http://127.0.0.1:43117";
 
+function encodedRouteId(id: string): string {
+  if (typeof id !== "string" || !id || id === "." || id === ".." || /[^A-Za-z0-9._~-]/.test(id)) {
+    throw new Error("Invalid identifier in request path");
+  }
+  return encodeURIComponent(id);
+}
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${SERVICE_URL}${path}`, {
     ...init,
@@ -1111,8 +1138,8 @@ export async function getJobs() {
   return (await request<{ jobs: AnnotationJob[] }>("/api/jobs")).jobs;
 }
 
-export async function getResourceDownloads() {
-  return (await request<{ jobs: ResourceDownloadJob[] }>("/api/resource-downloads")).jobs;
+export async function getResourceDownloads(signal?: AbortSignal) {
+  return (await request<{ jobs: ResourceDownloadJob[] }>("/api/resource-downloads", { signal })).jobs;
 }
 
 export async function getGeneKnowledgeStatus() {
@@ -1143,7 +1170,7 @@ export async function startOmimGeneKnowledgeDownload(linkBlock: string) {
 
 export async function startResourceDownload(resourceId: ResourceDownloadJob["resource_id"]) {
   return request<ResourceDownloadJob>(
-    `/api/resource-downloads/${encodeURIComponent(resourceId)}`,
+    `/api/resource-downloads/${encodedRouteId(resourceId)}`,
     { method: "POST", body: "{}" },
   );
 }
@@ -1151,6 +1178,7 @@ export async function startResourceDownload(resourceId: ResourceDownloadJob["res
 export type LocalResourceSelection = {
   cancelled: boolean;
   resource_id:
+    | "custom_scores"
     | "dbnsfp"
     | "promoterai"
     | "logofunc"
@@ -1271,15 +1299,15 @@ export async function stageAnnotationFile(file: File, batchId: string) {
 }
 
 export async function cancelJob(jobId: string) {
-  return request<AnnotationJob>(`/api/jobs/${jobId}/cancel`, { method: "POST", body: "{}" });
+  return request<AnnotationJob>(`/api/jobs/${encodedRouteId(jobId)}/cancel`, { method: "POST", body: "{}" });
 }
 
 export async function getJobLog(jobId: string) {
-  return (await request<{ job_id: string; log: string }>(`/api/jobs/${jobId}/log`)).log;
+  return (await request<{ job_id: string; log: string }>(`/api/jobs/${encodedRouteId(jobId)}/log`)).log;
 }
 
 export async function openJobReviewFile(jobId: string, fallbackName: string) {
-  const response = await fetch(`${SERVICE_URL}/api/jobs/${encodeURIComponent(jobId)}/review-file`);
+  const response = await fetch(`${SERVICE_URL}/api/jobs/${encodedRouteId(jobId)}/review-file`);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error ?? `Local service returned ${response.status}`);
@@ -1373,12 +1401,12 @@ export async function filterScreenContext(payload: {
 }
 
 export async function getWgsReviewJob(jobId: string) {
-  return request<WgsReviewJob>(`/api/wgs-review/${encodeURIComponent(jobId)}`);
+  return request<WgsReviewJob>(`/api/wgs-review/${encodedRouteId(jobId)}`);
 }
 
 export async function openWgsReviewFile(reviewId: string, fallbackName: string) {
   const response = await fetch(
-    `${SERVICE_URL}/api/wgs-review/${encodeURIComponent(reviewId)}/file`,
+    `${SERVICE_URL}/api/wgs-review/${encodedRouteId(reviewId)}/file`,
   );
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
@@ -1440,11 +1468,12 @@ export async function startCohortImport(
 }
 
 export async function getCohortImportJob(jobId: string) {
-  return request<CohortImportJob>(`/api/cohort/import-jobs/${encodeURIComponent(jobId)}`);
+  return request<CohortImportJob>(`/api/cohort/import-jobs/${encodedRouteId(jobId)}`);
 }
 
-export async function queryCohort(payload: CohortQuery) {
+export async function queryCohort(payload: CohortQuery, signal?: AbortSignal) {
   return request<CohortQueryResult>("/api/cohort/query", {
+    signal,
     method: "POST",
     body: JSON.stringify(payload),
   });
@@ -1515,7 +1544,7 @@ export async function getSampleLibrary(query = "") {
 
 export async function getSampleLibraryPhenotype(datasetId: string) {
   const phenotype = (await request<{ phenotype: PhenotypeIndividual | null }>(
-    `/api/sample-library/${encodeURIComponent(datasetId)}/phenotype`,
+    `/api/sample-library/${encodedRouteId(datasetId)}/phenotype`,
   )).phenotype;
   return phenotype ? normalizePhenotypeIndividual(phenotype) : null;
 }
@@ -1538,7 +1567,7 @@ export async function importSampleLibrary(payload: {
 
 export async function activateSampleLibraryVersion(datasetId: string) {
   return request<{ datasets: SampleLibraryDataset[]; warning: string; already_current: boolean }>(
-    `/api/sample-library/${encodeURIComponent(datasetId)}/activate-version`,
+    `/api/sample-library/${encodedRouteId(datasetId)}/activate-version`,
     { method: "POST", body: "{}" },
   );
 }
@@ -1579,7 +1608,7 @@ export async function getBulkIntake() {
 
 export async function cancelBulkIntake(jobId: string) {
   return request<{ job: BulkIntakeJob }>(
-    `/api/bulk-intake/${encodeURIComponent(jobId)}/cancel`,
+    `/api/bulk-intake/${encodedRouteId(jobId)}/cancel`,
     { method: "POST" },
   );
 }
@@ -1638,7 +1667,7 @@ export async function getSampleLibraryReviewRecord(
 }
 
 export async function openSampleLibraryFile(datasetId: string, fallbackName: string) {
-  const response = await fetch(`${SERVICE_URL}/api/sample-library/${encodeURIComponent(datasetId)}/file`);
+  const response = await fetch(`${SERVICE_URL}/api/sample-library/${encodedRouteId(datasetId)}/file`);
   if (!response.ok) {
     const payload = await response.json().catch(() => ({}));
     throw new Error(payload.error ?? `Local service returned ${response.status}`);
@@ -1654,7 +1683,7 @@ export async function mapSampleLibraryIdentity(
   datasetId: string,
   payload: { mode: "existing" | "create" | "unavailable"; individual_id?: string },
 ) {
-  return request<SampleLibraryDataset>(`/api/sample-library/${encodeURIComponent(datasetId)}/identity`, {
+  return request<SampleLibraryDataset>(`/api/sample-library/${encodedRouteId(datasetId)}/identity`, {
     method: "POST", body: JSON.stringify(payload),
   });
 }
@@ -1663,28 +1692,28 @@ export async function updateSampleLibraryMetadata(
   datasetId: string,
   payload: { sample_label?: string },
 ) {
-  return request<SampleLibraryDataset>(`/api/sample-library/${encodeURIComponent(datasetId)}/metadata`, {
+  return request<SampleLibraryDataset>(`/api/sample-library/${encodedRouteId(datasetId)}/metadata`, {
     method: "POST", body: JSON.stringify(payload),
   });
 }
 
 export async function reindexSampleLibraryDataset(datasetId: string, fullWgs = false) {
   return request<{ dataset: SampleLibraryDataset; cohort: CohortImportFile }>(
-    `/api/sample-library/${encodeURIComponent(datasetId)}/reindex`,
+    `/api/sample-library/${encodedRouteId(datasetId)}/reindex`,
     { method: "POST", body: JSON.stringify({ full_wgs: fullWgs }) },
   );
 }
 
 export async function removeSampleLibraryDatasetFromCohort(datasetId: string) {
   return request<SampleLibraryDataset>(
-    `/api/sample-library/${encodeURIComponent(datasetId)}/cohort/remove`,
+    `/api/sample-library/${encodedRouteId(datasetId)}/cohort/remove`,
     { method: "POST", body: "{}" },
   );
 }
 
 export async function removeSampleLibraryDataset(datasetId: string, removeManagedFile = true) {
   return request<{ removed_dataset: string; removed_files: string[] }>(
-    `/api/sample-library/${encodeURIComponent(datasetId)}/remove`,
+    `/api/sample-library/${encodedRouteId(datasetId)}/remove`,
     { method: "POST", body: JSON.stringify({ remove_managed_file: removeManagedFile }) },
   );
 }
@@ -1717,8 +1746,8 @@ export async function setStorageLocation(payload: {
   );
 }
 
-export async function getServiceHealth() {
-  return request<{ ok: boolean; version: string }>("/api/health");
+export async function getServiceHealth(signal?: AbortSignal) {
+  return request<{ ok: boolean; version: string }>("/api/health", { signal });
 }
 
 export type WorkbenchStatus = WorkbenchLifecycle & {
@@ -1861,11 +1890,23 @@ export async function getPhenotypeStats() {
   return request<PhenotypeStats>("/api/phenotypes/stats");
 }
 
-export async function getPhenotypeIndividuals(query = "") {
-  const individuals = (await request<{ individuals: PhenotypeIndividual[] }>(
-    `/api/phenotypes?query=${encodeURIComponent(query)}`,
-  )).individuals;
-  return individuals.map(normalizePhenotypeIndividual);
+export async function getPhenotypePage(query: string, limit: number, offset: number) {
+  const params = new URLSearchParams({ query, limit: String(limit), offset: String(offset) });
+  const page = await request<{ individuals: PhenotypeIndividual[]; has_more: boolean }>(
+    `/api/phenotypes?${params}`,
+  );
+  return { individuals: page.individuals.map(normalizePhenotypeIndividual), hasMore: page.has_more };
+}
+
+export async function getPhenotypeIds() {
+  return (await request<{ ids: string[] }>("/api/phenotypes/ids")).ids;
+}
+
+export async function getPhenotypeIndividual(id: string) {
+  const { individuals } = await request<{ individuals: PhenotypeIndividual[] }>(
+    `/api/phenotypes?individual_id=${encodeURIComponent(id)}`,
+  );
+  return individuals.length ? normalizePhenotypeIndividual(individuals[0]) : null;
 }
 
 export async function getPhenotypesBySample(sampleId: string) {
@@ -1917,4 +1958,45 @@ export async function importPhenotypeInput(payload: PhenotypeUploadPayload) {
     method: "POST",
     body: JSON.stringify(payload),
   });
+}
+
+export type RegulatoryVariant = { chrom: string; pos: number; ref: string; alt: string };
+export type ElementGeneLink = {
+  gene: string; symbol: string; start: number; end: number; element: string; tss: number;
+  distance: number; score: number; context: string; accession: string; annotation: string; model: string; systems: string; ontology: string; context_label: string;
+};
+export function elementGeneLinks(variant: RegulatoryVariant) {
+  return request<{status: string; provider?: string; release?: string; label?: string; score_label?: string; source_base?: string; links: ElementGeneLink[]}>(
+    "/api/element-gene-links", {method: "POST", body: JSON.stringify(variant)});
+}
+export function filterTargetGenes(variants: (RegulatoryVariant & {key: string})[], genes: string[]) {
+  return request<{matches: string[]; targets: Record<string, string[]>}>("/api/element-gene-links/filter", {
+    method: "POST", body: JSON.stringify({variants, genes}),
+  });
+}
+export function targetSearchStatus(gene: string) {
+  return request<{index: string[]; known: boolean}>("/api/element-gene-links/search-status", {
+    method: "POST", body: JSON.stringify({gene}),
+  });
+}
+
+export type ScoreMapping = Record<"chrom" | "pos" | "ref" | "alt" | "strand" | "gene" | "transcript", string>;
+export type CustomMetric = {column: string; label: string};
+export type ScorePreview = {columns: string[]; examples: string[][]; mapping: ScoreMapping};
+export type CustomDataset = {id: string; name: string; rows: number; skipped_rows?: number; error?: string; scores: CustomMetric[]};
+export type CustomMatch = {context: Record<string, string>; unresolved: string[]; values: (string | null)[]};
+export function inspectCustomScores(paths: string[]) {
+  return request<ScorePreview>("/api/custom-scores/inspect", {method: "POST", body: JSON.stringify({paths})});
+}
+export function installCustomScores(payload: {paths: string[]; name: string; mapping: ScoreMapping; scores: CustomMetric[]; replace: boolean; dash_is_missing_strand?: boolean}) {
+  return request<ResourceDownloadJob>("/api/resource-preparations/custom-scores", {method: "POST", body: JSON.stringify(payload)});
+}
+export function removeCustomScores(id: string) {
+  return request<{id: string}>("/api/custom-scores/remove", {method: "POST", body: JSON.stringify({id})});
+}
+export function customScoreDatasets() {
+  return request<CustomDataset[]>("/api/custom-scores");
+}
+export function lookupCustomScores(query: RegulatoryVariant & {gene: string; geneId?: string; transcript?: string; versionedTranscript?: string; strand?: string}) {
+  return request<(CustomDataset & {matches: CustomMatch[]})[]>("/api/custom-scores/lookup", {method: "POST", body: JSON.stringify(query)});
 }

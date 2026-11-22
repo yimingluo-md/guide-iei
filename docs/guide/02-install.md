@@ -96,7 +96,7 @@ Double-click **GUIDE-IEI.app** wherever you placed it.
   readiness checks pass; there is no skip option. **Import & QC → Set up
   annotation datasets → Set up annotation engine** remains available for repair.
   **Also install recommended whole-genome datasets** is off by default. Select it to
-  add Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI after essentials
+  add Full SpliceAI MANE 1.5, ENCODE SCREEN, ENCODE-rE2G and AlphaGenome AVI after essentials
   finish. The window shows the additional download and setup-space allowance
   for missing resources. These are not required for basic exome analysis.
   The workbench can open once essentials are ready while these optional
@@ -148,9 +148,14 @@ issue, not a failed Quit operation.
   smoke test verifies the wiring. No administrator password, Xcode, Homebrew,
   Docker Desktop, or preinstalled bioinformatics software is required. The
   first launch downloads several components and can take several minutes.
-- The browser then opens the workbench at **`http://127.0.0.1:3000`** — a
-  local address; the workbench runs on your machine and uses the browser
-  as its display.
+- The browser opens a **local address** such as `http://127.0.0.1:3000`.
+  The standalone Mac app automatically uses another available port if needed,
+  and tries its usual port again on the next launch. The browser keeps custom
+  gene lists and display preferences separately for each port. Settings saved
+  at the usual address reappear when the app returns to it. Use **Open Workbench** in the app to
+  reopen the current address rather than relying on an old browser bookmark.
+  Terminal-based launchers use port 3000 by default. The workbench runs on
+  your machine and uses the browser as its display.
 - **For Terminal-based launchers, keep the Terminal window open.** Closing
   it stops the local workbench service. Later launches skip the preparation.
 

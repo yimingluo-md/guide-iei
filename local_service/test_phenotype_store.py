@@ -71,6 +71,31 @@ class PhenotypeStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_pages_and_identity_picker_reach_every_individual(self):
+        ids = [f"Case-{index:04}" for index in range(502)]
+        with self.store._session() as connection:
+            # A bulk import can give every row the same timestamp.
+            connection.executemany(
+                "INSERT INTO phenotype_individuals(individual_id, created_at, updated_at) "
+                "VALUES (?, '2026-01-01', '2026-01-01')", [(key,) for key in reversed(ids)]
+            )
+            connection.executemany(
+                "INSERT INTO phenotype_sample_links VALUES (?, ?)",
+                [(ids[-1], sample) for sample in ("Sample Z", "Sample A")]
+            )
+        first = self.store.list_page("Case", 500)
+        last = self.store.list_page("Case", 500, 500)
+        self.assertTrue(first["has_more"])
+        self.assertFalse(last["has_more"])
+        self.assertEqual([r["individual_id"] for r in first["individuals"] + last["individuals"]], ids)
+        self.assertEqual(last["individuals"][-1], self.store.get(ids[-1]))
+        self.assertEqual(last["individuals"][-1]["sample_ids"], ["Sample A", "Sample Z"])
+        self.assertEqual(self.store.list_page("Sample Z", 1)["individuals"], [self.store.get(ids[-1])])
+        self.assertEqual(self.store.individual_ids(), ids)
+        self.assertEqual(self.store.list_page("", 500, 502), {"individuals": [], "has_more": False})
+        with self.assertRaises(ValueError):
+            self.store.list_page(offset=-1)
+
     def test_manual_individual_keeps_reported_race_and_ethnicity_separate(self):
         saved = self.store.save_individual({
             "individual_id": "CASE-1",
@@ -172,6 +197,30 @@ class PhenotypeStoreTests(unittest.TestCase):
                 "age_at_evaluation": "180",
                 "age_at_evaluation_unit": "years",
             })
+
+    def test_xlsx_size_and_cell_budgets(self):
+        from unittest.mock import patch
+        from local_service import phenotype_store as module
+        for limit in ("MAX_XLSX_MEMBER_BYTES", "MAX_XLSX_CELLS"):
+            with self.subTest(limit=limit), patch.object(module, limit, 2):
+                with self.assertRaisesRegex(ValueError, "limit"):
+                    parse_table("patients.xlsx", xlsx_bytes())
+        self.assertEqual(module._column_number("XFD1"), 16383)
+        with self.assertRaisesRegex(ValueError, "limit"):
+            module._column_number("XFE1")
+
+    def test_nullable_fields_and_concurrent_nonblank_updates(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from threading import Barrier
+        base = self.store.save_individual({"individual_id":"example", "sample_ids": None, "custom_fields": None})
+        self.assertEqual(base["sample_ids"], [])
+        barrier = Barrier(2)
+        def save(key):
+            barrier.wait(timeout=5)
+            return self.store._upsert({**base, "custom_fields": {key: key}}, "update_nonblank", "test")
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            self.assertEqual(list(pool.map(save, ["one", "two"])), ["updated", "updated"])
+        self.assertEqual(self.store.get("example")["custom_fields"], {"one": "one", "two": "two"})
 
     def test_xlsx_preview_reads_sheet_and_suggests_columns(self):
         parsed = parse_table("phenotypes.xlsx", xlsx_bytes())

@@ -32,6 +32,9 @@ annotation of the same calls becomes the current version while the prior one
 remains available under **Previous versions**. If sample names match but the
 called variants or genotypes changed, GUIDE-IEI asks whether this is an update
 or a separate dataset. Only the current version is placed in Cohort Search.
+Rebuilding one sample leaves its siblings’ index scopes and inclusion choices
+in place. Restoring a previous callset version carries the current inclusion
+choice over for each sample name shared by both versions.
 
 ## Reopening a review
 
@@ -77,6 +80,8 @@ can be saved as named profiles for the next batch, and every import
 records its source file, checksum, and row-level outcome counts. For
 existing individuals, the default merges only nonblank fields; full
 replacement and skip are explicit choices.
+
+If an Excel import exceeds the worksheet size or cell limit, export the columns you need as a TSV or split the sheet into smaller batches.
 
 ## Storage as the library grows
 

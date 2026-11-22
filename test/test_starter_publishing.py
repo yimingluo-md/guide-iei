@@ -47,7 +47,7 @@ def fixtures(tmp_path):
     cases = json.loads((Path(__file__).parent / "contracts/alphamissense_version_collisions.json").read_text())["cases"]
     vep.write_text(json.dumps({"status": "PASS", "preparations": preparations,
                               "baked_plugins": {name: identity(Path(__file__).resolve().parents[1] / "docker" / name)
-                                                for name in ("IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json")},
+                                                for name in ("GuideAllele.pm", "IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json")},
                               "alphamissense_version_collision_regressions": [c["gene"] for c in cases]}))
     return build, audit, vep
 

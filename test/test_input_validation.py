@@ -41,6 +41,74 @@ class InputValidationTests(unittest.TestCase):
     def test_crlf_and_missing_trailing_format_subfield(self):
         self.check_text((HEADER + RECORD.replace("0/1:10", "0/1")).replace("\n", "\r\n"))
 
+    def test_bgzf_extensions_through_validation_assembly_and_gpn(self):
+        from pipeline.avi_dataset import bgzf, EOF
+        from pipeline.vcf_assembly import resolve_input_assembly
+        config = self.root / "config.yaml"
+        config.write_text("{}")
+        for suffix in (".bgz", ".bgzf"):
+            path = self.root / ("input.vcf" + suffix)
+            path.write_bytes(bgzf((HEADER + RECORD).replace("\n", "\r\n").encode()) + EOF)
+            self.assertEqual(validate_input_vcf(path)["records_checked"], 1)
+            self.assertEqual(resolve_input_assembly(path, "auto")["resolved"], "GRCh38")
+            cli = [sys.executable, str(ROOT / "pipeline/gpn_star.py")]
+            self.assertEqual(subprocess.check_output(cli + ["has-fields", path]), b"no\n")
+            self.assertEqual(subprocess.check_output(cli + ["annotate", config, path]), (HEADER + RECORD).encode())
+
+    def test_bgzf_missing_eof_and_ordinary_gzip_with_extra_fields(self):
+        from pipeline.avi_dataset import bgzf, EOF
+        data = (HEADER + RECORD).encode()
+        block = bgzf(data)
+        for suffix in (".gz", ".bgz", ".bgzf"):
+            path = self.root / ("input.vcf" + suffix)
+            path.write_bytes(block + EOF)
+            self.assertEqual(validate_input_vcf(path)["records_checked"], 1)
+            path.write_bytes(block)
+            self.assertEqual(gzip.decompress(block), data)
+            for full in (False, True):
+                with self.assertRaisesRegex(ValueError, "missing BGZF EOF"):
+                    validate_input_vcf(path, full=full)
+
+        # A valid non-BC subfield may contain the literal BC bytes. Iterate
+        # the subfields instead of testing FEXTRA or searching the raw header.
+        extra = b"XY\x04\x00BC\x02\x00"
+        member = gzip.compress(data)
+        path.write_bytes(member[:3] + b"\x04" + member[4:10] +
+                         len(extra).to_bytes(2, "little") + extra + member[10:] + gzip.compress(RECORD.encode()))
+        self.assertEqual(validate_input_vcf(path)["records_checked"], 2)
+
+    def test_both_entry_points_refuse_block_boundary_truncation(self):
+        from pipeline.avi_dataset import bgzf
+        path = self.root / "input.vcf.gz"
+        path.write_bytes(bgzf((HEADER + RECORD).encode()))
+        config = self.root / "config.yaml"
+        config.write_text("output: {compress: bgzip}\ncontainer: {runtime: should-not-run}\n")
+        out = self.root / "out.vcf.gz"
+        for args in (["scripts/preflight.sh", config, path, out],
+                     ["scripts/run_annotation.sh", "-c", config, "-i", path, "-o", out]):
+            result = subprocess.run(["bash", *args], cwd=ROOT, capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("missing BGZF EOF", result.stderr)
+            self.assertFalse(out.exists())
+
+    def test_direct_runner_rejects_mismatched_output_before_reading_input(self):
+        self.vcf.write_text(HEADER + RECORD)
+        config = self.root / "config.yaml"
+        for setting, suffix, error in (("bgzip", ".vcf", "ending in .vcf.gz"),
+                                       ("none", ".vcf.gz", "ending in .vcf"),
+                                       ("bgzip", ".vcf.bgz", "ending in .vcf.gz"),
+                                       ("gzip", ".vcf.gz", "must be bgzip or none")):
+            with self.subTest(setting=setting, suffix=suffix):
+                config.write_text(f"output:\n  compress: {setting}\n")
+                out = self.root / "absent" / ("out" + suffix)
+                result = subprocess.run(["bash", str(ROOT / "scripts/run_annotation.sh"),
+                                         "-c", config, "-i", self.vcf, "-o", out],
+                                        capture_output=True, text=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(error, result.stderr)
+                self.assertNotIn("validating input", result.stderr)
+                self.assertFalse(out.parent.exists())
+
     def test_fixture_has_mandatory_info_and_preserves_original_calls(self):
         self.assertEqual(validate_input_vcf(ROOT / "test/sample.mini.vcf")["records_checked"], 3)
         rows = [line.split("\t") for line in (ROOT / "test/sample.mini.vcf").read_text().splitlines() if not line.startswith("#")]
@@ -75,15 +143,15 @@ class InputValidationTests(unittest.TestCase):
         config.write_text("reference:\n  assembly: GRCh38\nregion:\n  coding_only: false\ncontainer:\n  runtime: should-not-run\n")
         self.vcf.write_text(HEADER.replace("INFO\t", "") + RECORD)
         commands = [
-            ["bash", str(ROOT / "scripts/preflight.sh"), str(config), str(self.vcf), str(self.root / "out.vcf.gz")],
-            ["bash", str(ROOT / "scripts/run_annotation.sh"), "-c", str(config), "-i", str(self.vcf), "-o", str(self.root / "out.vcf.gz")],
+            ["bash", str(ROOT / "scripts/preflight.sh"), str(config), str(self.vcf), str(self.root / "out.vcf")],
+            ["bash", str(ROOT / "scripts/run_annotation.sh"), "-c", str(config), "-i", str(self.vcf), "-o", str(self.root / "out.vcf")],
         ]
         for command in commands:
             result = subprocess.run(command, text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("INFO is mandatory", result.stderr)
             self.assertNotIn("container runtime not found", result.stderr)
-            self.assertFalse((self.root / "out.vcf.gz").exists())
+            self.assertFalse((self.root / "out.vcf").exists())
 
 
 if __name__ == "__main__":

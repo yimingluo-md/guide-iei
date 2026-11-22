@@ -50,6 +50,22 @@ def variant(
 
 
 class WgsPrefilterTests(unittest.TestCase):
+    def test_nonfinite_scores_and_filter_thresholds(self):
+        from local_service.cohort_store import parse_number
+        from local_service.wgs_review import _numbers, _info_numbers
+        from pipeline.promoterai_evidence import promoterai_observation
+        for text in ("NaN", "inf", "-inf", "1e999"):
+            self.assertIsNone(parse_number(text))
+            with self.assertRaises(ValueError):
+                WgsPrefilterOptions.from_payload({"min_spliceai": text})
+            field = {"score": text + "&0.95"}
+            self.assertEqual(_numbers([field], {"score"}), [0.95])
+            self.assertEqual(_info_numbers(field, {"score"}, 0, 1), [0.95])
+            result = promoterai_observation({"PromoterAI_score": text, "PromoterAI_TSS": "80",
+                "PromoterAI_source_transcript": "transcript", "PromoterAI_match": "exact_version", "PromoterAI_strand": "+"})
+            self.assertIsNone(result.usable_score)
+            self.assertNotEqual(result.match_status, "exact")
+
     def test_defaults_and_payload_validation(self):
         options = WgsPrefilterOptions.from_payload({})
         self.assertEqual(options.max_gnomad_popmax, 0.01)
@@ -163,10 +179,9 @@ class WgsPrefilterTests(unittest.TestCase):
             record, HEADER, options, {"1": ((90, 110),)}
         ))
 
-    def test_multi_allelic_match_failure_still_qualifies_for_retention(self):
-        # Retention is record-granular: an unattributable high SpliceAI score
-        # must still keep the record (the safe direction), even though it can
-        # no longer exclude anything.
+    def test_ambiguous_deletion_score_cannot_qualify_either_alt(self):
+        # Both deletions minimize to "-". Without ALLELE_NUM even a high
+        # SpliceAI score cannot select a specific deletion.
         csq_quiet = "|".join(("-", "", "NFKB1", "0.001", "0.1", ".", "10"))
         csq_splice = "|".join(("-", "", "NFKB1", "0.001", "0.9", ".", "10"))
         record = (
@@ -174,7 +189,16 @@ class WgsPrefilterTests(unittest.TestCase):
             f"CSQ={csq_quiet},{csq_splice}\tGT\t1/2\n"
         )
         options = WgsPrefilterOptions(noncoding_mode="none")
-        self.assertTrue(record_passes(record, HEADER, options, {}))
+        self.assertFalse(record_passes(record, HEADER, options, {}))
+
+    def test_record_wide_indel_anchor_attributes_splice_score_to_insertion(self):
+        header = VcfHeader(("CASE",), ("Allele", "SpliceAI_pred_DS_AG"), ("1",))
+        record = "1\t100\t.\tAT\tA,ATT\t99\tPASS\tCSQ=-|0.1,TT|0.9\tGT\t1/2\n"
+        options = WgsPrefilterOptions(noncoding_mode="none")
+        self.assertTrue(record_passes(record, header, options, {}))
+        # Mask the insertion. Its score cannot qualify the remaining deletion.
+        masked = record.replace("CSQ=", "IEI_WGS_RETAINED=1,0;CSQ=")
+        self.assertFalse(record_passes(masked, header, options, {}))
 
     def test_single_alt_match_failure_still_uses_all_consequences(self):
         # A single-ALT record's consequences describe that ALT even when the
@@ -305,6 +329,69 @@ class WgsPrefilterTests(unittest.TestCase):
         self.assertIn("ENST_PICK", compacted)
         self.assertIn("ENST_FALLBACK", compacted)
         self.assertNotIn("ENST_REDUNDANT", compacted)
+
+    def test_compact_review_preserves_one_strict_logofunc_source_per_allele_and_gene(self):
+        fields = (
+            "Allele", "ALLELE_NUM", "Gene", "Feature", "PICK", "LoGoFunc_match",
+            "LoGoFunc_source_transcript", "LoGoFunc_source_HGVSp", "LoGoFunc_GOF",
+        )
+        header = VcfHeader(("CASE",), fields, ("1",))
+        entries = [
+            "G|1|ENSG1|PREFERRED|1|allele_only|SOURCE|p.Lys1Arg|",
+            "G|1|ENSG1|SOURCE||allele_transcript_protein|SOURCE|p.Lys1Arg|0.9",
+            "G|1|ENSG1|OTHER||allele_only|SOURCE|p.Lys1Arg|",
+            "G|1|ENSG2|FALLBACK|||||",
+            "G|1|ENSG2|SRC2||allele_transcript_protein|SRC2|p.Lys2Arg|0.8",
+            "T|2|ENSG1|SRC3|1|allele_transcript_protein|SRC3|p.Lys1Thr|0.1",
+            "T|2|ENSG1|OTHER||allele_only|SRC3|p.Lys1Thr|",
+            "G|1|ENSG1|SRC4||allele_transcript_protein|SRC4|p.Lys3Arg|0.7",
+        ]
+        record = "1\t100\t.\tA\tG,T\t99\tPASS\tCSQ=" + ",".join(entries) + "\tGT\t1/2\n"
+        compacted, scanned, retained = compact_review_transcripts(record, header)
+        expected = [entries[i] for i in (0, 1, 3, 4, 5)]
+        self.assertEqual((scanned, retained), (len(entries), len(expected)))
+        self.assertEqual(compacted.split("\t")[7], "CSQ=" + ",".join(expected))
+
+    def test_prefilter_preserves_calls_and_indexes_only_qualifying_alts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "alleles.vcf"
+            source.write_text(
+                '##fileformat=VCFv4.2\n##contig=<ID=1,length=248956422>\n'
+                '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|MAX_AF|DS_AG">\n'
+                '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tCASE\n'
+                '1\t100\t.\tA\tG,T\t99\tPASS\tCSQ=G|0.50|0,T|0|0\tGT:AD\t1|2:0,8,12\n'
+                '1\t101\t.\tA\tG,*\t99\tPASS\tCSQ=G|0.45|0\tGT\t1/2\n'
+                '1\t102\t.\tA\tG,*\t99\tPASS\tCSQ=G|0|0\tGT\t1/2\n'
+                '1\t200\t.\tAT\tA,CT\t99\tPASS\tCSQ=-|0.50|0.99,C|0|0\tGT\t1/2\n'
+                '1\t300\t.\tAT\tA,CT\t99\tPASS\tCSQ=-|0|0,C|0|0\tGT\t1/2\n'
+            )
+            bed = root / "regions.bed"
+            # At the last site, only the deleted T at 301 is in the region.
+            bed.write_text("1\t99\t102\n1\t300\t301\n")
+            cohort = CohortStore(
+                root / "cohort.sqlite3", enable_auto_index=True, hts_backend=FakeHtsBackend(),
+            )
+            review = WgsReviewStore(root, cohort).prefilter(
+                source, WgsPrefilterOptions(noncoding_mode="none"), exome_bed_path=bed,
+            )
+            with gzip.open(review["path"], "rt") as handle:
+                records = [line.rstrip().split("\t") for line in handle if not line.startswith("#")]
+            self.assertEqual([line[1] for line in records], ["100", "102", "300"])
+            self.assertEqual(records[0][4], "G,T")
+            self.assertEqual(records[0][8:], ["GT:AD", "1|2:0,8,12"])
+            self.assertIn("IEI_WGS_RETAINED=0,1", records[0][7])
+            self.assertIn("IEI_WGS_RETAINED=1,0", records[2][7])
+            # Simulate an existing compact index made by the old record-level
+            # filter, then import again under the same source path and settings.
+            cohort.import_vcf(source, import_profile="prefiltered")
+            args = dict(source_path=source, import_profile="prefiltered", prefilter_metadata=review)
+            self.assertEqual(cohort.import_vcf(Path(review["path"]), **args)["status"], "imported")
+            self.assertEqual(cohort.import_vcf(Path(review["path"]), **args)["status"], "unchanged")
+            with cohort._session() as db:
+                self.assertEqual([tuple(row) for row in db.execute(
+                    "SELECT pos,ref,alt FROM cohort_variants ORDER BY pos"
+                )], [(100, "A", "T"), (102, "A", "G"), (300, "AT", "A")])
 
     def test_prefilter_output_persists_allele_flag_and_count(self):
         with tempfile.TemporaryDirectory() as directory:

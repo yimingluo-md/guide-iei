@@ -270,6 +270,39 @@ class CohortStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
+    def test_direct_import_excludes_reset_and_vacuum_between_chunks(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from local_service.sample_library import SampleLibrary
+
+        library = SampleLibrary(self.root, self.store)
+        self.store.import_vcf(self.vcf)
+        with self.store._session() as connection:
+            published = [row[0] for row in connection.execute("SELECT id FROM cohort_samples")]
+        paused = threading.Event()
+        resume = threading.Event()
+
+        def pause_at_chunk():
+            paused.set()
+            if not resume.wait(10):
+                raise TimeoutError("test did not release the merge")
+
+        with patch.object(self.store, "_yield_to_waiting_writers", side_effect=pause_at_chunk):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                importing = pool.submit(self.store.import_vcf, self.vcf, force=True)
+                try:
+                    self.assertTrue(paused.wait(10))
+                    self.assertTrue(self.store.has_active_import())
+                    with self.assertRaisesRegex(ValueError, "active cohort import"):
+                        self.store.remove_samples(published)
+                    with self.assertRaisesRegex(ValueError, "active cohort import"):
+                        library.compact_database()
+                finally:
+                    resume.set()
+                self.assertEqual(importing.result(timeout=10)["status"], "imported")
+        self.assertFalse(self.store.has_active_import())
+        library.compact_database()
+        self.assertEqual(self.store.stats()["individuals"], len(published))
+
     def test_imports_pass_carriers_and_skips_unchanged_file(self):
         result = self.store.import_paths([str(self.vcf)])
         self.assertEqual(result["imported"], 1)
@@ -379,7 +412,7 @@ class CohortStoreTests(unittest.TestCase):
             }
         self.assertEqual(cohort_tables, {
             "cohort_files", "cohort_samples", "cohort_variants",
-            "cohort_annotations", "cohort_genotypes",
+            "cohort_annotations", "cohort_genotypes", "cohort_source_scores",
             # Never dropped: it carries the file-id allocator (H1).
             "cohort_meta",
         })
@@ -765,6 +798,13 @@ class CohortStoreTests(unittest.TestCase):
         )
         self.store.import_paths([str(source)])
 
+        # A pre-upgrade index can retain an unverified score on the preferred row.
+        with self.store._connect() as connection:
+            connection.execute("""
+                UPDATE cohort_annotations SET logofunc_prediction='LOF', logofunc_neutral=0,
+                    logofunc_gof=0, logofunc_lof=1 WHERE transcript='ENST_MANE'
+            """)
+
         result = self.store.query({
             "mode": "gene", "gene": "LOGOGENE",
             "logofunc_class": "GOF", "min_logofunc_probability": 0.8,
@@ -788,6 +828,41 @@ class CohortStoreTests(unittest.TestCase):
             if annotation["transcript"] == "ENST_SOURCE"
         )
         self.assertEqual(exact["logofunc_match"], "allele_transcript_protein")
+
+        mane_detail = next(a for a in detail["annotations"] if a["transcript"] == "ENST_MANE")
+        self.assertFalse(mane_detail["logofunc_prediction"])
+        self.assertIsNone(mane_detail["logofunc_lof"])
+        self.assertEqual(mane_detail["logofunc_source_transcript"], "ENST_SOURCE")
+
+        with self.store._connect() as connection:
+            connection.execute("UPDATE cohort_annotations SET logofunc_match='' WHERE transcript='ENST_SOURCE'")
+        row = self.store.query({"mode": "variant", "query": "1:950:A:G"})["rows"][0]
+        self.assertFalse(row["logofunc_prediction"])
+        self.assertTrue(all(row[key] is None for key in ("logofunc_gof", "logofunc_lof", "logofunc_neutral")))
+        self.assertEqual(row["logofunc_match"], "allele_only")
+
+    def test_summary_rule_changed_distinguishes_recorded_false_from_missing(self):
+        source = self.root / "unchanged.vcf"
+        write_vcf(source)
+        source.write_text(source.read_text().replace("|FAIL|PASS|1|42|ok|", "|FAIL||0|42|ok|"))
+        self.store.import_paths([str(source)])
+
+        def changed(key):
+            detail = self.store.variant_detail(key)
+            self.assertEqual(
+                detail["rows"][0]["loftee_50bp_changed"],
+                detail["annotations"][0]["loftee_50bp_changed"],
+            )
+            return detail["rows"][0]["loftee_50bp_changed"]
+
+        self.assertIsNone(changed("1:200:C:T"))
+        self.assertIs(changed("1:100:A:G"), False)
+        with self.store._connect() as connection:
+            connection.execute("DELETE FROM prediction_values WHERE metric='rule_changed'")
+        self.assertIsNone(changed("1:100:A:G"))
+        with self.store._connect() as connection:
+            connection.execute("UPDATE cohort_annotations SET loftee_50bp_original=loftee_50bp")
+        self.assertIs(changed("1:100:A:G"), False)
 
     def test_legacy_single_transcript_vcf_without_pick_remains_searchable(self):
         legacy_vcf = self.root / "legacy-pick-output.vcf"
@@ -1687,8 +1762,7 @@ class LegacyColumnReconciliationTests(unittest.TestCase):
 
 
 class PopulationFrequencyAndPloidyTests(unittest.TestCase):
-    """Review M9: frequency sources are preferred, never pooled; single-copy
-    X/Y loci match homozygous and hemizygous searches alike."""
+    """Frequency source preference and genotype filters."""
 
     def test_supplied_popmax_is_not_overridden_by_max_af(self):
         annotation = annotation_from({
@@ -1713,14 +1787,14 @@ class PopulationFrequencyAndPloidyTests(unittest.TestCase):
         self.assertEqual(missing["gnomad_popmax_source"], "")
 
     def test_single_copy_loci_are_recognised(self):
-        self.assertTrue(single_copy_locus("X", 71_108_276))
-        self.assertTrue(single_copy_locus("chrX", 71_108_276))
-        self.assertTrue(single_copy_locus("Y", 2_800_000))
-        self.assertFalse(single_copy_locus("X", 1_000_000))  # PAR1
-        self.assertFalse(single_copy_locus("X", 155_800_000))  # PAR2
+        for chrom, start2, end2 in (("chrX", 155_701_383, 156_030_895), ("Y", 56_887_903, 57_217_415)):
+            for pos in (10_001, 2_781_479, start2, end2):
+                self.assertFalse(single_copy_locus(chrom, pos))
+            for pos in (10_000, 2_781_480, start2 - 1, end2 + 1):
+                self.assertTrue(single_copy_locus(chrom, pos))
         self.assertFalse(single_copy_locus("1", 71_108_276))
 
-    def test_hemizygous_and_homozygous_searches_meet_on_single_copy_loci(self):
+    def test_homozygous_and_hemizygous_filters_respect_ploidy_and_recorded_sex(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             vcf = root / "ploidy.vcf"
@@ -1740,39 +1814,37 @@ class PopulationFrequencyAndPloidyTests(unittest.TestCase):
                 + "|".join(CSQ_FIELDS) + '">\n'
                 '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
                 "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tHAPLOID\tDIPLOID\n"
-                # Autosome first (sorted order): never widened.
+                # Autosome, X PAR, and non-PAR X in genomic order.
                 f"1\t100\t.\tA\tG\t99\tPASS\tCSQ={autosomal}\tGT\t0/1\t1/1\n"
                 # PAR1 X: diploid in everyone; a haploid call there stays
                 # hemizygous and a 1/1 stays homozygous — no widening.
                 f"X\t1000000\t.\tA\tG\t99\tPASS\tCSQ={consequence}\tGT\t1\t1/1\n"
                 # Non-PAR X: one caller writes the male call haploid, the
                 # other diploid-style.
-                f"X\t71108276\t.\tA\tG\t99\tPASS\tCSQ={consequence}\tGT\t1\t1/1\n",
+                f"X\t71108276\t.\tA\tG\t99\tPASS\tCSQ={consequence}\tGT\t1\t1/1\n"
+                f"Y\t3000000\t.\tA\tG\t99\tPASS\tCSQ={consequence}\tGT\t1\t1/1\n"
+                f"Y\t56887903\t.\tA\tG\t99\tPASS\tCSQ={consequence}\tGT\t1\t1/1\n"
+                f"MT\t3243\t.\tA\tG\t99\tPASS\tCSQ={consequence}\tGT\t1\t1/1\n",
                 encoding="utf-8",
             )
             store = CohortStore(root / "cohort.sqlite3")
             imported = store.import_paths([str(vcf)])
             self.assertEqual(imported["imported"], 1, imported)
 
-            def hits(zygosity):
+            def hits(zygosity, chrom="X"):
                 result = store.query({
                     "mode": "gene", "gene": "IL2RG", "max_popmax": 0.01,
                     "zygosity": zygosity,
                 })
                 return sorted(
-                    (row["pos"], row["sample"], row["zygosity"]) for row in result["rows"]
+                    (row["pos"], row["sample"], row["zygosity"]) for row in result["rows"] if row["chrom"] == chrom
                 )
 
-            self.assertEqual(hits("hemizygous"), [
-                (1000000, "HAPLOID", "hemizygous"),
-                (71108276, "DIPLOID", "homozygous"),
-                (71108276, "HAPLOID", "hemizygous"),
-            ])
-            self.assertEqual(hits("homozygous"), [
-                (1000000, "DIPLOID", "homozygous"),
-                (71108276, "DIPLOID", "homozygous"),
-                (71108276, "HAPLOID", "hemizygous"),
-            ])
+            haploid_calls = [(1000000, "HAPLOID", "hemizygous"), (71108276, "HAPLOID", "hemizygous")]
+            par_diploid = [(1000000, "DIPLOID", "homozygous")]
+            nonpar_diploid = [(71108276, "DIPLOID", "homozygous")]
+            self.assertEqual(hits("hemizygous"), haploid_calls)
+            self.assertEqual(hits("homozygous"), par_diploid)
             self.assertEqual(hits("heterozygous"), [])
             autosome = store.query({
                 "mode": "gene", "gene": "NFKB1", "max_popmax": 0.01,
@@ -1787,40 +1859,21 @@ class PopulationFrequencyAndPloidyTests(unittest.TestCase):
                 any("SCAN cohort_annotations" in step for step in plan["plan"]), plan
             )
 
-            # Recorded sex narrows the widening where it is known (review
-            # follow-up): once DIPLOID is recorded as female, its X 1/1 is
-            # a genuine two-copy call and leaves the hemizygous search; the
-            # homozygous search still lists it, and the haploid call stays
-            # in both. Genotypes and stored classes are untouched.
             from local_service.phenotype_store import PhenotypeStore
             phenotypes = PhenotypeStore(root / "cohort.sqlite3")
-            phenotypes.save_individual({
-                "individual_id": "IND-DIPLOID", "sample_ids": ["DIPLOID"],
-                "sex_at_birth": "female",
-            })
-            self.assertEqual(hits("hemizygous"), [
-                (1000000, "HAPLOID", "hemizygous"),
-                (71108276, "HAPLOID", "hemizygous"),
-            ])
-            self.assertEqual(hits("homozygous"), [
-                (1000000, "DIPLOID", "homozygous"),
-                (71108276, "DIPLOID", "homozygous"),
-                (71108276, "HAPLOID", "hemizygous"),
-            ])
-            phenotypes.save_individual({
-                "individual_id": "IND-DIPLOID", "sample_ids": ["DIPLOID"],
-                "sex_at_birth": "male",
-            })
-            self.assertEqual(hits("hemizygous"), [
-                (1000000, "HAPLOID", "hemizygous"),
-                (71108276, "DIPLOID", "homozygous"),
-                (71108276, "HAPLOID", "hemizygous"),
-            ])
-            phenotypes.save_individual({
-                "individual_id": "IND-DIPLOID", "sample_ids": ["DIPLOID"],
-                "sex_at_birth": "unknown",
-            })
-            self.assertEqual(len(hits("hemizygous")), 3)
+            for sex in ("female", "male", "unknown", "other"):
+                phenotypes.save_individual({
+                    "individual_id": "IND-DIPLOID", "sample_ids": ["DIPLOID"],
+                    "sex_at_birth": sex,
+                })
+                self.assertEqual(hits("hemizygous"), sorted(haploid_calls + (nonpar_diploid if sex == "male" else [])), sex)
+                self.assertEqual(hits("homozygous"), par_diploid + (nonpar_diploid if sex == "female" else []), sex)
+
+                y_single = [(3000000, "HAPLOID", "hemizygous"), (56887903, "HAPLOID", "hemizygous")]
+                self.assertEqual(hits("hemizygous", "Y"), sorted(y_single + ([(3000000, "DIPLOID", "homozygous")] if sex == "male" else [])))
+                self.assertEqual(hits("homozygous", "Y"), [(56887903, "DIPLOID", "homozygous")] if sex == "male" else [])
+                self.assertEqual(hits("homozygous", "MT"), [])
+                self.assertEqual(hits("hemizygous", "MT"), [(3243, "HAPLOID", "hemizygous")])
 
 
 def write_many_variant_vcf(
@@ -2086,13 +2139,10 @@ class ChunkedMergeTests(unittest.TestCase):
         write_many_variant_vcf(self.vcf, 40, promoter_score="0.4")
         self.store.import_vcf(self.vcf)
         write_many_variant_vcf(self.vcf, 40, cadd=99)
-        cleanup = self.store._finish_merge_cleanup
+        def crash_before_cleanup(connection):
+            raise RuntimeError("power loss before published evidence reconciliation")
 
-        def crash_after_cleanup(connection):
-            cleanup(connection)
-            raise RuntimeError("power loss before final evidence reconciliation")
-
-        with patch.object(self.store, "_finish_merge_cleanup", side_effect=crash_after_cleanup):
+        with patch.object(self.store, "_finish_merge_cleanup", side_effect=crash_before_cleanup):
             with self.assertRaises(RuntimeError):
                 self.store.import_vcf(self.vcf, force=True)
         with self.store._session() as connection:

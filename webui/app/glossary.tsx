@@ -5,35 +5,26 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   GLOSSARY, GLOSSARY_CATEGORIES, segmentText,
-  type GlossaryEntry,
 } from "./glossary-data";
-
-function TermPopover({ entry, onClose }: { entry: GlossaryEntry; onClose: () => void }) {
-  const popoverRef = useRef<HTMLSpanElement | null>(null);
-  useEffect(() => {
-    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
-    const onClick = (event: MouseEvent) => {
-      if (popoverRef.current && !popoverRef.current.contains(event.target as Node)) onClose();
-    };
-    document.addEventListener("keydown", onKey);
-    document.addEventListener("mousedown", onClick);
-    return () => {
-      document.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onClick);
-    };
-  }, [onClose]);
-  return (
-    <span className="glossary-popover" ref={popoverRef} role="dialog" aria-label={`Definition of ${entry.term}`}>
-      <strong>{entry.term}</strong>
-      <span>{entry.definition}</span>
-    </span>
-  );
-}
 
 /** Render authored copy with tap-for-definition on recognized genetics terms. */
 export function GlossaryText({ text }: { text: string }) {
   const segments = useMemo(() => segmentText(text), [text]);
   const [openId, setOpenId] = useState<string | null>(null);
+  const openAnchor = useRef<HTMLSpanElement>(null);
+  useEffect(() => {
+    if (!openId) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setOpenId(null); };
+    const onMouseDown = (event: MouseEvent) => {
+      if (!openAnchor.current?.contains(event.target as Node)) setOpenId(null);
+    };
+    document.addEventListener("keydown", onKey);
+    document.addEventListener("mousedown", onMouseDown);
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.removeEventListener("mousedown", onMouseDown);
+    };
+  }, [openId]);
   if (segments.length === 1 && !segments[0].entry) return <>{text}</>;
   return (
     <>
@@ -41,20 +32,23 @@ export function GlossaryText({ text }: { text: string }) {
         const entry = segment.entry;
         if (!entry) return <span key={index}>{segment.text}</span>;
         return (
-          <span className="glossary-anchor" key={`${entry.id}-${index}`}>
+          <span className="glossary-anchor" ref={openId === entry.id ? openAnchor : undefined} key={`${entry.id}-${index}`}>
             <button
               type="button"
               className="glossary-term"
               aria-expanded={openId === entry.id}
               onClick={(event) => {
                 event.stopPropagation();
-                setOpenId(openId === entry.id ? null : entry.id);
+                setOpenId((current) => current === entry.id ? null : entry.id);
               }}
             >
               {segment.text}
             </button>
             {openId === entry.id && (
-              <TermPopover entry={entry} onClose={() => setOpenId(null)} />
+              <span className="glossary-popover" role="dialog" aria-label={`Definition of ${entry.term}`}>
+                <strong>{entry.term}</strong>
+                <span>{entry.definition}</span>
+              </span>
             )}
           </span>
         );

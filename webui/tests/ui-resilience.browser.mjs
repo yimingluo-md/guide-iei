@@ -22,7 +22,9 @@ const parsed = await parseVcfFiles([new File([
   "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSYNTHETIC_ONLY\n",
   "1\t100\t.\tA\tG\t99\tPASS\tCSQ=G|missense_variant|MODERATE|NFKB1|ENSG00000109320|ENST00000226574|c.1A>G|p.Ala1Val|NM_TEST|1\tGT:DP:GQ:AD\t0/1:40:99:20,20\n",
 ], "synthetic-recovery.vcf")]);
-assert.equal(parsed.rows.length, 1);
+const [first] = parsed.rows;
+parsed.rows.push({ ...first, key: "second-transcript", transcript: "ENST_SECOND", maneSelect: false,
+  hgvsP: "change\twith\r\ncontrols" });
 
 const port = Number(process.env.UI_TEST_PORT || 45389);
 const origin = `http://127.0.0.1:${port}`;
@@ -52,6 +54,7 @@ try {
   await page.setRequestInterception(true);
   page.on("request", (request) => {
     const url = new URL(request.url());
+    if (url.protocol === "blob:") return void request.continue();
     if (url.pathname.includes("/api/")) {
       void request.respond({ status: 503, contentType: "application/json", body: '{"error":"Synthetic test: service unavailable"}' });
     } else if (failedReference && url.pathname.endsWith(failedReference)) {
@@ -80,22 +83,6 @@ try {
     }, text);
   };
   await clickNav("Variants");
-  const disabled = await page.evaluate(() => Object.fromEntries(
-    [...document.querySelectorAll(".check-row")].map((label) => [label.textContent, label.querySelector("input").disabled]),
-  ));
-  assert(Object.entries(disabled).some(([label, value]) => label.startsWith("IUIS 2024 IEI") && value));
-  assert(Object.entries(disabled).some(([label, value]) => label.startsWith("Haploinsufficiency") && !value));
-  await page.evaluate(() => [...document.querySelectorAll(".check-row")]
-    .find((label) => label.textContent.startsWith("Haploinsufficiency")).click());
-  failedReference = "iei_haploinsufficiency_genes.txt";
-  await clickText("Retry references");
-  await page.waitForFunction(() => document.body.textContent.includes("iei_haploinsufficiency_genes.txt could not be loaded"));
-  assert(await page.evaluate(() => document.body.textContent.includes("Results paused: a selected reference filter is unavailable")));
-  assert(!(await page.evaluate(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Export TSV"))));
-  failedReference = "";
-  await clickText("Retry references");
-  await page.waitForFunction(() => !document.body.textContent.includes("Some bundled references are unavailable"));
-
   // Test-only React fiber inspection locates the real data-owner callbacks;
   // no production fault-injection endpoint or hook is added to the app.
   await page.evaluate((fixture) => {
@@ -108,9 +95,69 @@ try {
     window.__reviewCallbacks = props;
     props.setRows(fixture.rows);
     props.setSummary(fixture.summary);
-    props.setSaved(new Set([fixture.rows[0].key]));
   }, parsed);
   await page.waitForFunction(() => document.querySelector(".table-frame")?.textContent.includes("NFKB1"));
+  const toggleCollapse = async () => {
+    await clickText("Display settings");
+    await page.locator(".settings-grid ::-p-text(One row per variant)").click();
+    await clickText("Display settings");
+  };
+  const starCount = n => page.waitForFunction(count => [...document.querySelectorAll(".nav-item")]
+    .find(node => node.firstElementChild.textContent === "Saved").lastElementChild.textContent === String(count), {}, n);
+  await page.click(".star-button");
+  await starCount(1);
+  await toggleCollapse();
+  await page.click(".star-button:not(.saved)");
+  await starCount(2);
+  await toggleCollapse();
+  assert.equal(await page.$$eval(".table-frame tbody tr", rows => rows.length), 1);
+  await page.evaluate(() => {
+    window.confirm = () => true;
+    HTMLAnchorElement.prototype.click = async function () {
+      window.__exportedText = "";
+      window.__exportedName = this.download;
+      window.__exportedText = await (await fetch(this.href)).text();
+    };
+  });
+  await clickText("Export TSV");
+  await page.waitForFunction(() => window.__exportedText);
+  const variantExport = await page.evaluate(() => window.__exportedText);
+  assert.equal(variantExport.trimEnd().split("\n").length, 4, "collapsed export includes both transcripts");
+  assert.equal(await page.evaluate(() => window.__exportedName), "iei-prioritized-variants.tsv");
+  const disabled = await page.evaluate(() => Object.fromEntries(
+    [...document.querySelectorAll(".check-row")].map((label) => [label.textContent, label.querySelector("input").disabled]),
+  ));
+  assert(Object.entries(disabled).some(([label, value]) => label.startsWith("IUIS 2024 IEI") && value));
+  assert(Object.entries(disabled).some(([label, value]) => label.startsWith("IEI haploinsufficiency") && !value));
+  await page.evaluate(() => [...document.querySelectorAll(".check-row")]
+    .find((label) => label.textContent.startsWith("IEI haploinsufficiency")).click());
+  failedReference = "iei_haploinsufficiency_genes.txt";
+  await clickText("Retry references");
+  await page.waitForFunction(() => document.body.textContent.includes("iei_haploinsufficiency_genes.txt could not be loaded"));
+  assert(await page.evaluate(() => document.body.textContent.includes("Results paused: a selected reference filter is unavailable")));
+  assert(!(await page.evaluate(() => [...document.querySelectorAll("button")].some((button) => button.textContent === "Export TSV"))));
+  await clickNav("Saved");
+  await starCount(2);
+  await page.waitForFunction(() => document.querySelectorAll(".table-frame tbody tr").length === 2);
+  await clickText("Export saved TSV");
+  await page.waitForFunction(() => window.__exportedText);
+  const [notice, header, ...records] = (await page.evaluate(() => window.__exportedText)).slice(0, -1).split("\n");
+  assert.match(notice, /^# Research use only/);
+  const columns = header.split("\t");
+  assert.equal(records.length, 2);
+  assert.equal(await page.evaluate(() => window.__exportedText), variantExport);
+  assert(records.every(row => row.split("\t").length === columns.length));
+  assert.deepEqual(records.map(row => row.split("\t")[columns.indexOf("transcript")]), [first.transcript, "ENST_SECOND"]);
+  assert(records[1].includes("change\\twith\\r\\ncontrols"));
+  assert.equal(await page.evaluate(() => window.__exportedName), "iei-saved-candidates.tsv");
+  await page.click(".star-button.saved");
+  await starCount(1);
+  await clickNav("Variants");
+  await page.waitForFunction(() => document.body.textContent.includes("Results paused: a selected reference filter is unavailable"));
+  failedReference = "";
+  await clickText("Retry references");
+  await page.waitForFunction(() => !document.body.textContent.includes("Some bundled references are unavailable"));
+
   await page.evaluate(() => {
     const fixture = window.__reviewFixture;
     const gene = fixture.rows[0].gene;
@@ -135,7 +182,7 @@ try {
   assert.equal(await page.evaluate(() => localStorage.getItem("guideIeiSavedCandidates")), null);
   assert.equal(await page.evaluate(() => [...document.querySelectorAll(".nav-item")]
     .find((node) => node.firstElementChild.textContent === "Saved").lastElementChild.textContent), "0");
-  console.log("PASS: reference failure/retry, legacy bookmark cleanup, real render recovery retaining rows/stars, and refresh privacy.");
+  console.log("PASS: collapsed and Saved TSV contents, stars under a blocked filter, reference retry, recovery and refresh privacy.");
 } catch (error) {
   if (browser) {
     const pages = await browser.pages();

@@ -253,7 +253,7 @@ variant-scoped workspace with three deliberately separate modules. These
 controls and the workspace are intentionally hidden for exome imports:
 
 1. Activity detected in SCREEN reference tissue/cell epigenomic data (implemented).
-2. Regulatory element–gene links such as R2G (to be developed).
+2. Predicted regulatory target genes from ENCODE-rE2G, with their reference biosamples, scores and source files. See [Predicted regulatory target genes](guide/05-whole-genome.md#predicted-regulatory-target-genes).
 3. Gene-specific variant-effect predictions such as AlphaGenome (to be
    developed).
 

@@ -15,6 +15,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from local_service.element_gene_links import interval as affected_bed_interval
 
 
 def _open_ro(path):
@@ -39,6 +40,7 @@ CLASS_LABELS = {
     7: "CA",
     8: "TF",
 }
+VALID_CLASS_CODES = bytes(CLASS_LABELS)
 CLASS_FAMILIES = {
     1: "promoter",
     2: "enhancer",
@@ -51,6 +53,17 @@ CLASS_FAMILIES = {
 }
 
 
+_FileStamp = tuple[int, int, int, int, int]
+
+
+def _file_stamp(path: Path) -> _FileStamp | None:
+    try:
+        stat = path.stat()
+    except FileNotFoundError:
+        return None
+    return stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -58,7 +71,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
-def _bundle_path(manifest: Path, value: str) -> Path:
+def _bundle_path(manifest: Path, value: str, stamps: dict[Path, _FileStamp | None]) -> Path:
     """Resolve runtime artifacts within the installed, self-contained bundle.
 
     Published legacy manifests record the producer's absolute paths. Those
@@ -74,7 +87,8 @@ def _bundle_path(manifest: Path, value: str) -> Path:
     if path.is_absolute() or (len(normalized) > 2 and normalized[1:3] == ":/"):
         path = Path(path.name)
     root = manifest.parent.resolve()
-    candidate = (root / path).resolve()
+    bundle_entry = root / path
+    candidate = bundle_entry.resolve()
     if candidate == root or root not in candidate.parents:
         raise ValueError(f"prepared SCREEN artifact path leaves its bundle: {value}")
     if not candidate.is_file():
@@ -82,6 +96,9 @@ def _bundle_path(manifest: Path, value: str) -> Path:
             f"prepared SCREEN artifact is missing: {candidate}. "
             "Retry the SCREEN download in Annotation datasets to restore missing files."
         )
+    # Check the bundle entry on cache hits so retargeting an in-bundle
+    # symlink also invalidates configuration loaded from its old target.
+    stamps[bundle_entry] = _file_stamp(candidate)
     return candidate
 
 
@@ -100,17 +117,15 @@ def _normalize_chrom(value: str) -> str:
     return chrom
 
 
-def _variant_interval(payload: dict[str, Any]) -> tuple[str, int, int]:
+def _variant_interval(payload: dict[str, Any]) -> tuple[str, int, int] | None:
     chrom = _normalize_chrom(str(payload.get("chrom") or ""))
     try:
         pos = int(payload.get("pos"))
     except (TypeError, ValueError) as exc:
         raise ValueError("pos must be a positive integer") from exc
-    ref = str(payload.get("ref") or "")
-    if pos < 1 or not ref or ref in {".", "-"}:
+    if pos < 1 or not payload.get("ref") or payload["ref"] in (".", "-"):
         raise ValueError("a positive pos and non-empty REF allele are required")
-    start0 = pos - 1
-    return chrom, start0, start0 + max(1, len(ref))
+    return affected_bed_interval({**payload, "chrom": chrom, "pos": pos})
 
 
 class ScreenContextStore:
@@ -119,6 +134,7 @@ class ScreenContextStore:
     def __init__(self) -> None:
         self._lock = threading.RLock()
         self._manifest_path: Path | None = None
+        self._bundle_stamps: dict[Path, _FileStamp | None] = {}
         self._configuration: dict[str, Any] | None = None
 
     def _configure(self, manifest_path: Path | None) -> dict[str, Any] | None:
@@ -126,18 +142,24 @@ class ScreenContextStore:
             return None
         resolved = manifest_path.resolve()
         with self._lock:
-            if self._manifest_path == resolved and self._configuration is not None:
+            if (
+                self._manifest_path == resolved and self._configuration is not None
+                and all(_file_stamp(path) == stamp for path, stamp in self._bundle_stamps.items())
+            ):
                 return self._configuration
+            # Record each input's identity before reading its metadata. An
+            # install can replace individual artifacts at the same path.
+            stamps = {resolved: _file_stamp(resolved)}
             context_manifest = _read_json(resolved)
             prepared_path = _bundle_path(
-                resolved, context_manifest.get("source_paths", {}).get("prepared_manifest", "")
+                resolved, context_manifest.get("source_paths", {}).get("prepared_manifest", ""), stamps
             )
             prepared = _read_json(prepared_path)
-            catalog_path = _bundle_path(prepared_path, prepared["catalog"]["path"])
-            tissue_matrix = _bundle_path(prepared_path, prepared["tissue_matrix"]["path"])
-            immune_matrix = _bundle_path(prepared_path, prepared["immune_matrix"]["path"])
+            catalog_path = _bundle_path(prepared_path, prepared["catalog"]["path"], stamps)
+            tissue_matrix = _bundle_path(prepared_path, prepared["tissue_matrix"]["path"], stamps)
+            immune_matrix = _bundle_path(prepared_path, prepared["immune_matrix"]["path"], stamps)
             context_database = _bundle_path(
-                resolved, context_manifest["artifacts"]["database"]["path"]
+                resolved, context_manifest["artifacts"]["database"]["path"], stamps
             )
 
             catalog = _open_ro(catalog_path)
@@ -224,7 +246,10 @@ class ScreenContextStore:
                     "prepared SCREEN bundle is inconsistent: profile index(es) "
                     f"{bad_profiles} exceed the immune matrix width {immune_columns}"
                 )
+            if any(_file_stamp(path) != stamp for path, stamp in stamps.items()):
+                raise ValueError("SCREEN bundle changed while loading its configuration; retry the request")
             self._manifest_path = resolved
+            self._bundle_stamps = stamps
             self._configuration = {
                 "context_manifest": context_manifest,
                 "prepared": prepared,
@@ -319,9 +344,11 @@ class ScreenContextStore:
 
     @staticmethod
     def _overlaps_with_connection(
-        connection: sqlite3.Connection, payload: dict[str, Any]
+        connection: sqlite3.Connection, span: tuple[str, int, int]
     ) -> list[dict[str, Any]]:
-        chrom, start0, end0 = _variant_interval(payload)
+        # For an insertion start0 == end0, so both strict comparisons
+        # require the breakpoint to be interior to a single cCRE.
+        chrom, start0, end0 = span
         rows = connection.execute(
             """SELECT c.row_index, c.chrom, c.start, c.end,
                       c.ccre_accession, c.overall_class
@@ -333,27 +360,32 @@ class ScreenContextStore:
         return [dict(row) for row in rows]
 
     @staticmethod
-    def _overlaps(configured: dict[str, Any], payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _overlaps(configured: dict[str, Any], span: tuple[str, int, int]) -> list[dict[str, Any]]:
         connection = ScreenContextStore._catalog_connection(configured["catalog_path"])
         try:
-            return ScreenContextStore._overlaps_with_connection(connection, payload)
+            return ScreenContextStore._overlaps_with_connection(connection, span)
         finally:
             connection.close()
 
     @staticmethod
-    def _read_matrix_row(path: Path, columns: int, row_index: int) -> bytes:
+    def _read_matrix_row(path: Path, columns: int, rows: int, row_index: int) -> bytes:
         with path.open("rb") as handle:
             codes = ScreenContextStore._read_matrix_row_handle(
-                handle, columns, row_index, path
+                handle, columns, rows, row_index, path
             )
         return codes
 
     @staticmethod
-    def _read_matrix_row_handle(handle, columns: int, row_index: int, path: Path) -> bytes:
+    def _read_matrix_row_handle(handle, columns: int, rows: int, row_index: int, path: Path) -> bytes:
+        if not isinstance(row_index, int) or not 0 <= row_index < rows:
+            raise ValueError(f"SCREEN matrix row index {row_index} outside [0, {rows}) in {path}")
         handle.seek(row_index * columns)
         codes = handle.read(columns)
         if len(codes) != columns:
             raise ValueError(f"incomplete SCREEN matrix row {row_index} in {path}")
+        invalid = codes.translate(None, VALID_CLASS_CODES)
+        if invalid:
+            raise ValueError(f"invalid SCREEN class code {invalid[0]} in matrix row {row_index} of {path}")
         return codes
 
     @staticmethod
@@ -388,7 +420,8 @@ class ScreenContextStore:
     def _tissue_evidence(self, configured: dict[str, Any], row_index: int) -> list[dict[str, Any]]:
         tissues = configured["tissues"]
         codes = self._read_matrix_row(
-            configured["tissue_matrix"], configured["tissue_columns"], row_index
+            configured["tissue_matrix"], configured["tissue_columns"],
+            configured["matrix_rows"], row_index,
         )
         result = []
         for tissue in tissues:
@@ -406,7 +439,8 @@ class ScreenContextStore:
 
     def _immune_evidence(self, configured: dict[str, Any], row_index: int) -> list[dict[str, Any]]:
         codes = self._read_matrix_row(
-            configured["immune_matrix"], configured["immune_columns"], row_index
+            configured["immune_matrix"], configured["immune_columns"],
+            configured["matrix_rows"], row_index,
         )
         result = []
         for context in configured["immune_contexts"]:
@@ -442,8 +476,11 @@ class ScreenContextStore:
         configured = self._configure(manifest_path)
         if configured is None:
             return {"available": False, "status": "resource_unavailable", "overlaps": []}
+        span = _variant_interval(payload)
+        if span is None:
+            return {"available": True, "status": "unsupported", "overlaps": []}
         overlaps = []
-        for overlap in self._overlaps(configured, payload):
+        for overlap in self._overlaps(configured, span):
             tissue = self._tissue_evidence(configured, overlap["row_index"])
             immune = self._immune_evidence(configured, overlap["row_index"])
             overlaps.append({
@@ -509,18 +546,22 @@ class ScreenContextStore:
             raise ValueError("Select at least one SCREEN tissue or immune-cell context before filtering")
         tissue_columns = configured["tissue_columns"]
         immune_columns = configured["immune_columns"]
+        rows = configured["matrix_rows"]
         matching: list[str] = []
         connection = self._catalog_connection(configured["catalog_path"])
         tissue_handle = configured["tissue_matrix"].open("rb") if tissue_indices else None
         immune_handle = configured["immune_matrix"].open("rb") if selected_contexts else None
         try:
             for variant in variants:
+                span = _variant_interval(variant)
+                if span is None:
+                    continue
                 key = str(variant.get("key") or "")
                 passed_contexts: set[str] = set()
-                for overlap in self._overlaps_with_connection(connection, variant):
+                for overlap in self._overlaps_with_connection(connection, span):
                     if tissue_handle is not None:
                         codes = self._read_matrix_row_handle(
-                            tissue_handle, tissue_columns, overlap["row_index"],
+                            tissue_handle, tissue_columns, rows, overlap["row_index"],
                             configured["tissue_matrix"],
                         )
                         passed_contexts.update(
@@ -528,7 +569,7 @@ class ScreenContextStore:
                         )
                     if immune_handle is not None:
                         codes = self._read_matrix_row_handle(
-                            immune_handle, immune_columns, overlap["row_index"],
+                            immune_handle, immune_columns, rows, overlap["row_index"],
                             configured["immune_matrix"],
                         )
                         for context in selected_contexts:

@@ -91,6 +91,26 @@ class BundledEngineTests(unittest.TestCase):
         self.assertIn("/tmp/colima:w", arguments)
         self.assertNotIn("/:w", arguments)
 
+    def test_new_colima_compares_resolved_workspace_to_default_roots(self):
+        home = self.directory / "home"
+        home.mkdir()
+        alias = self.directory / "home-alias"
+        alias.symlink_to(home, target_is_directory=True)
+        drive = self.directory / "drive"
+        drive.mkdir()
+        (home / "external").symlink_to(drive, target_is_directory=True)
+        for workspace, extras in ((alias / "future", []), (home / "external/new", [str(drive.resolve() / "new") + ":w"])):
+            with self.subTest(workspace=workspace):
+                result = subprocess.run(
+                    ["bash", "-uc", 'source "$1"; fake() { printf "%s\\n" "$@"; }; start_managed_colima fake "$2" 4 8',
+                     "test", str(ROOT / "scripts/macos_container_dependencies.sh"), str(workspace)],
+                    env={**os.environ, "HOME": str(home), "PYTHON_BIN": sys.executable},
+                    capture_output=True, text=True, check=True,
+                )
+                args = result.stdout.splitlines()
+                self.assertEqual([args[i+1] for i, arg in enumerate(args) if arg == "--mount"],
+                                 [str(home) + ":w", "/tmp/colima:w", *extras])
+
 
 if __name__ == "__main__":
     unittest.main()

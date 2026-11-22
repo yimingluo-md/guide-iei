@@ -97,7 +97,11 @@ class IndexedScoresPluginTests(unittest.TestCase):
                 sub expand_right { $_[0]{expand_right} = $_[1] if @_ > 1; }
                 sub cache_size { $_[0]{cache_size} = $_[1] if @_ > 1; }
                 sub add_file { $_[0]{file} = $_[1]; }
-                sub get_data { $_[0]{get_data_calls}++; return $_[0]{test_data} || []; }
+                sub get_data {
+                  my ($self, $chr, $start, $end) = @_;
+                  $self->{get_data_calls}++;
+                  return [grep { $_->{start} >= $start && $_->{start} <= $end } @{$self->{test_data}}];
+                }
                 1;
             """))
             (stub / "Sequence.pm").write_text(textwrap.dedent(r"""
@@ -122,12 +126,12 @@ class IndexedScoresPluginTests(unittest.TestCase):
                 use strict; use warnings; use JSON::PP qw(encode_json); use IndexedScores;
                 { package Gene; sub new { bless {id => $_[1]}, $_[0] } sub stable_id { $_[0]{id} } }
                 { package Transcript; sub new { bless {gene => $_[1]}, $_[0] } sub get_Gene { $_[0]{gene} } sub stable_id { 'ENST1' } }
-                { package VF; sub new { bless {chr=>'chr1',start=>100,end=>100}, $_[0] } sub ref_allele_string {'A'} sub strand {1} }
+                { package VF; sub new { bless {chr=>'chr1',start=>100,end=>100}, $_[0] } sub ref_allele_string {$_[0]{ref} // 'A'} sub strand {1} }
                 { package OC; sub new { bless {term=>$_[1]}, $_[0] } sub SO_term { $_[0]{term} } }
                 { package TVA;
                   sub new { bless {gene=>$_[1],alt=>($_[2] || 'T'),term=>($_[3] || 'missense_variant')}, $_[0] }
                   sub transcript { Transcript->new($_[0]{gene}) }
-                  sub variation_feature { VF->new }
+                  sub variation_feature { $_[0]{vf} // VF->new }
                   sub variation_feature_seq { $_[0]{alt} }
                   sub get_all_OverlapConsequences { [OC->new($_[0]{term})] }
                 }
@@ -149,7 +153,20 @@ class IndexedScoresPluginTests(unittest.TestCase):
                 my $synonymous_lookups = $plugin->{get_data_calls} - $calls_before_synonymous;
                 $plugin->{test_data} = [$gene_record, $gene_record];
                 my $ambiguous = $plugin->run(TVA->new(Gene->new('ENSG00000000001')));
-                print encode_json({exact=>$exact, partial=>$partial, missing=>$missing,
+                my @edit_scores;
+                for my $case (
+                    [99, 101, 'CAT', 'CTT', 'A', 'T'],
+                    [101, 100, '-', 'T', 'A', 'AT'],
+                    [101, 101, 'T', '-', 'AT', 'A'],
+                    [101, 102, 'TG', '-', 'ATG', 'A'],
+                ) {
+                    my ($start,$end,$ref,$alt,$table_ref,$table_alt) = @$case;
+                    my $query = TVA->new(Gene->new('ENSG00000000001'), $alt);
+                    $query->{vf} = bless {chr=>'1',start=>$start,end=>$end,ref=>$ref}, 'VF';
+                    $plugin->{test_data} = [{%$gene_record, ref=>$table_ref, alt=>$table_alt}];
+                    push @edit_scores, $plugin->run($query)->{FuncVEP_CTI};
+                }
+                print encode_json({edit_scores=>\@edit_scores, exact=>$exact, partial=>$partial, missing=>$missing,
                                    absent=>$absent, ambiguous=>$ambiguous,
                                    synonymous=>$synonymous,
                                    synonymous_lookups=>$synonymous_lookups});
@@ -165,6 +182,7 @@ class IndexedScoresPluginTests(unittest.TestCase):
                 text=True,
             )
             observed = json.loads(result.stdout)
+            self.assertEqual(observed["edit_scores"], ["0.11"] * 4)
             self.assertEqual(observed["exact"]["FuncVEP_match_status"], "exact")
             self.assertEqual(observed["exact"]["FuncVEP_match"], "allele_gene")
             self.assertEqual(observed["exact"]["FuncVEP_CTE"], "0.22")
@@ -194,6 +212,23 @@ class IndexedScoresPluginTests(unittest.TestCase):
             invalid = manifest_payload()
             invalid["outputs"][0]["description"] = ""
             invalid_cases.append(("output description", invalid, "requires a description"))
+
+            for separator in ("\n", "\r", "\r\n", "\t", "\x00", "\x85", "\u2028", "\u2029"):
+                for key in ("id", "name", "release"):
+                    invalid = manifest_payload()
+                    invalid["resource"][key] += separator + "second line"
+                    invalid_cases.append((f"resource.{key} {separator!r}", invalid, "single-line"))
+                invalid = manifest_payload()
+                invalid["outputs"][0]["description"] += separator
+                invalid_cases.append((f"description {separator!r}", invalid, "single-line"))
+
+            invalid = manifest_payload()
+            invalid["outputs"][0]["id"] += "\n"
+            invalid_cases.append(("output ID trailing newline", invalid, "invalid indexed-score output field"))
+
+            invalid = manifest_payload()
+            invalid["provenance"]["match"] += "\n"
+            invalid_cases.append(("provenance ID trailing newline", invalid, "invalid indexed-score provenance"))
 
             invalid = manifest_payload()
             invalid["outputs"][0]["minimum"] = 2

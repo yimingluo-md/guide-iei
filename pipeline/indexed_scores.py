@@ -28,6 +28,7 @@ SUPPORTED_MATCH_DIMENSIONS = {
     "protein_change",
 }
 VCF_FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_.]*$")
+HEADER_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 REGISTRY_TO_MANIFEST_TYPE = {
     "float": "number",
     "integer": "integer",
@@ -56,6 +57,11 @@ def _required_mapping(value: Any, label: str) -> dict[str, Any]:
     return value
 
 
+def _validate_header_text(value: Any, label: str) -> None:
+    if not isinstance(value, str) or not value.strip() or HEADER_CONTROL_RE.search(value):
+        raise ManifestError(f"{label} must be non-empty single-line text without control characters")
+
+
 def validate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate and return an indexed-score manifest.
 
@@ -73,8 +79,7 @@ def validate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
 
     resource = _required_mapping(payload.get("resource"), "resource")
     for key in ("id", "name", "release"):
-        if not isinstance(resource.get(key), str) or not resource[key].strip():
-            raise ManifestError(f"resource.{key} must be a non-empty string")
+        _validate_header_text(resource.get(key), f"resource.{key}")
 
     if payload.get("assembly") != "GRCh38":
         raise ManifestError("indexed predictor assembly must be GRCh38")
@@ -166,8 +171,7 @@ def validate_manifest(payload: dict[str, Any]) -> dict[str, Any]:
             raise ManifestError(f"outputs[{index}].column must name a table column")
         if output.get("type") not in {"number", "integer", "string", "boolean"}:
             raise ManifestError(f"outputs[{index}].type is unsupported")
-        if not isinstance(output.get("description"), str) or not output["description"]:
-            raise ManifestError(f"outputs[{index}].description is required")
+        _validate_header_text(output.get("description"), f"outputs[{index}].description")
         minimum = output.get("minimum")
         maximum = output.get("maximum")
         if minimum is not None or maximum is not None:

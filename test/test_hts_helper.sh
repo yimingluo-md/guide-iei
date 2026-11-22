@@ -45,6 +45,16 @@ if grep -F "$WORK/input dir/in.vcf.gz" "$CAPTURE" >/dev/null; then
     exit 1
 fi
 
+mkdir "$WORK/links" "$WORK/colon:dir"
+ln -s "../input dir/in.vcf.gz" "$WORK/links/linked.vcf.gz"
+hts bcftools view "$WORK/links/linked.vcf.gz"
+grep -F "$WORK/input dir:/hts_1:rw" "$CAPTURE" >/dev/null
+grep -Fx '/hts_1/in.vcf.gz' "$CAPTURE" >/dev/null
+if (hts bcftools view "$WORK/colon:dir/file.vcf") >"$WORK/colon.log" 2>&1; then
+    echo "FAIL: colon in a mount directory was accepted" >&2; exit 1
+fi
+grep -F 'choose a folder without a colon' "$WORK/colon.log" >/dev/null
+
 RUNTIME=singularity
 hts tabix -p vcf "$WORK/output dir/out.vcf.gz"
 [[ "$(sed -n '1p' "$CAPTURE")" == "exec" ]]

@@ -27,7 +27,7 @@ def managed_colima_environment(env):
         return result
     home = Path.home()
     tools = Path(env.get("IEI_TOOLS_DIR", str(home / ".iei-variant-review/tools")))
-    docker = shutil.which("docker", path=env.get("PATH", ""))
+    docker = shutil.which("docker", path=env.get("PATH", os.defpath))
     if (not docker or Path(docker).resolve() != (tools / "bin/docker").resolve()
             or not os.access(tools / "bin/colima", os.X_OK)
             or docker_desktop_installed(home)):
@@ -70,7 +70,12 @@ def mac_tool_path(path=None):
     entries = (path if path is not None else os.environ.get("PATH", "")).split(os.pathsep)
     entries += [str(tools / "bin"), str(home / ".docker/bin"), "/usr/local/bin",
                 "/opt/homebrew/bin", "/Applications/Docker.app/Contents/Resources/bin"]
-    return os.pathsep.join(dict.fromkeys(entry for entry in entries if entry))
+    directories = {}
+    for entry in entries:
+        if entry:
+            key = os.path.realpath(entry) if os.path.isabs(entry) else entry
+            directories.setdefault(key, entry)
+    return os.pathsep.join(directories.values())
 
 
 def selected_start_command(docker, env):
@@ -93,7 +98,7 @@ def selected_start_command(docker, env):
     colima_home = Path(env.get("COLIMA_HOME", str(home / ".colima"))).expanduser().resolve()
     if resolved.parent.parent == colima_home and resolved.name == "docker.sock":
         profile = resolved.parent.name
-        colima = shutil.which("colima", path=env["PATH"])
+        colima = shutil.which("colima", path=env.get("PATH", os.defpath))
         # Never create a fresh VM or change its CPU/memory/mount settings here.
         if (colima and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile)
                 and (colima_home / profile / "colima.yaml").is_file()):

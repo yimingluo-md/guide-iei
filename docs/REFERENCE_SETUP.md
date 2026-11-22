@@ -25,7 +25,7 @@ The top of the dataset screen provides three primary actions:
   contexts. CADD whole-genome is a separate optional download, not part of
   this action. The SpliceAI table is the same MANE SNV resource in both profiles.
 - **Update installed datasets** refreshes ClinVar and ClinGen variant
-  curations. VEP, dbNSFP, CADD, SpliceAI, and SCREEN remain pinned until a
+  curations and the public gene-knowledge bundle, including GenCC. VEP, dbNSFP, CADD, SpliceAI, and SCREEN remain pinned until a
   validated software release changes them.
 
 The free-space check includes a conservative preparation allowance, not just

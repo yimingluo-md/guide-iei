@@ -114,6 +114,32 @@ class ClinicalProteinCatalogTests(unittest.TestCase):
             "GENE4\t123\tR\tH\tENST0001\trec 1\t4:40:C:T\tPathogenic\tDisease A",
         )
 
+    def test_plus_clinical_missense_survives_picked_start_loss(self):
+        from clinvar_aa_match import load_reference, match_alleles_with_details
+
+        meta = self.root / "meta.tsv"
+        meta.write_text("\t".join(catalog.METADATA_COLUMNS) + "\n"
+                        "CPM1\t42\t1:100:G:T\tPathogenic\tD\tC12ORF57\n")
+        vep = self.root / "vep.tsv"
+        vep.write_text(
+            "#Uploaded_variation\tSYMBOL\tProtein_position\tConsequence\tAmino_acids\tFeature\tPICK\tMANE_SELECT\tMANE_PLUS_CLINICAL\n"
+            "CPM1\tC12orf57\t1\tstart_lost\tM/V\tENST1\t1\tNM1\t-\n"
+            "CPM1\tC12orf57\t51\tmissense_variant\tL/Q\tENST2\t-\t-\tNM2\n"
+            "CPM1\tC12orf57\t51\tmissense_variant\tL/Q\tENST3\t-\t-\t-\n"
+        )
+        output = self.root / "catalog.tsv"
+        self.assertEqual(catalog.reduce_vep(vep, meta, output), 1)
+        built = output.read_text()
+        for gene in ("C12orf57", "C12ORF57"):
+            output.write_text(built.replace("C12ORF57", gene))
+            ref = load_reference(str(output))
+            for tx, expected in (("ENST2", 1), ("ENST3", 0)):
+                hits = match_alleles_with_details(
+                    f"C12orf57|51|missense_variant|1|L/Q|{tx}", [], ref, 1,
+                    0, 1, 2, 3, 4, 5, ["1:101:A:T"],
+                )
+                self.assertEqual(hits[:2], ([expected], [expected]))
+
 
 class PathogenicTermPolicyTests(unittest.TestCase):
     """Review M6: `pathogenic_terms` is honoured by the active catalog

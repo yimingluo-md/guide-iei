@@ -28,6 +28,19 @@ bgzf_complete() { # bgzf_complete <file.gz>  -> 0 when the EOF marker is present
     tail_hex="$(tail -c 28 "$1" 2>/dev/null | od -An -tx1 | tr -d ' \n')"
     [[ "$tail_hex" == "$BGZF_EOF_MARKER_HEX" ]]
 }
+# tabix can exit zero after indexing only a truncated prefix.
+index_bgzf() {
+    local file="$1" preset="$2" index_log="$3" rc=0
+    shift 3
+    if [[ -n "$preset" ]]; then set -- -p "$preset" "$@"; fi
+    ( cd "$(dirname "$file")" && hts tabix -f "$@" "$(basename "$file")" ) 2>"$index_log" || rc=$?
+    cat "$index_log" >&2
+    [[ "$rc" == 0 && -s "${file}.tbi" ]] || return 1
+    if grep -Eiq 'EOF marker is absent|\[E::|input is probably truncated' "$index_log"; then
+        warn "tabix reported an incomplete input for $(basename "$file"); not publishing its index"
+        return 1
+    fi
+}
 # Compress <plain> into <final.gz> atomically: move the plain file to a sibling
 # temp name, bgzip it there, require the EOF marker, index, then rename so a
 # partial file never carries the final name. The plain input is consumed
@@ -50,18 +63,8 @@ publish_bgzf() {
     fi
     if [[ -n "$preset" ]]; then
         index_log="${tmp}.index.log"
-        if ! ( cd "$dir" && hts tabix -f -p "$preset" "$(basename "$tmp.gz")" ) 2>"$index_log"; then
-            cat "$index_log" >&2
+        if ! index_bgzf "$tmp.gz" "$preset" "$index_log"; then
             rm -f "$tmp.gz" "$tmp.gz.tbi" "$index_log"
-            return 1
-        fi
-        cat "$index_log" >&2
-        # tabix can return zero after indexing only the visible prefix of a
-        # stale/truncated container view. Never publish that successful-looking
-        # index; preserve the old file/index and report a retryable failure.
-        if grep -Eiq 'EOF marker is absent|\[E::|input is probably truncated' "$index_log"; then
-            rm -f "$tmp.gz" "$tmp.gz.tbi" "$index_log"
-            warn "tabix reported an incomplete input for $base; not publishing its index"
             return 1
         fi
         rm -f "$index_log"
@@ -69,6 +72,14 @@ publish_bgzf() {
     fi
     mv -f "$tmp.gz" "$final" || { rm -f "$tmp.gz" "$final.tbi"; return 1; }
     return 0
+}
+
+# Published MD5 sidecars contain either a bare digest or a sum-tool record.
+read_md5_sidecar() {
+    local digest
+    digest="$(LC_ALL=C awk '{ sub(/\r$/, "") } NF {print tolower($1); exit}' "$1")" || return 1
+    [[ "$digest" =~ ^[0-9a-f]{32}$ ]] || return 1
+    printf '%s\n' "$digest"
 }
 
 # --- SHA-256 ------------------------------------------------------------------
@@ -214,15 +225,26 @@ hts() {
                 bind_cwd=0; work_dir=/tmp ;;
         esac
     fi
+    if [[ "$bind_cwd" == 1 && "$PWD" == *:* ]]; then
+        die "container working directory contains a colon: $PWD; run from a folder without a colon"
+    fi
     # Rewrite every absolute path argument to a dedicated bind mount. Output
     # files do not need to exist yet; their existing parent directory is used.
     for i in "${!args[@]}"; do
         arg="${args[$i]}"
+        if [[ -L "$arg" ]]; then
+            # A bind of the link's parent cannot expose an external target.
+            # realpath via Python also resolves relative chains on older macOS.
+            arg="$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$arg")" || return 1
+        fi
         [[ "$arg" == /* ]] || continue
         if [[ -d "$arg" ]]; then
             host_dir="$(cd "$arg" && pwd -P)"; base=""
         else
             host_dir="$(cd "$(dirname "$arg")" && pwd -P)"; base="$(basename "$arg")"
+        fi
+        if [[ "$host_dir" == *:* ]]; then
+            die "container mount folder contains a colon: $host_dir; choose a folder without a colon"
         fi
         if [[ -f "$application_root/desktop-build.json" ]]; then
             case "$host_dir" in "$application_root"|"$application_root"/*)
@@ -255,6 +277,8 @@ hts() {
             "$rt" image inspect "$img" >/dev/null 2>&1 \
                 || die "container image $img is not available locally; run bash docker/build.sh before preparing indexed resources"
             if [[ "$bind_cwd" == 1 ]]; then mount_flags=(-v "$PWD:/w"); fi
+            # Streams must reach the container and cannot be replayed on retry.
+            if [[ "${HTS_STREAM_INPUT:-0}" == 1 ]]; then mount_flags+=(-i); fi
             for i in "${!hosts[@]}"; do mount_flags+=(-v "${hosts[$i]}:${conts[$i]}:rw"); done
             "$rt" run --pull=never --network=none --rm --ulimit core=0:0 ${mount_flags[@]+"${mount_flags[@]}"} -w "$work_dir" --entrypoint "$tool" "$img" ${args[@]+"${args[@]}"} || rc=$?
             # A file written by the host or another container can be
@@ -263,7 +287,7 @@ hts() {
             # drives), which fails tabix/bcftools/bgzip on perfectly valid
             # files. Settle and retry once; genuine failures (unsorted input,
             # non-BGZF, malformed records) fail identically on retry.
-            if [[ "$rc" -gt 0 && "$rc" -lt 125 ]]; then
+            if [[ "${HTS_STREAM_INPUT:-0}" != 1 && "$rc" -gt 0 && "$rc" -lt 125 ]]; then
                 log "WARN  containerized $tool failed (rc=$rc); retrying once after write settling"
                 sleep 5
                 rc=0

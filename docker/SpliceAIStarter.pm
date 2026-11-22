@@ -4,6 +4,7 @@
 package SpliceAIStarter;
 use strict;
 use warnings;
+use GuideAllele qw(transcript_snv);
 use JSON::PP qw(decode_json);
 use File::Basename qw(dirname);
 use Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin;
@@ -90,13 +91,8 @@ sub parse_data {
 sub run {
     my ($self, $tva) = @_;
     my $vf = $tva->variation_feature;
-    return {} unless defined $vf->{start} && defined $vf->{end} && $vf->{start} == $vf->{end};
-    my $ref = $vf->ref_allele_string;
-    my $alt = $tva->variation_feature_seq;
-    return {} unless defined $ref && defined $alt && $ref =~ /^[ACGT]$/ && $alt =~ /^[ACGT]$/;
-    # VEP's reference/variation_feature_seq are genomic alleles, independent
-    # of transcript strand. Never reverse-complement for a minus-strand gene.
-    return {} unless $vf->strand == 1;
+    my ($pos, $ref, $alt) = transcript_snv($tva);
+    return {} unless defined $pos;
     my $tx = $tva->transcript;
     my $gene = eval { $tx->get_Gene->stable_id } || $tx->{_gene_stable_id} || $tx->{gene_stable_id};
     return {} unless $gene;
@@ -110,8 +106,8 @@ sub run {
     # Tabix handles open lazily in each VEP worker and are reused by that worker.
     my $file = $self->{shard_files} ? $self->{shard_files}{$chr} : undef;
     return {} if $self->{shard_files} && !$file;
-    for my $row (@{$self->get_data($chr, $vf->{start}, $vf->{end}, $file)}) {
-        next unless $row->{chr} eq $chr && $row->{start} == $vf->{start}
+    for my $row (@{$self->get_data($chr, $pos, $pos, $file)}) {
+        next unless $row->{chr} eq $chr && $row->{start} == $pos
             && $row->{ref} eq $ref && $row->{alt} eq $alt;
         for my $entry (@{$row->{entries}}) {
             next unless $names{$entry->[0]};

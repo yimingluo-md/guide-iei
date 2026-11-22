@@ -4,9 +4,10 @@ from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from local_service.desktop_setup import prepare_engine
+from local_service.desktop_setup import prepare_engine, take_action
 
 
 class DesktopSetupTests(unittest.TestCase):
@@ -37,6 +38,8 @@ class DesktopSetupTests(unittest.TestCase):
         state = {"ready": False, "started": False}
         def call(route, body):
             if route.endswith("/status"):
+                if self.ticks in (1, 2):
+                    self.assertTrue(json.loads(self.status.read_text())["can_prepare"])
                 return {"available": state["ready"], "busy": False,
                         "package": {"installable": True}, "annotation_path": "/default/data",
                         "free_bytes": 1000, "estimated_required_bytes": 500}
@@ -55,6 +58,46 @@ class DesktopSetupTests(unittest.TestCase):
                 self.action("prepare")
         self.assertTrue(self.run_setup(call, tick, essential=True))
         self.assertEqual(self.calls.count("/api/essential-setup/setup"), 1)
+
+    def test_quit_arriving_while_prepare_is_read_remains_pending(self):
+        self.action("prepare")
+        read = Path.read_text
+        def read_then_quit(path):
+            value = read(path)
+            self.action("quit")
+            return value
+        with patch.object(Path, "read_text", read_then_quit):
+            self.assertEqual(take_action(self.control), "prepare")
+        self.assertEqual(take_action(self.control), "quit")
+
+    def test_returning_install_waits_for_runtime_even_if_prepare_is_clicked(self):
+        for legacy in (True, False):
+            with self.subTest(legacy=legacy):
+                self.ticks = 0
+                def call(route, body):
+                    self.assertEqual(route, "/api/essential-setup/status")
+                    ready = self.ticks >= 2
+                    return {"engine": {"state": "available" if ready else "runtime_starting"}, "available": ready,
+                            "legacy_ready": legacy, "package": {"installable": True, "available": not legacy},
+                            "annotation_path": "/prepared/data", "free_bytes": 1000, "estimated_required_bytes": 0}
+                def tick():
+                    snapshot = json.loads(self.status.read_text())
+                    self.assertEqual(snapshot["phase"], "starting")
+                    self.assertFalse(snapshot["can_prepare"])
+                    self.action("prepare")
+                self.assertTrue(self.run_setup(call, tick, essential=True))
+
+    def test_startup_failure_offers_preparation_without_automatically_installing(self):
+        def call(route, body):
+            self.assertEqual(route, "/api/essential-setup/status")
+            return {"engine": {"state": "runtime_starting" if not self.ticks else "runtime_unavailable"},
+                    "package": {"installable": True}, "annotation_path": "/data",
+                    "free_bytes": 1000, "estimated_required_bytes": 500}
+        def tick():
+            if self.ticks == 2:
+                self.assertTrue(json.loads(self.status.read_text())["can_prepare"])
+                self.action("quit")
+        self.assertFalse(self.run_setup(call, tick, essential=True))
 
     def test_unreleased_package_shows_explanation_without_installing(self):
         def call(route, body):

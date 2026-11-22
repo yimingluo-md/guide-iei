@@ -7,17 +7,21 @@ include record contents in errors: they may contain patient data.
 from __future__ import annotations
 
 import argparse
-import gzip
 import re
 import zlib
 from pathlib import Path
+
+if __package__:
+    from .vcf_io import check_bgzf_eof, open_text
+else:
+    from vcf_io import check_bgzf_eof, open_text
 
 
 FIXED_COLUMNS = ["#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"]
 FIELD_WHITESPACE = re.compile(r"[^\S\t]")
 
 
-def validate_input_vcf(path: str | Path, *, full: bool = True) -> dict:
+def validate_input_vcf(path: str | Path, *, full: bool = True, record_contigs=None) -> dict:
     path = Path(path)
     columns = None
     records = 0
@@ -29,8 +33,8 @@ def validate_input_vcf(path: str | Path, *, full: bool = True) -> dict:
     try:
         if not path.is_file():
             raise ValueError(f"Input VCF is not a readable regular file: {path}")
-        opener = gzip.open if path.name.lower().endswith(".gz") else open
-        with opener(path, "rt", encoding="utf-8") as handle:
+        check_bgzf_eof(path)
+        with open_text(path) as handle:
             for line_number, raw in enumerate(handle, 1):
                 line = raw.rstrip("\r\n")
                 if "\x00" in line:
@@ -76,6 +80,8 @@ def validate_input_vcf(path: str | Path, *, full: bool = True) -> dict:
                     # Trailing sample subfields may legally be omitted.
                     if any(value.count(":") + 1 > len(formats) for value in values[9:]):
                         invalid("a sample has more subfields than FORMAT declares")
+                if record_contigs is not None:
+                    record_contigs.setdefault(values[0], None)
                 records += 1
                 if not full:
                     break
@@ -94,11 +100,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vcf", required=True)
     parser.add_argument("--header-only", action="store_true", help="Check header and first record; the annotation runner always checks the full file")
+    parser.add_argument("--list-contigs", action="store_true", help="Print distinct observed chromosome names after validation")
     args = parser.parse_args()
+    contigs = {} if args.list_contigs else None
     try:
-        result = validate_input_vcf(args.vcf, full=not args.header_only)
+        result = validate_input_vcf(args.vcf, full=not args.header_only, record_contigs=contigs)
     except ValueError as exc:
         parser.exit(2, f"ERROR {exc}\n")
+    if contigs is not None:
+        print("\n".join(contigs))
+        return 0
     print(f"VCF structure valid: {result['samples']} sample(s), {result['records_checked']} record(s) checked")
 
 

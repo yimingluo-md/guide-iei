@@ -19,6 +19,7 @@ package PromoterAI;
 
 use strict;
 use warnings;
+use GuideAllele qw(transcript_snv);
 use Bio::EnsEMBL::Variation::Utils::Sequence qw(get_matched_variant_alleles);
 use Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin;
 use base qw(Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin);
@@ -117,27 +118,15 @@ sub run {
   my ($mapping, $match) = $self->_transcript_mapping($transcript, $chr);
   return {} unless $mapping;
 
-  # SNV-only by table design (decision D5): prepare_promoterai.py stores
-  # exactly the four single-base substitutions per position, so only a
-  # single-base span can ever match. An Ensembl-convention insertion
-  # (start = end + 1) and any multi-base span are deliberately refused here,
-  # and the ACGT allele guard below rejects non-SNVs a second time. The old
-  # start/end swap that made this look like range handling was dead code.
-  my $start = $vf->{start};
-  my $end = $vf->{end};
-  return {} unless $start == $end;
-  return {} unless $mapping->{chrom} eq $chr;
-
-  my $ref = $vf->ref_allele_string;
-  my $alt = $tva->variation_feature_seq;
-  return {} unless defined $ref && defined $alt && $ref =~ /^[ACGT]$/i && $alt =~ /^[ACGT]$/i;
-  my @data = @{$self->get_data($chr, $start, $end, $self->{promoterai_file})};
+  my ($start, $ref, $alt) = transcript_snv($tva);
+  return {} unless defined $start && $mapping->{chrom} eq $chr;
+  my @data = @{$self->get_data($chr, $start, $start, $self->{promoterai_file})};
   for my $data (@data) {
     next unless $data->{tss_pos} == $mapping->{tss_pos};
     next unless $data->{strand} eq $mapping->{strand};
     for my $candidate (@{$data->{alleles}}) {
       my $matches = get_matched_variant_alleles(
-        {ref => $ref, alts => [$alt], pos => $start, strand => $vf->strand},
+        {ref => $ref, alts => [$alt], pos => $start, strand => 1},
         {ref => $data->{ref}, alts => [$candidate->{alt}], pos => $data->{start}},
       );
       next unless @$matches;

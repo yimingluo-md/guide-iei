@@ -50,10 +50,9 @@ existing AlphaMissense/CADD cards and cohort search columns, not extra cards.
   Query protein changes can come from VEP's amino-acid/position fields or HGVS.
 - Indexed scores must be scalar, finite and in range; zero is valid. Partial,
   ambiguous, wrong-target and malformed values cannot become filterable scores.
-- Existing dbNSFP-only VCFs keep their interpretation. When starter fields are
-  declared in a VCF, that starter provider controls its logical score, including
-  missing values. A missing starter score is not silently filled from dbNSFP.
-  Explicit genome-wide CADD Phred values still take precedence over coding CADD.
+- When the starter has an exact score, the review card uses it. When it has
+  no score, the card can show the dbNSFP annotation for that row. The card
+  identifies the provider. An available genome-wide CADD Phred takes precedence.
 - Score magnitude never chooses a provider. Starter Phred is not paired with a
   raw score from dbNSFP. If both providers appear in an external VCF, both source
   observations are retained separately for provenance, but the UI card remains

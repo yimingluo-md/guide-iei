@@ -20,13 +20,14 @@ The redistributable `gene_knowledge_public.sqlite3` bundle contains:
   row, major category, subcategory, inheritance, GOF/DN mechanism, T-cell
   count, B-cell count, immunoglobulin level, neutrophil count, other affected
   cells, associated features, and source wording;
+- the public GenCC export, including current versioned submissions from its contributing groups;
 - the current ClinGen Gene-Disease Validity summary;
 - the ClinGen GRCh38 dosage-sensitivity gene list, retaining haploinsufficiency
   and triplosensitivity scores as separate evaluations.
 
 The exact source URL, download SHA-256, release date, row count, and build time
 are stored inside the database. `scripts/update_gene_knowledge.sh` downloads
-only official public HGNC and ClinGen sources, validates their schemas, builds
+only official public HGNC, ClinGen and GenCC sources, validates their schemas, builds
 a new SQLite file, and replaces the destination only after a successful build.
 The IUIS table remains pinned until a new IUIS release is reviewed explicitly.
 
@@ -34,6 +35,12 @@ ClinGen dosage score 3 means sufficient evidence for dosage pathogenicity.
 Score 30 means that a gene is associated with an autosomal-recessive phenotype;
 it is not evidence for haploinsufficiency. gnomAD LOEUF/pLI are population
 constraint metrics and are displayed separately from ClinGen dosage evidence.
+
+## GenCC gene–disease validity
+
+The public bundle includes GenCC submissions under CC0. The gene view groups current submissions by HGNC gene ID, standardized disease ID and mode of inheritance. Expand a relationship to see each contributing organization, evaluation date, versioned GenCC record and available public report. ClinGen also submits to GenCC. Both displays can lead back to the same curation. Each new snapshot replaces the previous one, including revised and withdrawn submissions. A conditional request reuses the prior snapshot when GenCC reports that it is current. When a locally refreshed database predates GenCC, the workbench reads GenCC from the shipped bundle and keeps using the local versions of the other sources. [Official download and attribution](https://thegencc.org/download)
+
+The conflict badge follows GenCC's comparison of classifications from different submitters. Definitive, Strong or Moderate on one side and Limited, Disputed, Refuted or No Known Disease Relationship on the other trigger the badge for the same disease and inheritance. Supportive and Animal Model Only remain visible when submitted. [GenCC conflict viewer](https://thegencc.org/conflict-viewer)
 
 ## OMIM licensing and local installation
 
@@ -141,7 +148,7 @@ IUIS text is always displayed beneath them, and a blank source cell remains
 
 ## Reproducible public build
 
-For a normal public-resource refresh:
+To refresh the public database in your configured annotation storage from a source checkout, run the following command. Reopen the workbench after it finishes.
 
 ```bash
 bash scripts/update_gene_knowledge.sh
@@ -151,6 +158,7 @@ To build from already downloaded inputs:
 
 ```bash
 PYTHONPATH=. python3 scripts/build_gene_knowledge.py \
+  --gencc /path/to/gencc-submissions-new.csv \
   --hgnc /path/to/hgnc_complete_set.txt \
   --iuis webui/public/bundled-data/iuis_2024_classification.tsv \
   --clingen-validity /path/to/clingen_gene_validity.csv \

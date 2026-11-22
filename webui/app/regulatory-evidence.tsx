@@ -1,5 +1,7 @@
 "use client";
 
+import { ElementGeneLinks } from "./element-gene-links";
+import type { RegulatoryVariant } from "./local-service";
 import { useEffect, useMemo, useState } from "react";
 import type {
   ScreenContextCatalog,
@@ -85,7 +87,7 @@ export function RegulatorySummary({
   const total = evidence?.overlaps.reduce((sum, item) => sum + item.summary.tissues_detected + item.summary.immune_contexts_detected, 0) ?? 0;
   const mixed = evidence?.overlaps.reduce((sum, item) => sum + item.summary.mixed_immune_contexts, 0) ?? 0;
   return <section className="regulatory-summary-card">
-    <div><p className="eyebrow">Regulatory evidence</p><h2>SCREEN tissue &amp; immune context</h2><span>{loading ? "Checking prepared local context data…" : error ? "Context data unavailable" : evidence?.status === "overlap" ? `${evidence.overlaps.length} Registry cCRE overlap${evidence.overlaps.length === 1 ? "" : "s"} · ${total} SCREEN context${total === 1 ? "" : "s"} with regulatory activity detected${mixed ? ` · ${mixed} mixed` : ""}` : evidence?.status === "no_overlap" ? "No SCREEN Registry V4 cCRE overlap" : "Prepared context data not installed"}</span>{codingConsequence && evidence?.status === "overlap" && <p className="regulatory-coding-explanation"><strong>Why are both coding and regulatory annotations shown?</strong><span>A genomic region can simultaneously have a transcript-specific coding consequence and be a regulatory element. The regulatory element may act on the same gene, another gene, or multiple genes.</span></p>}</div>
+    <div><p className="eyebrow">Regulatory evidence</p><h2>SCREEN tissue &amp; immune context</h2><span>{loading ? "Checking prepared local context data…" : error ? "Context data unavailable" : evidence?.status === "overlap" ? `${evidence.overlaps.length} Registry cCRE overlap${evidence.overlaps.length === 1 ? "" : "s"} · ${total} SCREEN context${total === 1 ? "" : "s"} with regulatory activity detected${mixed ? ` · ${mixed} mixed` : ""}` : evidence?.status === "no_overlap" ? "No SCREEN Registry V4 cCRE overlap" : evidence?.status === "unsupported" ? "Unsupported allele for SCREEN overlap" : "Prepared context data not installed"}</span>{codingConsequence && evidence?.status === "overlap" && <p className="regulatory-coding-explanation"><strong>Why are both coding and regulatory annotations shown?</strong><span>A genomic region can simultaneously have a transcript-specific coding consequence and be a regulatory element. The regulatory element may act on the same gene, another gene, or multiple genes.</span></p>}</div>
     <button className="secondary-button" onClick={onOpen}>Open regulatory evidence</button>
   </section>;
 }
@@ -133,7 +135,7 @@ export function RegulatoryFilterControl({
 
 export function RegulatoryEvidencePanel({
   catalog, evidence, loading, error, activeSetId, setActiveSetId,
-  customSets, setCustomSets, onCatalogInstalled, children,
+  customSets, setCustomSets, onCatalogInstalled, children, variant, geneKnowledge,
 }: {
   catalog: ScreenContextCatalog | null;
   evidence: ScreenContextEvidence | null;
@@ -145,7 +147,10 @@ export function RegulatoryEvidencePanel({
   setCustomSets: (sets: RegulatoryContextSet[]) => void;
   onCatalogInstalled: (catalog: ScreenContextCatalog) => void;
   children?: React.ReactNode;
+  variant: RegulatoryVariant;
+  geneKnowledge: (gene: string) => React.ReactNode;
 }) {
+  const [tab, setTab] = useState("screen");
   const [positiveOnly, setPositiveOnly] = useState(true);
   const [draftName, setDraftName] = useState("");
   const current = useMemo(
@@ -203,7 +208,8 @@ export function RegulatoryEvidencePanel({
 
   return <div className="regulatory-workspace">
     <header className="regulatory-workspace-head"><div><p className="eyebrow">Variant-scoped workspace</p><h1>Regulatory evidence</h1><p>Activity detected in SCREEN reference epigenomic data is shown separately from target-gene links and model predictions.</p></div><span className="local-only-badge">Local data</span></header>
-    <div className="regulatory-module-tabs"><button className="active">Detected in SCREEN reference epigenomic data</button><button disabled title="Regulatory element–gene links are planned for future development">Element–gene links · to be developed</button><button disabled title="Gene-specific variant-effect prediction is planned for future development">Gene-specific variant-effect prediction · to be developed</button></div>
+    <div className="regulatory-module-tabs"><button aria-pressed={tab === "screen"} className={tab === "screen" ? "active" : ""} onClick={() => setTab("screen")}>Detected in SCREEN reference epigenomic data</button><button aria-pressed={tab === "links"} className={tab === "links" ? "active" : ""} onClick={() => setTab("links")}>Element–gene links</button><button disabled title="Gene-specific variant-effect prediction is planned for future development">Gene-specific variant-effect prediction · to be developed</button></div>
+    {tab === "links" ? <ElementGeneLinks variant={variant} key={JSON.stringify([variant.chrom,variant.pos,variant.ref,variant.alt])} geneKnowledge={geneKnowledge}/> : <>
     {children}
     <section className="regulatory-controls-card">
       <div><label><span>Display context set</span><select value={current?.id ?? ""} onChange={(event) => setActiveSetId(event.target.value)}>{sets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}</select></label><label className="inline-check"><input type="checkbox" checked={positiveOnly} onChange={(event) => setPositiveOnly(event.target.checked)}/> Show detected regulatory activity only</label></div>
@@ -212,6 +218,7 @@ export function RegulatoryEvidencePanel({
     {loading && <div className="regulatory-loading">Reading the prepared Registry V4 tissue and immune matrices…</div>}
     {error && <div className="ccre-unavailable"><strong>Regulatory context unavailable</strong><span>{error}</span></div>}
     {!loading && !error && !catalog?.available && <div className="ccre-unavailable screen-context-installer"><strong>Prepared tissue/cell context data are not installed</strong><span>Select the prepared SCREEN Registry V4 folder or its <code>screen.registry-v4.immune-contexts.json</code> manifest. The matrices remain in place; the workbench stores only a local pointer.</span><div><input value={installPath} onChange={(event) => setInstallPath(event.target.value)} placeholder="/path/to/SCREEN/Registry-V4/prepared" spellCheck={false}/><button className="secondary-button" disabled={installing || !installPath.trim()} onClick={() => void installPreparedBundle()}>{installing ? "Validating…" : "Use prepared bundle"}</button></div>{installError && <small className="error-text">{installError}</small>}</div>}
+    {!loading && evidence?.status === "unsupported" && <div className="ccre-unavailable">SCREEN context lookup requires a sequence-resolved change between REF and ALT.</div>}
     {!loading && evidence?.status === "no_overlap" && <div className="ccre-no-overlap"><strong>No SCREEN Registry V4 cCRE overlap</strong><span>Tissue/cell context matrices are indexed by the Registry master catalog, so no per-context cCRE evidence is available at this locus.</span></div>}
     {evidence?.overlaps.map((overlap) => {
       const tissues = overlap.tissues.filter((item) => allowedTissues.has(item.id) && (!positiveOnly || item.activity_detected));
@@ -223,7 +230,7 @@ export function RegulatoryEvidencePanel({
         <ContextTable title="Curated baseline immune contexts" empty={positiveOnly ? "No positive calls in the selected immune context set." : "No immune contexts are selected."} rows={immune.map((item) => <ImmuneRow key={item.id} item={item}/>)}/>
       </section>;
     })}
-    <div className="regulatory-interpretation-note"><strong>Interpretation boundary</strong><span>Regulatory activity detected in this SCREEN context supports activity in that reference aggregate/context. It does not identify a causal cell, prove that the variant changes activity, or assign a target gene. Not detected and classification unavailable are not exclusionary evidence.</span></div>
+    <div className="regulatory-interpretation-note"><strong>Interpretation boundary</strong><span>Regulatory activity detected in this SCREEN context supports activity in that reference aggregate/context. It does not identify a causal cell, prove that the variant changes activity, or assign a target gene. Not detected and classification unavailable are not exclusionary evidence.</span></div></>}
   </div>;
 }
 

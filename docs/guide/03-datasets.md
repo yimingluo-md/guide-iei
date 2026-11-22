@@ -49,7 +49,7 @@ rerun annotation and re-import an updated VCF to recover affected scores.
 
 First-time essential setup is offered in the startup/preparation window.
 The Mac startup window also offers **Also install recommended whole-genome datasets**,
-off by default. It adds Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI
+off by default. It adds Full SpliceAI MANE 1.5, ENCODE SCREEN, ENCODE-rE2G and AlphaGenome AVI
 after essentials finish, with an estimate of the additional download and
 setup space for missing resources. Not required for basic exome analysis.
 The workbench opens once essentials are ready; optional downloads can continue
@@ -75,6 +75,8 @@ recommended user-provided resources, and optional additions.
 | AlphaGenome AVI (recommended for WGS) | 75.8 GB prepared download; allow 80 GiB free for setup | genome-wide SNV impact scores |
 | CADD whole-genome (optional) | ~83 GiB | non-coding CADD only |
 | LoGoFunc (optional) | ~4 GB | GOF/LOF missense mechanism |
+| GPN-Star-V (optional exome) | 1.13 GB | vertebrate SNV scores for coding sequence and splice flanks |
+| GPN-Star-M and GPN-Star-V (optional WGS) | 58.91 GB and 58.70 GB respectively | mammalian and vertebrate genome-wide SNV scores |
 | FuncVEP (optional; licensed) | 4.24 GB source ZIP; 24 GiB free for automatic setup | missense functional-effect scores |
 | GenIA (recommended; user-provided) | source-release dependent; small derived SQLite index | gene–disease, phenotype, and exact-allele evidence for exome and genome |
 
@@ -114,17 +116,18 @@ Essential setup supplies the VEP cache, reference genome, LOFTEE resources,
 compact MANE AlphaMissense, coding-SNV CADD and essential donor/acceptor-site
 SpliceAI, plus ClinVar and ClinGen. No separate recommended-exome action is needed.
 
-**Install recommended WGS datasets** adds exactly three resources:
+**Install recommended WGS datasets** adds four resources:
 
 - **Full SpliceAI MANE 1.5:** predicted effects on splicing beyond essential
   splice sites, including deep-intronic SNVs within covered MANE transcripts.
 - **ENCODE SCREEN:** annotation of candidate cis-regulatory elements, with
   tissue and immune-cell activity context.
+- **ENCODE-rE2G:** predicted element–gene links for local regulatory review and cohort searches.
 - **AlphaGenome AVI:** predicted functional-impact scores for non-coding
   variants. The installed precomputed scores cover SNVs, not indels.
 
-All three can be downloaded automatically without user-supplied files; their
-usage terms still apply. Together they require approximately **112 GB of
+All four can be downloaded automatically without user-supplied files; their
+usage terms still apply. Together they require approximately **117 GB of
 downloads** when none is installed. The button estimates missing datasets only
 and shows a separate setup-space allowance. Installed resources are skipped;
 the essential references are not downloaded again. Full SpliceAI also benefits
@@ -145,10 +148,10 @@ check itself is not a fresh checksum verification.
 
 **Recommended · user-provided** contains PromoterAI (WGS) and GenIA (exome
 and genome). Neither is required to run, and neither is in the automatic batch.
-**Optional add-ons** contains dbNSFP, LoGoFunc, FuncVEP, full CADD, and OMIM.
+**Optional add-ons** contains dbNSFP, LoGoFunc, FuncVEP, full CADD, OMIM, and the two GPN-Star models.
 
 Progress is reported per dataset. **Update installed datasets** separately checks
-for updated ClinVar and ClinGen resources. Annotation runs
+for ClinVar and ClinGen variant curations and refreshes the public gene-knowledge bundle, including GenCC. If only some updates succeed, the workbench names the completed, failed, and skipped stages. Completed updates are available immediately. Annotation runs
 record the source versions used, allowing results from different dates to be
 compared explicitly.
 
@@ -158,6 +161,18 @@ archive validation remains in place.
 If setup is interrupted or stops on an error, completed and verified files are
 kept. The setup panel shows the error and a **Retry** action; retrying checks
 what is already ready and resumes only the missing work.
+
+### GPN-Star installation
+
+In **Import & QC → Set up annotation datasets → Optional add-ons**, choose **GPN-Star-V**. In **Exome** mode, **Download / resume** installs **Coding + splice flanks** (1.13 GB). If you already have genome-wide V scores, the workbench uses them automatically. In **Whole genome** mode, the same card offers genome-wide V (58.70 GB). GPN-Star-M is a separate optional genome-wide download (58.91 GB).
+
+The compact package contains upstream-scored GRCh38 SNVs on chromosomes 1–22, X and Y within the default Ensembl 113 coding and splice regions. This includes stop codons and 8-base flanks at coding and exon boundaries. With a custom capture BED, targets outside these intervals need the genome-wide package for scoring. Both packages return the same values for shared alleles. [Compact exome dataset](https://huggingface.co/datasets/luoyiming1991/gpn-star-v-grch38-exome) · [Official GPN-Star data and score definitions](https://huggingface.co/datasets/songlab/gpn-star-scores)
+
+Coverage QC warns if GPN-Star scores none of the eligible SNVs. For a small panel
+or custom capture, check whether the variants fall within the installed package’s
+coverage. A run with no eligible SNVs is marked **Not applicable**.
+
+GUIDE-IEI verifies each chromosome and installs it in the **Annotation datasets** location selected under **Storage**. Retry the same download to resume. Installed models are selected by default for the relevant analysis mode. Use the card’s checkbox to turn a model off for a run.
 
 ### AlphaGenome AVI installation
 
@@ -322,8 +337,9 @@ and a missing score is not evidence that a variant is neutral or benign.
   GenIA gene–disease context.
 
 The software includes compact gene-knowledge resources (gnomAD constraint,
-HGNC, the IUIS IEI classification, and ClinGen gene–disease validity and
-dosage). Large annotation references are separate downloads. Included resource
+HGNC, the IUIS IEI classification, ClinGen gene–disease validity and
+dosage, and GenCC gene–disease submissions). GenCC is included for exomes and genomes.
+Find the **GenCC** card under **Essential annotations & included resources** to check the installed release and submission count. Choose **Check and update snapshot** on the card or **Check and update now** in **Gene knowledge** to refresh the public gene-knowledge bundle. Existing variants can be reviewed immediately. Large annotation references are separate downloads. Included resource
 cards offer individual setup or repair actions for cCRE/gene-TSS and GRCh37
 conversion data. Do not assume that the application
 download alone contains these files.
@@ -334,6 +350,18 @@ on the same dataset screen. An authorized OMIM user can paste
 their four private links for local download and indexing, or select an
 institution's already-downloaded copy. GenIA instead accepts authorized local
 exports and retains only its derived component database.
+
+### Import your own score columns
+
+Under **Optional add-ons → Custom score tables**, choose one or more local GRCh38 tab-separated files. Each needs a header, 1-based positions, and one sequence-resolved REF/ALT pair per row. Compressed TSVs work too. Use **Add files** to combine chromosome files with the same columns.
+
+Rows can arrive in any order. The importer skips wild-type rows where REF equals ALT and rows with `-` or `*` in either allele column. The installed dataset shows how many rows were skipped. **Remove index** deletes the local lookup index and keeps your original tables.
+
+Confirm the chromosome, position, REF and ALT columns. Include strand, gene or transcript when scores depend on them. Search the remaining columns, select the scores you want, and give each a display name. The preview shows example rows with your chosen columns before you start the import.
+
+By default, `-` means minus strand. If your table uses it for missing strand, select that option during import. Gene symbols match regardless of letter case. When the table gives a transcript version and the VCF supplies only its stable ID, the card marks the transcript as unverified. An explicitly different version excludes that row. A gene symbol can also be unverified when the VCF supplies only an Ensembl gene ID.
+
+Open a variant and look under **Predictors**. **Display settings → Custom scores** lets you hide or show imported columns immediately. A score with unverified context is labeled with its source context. For indels in repeats, use the same left-aligned representation in both files. To add a previously skipped column, select the original files again and replace the named dataset with the complete selection you want to keep.
 
 ## Verifying the installation
 

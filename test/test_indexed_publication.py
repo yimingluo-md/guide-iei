@@ -3,10 +3,14 @@
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+from pipeline.publish_annotation import publish
 EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
 SCRIPT = r'''
 set -euo pipefail
@@ -36,6 +40,44 @@ fi
 
 
 class IndexedPublicationTests(unittest.TestCase):
+    def test_alias_copy_fallback_and_rollback_after_data_replacement(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            stage = root / "stage"
+            stage.mkdir()
+            base = root / "result.vcf.gz"
+            legacy = root / "result.aamatch.vcf.gz"
+            final = stage / legacy.name
+            pointer = Path(str(base) + ".deliverable")
+            original = {pointer: b"previous pointer\n"}
+            for path in (base, legacy):
+                for suffix in ("", ".tbi", ".csi"):
+                    dest = Path(str(path) + suffix)
+                    original[dest] = dest.name.encode()
+            for path, content in original.items():
+                path.write_bytes(content)
+            replace = os.replace
+
+            def fail_once(source, target):
+                if target == pointer and source.name == "pointer":
+                    raise OSError("injected pointer replacement failure")
+                replace(source, target)
+
+            with patch("os.link", side_effect=OSError("no hard links")):
+                final.write_bytes(b"new data")
+                Path(str(final) + ".tbi").write_bytes(b"new index")
+                with patch("os.replace", side_effect=fail_once), self.assertRaisesRegex(OSError, "injected"):
+                    publish(final, base)
+                self.assertEqual({p: p.read_bytes() for p in original}, original)
+                final.write_bytes(b"new data")
+                Path(str(final) + ".tbi").write_bytes(b"new index")
+                publish(final, base)
+            for path in (base, legacy):
+                self.assertEqual(path.read_bytes(), b"new data")
+                self.assertEqual(Path(str(path) + ".tbi").read_bytes(), b"new index")
+                self.assertFalse(Path(str(path) + ".csi").exists())
+            self.assertEqual(pointer.read_text(), legacy.name + "\n")
+
     def run_case(self, mode):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)

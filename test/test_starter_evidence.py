@@ -24,14 +24,14 @@ def test_shared_starter_contract(case):
     assert annotation[column] == case["values"].get(metric)
 
 
-def test_absent_and_empty_starter_schema_are_not_equivalent():
+def test_empty_starter_schema_preserves_full_dbnsfp_evidence():
     assert starter_observation({}, "alphamissense") is None
     record = {"AlphaMissense_score": "0.9", "CADD_phred": "40"}
     assert annotation_from(record)["alpha_missense"] == 0.9
     assert annotation_from(record)["cadd"] == 40
     record.update(StarterAM_score="", StarterCADD_phred="")
-    assert annotation_from(record)["alpha_missense"] is None
-    assert annotation_from(record)["cadd"] is None
+    assert annotation_from(record)["alpha_missense"] == 0.9
+    assert annotation_from(record)["cadd"] == 40
 
 
 def test_precedence_is_not_score_magnitude_and_wgs_cadd_still_wins():

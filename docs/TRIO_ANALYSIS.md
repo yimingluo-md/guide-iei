@@ -84,8 +84,9 @@ allele balance, and phase set for all three samples.
 
 ### Uniparental contexts: X, Y, and mitochondria
 
-Regions with a single informative transmitting parent are modeled
-explicitly rather than forced through the autosomal diploid logic:
+The inheritance model uses the transmitting parent or parents at each
+locus. The classifier uses the one-based, inclusive GRCh38 PAR intervals on X and Y
+[reported by Olney et al., Figure 1](https://pmc.ncbi.nlm.nih.gov/articles/PMC7374973/).
 
 - **Non-PAR X, male proband** — hemizygous; only the mother's genotype
   gates the de novo call. A `1/1` (diploid-caller style) or haploid `1`
@@ -93,14 +94,18 @@ explicitly rather than forced through the autosomal diploid logic:
   allele-balance upper bound is waived (a true hemizygous call sits near
   AB 1.0). GRCh38 PAR1/PAR2 boundaries are respected; inside the PARs the
   diploid model applies.
-- **Y, male proband** — only the father's genotype is informative.
+- **Non-PAR Y, male proband** — only the father's genotype is informative.
+  GRCh38 Y PAR1 and PAR2 use biparental diploid inheritance.
 - **Mitochondria, any proband** — maternal transmission only; a paternal
   ALT call never marks the variant inherited. Heteroplasmy makes allele
   balance continuous, so the diploid upper bound is likewise waived; the
   lower artifact bound still applies as a screen and is adjustable.
 
-Proband sex comes from the PED file or the manual mapping panel; when it
-is unknown, the conservative diploid model is used throughout.
+Proband sex comes from the PED file or the manual mapping panel. Unknown
+sex leaves non-PAR X and Y inheritance unassessed. A Y call in a proband
+recorded as female, a haploid autosomal or PAR call, or a heterozygous GT
+at an expected single-copy X/Y locus also requires ploidy review.
+**Include artifacts, conflicts and unassessed calls** shows these reasons.
 
 ## Compound heterozygotes
 
@@ -121,6 +126,14 @@ classifies each pair as:
   proband, where a single haplotype makes a compound heterozygote
   impossible; heterozygous-appearing calls there suggest genotyping
   artifact or an overlapping CNV rather than two alleles in trans.
+
+Mitochondrial pairs and pairs with unresolved ploidy appear under
+**Show cis and excluded pairs**. The compound filter and badges use the
+remaining pairs. Without a trio, both heterozygous calls must come from
+the same carrier, gene and contig. Calls on the same phased haplotype in
+one source are excluded. In cohort review, each participating carrier
+must pass active QC at both alleles. The homozygous filter likewise
+requires a carrier with a qualifying diploid ALT genotype.
 
 This is candidate discovery, not proof of molecular diagnosis. Review read
 evidence, transcript compatibility, gene-disease mechanism, sample identity,

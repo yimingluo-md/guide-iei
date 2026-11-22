@@ -15,10 +15,6 @@ case "${PROFILE}" in
   *) echo "ERROR: profile must be exome or whole_genome" >&2; exit 2 ;;
 esac
 
-echo "Installing recommended ${PROFILE} annotation datasets"
-echo "Registration/license resources (dbNSFP and PromoterAI) are handled separately in the UI."
-echo "LoGoFunc is optional and is not installed by this action."
-
 abs_path() {
   local path="$1"
   [[ "$path" = /* ]] || path="${ROOT}/${path}"
@@ -46,55 +42,89 @@ files_ready() {
   done
 }
 
-# Build the smallest possible request. The individual downloader is resumable,
-# but some large resources perform checksum verification when invoked; do not
-# invoke them at all once the complete configured installation is present.
-VEP_TAG="$(yaml_get "$CONFIG" container.vep_image_tag)"
-VEP_RELEASE="$(printf '%s' "$VEP_TAG" | sed -E 's/[^0-9]*([0-9]+).*/\1/')"; VEP_RELEASE="${VEP_RELEASE:-113}"
-ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh38}"
-VEP_CACHE="$(abs_path "$(yaml_get "$CONFIG" reference.vep_cache_dir)")"
-FASTA="$(abs_path "$(yaml_get "$CONFIG" reference.fasta.path)")"
-ANCESTOR="$(abs_path "$(yaml_get "$CONFIG" plugins.LoF.human_ancestor_fa)")"
-LOFTEE_SQL="$(abs_path "$(yaml_get "$CONFIG" plugins.LoF.conservation_file)")"
-GERP="$(abs_path "$(yaml_get "$CONFIG" plugins.LoF.gerp_bigwig)")"
-SPLICEAI="$(abs_path "$(yaml_get "$CONFIG" plugins.SpliceAI.snv)")"
-REPEATMASKER="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.RepeatMasker.file)")"
-SEGDUP="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.SegDup.file)")"
-PTC_GTF="$(abs_path_optional "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.gtf)")"
-CCRE="$(abs_path_optional "$(yaml_get "$CONFIG" wgs_review.ccre.bed)")"
-GENE_TSS="$(abs_path_optional "$(yaml_get "$CONFIG" wgs_review.gene_tss.path)")"
-LIFTOVER_FASTA="$(abs_path_optional "$(yaml_get "$CONFIG" liftover.grch37_to_grch38.source_fasta)")"
-LIFTOVER_CHAIN="$(abs_path_optional "$(yaml_get "$CONFIG" liftover.grch37_to_grch38.chain)")"
+# The workbench reserves this exact list before starting the worker. A direct
+# invocation computes the same plan locally.
+missing_components() {
+  # Build the smallest possible request. The individual downloader is resumable,
+  # but some large resources perform checksum verification when invoked; do not
+  # invoke them at all once the complete configured installation is present.
+  VEP_TAG="$(yaml_get "$CONFIG" container.vep_image_tag)"
+  VEP_RELEASE="$(printf '%s' "$VEP_TAG" | sed -E 's/[^0-9]*([0-9]+).*/\1/')"; VEP_RELEASE="${VEP_RELEASE:-113}"
+  ASSEMBLY="$(yaml_get "$CONFIG" reference.assembly)"; ASSEMBLY="${ASSEMBLY:-GRCh38}"
+  VEP_CACHE="$(abs_path "$(yaml_get "$CONFIG" reference.vep_cache_dir)")"
+  FASTA="$(abs_path "$(yaml_get "$CONFIG" reference.fasta.path)")"
+  ANCESTOR="$(abs_path "$(yaml_get "$CONFIG" plugins.LoF.human_ancestor_fa)")"
+  LOFTEE_SQL="$(abs_path "$(yaml_get "$CONFIG" plugins.LoF.conservation_file)")"
+  GERP="$(abs_path "$(yaml_get "$CONFIG" plugins.LoF.gerp_bigwig)")"
+  SPLICEAI="$(abs_path "$(yaml_get "$CONFIG" plugins.SpliceAI.snv)")"
+  REPEATMASKER="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.RepeatMasker.file)")"
+  SEGDUP="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.SegDup.file)")"
+  PTC_GTF="$(abs_path_optional "$(yaml_get "$CONFIG" post_processing.loftee_ptc_50bp.gtf)")"
+  CCRE="$(abs_path_optional "$(yaml_get "$CONFIG" wgs_review.ccre.bed)")"
+  GENE_TSS="$(abs_path_optional "$(yaml_get "$CONFIG" wgs_review.gene_tss.path)")"
+  LIFTOVER_FASTA="$(abs_path_optional "$(yaml_get "$CONFIG" liftover.grch37_to_grch38.source_fasta)")"
+  LIFTOVER_CHAIN="$(abs_path_optional "$(yaml_get "$CONFIG" liftover.grch37_to_grch38.chain)")"
 
+  local missing=()
+  if [[ ! -f "${VEP_CACHE}/.homo_sapiens_vep_${VEP_RELEASE}_${ASSEMBLY}.complete" ]] \
+    || [[ ! -d "${VEP_CACHE}/homo_sapiens/${VEP_RELEASE}_${ASSEMBLY}" ]]; then
+    missing+=(vep_cache)
+  fi
+  [[ -s "$FASTA" ]] || missing+=(fasta)
+  files_ready "$ANCESTOR" "$LOFTEE_SQL" "$GERP" || missing+=(loftee)
+  indexed_ready "$SPLICEAI" || missing+=(spliceai)
+  indexed_ready "$REPEATMASKER" || missing+=(repeatmasker)
+  indexed_ready "$SEGDUP" || missing+=(segdup)
+  ccre_missing=0
+  if [[ -n "$PTC_GTF" ]] && [[ ! -s "$PTC_GTF" ]]; then
+    ccre_missing=1
+  fi
+  if [[ -n "$GENE_TSS" ]] && [[ ! -s "$GENE_TSS" ]]; then
+    ccre_missing=1
+  fi
+  if [[ -n "$CCRE" ]] && ! indexed_ready "$CCRE"; then
+    ccre_missing=1
+  fi
+  ((ccre_missing)) && missing+=(ccre)
+  if [[ -n "$LIFTOVER_FASTA" && -n "$LIFTOVER_CHAIN" ]]; then
+    files_ready "$LIFTOVER_FASTA" "${LIFTOVER_FASTA}.fai" \
+      "${LIFTOVER_FASTA}.gzi" "$LIFTOVER_CHAIN" || missing+=(liftover)
+  fi
+
+  CLINVAR="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.ClinVar.file)")"
+  indexed_ready "$CLINVAR" || missing+=(clinvar)
+  CLINGEN_DB="$(abs_path "$(yaml_get "$CONFIG" clingen_erepo.database)")"
+  CLINGEN_VCF="$(abs_path "$(yaml_get "$CONFIG" clingen_erepo.vcf)")"
+  CLINGEN_MANIFEST="$(abs_path "$(yaml_get "$CONFIG" clingen_erepo.manifest)")"
+  files_ready "$CLINGEN_DB" "$CLINGEN_VCF" "$CLINGEN_MANIFEST" || missing+=(clingen_erepo)
+  local IFS=,
+  components="${missing[*]-}"
+}
+
+[[ "$PROFILE" == exome || $# -le 2 ]] || die "component selection requires the exome profile"
+case "${3:-}" in
+  --print-missing) missing_components; printf '%s\n' "$components"; exit 0 ;;
+  --components) components="${4?component list required}" ;;
+  "") missing_components ;;
+  *) die "unknown installer option: $3" ;;
+esac
 missing_references=()
-if [[ ! -f "${VEP_CACHE}/.homo_sapiens_vep_${VEP_RELEASE}_${ASSEMBLY}.complete" ]] \
-  || [[ ! -d "${VEP_CACHE}/homo_sapiens/${VEP_RELEASE}_${ASSEMBLY}" ]]; then
-  missing_references+=(vep_cache)
-fi
-[[ -s "$FASTA" ]] || missing_references+=(fasta)
-files_ready "$ANCESTOR" "$LOFTEE_SQL" "$GERP" || missing_references+=(loftee)
-indexed_ready "$SPLICEAI" || missing_references+=(spliceai)
-indexed_ready "$REPEATMASKER" || missing_references+=(repeatmasker)
-indexed_ready "$SEGDUP" || missing_references+=(segdup)
-ccre_missing=0
-if [[ -n "$PTC_GTF" ]] && [[ ! -s "$PTC_GTF" ]]; then
-  ccre_missing=1
-fi
-if [[ -n "$GENE_TSS" ]] && [[ ! -s "$GENE_TSS" ]]; then
-  ccre_missing=1
-fi
-if [[ -n "$CCRE" ]] && ! indexed_ready "$CCRE"; then
-  ccre_missing=1
-fi
-((ccre_missing)) && missing_references+=(ccre)
-if [[ -n "$LIFTOVER_FASTA" && -n "$LIFTOVER_CHAIN" ]]; then
-  files_ready "$LIFTOVER_FASTA" "${LIFTOVER_FASTA}.fai" \
-    "${LIFTOVER_FASTA}.gzi" "$LIFTOVER_CHAIN" || missing_references+=(liftover)
-fi
-
-CLINVAR="$(abs_path "$(yaml_get "$CONFIG" custom_tracks.ClinVar.file)")"
 clinvar_missing=0
-indexed_ready "$CLINVAR" || clinvar_missing=1
+clingen_missing=0
+IFS=',' read -r -a planned <<< "$components"
+for component in ${planned[@]+"${planned[@]}"}; do
+  case "$component" in
+    clinvar) clinvar_missing=1 ;;
+    clingen_erepo) clingen_missing=1 ;;
+    vep_cache|fasta|loftee|spliceai|repeatmasker|segdup|ccre|liftover)
+      missing_references+=("$component") ;;
+    *) die "unknown dataset: $component" ;;
+  esac
+done
+
+echo "Installing recommended ${PROFILE} annotation datasets"
+echo "Registration/license resources (dbNSFP and PromoterAI) are handled separately in the UI."
+echo "LoGoFunc is optional and is not installed by this action."
 
 # Preparing reference files needs bgzip, tabix, and samtools. On clean machines
 # these are normally supplied by the GUIDE-IEI annotation image. Validate that backend
@@ -242,10 +272,7 @@ else
   bash "${HERE}/fetch_clinvar.sh" "${CONFIG}"
 fi
 
-CLINGEN_DB="$(abs_path "$(yaml_get "$CONFIG" clingen_erepo.database)")"
-CLINGEN_VCF="$(abs_path "$(yaml_get "$CONFIG" clingen_erepo.vcf)")"
-CLINGEN_MANIFEST="$(abs_path "$(yaml_get "$CONFIG" clingen_erepo.manifest)")"
-if files_ready "$CLINGEN_DB" "$CLINGEN_VCF" "$CLINGEN_MANIFEST"; then
+if [[ "$clingen_missing" == "0" ]]; then
   echo "ClinGen already installed; use 'Update installed datasets' to refresh it."
 else
   bash "${HERE}/update_clingen_erepo.sh" "${CONFIG}"

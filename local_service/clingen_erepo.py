@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 
@@ -25,7 +26,7 @@ class ClinGenErepoStore:
             if signature == self._status_signature and self._status_cache is not None:
                 return dict(self._status_cache)
             manifest = json.loads(self.manifest.read_text(encoding="utf-8"))
-            with sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro&immutable=1", uri=True) as connection:
+            with closing(sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro&immutable=1", uri=True)) as connection:
                 integrity = connection.execute("PRAGMA quick_check").fetchone()[0]
             if integrity != "ok":
                 raise ValueError(f"database quick check: {integrity}")
@@ -61,6 +62,6 @@ class ClinGenErepoStore:
             "guideline", "approval_date", "published_date", "retracted",
             "evidence_repo_link", "mapping_method",
         ]
-        with sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro&immutable=1", uri=True) as connection:
+        with closing(sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro&immutable=1", uri=True)) as connection:
             rows = connection.execute(query, (chrom.removeprefix("chr"), pos, ref, alt)).fetchall()
         return {**status, "assertions": [dict(zip(columns, row)) for row in rows]}

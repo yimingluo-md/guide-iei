@@ -118,23 +118,27 @@ findings are ever opened. Matched findings flow into the review
 workspace with each record re-read from its source, so every evidence
 field the variant page displays reflects the full record.
 
+For a gene-list search, an allele that qualifies for two panel genes appears
+under both genes. It counts once in that sample’s qualifying variant count.
+If an older search entry shows a score that differs from its stored VCF,
+open **Sample Library → More actions → Rebuild search index** for the
+affected sample. This rereads its VCF without rerunning annotation.
+
 When a new gene–disease association is published, this is the two-minute
 check across the entire collection — without touching the original files.
 
-The **Genotype** control narrows carriers by stored zygosity, which follows
-how each file encoded the call. A male's single X or Y copy outside the
-pseudoautosomal regions is written haploid (`1`, stored *hemizygous*) by
-some callers and diploid-style (`1/1`, stored *homozygous*) by others, so at
-those single-copy loci the **Homozygous** and **Hemizygous** searches each
-include the other class; elsewhere they stay distinct. Recorded sex from the
-Phenotypes tab narrows this where it is known: a `1/1` on non-PAR X in an
-individual recorded as *female* is a genuine two-copy call and is left out of
-a hemizygous search, while male, other, unknown and unlinked samples keep the
-widening. A haploid call is single-copy whatever the recorded sex and stays in
-both searches. Nothing is re-coded — each result still shows its own genotype
-and stored class — so a hemizygous search on a cohort without phenotype
-records will also list female X homozygotes; link samples to individuals with
-sex at birth to exclude them.
+The **Homozygous ALT (diploid)** filter requires a fully called diploid ALT
+genotype such as `1/1`. The **Haploid GT or hemizygous X/Y** filter includes
+single-allele calls such as `1`. For a diploid-encoded ALT on non-PAR X or Y,
+a sample linked to one individual recorded as male qualifies as hemizygous.
+A non-PAR X `1/1` qualifies as homozygous when the linked individual is
+recorded as female. Unknown or ambiguous sex leaves these double-encoded
+calls visible under **All carriers**. Results preserve the source GT and
+its stored class. Mitochondrial genotypes do not qualify as diploid.
+
+Gene and gene-list searches share their MANE and impact selections. Region
+and predicted-target searches each start with all transcripts and impact
+tiers, and each remembers its own edits while the query panel is open.
 
 ## Building a large collection: bulk import
 

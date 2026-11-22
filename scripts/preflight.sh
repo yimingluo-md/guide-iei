@@ -38,6 +38,7 @@ errors, warnings = [], []
 sys.path.insert(0, os.path.join(root, "pipeline"))
 from indexed_scores import ManifestError, load_manifest, validate_manifest_files
 from predictor_registry import Adapter, RegistryError, load_registry
+from vcf_io import open_text, validate_output_path
 from vcf_assembly import resolve_input_assembly
 from validate_input_vcf import validate_input_vcf
 
@@ -65,9 +66,11 @@ if os.path.realpath(input_path) == os.path.realpath(output_path):
 
 out_cfg = cfg.get("output", {}) or {}
 fmt = out_cfg.get("format", "vcf")
-compression = out_cfg.get("compress", "none")
-if fmt == "vcf" and compression == "bgzip" and not output_path.endswith(".vcf.gz"):
-    errors.append("output.format=vcf + compress=bgzip requires an output ending in .vcf.gz")
+if fmt == "vcf":
+    try:
+        validate_output_path(output_path, out_cfg.get("compress"))
+    except ValueError as exc:
+        errors.append(str(exc))
 post = cfg.get("post_processing", {}) or {}
 legacy_protein_match = (post.get("clinvar_aa_match", {}) or {}).get("enabled", False)
 clinical_protein_match = post.get("clinical_protein_match") or {}
@@ -75,12 +78,11 @@ protein_match_enabled = clinical_protein_match.get("enabled", legacy_protein_mat
 if fmt != "vcf" and protein_match_enabled:
     errors.append("Clinical protein residue/change matching requires output.format=vcf")
 
-opener = gzip.open if input_path.endswith(".gz") else open
 sample_count = None
 contigs = {}
 first_chrom = None
 try:
-    with opener(input_path, "rt") as fh:
+    with open_text(input_path) as fh:
         for line in fh:
             if line.startswith("##contig=<"):
                 payload = line.split("<", 1)[1].rsplit(">", 1)[0]

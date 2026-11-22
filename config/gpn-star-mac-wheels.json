@@ -1,0 +1,22 @@
+{
+  "arm64": [
+    {
+      "url": "https://files.pythonhosted.org/packages/16/ca/c7eaa8e62db8fb37ce942b1ea0c6d7abfe3786ca193957afa25e71b81b66/pyarrow-21.0.0-cp313-cp313-macosx_12_0_arm64.whl",
+      "sha256": "e99310a4ebd4479bcd1964dff9e14af33746300cb014aa4a3781738ac63baf4a"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/dc/9e/14520dc3dadf3c803473bd07e9b2bd1b69bc583cb2497b47000fed2fa92f/numpy-2.2.6-cp313-cp313-macosx_11_0_arm64.whl",
+      "sha256": "287cc3162b6f01463ccd86be154f284d0893d2b3ed7292439ea97eafa8170e0b"
+    }
+  ],
+  "x86_64": [
+    {
+      "url": "https://files.pythonhosted.org/packages/ce/e8/e87d9e3b2489302b3a1aea709aaca4b781c5252fcb812a17ab6275a9a484/pyarrow-21.0.0-cp313-cp313-macosx_12_0_x86_64.whl",
+      "sha256": "d2fe8e7f3ce329a71b7ddd7498b3cfac0eeb200c2789bd840234f0dc271a8efe"
+    },
+    {
+      "url": "https://files.pythonhosted.org/packages/f9/5c/6657823f4f594f72b5471f1db1ab12e26e890bb2e41897522d134d2a3e81/numpy-2.2.6-cp313-cp313-macosx_10_13_x86_64.whl",
+      "sha256": "0811bb762109d9708cca4d0b13c4f67146e3c3b7cf8d34018c722adb2d957c84"
+    }
+  ]
+}

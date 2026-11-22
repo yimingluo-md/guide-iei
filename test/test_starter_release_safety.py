@@ -19,7 +19,7 @@ def test_optimized_python_refused_before_audit_io(script):
     assert "without -O or PYTHONOPTIMIZE" in result.stderr
 
 
-@pytest.mark.parametrize("stale", [None, "IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json"])
+@pytest.mark.parametrize("stale", [None, "GuideAllele.pm", "IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json"])
 def test_baked_starter_contract_checks_every_dependency(stale):
     spec = importlib.util.spec_from_file_location("starter_vep_audit", ROOT / "test/test_starter_annotation_e2e.py")
     audit = importlib.util.module_from_spec(spec)
@@ -36,7 +36,7 @@ def test_baked_starter_contract_checks_every_dependency(stale):
             verify_baked_plugins("synthetic", run=run)
     else:
         assert set(verify_baked_plugins("synthetic", run=run)) == set(checked)
-        assert len(checked) == 3
+        assert len(checked) == 4
 
 
 def test_baked_checks_ignore_a_competing_stdlib_test_package(tmp_path):
@@ -53,7 +53,7 @@ def test_baked_checks_ignore_a_competing_stdlib_test_package(tmp_path):
     )
     result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "4 passed" in result.stdout
+    assert "5 passed" in result.stdout
 def test_source_sha_pin_cannot_fall_back_to_matching_md5(tmp_path):
     from scripts.build_starter_release import fetch
     source = tmp_path / "source"

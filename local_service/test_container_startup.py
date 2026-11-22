@@ -70,6 +70,15 @@ class DockerStartupTests(unittest.TestCase):
         with patch("local_service.container_startup.shutil.which", return_value="/tools/colima"):
             self.assertEqual(selected_start_command("docker", self.env)[0], "Colima")
 
+    def test_colima_helper_with_missing_path_uses_subprocess_default(self):
+        folder = self.home / ".colima/default"
+        folder.mkdir(parents=True)
+        (folder / "colima.yaml").write_text("{}")
+        env = {"DOCKER_HOST": "unix://" + str(folder / "docker.sock")}
+        with patch("local_service.container_startup.shutil.which", return_value=None) as which:
+            self.assertIsNone(selected_start_command("docker", env))
+        which.assert_called_once_with("colima", path=os.defpath)
+
     def test_running_engine_never_launches_another(self):
         with patch("local_service.container_startup.shutil.which", return_value="docker"), \
                 patch.object(self.startup, "_ready", return_value=True), \
@@ -132,6 +141,14 @@ class DockerStartupTests(unittest.TestCase):
         self.assertIn("/Applications/Docker.app/Contents/Resources/bin", path)
         with patch.dict(os.environ, {"IEI_MAC_TOOL_DISCOVERY": "0"}):
             self.assertEqual(mac_tool_path("/usr/bin"), "/usr/bin")
+
+    def test_tool_path_keeps_first_spelling_of_directory(self):
+        alias = self.home / "tools-link"
+        alias.symlink_to(self.home, target_is_directory=True)
+        with patch.dict(os.environ, {"IEI_MAC_TOOL_DISCOVERY": "1"}):
+            entries = mac_tool_path(f"{alias}:{self.home}").split(os.pathsep)
+        self.assertEqual(entries[0], str(alias))
+        self.assertNotIn(str(self.home), entries)
 
     def managed_stack(self, profiles=("default",)):
         # Do not inherit this test host's Docker Desktop socket symlink.

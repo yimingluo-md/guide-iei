@@ -44,7 +44,7 @@ def stage(build, audit, vep, destination, version,
     if vep_report.get("status") != "PASS" or report.get("installation", {}).get("status") != "PASS":
         raise ValueError("Passing real-payload installation and VEP reports are required")
     expected_plugins = {name: identity(ROOT / "docker" / name) for name in
-                        ("IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json")}
+                        ("GuideAllele.pm", "IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json")}
     if vep_report.get("baked_plugins") != expected_plugins:
         raise ValueError("VEP validation must verify both baked starter plugins and the gene map")
     if report.get("alphamissense", {}).get("runtime_key_uniqueness") != "PASS":

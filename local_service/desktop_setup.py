@@ -26,8 +26,30 @@ def write_status(path, phase, message, log_path="", **details):
     os.replace(temporary, path)
 
 
-def prepare_engine(base, support, status_path, control_path, alive, call=api, pause=time.sleep, *, essential=False):
-    """Return True to open review, False to quit; failed installs require Retry."""
+def take_control_message(control_path):
+    # Claim the current message before reading. A new Quit can arrive while
+    # we process Prepare and must survive removal of the previous message.
+    claimed = control_path.with_suffix(".reading")
+    try:
+        control_path.replace(claimed)
+    except FileNotFoundError:
+        return {}
+    try:
+        message = json.loads(claimed.read_text())
+        return message if isinstance(message, dict) else {}
+    except ValueError:
+        return {}
+    finally:
+        claimed.unlink(missing_ok=True)
+
+
+def take_action(control_path):
+    return take_control_message(control_path).get("action")
+
+
+def prepare_engine(base, support, status_path, control_path, alive, call=api, pause=time.sleep, *,
+                   essential=False, launcher_gone=lambda: False):
+    """Return True when ready, False for an accepted Quit, or None if supervision ended."""
     deferred = support / "annotation-setup-deferred.json"
     phase, job, log_path = "checking", None, ""
     quit_requested = cancellation_sent = False
@@ -50,12 +72,8 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
 
     publish(phase, "Checking installed annotation components…")
     while alive():
-        try:
-            action = json.loads(control_path.read_text()).get("action")
-            control_path.unlink(missing_ok=True)
-        except (OSError, ValueError, AttributeError):
-            action = None
-        if action == "quit":
+        action = take_action(control_path)
+        if action == "quit" or launcher_gone():
             quit_requested = True
         if action == "prepare" and phase in {"waiting", "failed"}:
             authorized = True
@@ -79,8 +97,9 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
                 else:
                     publish("stopped", "Annotation preparation stopped.", log_path)
                     return False
-            elif phase in {"checking", "waiting"}:
-                publish(phase, "Checking installed annotation components…")
+            elif phase in {"checking", "waiting", "starting"}:
+                if phase == "checking":
+                    publish(phase, "Checking installed annotation components…")
                 status = call(base, status_route)
                 update_location(status)
                 if status.get("available") and not status.get("busy") and not status.get("restart_required"):
@@ -91,6 +110,12 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
                     phase = "waiting"
                     publish(phase, "Restart to activate the selected storage location.",
                                  can_prepare=False, **{k: status[k] for k in ("annotation_path", "free_bytes", "estimated_required_bytes")})
+                    pause(.5)
+                    continue
+                engine = status.get("engine", {}) if essential else status
+                if engine.get("state") == "runtime_starting" and not status.get("busy"):
+                    phase = "starting"
+                    publish(phase, "Starting the installed container runtime…", can_prepare=False)
                     pause(.5)
                     continue
                 if essential and not authorized:
@@ -110,14 +135,11 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
                         log_path, phase = job.get("log_path", ""), "preparing"
                     pause(.5)
                     continue
-                if status.get("state") == "runtime_starting":
-                    publish(phase, "Starting the installed container runtime…")
-                else:
-                    attempted = True
-                    route = "/api/annotation-engine/setup" if essential and status.get("legacy_ready") else setup_route
-                    job = call(base, route, {"confirm": True})
-                    log_path, phase = job.get("log_path", ""), "preparing"
-                    publish(phase, "Preparing GUIDE-IEI…", log_path)
+                attempted = True
+                route = "/api/annotation-engine/setup" if essential and status.get("legacy_ready") else setup_route
+                job = call(base, route, {"confirm": True})
+                log_path, phase = job.get("log_path", ""), "preparing"
+                publish(phase, "Preparing GUIDE-IEI…", log_path)
             elif phase == "preparing":
                 jobs = call(base, "/api/resource-downloads")["jobs"]
                 job = next(item for item in jobs if item["id"] == job["id"])
@@ -138,4 +160,4 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
             phase = "failed"
             publish(phase, str(exc) or "Preparation needs attention. Open Log, Retry, or Quit GUIDE-IEI.", log_path)
         pause(.5)
-    return False
+    return None

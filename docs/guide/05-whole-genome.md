@@ -19,6 +19,7 @@ ENCODE SCREEN tissue/immune contexts, and AlphaGenome AVI. These downloads
 extend the starter annotations without reinstalling core references. PromoterAI
 is also recommended for WGS, and GenIA for both exome and genome; each requires
 user-provided data. dbNSFP, LoGoFunc, FuncVEP, full CADD and OMIM remain optional.
+GPN-Star-M and GPN-Star-V can be installed separately for genome-wide SNV scoring, including intergenic variants. Neither model changes which variants pass WGS intake.
 See [dataset setup and disk requirements](03-datasets.md).
 
 A whole-genome VCF typically contains 4–5 million PASS variants, and
@@ -54,6 +55,14 @@ it satisfies **any** of four criteria:
    expression-altering promoter variants; or
 4. it overlaps an ENCODE candidate cis-regulatory element (this criterion
    can be broadened to all non-coding sequence, or omitted).
+
+At a site with several alternate alleles, Compact WGS evaluates each allele
+separately. The review VCF preserves the original ALT order, genotypes, and
+allele depths. Its `IEI_WGS_RETAINED` field marks which alleles qualified.
+Variant Review and Cohort Search use those marks. A spanning-deletion
+placeholder (`*`) cannot qualify a site. For a compact file prepared with
+an older release, repeat intake from the original annotated WGS VCF to apply
+these per-allele decisions.
 
 Because the precomputed SpliceAI and PromoterAI tables score
 single-nucleotide variants but not every indel, an intronic or promoter
@@ -130,10 +139,7 @@ classifications for body-wide context, and a curated immune-cell layer
 with donor-level evidence. The detailed semantics of this display are
 covered in [Reading a variant page](09-reading-a-variant.md).
 
-Prediction in this territory is younger than for splicing or promoters;
-future development is planned for regulatory-region prediction, including
-assignment of regulatory elements to their target genes and variant-level
-impact scores.
+For predicted targets of an overlapping regulatory element, open [Element–gene links](#predicted-regulatory-target-genes). Each ENCODE-rE2G score describes a link in a specific reference biosample.
 
 See the [regulatory-evidence reference](../SCREEN_TISSUE_IMMUNE_DATA.md#variant-review-interface-and-filtering)
 for display states and assay-availability labels.
@@ -143,8 +149,7 @@ evidence invites over-reading:
 
 1. **Position is not mechanism.** A regulatory element may act on the
    nearest gene, a distant gene, several genes, or none of clinical
-   relevance. The genes displayed are proximity context, not predicted
-   targets.
+   relevance. The nearby-gene table lists genes by distance. The Element–gene links tab shows which genes the model predicts as targets.
 2. **Absent evidence is not negative evidence.** The context layer
    preserves which assays were actually performed; a cell type without
    data is reported as unavailable, never as inactive.
@@ -163,6 +168,24 @@ principle above, context does not exclude variants unless you enable the
 positive-evidence filter. Once enabled, variants without qualifying positive
 context are hidden, including those with unavailable context. Display sets and
 variant-list filters are separate controls.
+
+## Predicted regulatory target genes
+
+Choose **Import & QC → Annotation datasets → ENCODE-rE2G → Download / resume**, or install the recommended WGS datasets. The download contains 5.08 GB of published GRCh38 predictions. GUIDE-IEI builds an interval index under your selected annotation storage and resumes an interrupted installation from the last verified file.
+
+Open **Variant Review → Regulatory evidence → Element–gene links**. Expand a gene to see the overlapping element, reference biosample, published model score, distance to the target transcription start site, and ENCODE file accession. Choose **Immune system** to restrict results to ENCODE biosamples with that ontology classification. **Gene knowledge** opens the predicted target’s evidence. Display coordinates start at one. GUIDE-IEI uses the published ENCODE links without an additional score cutoff. ENCODE selected its threshold to recover 70% of experimentally supported enhancer–gene links in its CRISPR benchmark. [ENCODE-rE2G manuscript](https://www.nature.com/articles/s41586-026-10781-4)
+
+The data describe an element’s predicted target in a reference biosample. The score applies to that link. Determining whether the patient's allele alters gene regulation requires additional evidence. A locus can have several targets, including genes beyond the nearby-gene table. Lookup also works for previously annotated GRCh38 variants and requires no SCREEN overlap.
+
+In whole-genome **Variant Review → Filters**, the search box matches partial text in the annotated gene symbol, HGVS, variant ID, locus or sample as you type. Both gene matching modes keep these matches. With a gene set selected, an annotated match must also have a VEP gene in the set.
+
+Choose **Annotated + regulatory targets** to include linked variants. Enter a full target symbol such as `NFKB1` to find rows labeled **Regulatory target: NFKB1**, even when the VEP gene differs. With a gene set selected, that target symbol must belong to the set. If the text also matches a row’s HGVS, variant ID, locus or sample, any linked target in the set qualifies for that row. Leave the box empty to find all matches for the set.
+
+The regulatory tab starts with HIGH, MODERATE, LOW and MODIFIER selected. Each tab remembers its own impact selection during the review. In **Annotated + regulatory targets**, gene-less intergenic and regulatory consequences are eligible for lookup even when VEP leaves MANE and PICK blank. **Clinical transcripts** still filters transcript annotations, and your quality, frequency and impact filters still apply.
+
+**Cohort Search → Predicted target gene** searches variants retained in the cohort index. A compact import can have discarded noncoding variants before this search. For sequence-resolved indels the overlap uses the changed bases after trimming shared sequence. Insertions qualify when the breakpoint falls inside an element. Symbolic alleles are unsupported.
+
+The snapshot uses the 1,458 standard DHS-model, upstream-thresholded ENCODE prediction files. Each file’s original accession identifies its source biosample and ENCODE analysis. [Published manuscript](https://doi.org/10.1038/s41586-026-10781-4) · [ENCODE pipeline](https://www.encodeproject.org/pipelines/ENCPL835OUC/).
 
 ## Practical notes
 

@@ -16,9 +16,9 @@ package IndexedScores;
 
 use strict;
 use warnings;
+use GuideAllele qw(sequence_edit transcript_edit);
 use B qw(SVp_IOK SVp_NOK svref_2object);
 use JSON::PP qw(decode_json);
-use Bio::EnsEMBL::Variation::Utils::Sequence qw(get_matched_variant_alleles);
 use Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin;
 use base qw(Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin);
 
@@ -33,7 +33,13 @@ sub _nonempty_scalar {
 
 sub _valid_field_id {
   my ($value) = @_;
-  return _nonempty_scalar($value) && $value =~ /^[A-Za-z_][A-Za-z0-9_.]*$/;
+  return _nonempty_scalar($value) && $value =~ /\A[A-Za-z_][A-Za-z0-9_.]*\z/;
+}
+
+sub _valid_header_text {
+  my ($value) = @_;
+  return _nonempty_scalar($value) && !_json_number($value) && $value =~ /\S/
+    && $value !~ /[\x00-\x1f\x7f-\x9f\x{2028}\x{2029}]/;
 }
 
 sub _json_number {
@@ -113,8 +119,8 @@ sub _load_manifest {
   die "ERROR: indexed-score manifest lacks resource metadata\n"
     unless ref($resource) eq 'HASH';
   for my $key (qw(id name release)) {
-    die "ERROR: indexed-score resource.$key must be a non-empty string\n"
-      unless _nonempty_scalar($resource->{$key});
+    die "ERROR: indexed-score resource.$key must be non-empty single-line text without control characters\n"
+      unless _valid_header_text($resource->{$key});
   }
 
   my $table = $manifest->{table};
@@ -193,8 +199,8 @@ sub _load_manifest {
       unless _nonempty_scalar($type)
         && ($type eq 'number' || $type eq 'integer'
           || $type eq 'string' || $type eq 'boolean');
-    die "ERROR: indexed-score output '$id' requires a description\n"
-      unless _nonempty_scalar($output->{description});
+    die "ERROR: indexed-score output '$id' requires a description with non-empty single-line text without control characters\n"
+      unless _valid_header_text($output->{description});
     my $minimum = $output->{minimum};
     my $maximum = $output->{maximum};
     if (defined $minimum || defined $maximum) {
@@ -382,29 +388,25 @@ sub run {
   }
   my $vf = eval { $tva->variation_feature };
   return {} unless $vf;
-  my $start = $vf->{start};
-  my $end = $vf->{end};
-  return {} unless defined $start && defined $end && $start == $end;
+  my ($pos, $ref, $alt) = transcript_edit($tva);
+  return {} unless defined $pos;
 
   my $chr = $vf->{chr};
   return {} unless defined $chr && length $chr;
   $chr =~ s/^chr//i;
   $chr = 'MT' if uc($chr) eq 'M';
-  my $ref = eval { $vf->ref_allele_string };
-  my $alt = eval { $tva->variation_feature_seq };
-  return {} unless defined $ref && length $ref && defined $alt && length $alt;
-
-  my @records = @{$self->get_data(
-    $chr, $start, $end, $self->{indexed_score_file}
-  )};
+  # Tabix indexes the source's VCF position. An unanchored indel can
+  # start one base after its VCF anchor (or use a right anchor at base 1).
+  my $start = $pos;
+  --$start if $pos > 1 && (!length($ref) || !length($alt));
+  my @records = @{$self->get_data($chr, $start, $pos, $self->{indexed_score_file})};
   my @allele_matches;
   for my $record (@records) {
     next if defined $record->{chr} && $record->{chr} ne $chr;
-    my $matches = get_matched_variant_alleles(
-      {ref => $ref, alts => [$alt], pos => $start, strand => $vf->strand},
-      {ref => $record->{ref}, alts => [$record->{alt}], pos => $record->{start}},
-    );
-    push @allele_matches, $record if @$matches;
+    my ($source_pos, $source_ref, $source_alt) =
+      sequence_edit($record->{start}, $record->{ref}, $record->{alt});
+    push @allele_matches, $record if defined $source_pos && $source_pos == $pos
+      && $source_ref eq $ref && $source_alt eq $alt;
   }
   return {} unless @allele_matches;
 

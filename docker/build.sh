@@ -7,7 +7,34 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${HERE}/.." && pwd)"
 CONFIG="${1:-${REPO_ROOT}/config/annotation.config.yaml}"
 
-# --- defaults (overridable by env) -------------------------------------------
+# The two build settings are single-token scalars directly under container.
+container_setting() {
+    awk -v key="$1:" -v quote="'" '
+        { sub(/\r$/, "") }
+        /^[[:space:]]*(#|$)/ { next }
+        /^container:[[:space:]]*(#.*)?$/ { active=1; indent=0; next }
+        /^[^[:space:]]/ { active=0 }
+        active {
+            match($0, /^ +/)
+            if (!indent) indent=RLENGTH
+            if (RLENGTH != indent || $1 != key) next
+            value=$2
+            if (value ~ /^#/) exit
+            first=substr(value, 1, 1)
+            if ((first == quote || first == "\"") && substr(value, length(value)) == first)
+                value=substr(value, 2, length(value)-2)
+            print value
+            exit
+        }
+    ' "${CONFIG}"
+}
+
+# Non-empty environment overrides take precedence over config and defaults.
+if [[ -f "${CONFIG}" ]]; then
+    VEP_TAG="${VEP_TAG:-$(container_setting vep_image_tag)}"
+    LOFTEE_BRANCH="${LOFTEE_BRANCH:-$(container_setting loftee_branch)}"
+fi
+
 VEP_TAG="${VEP_TAG:-release_113.4}"
 LOFTEE_BRANCH="${LOFTEE_BRANCH:-grch38}"
 LOFTEE_COMMIT="${LOFTEE_COMMIT:-a46b502a68c812c8ae0c5a5721c0603fe81cae8d}"
@@ -15,15 +42,6 @@ BCFTOOLS_VERSION="${BCFTOOLS_VERSION:-1.20}"
 BCFTOOLS_LIFTOVER_COMMIT="${BCFTOOLS_LIFTOVER_COMMIT:-909d23019e19aeadf3bf6fe1407fd6afc094592a}"
 IMAGE_NAME="${IMAGE_NAME:-vep-annotate}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
-
-# --- pull container.* values out of the YAML config if available -------------
-# Tiny grep-based reader (no yq dependency). Only reads the container: block.
-if [[ -f "${CONFIG}" ]]; then
-    v="$(awk '/^container:/{f=1;next} f&&/^[^ ]/{f=0} f&&/vep_image_tag:/{print $2;exit}' "${CONFIG}" | tr -d '"'"'"'')"
-    [[ -n "${v:-}" ]] && VEP_TAG="${v}"
-    v="$(awk '/^container:/{f=1;next} f&&/^[^ ]/{f=0} f&&/loftee_branch:/{print $2;exit}' "${CONFIG}" | tr -d '"'"'"'')"
-    [[ -n "${v:-}" ]] && LOFTEE_BRANCH="${v}"
-fi
 
 RUNTIME="${RUNTIME:-docker}"
 command -v "${RUNTIME}" >/dev/null 2>&1 || { echo "ERROR: '${RUNTIME}' not found on PATH." >&2; exit 1; }

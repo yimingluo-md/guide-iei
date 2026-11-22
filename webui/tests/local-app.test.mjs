@@ -16,7 +16,7 @@ test("keeps the clinical review defaults visible", async () => {
   assert.match(source, /useState<VariantRow\[\]>\(\[\]\)/);
   assert.doesNotMatch(source, /demoVariants/);
   assert.match(source, /Clinical transcripts \(MANE \+ PICK fallback\)/);
-  assert.doesNotMatch(source, /setManeOnly\(false\)/);
+  assert.doesNotMatch(source.split("function CohortPanel")[0], /setManeOnly\(false\)/);
   assert.match(source, /excludeConfirmedFrameRestored, setExcludeConfirmedFrameRestored\] = useState\(true\)/);
   assert.match(source, /Hidden by default; possible\/unphased events always remain visible/);
   assert.match(source, /Exclude RepeatMasker/);
@@ -195,8 +195,8 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Paste the private dbNSFP GRCh38 \(\.gz\) download link/);
   assert.match(source, /must end in _grch38\.gz — not _grch37\.gz/);
   assert.match(source, /accepts any dbNSFP release version/);
-  assert.match(source, /source\.id !== "dbnsfp" && !\["funcvep", "logofunc", "clingen_erepo"\]\.includes\(source\.id\) && source\.version/);
-  assert.match(source, /source\.id === "clingen_erepo" && source\.version && <span>Updated/);
+  assert.match(source, /source\.id !== "dbnsfp" && !\["funcvep", "logofunc", "clingen_erepo", "gencc"\]\.includes\(source\.id\) && source\.version/);
+  assert.match(source, /\["clingen_erepo", "gencc"\]\.includes\(source\.id\) && source\.version && <span>Updated/);
   assert.match(source, /Download and install dbNSFP/);
   assert.match(source, /derives the \.tbi and \.md5 links/);
   assert.match(source, /Choose folder/);
@@ -221,14 +221,11 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /Choose the licensed PromoterAI source folder/);
   assert.match(service, /\/api\/resource-preparations\/promoterai/);
   assert.match(service, /startPromoterAiPreparation/);
-  assert.match(source, /PromoterAI \|score\| ≥/);
-  assert.match(source, /Math\.abs\(row\.promoterAI\) < promoterAbsMin/);
   assert.match(source, /Choose the downloaded LoGoFunc file/);
   assert.match(source, /Import LoGoFunc/);
   assert.match(source, /Download from Zenodo/);
   assert.match(service, /\/api\/resource-preparations\/logofunc/);
   assert.match(service, /startLoGoFuncPreparation/);
-  assert.match(source, /LoGoFunc predicted class/);
   assert.match(source, /source\.recommendation === "optional"/);
   assert.match(source, /source\.id === "funcvep" \? funcVepSourcePath/);
   assert.match(source, /Automatic Zenodo download/);
@@ -248,7 +245,7 @@ test("provides annotation dataset setup and constrained local downloads", async 
   assert.match(source, /source\.prepare_id !== "funcvep" && !preparationPath\.trim\(\)/);
   assert.match(source, /source\.prepare_id === "funcvep" && !licenseAccepted/);
   assert.match(source, /licenseAccepted=\{source\.id === "funcvep" \? funcVepLicenseAccepted : false\}/);
-  assert.match(source, /!\["funcvep", "logofunc", "clingen_erepo"\]\.includes\(source\.id\)/);
+  assert.match(source, /!\["funcvep", "logofunc", "clingen_erepo", "gencc"\]\.includes\(source\.id\)/);
   assert.match(source, /href="https:\/\/zenodo\.org\/records\/20595206"/);
   assert.match(source, /href="https:\/\/omim\.org\/"[^>]*>OMIM website ↗/);
   assert.match(source, /source\.reference_url && <a href=\{source\.reference_url\}/);
@@ -307,7 +304,7 @@ test("filters Variant Review by ClinGen and GenIA pathogenic assertions and GEI 
 
 test("builds compound-het candidates only from rows surviving active filters", async () => {
   const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
-  assert.match(source, /candidateCompoundHetKeys\(screenFilteredRows\)/);
+  assert.match(source, /candidateCompoundHetKeys\(screenFilteredRows, carrierQc\)/);
   assert.doesNotMatch(source, /candidateCompoundHetKeys\(rows\)/);
 });
 
@@ -319,7 +316,7 @@ test("keeps SCREEN reference context separate and exposes defensible activity fi
   assert.match(source, /RegulatoryFilterControl/);
   assert.match(source, /mode: "any"/);
   assert.match(regulatory, /Detected in SCREEN reference epigenomic data/);
-  assert.match(regulatory, /Element–gene links · to be developed/);
+  assert.match(regulatory, /onClick=\{\(\) => setTab\("links"\)\}>Element–gene links/);
   assert.match(regulatory, /Gene-specific variant-effect prediction · to be developed/);
   assert.doesNotMatch(regulatory, /Gene links · not installed/);
   assert.match(source, /reviewAnalysisScope === "whole_genome"/);
@@ -371,7 +368,7 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /classification\?\.label/);
   assert.match(source, /classification\?\.isPositive/);
   assert.match(source, /Functional-effect prediction, not a clinical pathogenicity classification/);
-  assert.match(source, /const allPredictorCards = \[\.\.\.predictorCards, \.\.\.funcVepPredictorCards, \.\.\.additionalPredictorCards\]/);
+  assert.match(source, /const allPredictorCards = \[\.\.\.predictorCards, \.\.\.funcVepPredictorCards, \.\.\.additionalPredictorCards, \.\.\.customScores\.cards\]/);
   assert.match(source, /allPredictorCards\.map/);
   assert.doesNotMatch(source, /Functional evidence model/);
   assert.doesNotMatch(source, /<FuncVepEvidence/);
@@ -584,7 +581,7 @@ test("bounds the number of variant rows rendered at once (audit H9)", async () =
   assert.match(source, /Showing \{visibleRows\.length\.toLocaleString\(\)\} of \{rows\.length\.toLocaleString\(\)\} matching rows/);
   assert.match(source, /const VariantTableRow = memo\(function VariantTableRow/);
   assert.match(source, /const deferredQuery = useDeferredValue\(query\);/);
-  assert.match(source, /const q = deferredQuery\.trim\(\)\.toLowerCase\(\);/);
+  assert.match(source, /const searchText = deferredQuery\.trim\(\)\.toLowerCase\(\);/);
   // The review side list shows a window around the selected variant.
   assert.match(source, /reviewListWindow\.rows\.map\(/);
   assert.doesNotMatch(source, /<tbody>\{rows\.map\(\(row\) => \{/);
@@ -594,18 +591,17 @@ test("explains what a prediction threshold does with a missing score (review M1)
   const source = await readFile(new URL("app/VariantWorkbench.tsx", root), "utf8");
   // The prediction-score panel states the missing-score rule in place: an
   // enabled threshold excludes unscored variants, unlike the frequency filter.
-  assert.match(source, /id="prediction-threshold-help"/);
-  assert.match(source, /variants with no value for the predictor are excluded while the threshold is set/);
-  assert.match(source, /the optional CADD dataset adds indels/);
+  const filters = await readFile(new URL("app/PredictionScoreFilters.tsx", root), "utf8");
+  assert.match(filters, /Comparisons exclude rows with a missing value/);
   // The frequency help names the source preference (review M9) …
   assert.match(source, /otherwise VEP&apos;s MAX_AF \(highest AF across 1000 Genomes, ESP and gnomAD\)/);
   // … and the variant page labels the value by its source rather than
   // calling every fallback "gnomAD popmax".
   assert.match(source, /function frequencySourceLabel\(/);
   assert.match(source, /frequencySourceLabel\(selectedFrequencySource, true\)/);
-  // Cohort Search says the single-copy X/Y widening out loud.
-  assert.match(source, /Homozygous \(incl\. single-copy X\/Y\)/);
-  assert.match(source, /Hemizygous \(incl\. single-copy X\/Y unless recorded female\)/);
+  // The two genotype searches distinguish diploid ALT and single-copy calls.
+  assert.match(source, /Homozygous ALT \(diploid\)/);
+  assert.match(source, /Haploid GT or hemizygous X\/Y/);
   // The CcreContextPanel allele props are not named `ref` (review M36).
   assert.doesNotMatch(source, /<CcreContextPanel[^>]* ref=\{/);
   assert.match(source, /<CcreContextPanel[^>]* refAllele=\{/);

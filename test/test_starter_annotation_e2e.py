@@ -24,7 +24,7 @@ sys.path.insert(0, str(ROOT))
 def verify_baked_plugins(image, run=subprocess.check_output):
     from pipeline.starter_annotations import file_identity
     identities = {}
-    for name in ("IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json"):
+    for name in ("GuideAllele.pm", "IndexedScores.pm", "SpliceAIStarter.pm", "SpliceAI-MANE1.5-gene-map.json"):
         baked = run(["docker", "run", "--rm", "--network", "none", "--entrypoint",
                      "sha256sum", image, "/plugins/" + name], text=True).split()[0]
         identity = file_identity(ROOT / "docker" / name)

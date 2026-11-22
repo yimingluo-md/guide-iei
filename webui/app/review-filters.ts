@@ -1,7 +1,3 @@
-export function passesMinimumScore(score: number | null | undefined, minimum: number | null): boolean {
-  return minimum === null || (typeof score === "number" && Number.isFinite(score) && score >= minimum);
-}
-
 type ScreenVariant = { key: string; chrom: string; pos: number; ref: string; alt: string };
 
 /** Publish only confirmed matches, after each completed batch; ignore cancelled runs. */

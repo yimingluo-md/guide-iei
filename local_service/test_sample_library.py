@@ -604,7 +604,10 @@ class SampleLibraryTests(unittest.TestCase):
         first_id = imported["datasets"][0]["id"]
         self.library.reindex(first_id)
         records = self.library.list()
-        self.assertEqual({record["cohort_index_status"] for record in records}, {"ready"})
+        self.assertEqual({r["id"]: r["cohort_index_status"] for r in records},
+                         {r["id"]: "ready" if r["id"] == first_id else "not_included" for r in records})
+        sibling = next(r for r in records if r["id"] != first_id)
+        self.library.reindex(sibling["id"])
 
         first = self.library.get(first_id)
         removed = self.library.exclude_from_cohort(first_id)
@@ -776,9 +779,7 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(sibling_after["profile_label"], sibling_before["profile_label"])
 
     def test_reindex_profile_rewrite_spares_diverged_sibling_profile(self):
-        # Non-full reindex repairs cohort linkage for every dataset sharing
-        # the managed file, but must not overwrite a diverged sibling's
-        # profile identity with this record's settings.
+        # The sibling keeps its linkage and its independently edited profile.
         imported = self.library.import_vcf(self.vcf, self.payload(include=True))
         first, second = imported["datasets"]
         self.library.update_metadata(second["id"], {"capture_kit": "Sibling kit"})
@@ -787,10 +788,7 @@ class SampleLibraryTests(unittest.TestCase):
         sibling_after = self.library.get(second["id"])
         self.assertEqual(sibling_after["settings_hash"], sibling_before["settings_hash"])
         self.assertEqual(sibling_after["profile_label"], sibling_before["profile_label"])
-        # Linkage repair still reaches the sibling, but "ready" now asserts
-        # profile COHERENCE with the indexed file — the diverged sibling is
-        # honestly shown as needing its own re-index, not silently ready
-        # under someone else's profile.
+        # The sibling's edited profile still differs from the file-level profile.
         self.assertIsNotNone(sibling_after["cohort_file_id"])
         self.assertEqual(sibling_after["cohort_index_status"], "needs_repair")
 
@@ -909,6 +907,10 @@ class SampleLibraryTests(unittest.TestCase):
         hits = self.cohort.query({"mode": "variant", "query": "1:200:C:T", "limit": 50})
         self.assertEqual(hits["total"], 1, hits["rows"])
         self.assertEqual(hits["rows"][0]["sample"], "P2")
+
+        self.library.reindex(p2["id"])
+        self.assertEqual(self.library.get(p1["id"])["cohort_file_id"], full_file_id)
+        self.assertEqual(sorted(item["name"] for item in self.cohort.list_samples()), ["P1", "P2"])
 
         # A sibling's own full reindex APPENDS to the same full file rather
         # than replacing it (cohort_files.path is unique).

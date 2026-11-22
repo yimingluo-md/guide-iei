@@ -12,7 +12,7 @@ The easiest route is inside the application: **Annotate VCF → Set up
 annotation datasets**. After first-time essential setup, **Install recommended
 WGS datasets** adds full SpliceAI MANE 1.5, SCREEN tissue/immune contexts and
 AlphaGenome AVI, skipping installed resources. **Update installed datasets**
-separately refreshes ClinVar and ClinGen. PromoterAI (WGS) and GenIA (exome and
+refreshes ClinVar, ClinGen and the public gene-knowledge bundle, including GenCC. PromoterAI (WGS) and GenIA (exome and
 genome) are recommended user-provided resources. dbNSFP is optional after
 essential setup. Included resource cards can repair cCRE and hg19 input references;
 LoGoFunc remains an optional public research annotation, and FuncVEP
@@ -272,8 +272,9 @@ VCF.
 ## ClinVar and ClinGen stay fresh automatically
 
 The latest ClinVar is fetched (version-stamped) on every annotation run, and
-**Refresh changing sources** in the UI (or
-`scripts/update_refreshable_datasets.sh`) updates ClinVar + ClinGen expert
-variant curations on demand.
+**Update installed datasets** in the UI (or
+`scripts/update_refreshable_datasets.sh`) refreshes ClinVar, ClinGen expert
+variant curations and public gene knowledge, including GenCC. If a source is unavailable, the update summary identifies which stages completed.
+ClinGen ERepo uses the refreshed ClinVar data. Public gene knowledge refreshes independently.
 
 Next: [Running annotation](RUNNING_ANNOTATION.md)

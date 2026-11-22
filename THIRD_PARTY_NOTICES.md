@@ -11,6 +11,10 @@ does not itself change the license of GUIDE-IEI's independent application code.
 Use of restricted data must comply with that resource's terms even when the
 application is free of charge. An acknowledgment cannot confer missing rights.
 
+## GenCC gene–disease submissions
+
+The bundled gene-knowledge index includes the Gene Curation Coalition public submissions export under the CC0 1.0 Universal Public Domain Dedication. GUIDE-IEI groups versioned submissions by gene, disease and inheritance. Each submission retains its contributing organization and evidence links. The local resource manifest records the snapshot date and source checksum. [GenCC data, attribution and manuscript](https://thegencc.org/download) · [CC0 1.0](https://creativecommons.org/publicdomain/zero/1.0/).
+
 ## Starter annotation resources under development
 
 The starter bundle is not yet part of the released installer. Preparation outputs
@@ -47,3 +51,8 @@ their own terms, shown in their dataset documentation and installation metadata.
 An installer without starter data would still contain separately licensed engine
 and runtime components. It should be described as “without starter datasets,”
 not “MIT-only.”
+
+
+### GPN-Star scores
+
+GUIDE-IEI can download Song Lab’s GRCh38 GPN-Star-M and GPN-Star-V Parquet datasets under the Apache License 2.0. The exome option downloads a GUIDE-IEI subset of the vertebrate scores intersected with Ensembl release 113 coding and splice intervals. It preserves the original score values. The genome-wide options download the original files from the [official dataset](https://huggingface.co/datasets/songlab/gpn-star-scores). The local reader uses Apache Arrow (Apache-2.0) and NumPy (BSD-3-Clause). Their installed packages include their respective notices.

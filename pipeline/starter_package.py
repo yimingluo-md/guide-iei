@@ -148,10 +148,10 @@ def apply_starters(config, paths, resolve):
     def indexed(path):
         return path and path.is_file() and any(Path(str(path) + suffix).is_file() for suffix in (".tbi", ".csi"))
     db = plugins.setdefault("dbNSFP", {})
-    db["required"] = False
     full_db = resolve(db.get("path"))
     if not indexed(full_db):
         db["enabled"] = False
+    db["required"] = bool(db.get("enabled"))
     for kind, name in (("alphamissense", "AlphaMissenseStarter"), ("cadd", "CADDStarter")):
         block = plugins.setdefault(name, {})
         if block.get("enabled") is False:

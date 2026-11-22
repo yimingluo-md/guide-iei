@@ -19,6 +19,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 
+from pipeline.vcf_io import COMPRESSED_SUFFIXES
 from local_service.errors import NotFoundError
 from local_service.cohort_store import (
     CohortStore,
@@ -503,7 +504,7 @@ class SampleLibrary:
         """
         digest = hashlib.sha256()
         digest.update(b"GUIDE-IEI genotype callset fingerprint v1\n")
-        opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+        opener = gzip.open if path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
         chromosome_header = False
         with opener(path, "rb") as handle:
             for raw in handle:
@@ -1470,7 +1471,7 @@ class SampleLibrary:
                 )
             source_handle = (
                 gzip.open(source, "rt", encoding="utf-8", errors="replace")
-                if source.name.lower().endswith((".gz", ".bgz"))
+                if source.name.lower().endswith(COMPRESSED_SUFFIXES)
                 else source.open("rt", encoding="utf-8", errors="replace")
             )
             source_records = (line for line in source_handle if not line.startswith("#"))
@@ -1727,6 +1728,10 @@ class SampleLibrary:
         return record
 
     def reindex(self, dataset_id: str, full_wgs: bool = False) -> dict:
+        with self._import_lock:
+            return self._reindex(dataset_id, full_wgs)
+
+    def _reindex(self, dataset_id: str, full_wgs: bool) -> dict:
         record = self.get(dataset_id)
         if not record:
             raise ValueError("library dataset was not found")
@@ -1735,12 +1740,15 @@ class SampleLibrary:
                 "this is a previous dataset version; restore it before adding "
                 "it to Cohort Search"
             )
+        full_wgs = full_wgs or (record["analysis_scope"] == "whole_genome" and record["index_scope"] == "full")
         if full_wgs:
             if record["analysis_scope"] != "whole_genome":
                 raise ValueError("Full WGS indexing is available only for WGS datasets")
             source = self._original_path(record.get("original_path"))
             if not source.is_file():
                 raise ValueError("the original full WGS VCF path is not available")
+            if record.get("original_checksum") and self._checksum(source) != record["original_checksum"]:
+                raise ValueError("the original full WGS file has changed")
             path = source
             import_profile = "full"
             index_scope = "full"
@@ -1757,26 +1765,10 @@ class SampleLibrary:
         result = self.cohort.import_vcf(
             path, force=True, import_profile=import_profile,
             analysis_scope=record["analysis_scope"], prefilter_options=options,
-            # Full-WGS indexing reads the ORIGINAL multi-sample VCF. Index
-            # only this dataset's own column: siblings stay in their existing
-            # cohort file, so no sample is ever counted twice (audit H2). A
-            # sibling's later full reindex appends to the same full file.
-            restrict_samples=(record["vcf_sample_name"],) if full_wgs else None,
+            restrict_samples=(record["vcf_sample_name"],),
         )
-        if full_wgs and record.get("cohort_file_id") != result.get("id"):
-            with self._session() as connection:
-                # Remove only THIS dataset's sample from the previous cohort
-                # file. The file holds one row per VCF sample, and an
-                # unfiltered deletion removed every co-resident sample's
-                # cohort records (then reclaimed their variants).
-                previous_samples = [
-                    item["id"] for item in connection.execute(
-                        "SELECT id FROM cohort_samples WHERE file_id=? AND name=?",
-                        (record.get("cohort_file_id"), record["vcf_sample_name"]),
-                    ).fetchall()
-                ]
-            for start in range(0, len(previous_samples), 5000):
-                self.cohort.remove_samples(previous_samples[start:start + 5000])
+        if record.get("cohort_file_id") != result.get("id"):
+            self._remove_cohort_records([record])
         profile_settings = record["complete_settings"]
         profile_hash = record["settings_hash"]
         profile_label = record["profile_label"]
@@ -1790,51 +1782,13 @@ class SampleLibrary:
                 capture_kit=record["capture_kit"], target_bed=record["target_bed"],
             )
         with self._session() as connection:
-            if full_wgs:
-                # Only this dataset's sample was re-imported into the full
-                # index; siblings sharing the original VCF keep their rows in
-                # (and their linkage to) the previous cohort file, so only the
-                # addressed dataset may be repointed.
-                connection.execute(
-                    """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
-                           cohort_preferred=1,
-                           index_scope=?,complete_settings=?,settings_hash=?,profile_label=?,updated_at=?
-                           WHERE id=?""",
-                    (result.get("id"), index_scope, _json(profile_settings), profile_hash,
-                     profile_label, utc_now(), dataset_id),
-                )
-            else:
-                # Re-importing the managed VCF indexes every co-resident
-                # sample, so cohort LINKAGE is repaired for all datasets
-                # sharing the file. index_scope, however, is stamped only on
-                # same-profile rows: writing this dataset's scope onto a
-                # divergent sibling poisoned that sibling's own later repair
-                # (a full-index dataset silently repaired as compact).
-                # Whether a relinked sibling shows "ready" is decided by the
-                # coherence-derived status — a divergent profile surfaces as
-                # needs-repair even though its sample is in the index.
-                connection.execute(
-                    """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
-                           cohort_preferred=1,
-                           updated_at=? WHERE managed_path=? AND is_current=1""",
-                    (result.get("id"), utc_now(),
-                     self._stored_state_path(record["managed_path"])),
-                )
-                connection.execute(
-                    """UPDATE library_datasets SET index_scope=?,updated_at=?
-                           WHERE managed_path=? AND settings_hash=? AND is_current=1""",
-                    (index_scope, utc_now(),
-                     self._stored_state_path(record["managed_path"]),
-                     record["settings_hash"]),
-                )
-                # ...but profile identity stays per-dataset: a sibling may
-                # have diverged (capture kit / target BED), and this record's
-                # profile must not overwrite it.
-                connection.execute(
-                    """UPDATE library_datasets SET complete_settings=?,settings_hash=?,
-                           profile_label=?,updated_at=? WHERE id=?""",
-                    (_json(profile_settings), profile_hash, profile_label, utc_now(), dataset_id),
-                )
+            connection.execute(
+                """UPDATE library_datasets SET cohort_file_id=?,include_in_cohort=1,
+                       cohort_preferred=1,index_scope=?,complete_settings=?,settings_hash=?,profile_label=?,updated_at=?
+                   WHERE id=?""",
+                (result.get("id"), index_scope, _json(profile_settings), profile_hash,
+                 profile_label, utc_now(), dataset_id),
+            )
             connection.execute(
                 "UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=? WHERE id=?",
                 (profile_label, profile_hash, _json(profile_settings), result.get("id")),
@@ -1867,9 +1821,9 @@ class SampleLibrary:
                 raise ValueError(
                     f"managed review VCF is missing: {managed_path}"
                 )
-            include_in_cohort = any(
-                bool(row.get("cohort_preferred")) for row in current
-            ) or any(bool(row.get("cohort_preferred")) for row in target)
+            preferences = {row["vcf_sample_name"]: bool(row["cohort_preferred"]) for row in current}
+            selected = [row for row in target if preferences.get(row["vcf_sample_name"], bool(row["cohort_preferred"]))]
+            selected_ids = {row["id"] for row in selected}
             self._remove_cohort_records(current)
             now = utc_now()
             with self._session() as connection:
@@ -1879,55 +1833,45 @@ class SampleLibrary:
                        WHERE callset_id=? AND is_current=1""",
                     (now, callset_id),
                 )
-                connection.execute(
-                    """UPDATE library_datasets
-                       SET is_current=1,include_in_cohort=?,cohort_file_id=NULL,updated_at=?
-                       WHERE callset_id=? AND version_id=?""",
-                    (int(include_in_cohort), now, callset_id, version_id),
+                connection.executemany(
+                    """UPDATE library_datasets SET is_current=1, include_in_cohort=?,
+                       cohort_preferred=?, cohort_file_id=NULL, updated_at=? WHERE id=?""",
+                    [(row["id"] in selected_ids, row["id"] in selected_ids, now, row["id"]) for row in target],
                 )
 
             cohort_result = None
-            warning = ""
-            if include_in_cohort:
+            warnings = []
+            groups = {}
+            for row in selected:
+                groups.setdefault((row["managed_path"], row["original_path"], row["settings_hash"], row["index_scope"]), []).append(row)
+            for group in groups.values():
+                first = group[0]
                 try:
-                    prefilter = json.loads(target[0]["prefilter_settings"] or "{}")
-                    settings = json.loads(target[0]["complete_settings"] or "{}")
+                    full = first["analysis_scope"] == "whole_genome" and first["index_scope"] == "full"
+                    path = self._original_path(first["original_path"]) if full else self._managed_path(first["managed_path"])
+                    if full and first["original_checksum"] and self._checksum(path) != first["original_checksum"]:
+                        raise ValueError("the original full WGS file has changed")
                     cohort_result = self.cohort.import_vcf(
-                        managed_path,
-                        force=True,
-                        import_profile=(
-                            "prefiltered"
-                            if target[0]["analysis_scope"] == "whole_genome"
-                            and target[0]["index_scope"] == "compact"
-                            else "full"
-                        ),
-                        analysis_scope=target[0]["analysis_scope"],
-                        prefilter_options=prefilter,
+                        path, force=True, import_profile="prefiltered" if first["analysis_scope"] == "whole_genome" and not full else "full",
+                        analysis_scope=first["analysis_scope"], prefilter_options={} if full else json.loads(first["prefilter_settings"] or "{}"),
+                        restrict_samples=tuple(row["vcf_sample_name"] for row in group),
                     )
                     with self._session() as connection:
-                        connection.execute(
-                            """UPDATE library_datasets
-                               SET cohort_file_id=?,include_in_cohort=1,cohort_preferred=1,updated_at=?
-                               WHERE callset_id=? AND version_id=?""",
-                            (cohort_result.get("id"), utc_now(), callset_id, version_id),
+                        connection.executemany(
+                            "UPDATE library_datasets SET cohort_file_id=?,updated_at=? WHERE id=?",
+                            [(cohort_result["id"], utc_now(), row["id"]) for row in group],
                         )
                         connection.execute(
-                            """UPDATE cohort_files
-                               SET profile_label=?,profile_hash=?,profile_json=? WHERE id=?""",
-                            (target[0]["profile_label"], target[0]["settings_hash"],
-                             _json(settings), cohort_result.get("id")),
+                            "UPDATE cohort_files SET profile_label=?,profile_hash=?,profile_json=? WHERE id=?",
+                            (first["profile_label"], first["settings_hash"], first["complete_settings"], cohort_result["id"]),
                         )
-                except Exception as exc:  # active library version remains valid
-                    warning = (
-                        f"Previous version restored, but Cohort Search indexing failed: "
-                        f"{str(exc)[:300]} — use Repair Cohort Search."
-                    )
+                except Exception as exc:
+                    message = f"Previous version restored, but Cohort Search indexing failed: {str(exc)[:300]} — use Repair Cohort Search."
+                    warnings.append(message)
                     with self._session() as connection:
-                        connection.execute(
-                            """UPDATE library_datasets SET warnings=?,updated_at=?
-                               WHERE callset_id=? AND version_id=?""",
-                            (_json([warning]), utc_now(), callset_id, version_id),
-                        )
+                        connection.executemany("UPDATE library_datasets SET warnings=?,updated_at=? WHERE id=?",
+                            [(_json([message]), utc_now(), row["id"]) for row in group])
+            warning = " ".join(dict.fromkeys(warnings))
             with self._session() as connection:
                 ids = [row["id"] for row in connection.execute(
                     "SELECT id FROM library_datasets WHERE callset_id=? AND version_id=? ORDER BY vcf_sample_name",
@@ -1990,6 +1934,10 @@ class SampleLibrary:
 
     def exclude_from_cohort(self, dataset_id: str) -> dict:
         """Remove the derived carrier entry while retaining the library dataset."""
+        with self._import_lock:
+            return self._exclude_from_cohort(dataset_id)
+
+    def _exclude_from_cohort(self, dataset_id: str) -> dict:
         record = self.get(dataset_id)
         if not record:
             raise ValueError("library dataset was not found")
@@ -2374,9 +2322,7 @@ class SampleLibrary:
         return removed
 
     def compact_database(self) -> dict:
-        if self.cohort.has_active_import():
-            raise ValueError("wait for the active cohort import before compacting SQLite")
-        with self._session() as connection:
+        with self.cohort.maintenance("compacting SQLite"), self._session() as connection:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             connection.execute("VACUUM")
         return self.storage_stats()

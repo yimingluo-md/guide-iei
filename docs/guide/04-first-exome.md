@@ -21,9 +21,9 @@ subsequent runs; the walkthrough is not a runtime guarantee.
    AlphaMissense/coding-SNV CADD/essential-site SpliceAI, ClinVar and ClinGen.
    dbNSFP and LoGoFunc are optional additions
    ([Set up the annotation datasets](03-datasets.md)).
-3. **A VCF** — single- or multi-sample, `.vcf` or `.vcf.gz`. GRCh38 is used
-   directly; a GRCh37/hg19 file from an older pipeline is converted
-   automatically with full quality control
+3. **A VCF** — single- or multi-sample, plain (`.vcf`) or compressed
+   (`.vcf.gz`, `.vcf.bgz`, or `.vcf.bgzf`). GUIDE-IEI reads GRCh38 directly
+   and converts GRCh37/hg19 files with quality control
    ([GRCh37 input](../GRCH37_INPUT.md)).
 
 Without a patient VCF at hand, the walkthrough can be followed with the
@@ -41,7 +41,12 @@ routes:
 - **Review annotated VCF** — the file was already annotated by GUIDE-IEI or
   a compatible VEP pipeline and only review is needed.
 
-Drag the `.vcf`/`.vcf.gz` file onto the drop zone, or click to browse.
+Drag the VCF file onto the drop zone, or click to browse.
+
+GUIDE-IEI recognizes chromosome aliases such as `chrM` and `MT`. If it reports
+that two contigs in the same VCF map to one chromosome, ask the file provider
+for an export with consistent chromosome names. Simply renaming both could
+leave duplicate or conflicting records.
 
 ![The import screen with the Exome scope and Annotate VCF route selected](../assets/img/import-run-vep-first.png)
 
@@ -150,8 +155,7 @@ frameshifts and other indels when only dbNSFP's SNV-based CADD is installed,
 non-missense variants for AlphaMissense, variants far from splice sites for
 SpliceAI. Use score thresholds to rank a shortlist you have already made
 with frequency, impact and gene-list filters, and clear them before
-concluding that nothing else is there. The Prediction scores panel says the
-same thing in place.
+concluding that nothing else is there. In **Prediction scores → Add predictor filter**, choose the metric and select **is missing** to see the unscored rows.
 
 Counts depend on the number of samples, transcript display, calling pipeline,
 and intake profile. A multi-sample exome can legitimately produce hundreds

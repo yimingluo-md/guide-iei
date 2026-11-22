@@ -40,6 +40,7 @@ if output.name.endswith(".tbi"):
     output.write_bytes(b"test-index")
 else:
     assert url.endswith("dbNSFP6.0b_grch38.gz")
+    assert sys.argv[sys.argv.index("--md5") + 1] == "a" * 32
     output.write_bytes(bytes.fromhex("1f8b0804") + b"test-bgzf")
 print(" 99.5%  fake verified download")
 PY
@@ -57,7 +58,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 grep -F 'dbNSFP6.0b_grch38.gz.md5' "$config" >/dev/null
-printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  dbNSFP6.0b_grch38.gz\n' > "$output"
+printf '%b' "$MD5_RESPONSE" > "$output"
 SH
 
 cat > "$WORK/bin/tabix" <<'SH'
@@ -71,14 +72,18 @@ chmod +x "$TEST_ROOT/scripts/download_dbnsfp.sh" \
   "$TEST_ROOT/scripts/parallel_fetch.py" "$WORK/bin/curl" "$WORK/bin/tabix"
 
 SECRET="$WORK/dbnsfp-url.secret"
-printf '%s\n' \
-  'https://dist.genos.us/academic/authorized-code/dbNSFP6.0b_grch38.gz' \
-  > "$SECRET"
-chmod 600 "$SECRET"
-
-PATH="$WORK/bin:/usr/local/bin:/usr/bin:/bin" \
-  bash "$TEST_ROOT/scripts/download_dbnsfp.sh" \
-  "$SECRET" "$TEST_ROOT/config/test.yaml" > "$WORK/job.log" 2>&1
+run_download() {
+  printf '%s\n' 'https://dist.genos.us/academic/authorized-code/dbNSFP6.0b_grch38.gz' > "$SECRET"
+  chmod 600 "$SECRET"
+  MD5_RESPONSE="$1" PATH="$WORK/bin:$PATH" \
+    bash "$TEST_ROOT/scripts/download_dbnsfp.sh" \
+    "$SECRET" "$TEST_ROOT/config/test.yaml" > "$WORK/job.log" 2>&1
+}
+if run_download 'invalid\r\n'; then exit 1; fi
+grep -F 'not a valid MD5 sidecar' "$WORK/job.log" >/dev/null
+test ! -e "$TEST_ROOT/data/dbNSFP6.0b_grch38.gz"
+run_download 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa  dbNSFP6.0b_grch38.gz\n'
+run_download 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\r\n'
 
 test -s "$TEST_ROOT/data/dbNSFP6.0b_grch38.gz"
 test -s "$TEST_ROOT/data/dbNSFP6.0b_grch38.gz.tbi"

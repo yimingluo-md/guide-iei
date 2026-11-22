@@ -7,19 +7,8 @@ const source = await readFile(new URL("../app/review-filters.ts", import.meta.ur
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
-const { passesMinimumScore, screenVariantBatches } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
+const { screenVariantBatches } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 const variants = Array.from({ length: 5 }, (_, i) => ({ key: String(i), chrom: "1", pos: i + 1, ref: "A", alt: "G" }));
-
-test("AVI minimum permits zero, excludes missing only when enabled, and includes the boundary", () => {
-  assert(passesMinimumScore(null, null));
-  assert(passesMinimumScore(undefined, null));
-  assert(passesMinimumScore(0, 0));
-  assert(!passesMinimumScore(null, 0));
-  assert(!passesMinimumScore(undefined, 0));
-  assert(!passesMinimumScore(NaN, 0));
-  assert(passesMinimumScore(20, 20));
-  assert(!passesMinimumScore(19.99, 20));
-});
 
 test("SCREEN publishes cumulative matches only after completed batches", async () => {
   const updates = [];

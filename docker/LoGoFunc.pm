@@ -21,6 +21,7 @@ package LoGoFunc;
 
 use strict;
 use warnings;
+use GuideAllele qw(transcript_snv);
 use Bio::EnsEMBL::Variation::Utils::Sequence qw(get_matched_variant_alleles);
 use Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin;
 use base qw(Bio::EnsEMBL::Variation::Utils::BaseVepTabixPlugin);
@@ -63,9 +64,6 @@ sub run {
     @{$tva->get_all_OverlapConsequences};
 
   my $vf = $tva->variation_feature;
-  return {} unless defined $vf->{start} && defined $vf->{end};
-  return {} unless $vf->{start} == $vf->{end};
-
   my $transcript = $tva->transcript;
   my $transcript_id = $transcript ? $transcript->stable_id : undef;
   return {} unless defined $transcript_id && length $transcript_id;
@@ -83,13 +81,10 @@ sub run {
   $chr =~ s/^chr//i;
   return {} if $chr =~ /^(?:M|MT)$/i;
 
-  my $ref = $vf->ref_allele_string;
-  my $alt = $tva->variation_feature_seq;
-  return {} unless defined $ref && defined $alt;
-  return {} unless $ref =~ /^[ACGT]$/i && $alt =~ /^[ACGT]$/i;
-
+  my ($pos, $ref, $alt) = transcript_snv($tva);
+  return {} unless defined $pos;
   my @data = @{$self->get_data(
-    $chr, $vf->{start}, $vf->{end}, $self->{logofunc_file}
+    $chr, $pos, $pos, $self->{logofunc_file}
   )};
   my @allele_matches;
   for my $candidate (@data) {
@@ -100,7 +95,7 @@ sub run {
       && length $candidate->{chr}
       && $candidate->{chr} ne $chr;
     my $matches = get_matched_variant_alleles(
-      {ref => $ref, alts => [$alt], pos => $vf->{start}, strand => $vf->strand},
+      {ref => $ref, alts => [$alt], pos => $pos, strand => 1},
       {ref => $candidate->{ref}, alts => [$candidate->{alt}], pos => $candidate->{start}},
     );
     next unless @$matches;

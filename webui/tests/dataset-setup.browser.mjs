@@ -20,7 +20,7 @@ const definitions = [
   ["loftee", "LOFTEE", "required", "bundled"],
 ];
 const sources = definitions.map(([id, label, recommendation, setup_mode]) => ({
-  id, label, recommendation, setup_mode, description: `Synthetic ${label} dataset`,
+  id, label, recommendation, setup_mode, description: `Synthetic ${label} dataset for transcript and frameshift review`,
   available: ["spliceai", "loftee", "clinvar", "clingen_erepo"].includes(id),
   installed: ["spliceai", "loftee", "clinvar", "clingen_erepo"].includes(id),
   enabled: true, required: ["spliceai", "loftee", "clingen_erepo"].includes(id),
@@ -92,6 +92,20 @@ try {
   await clickText("Import & QC");
   await clickText("Set up annotation datasets");
   await page.waitForSelector(".dataset-group.optional .dataset-card");
+  const term = await page.waitForSelector(".dataset-quick-setup .glossary-term", { visible: true });
+  await term.click();
+  await page.waitForSelector(".glossary-popover");
+  await term.click();
+  await page.waitForSelector(".glossary-popover", { hidden: true });
+  assert.equal(await term.evaluate(el => el.getAttribute("aria-expanded")), "false");
+  await term.focus();
+  await page.keyboard.press("Enter");
+  await page.waitForSelector(".glossary-popover");
+  await page.keyboard.press("Escape");
+  await page.waitForSelector(".glossary-popover", { hidden: true });
+  await term.click();
+  await page.click(".dataset-quick-setup .dataset-card-title > strong");
+  await page.waitForSelector(".glossary-popover", { hidden: true });
   assert.deepEqual(await page.$$eval(".dataset-quick-setup .dataset-card-title > strong", (els) => els.map((el) => el.textContent)),
     ["SpliceAI", "ENCODE tissue and immune contexts (SCREEN)", "AlphaGenome AVI"]);
   assert.deepEqual(await page.$$eval(".access-required .dataset-card-title > strong", (els) => els.map((el) => el.textContent)), ["PromoterAI", "GenIA"]);

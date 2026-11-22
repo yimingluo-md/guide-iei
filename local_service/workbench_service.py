@@ -9,6 +9,7 @@ SQLite, and never sends VCF data over the network.
 from __future__ import annotations
 
 import argparse
+import errno
 import gzip
 import hashlib
 import html
@@ -28,7 +29,7 @@ import threading
 import traceback
 import time
 import uuid
-from contextlib import closing, contextmanager
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import asdict
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -38,15 +39,19 @@ from pathlib import Path
 from typing import Callable
 import urllib.error
 import urllib.request
-from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlencode, urlparse, urlsplit
 
 from local_service.ccre_context import CcreContextStore
 from local_service.essential_setup import missing_resources, package_status, reference_allowance
+from pipeline.numeric import finite_float
+
+from pipeline.vcf_io import VCF_SUFFIXES
 from pipeline.starter_package import load_plan as load_starter_plan, installed_paths as starter_paths, apply_starters
 from pipeline.spliceai_dataset import (
     FORMAT as SPLICEAI_SHARDED, valid as valid_full_spliceai, full_install_config,
 )
 from local_service.container_startup import DockerStartup, mac_tool_path, managed_colima_environment
+from local_service.desktop_endpoint import guard_loopback_aliases
 from local_service.container_workspace import workspace_directory, check_ready as check_container_workspace
 from local_service.clingen_erepo import ClinGenErepoStore
 from local_service import cohort_store as cohort_module
@@ -80,7 +85,7 @@ from pipeline.indexed_scores import (
     validate_manifest_registry_contract,
 )
 from pipeline.funcvep_dataset import PINNED_RELEASE as FUNCVEP_PINNED_RELEASE
-from pipeline.avi_dataset import RELEASE as AVI_RELEASE, valid_bundle as valid_avi_bundle
+from pipeline.avi_dataset import RELEASE as AVI_RELEASE, bundle_present as avi_bundle_present
 from pipeline.predictor_registry import (
     Adapter,
     load_registry as load_predictor_registry,
@@ -96,6 +101,7 @@ CONTAINER_FINGERPRINT_FILES = (
     "build.sh",
     "PromoterAI.pm",
     "LoGoFunc.pm",
+    "GuideAllele.pm",
     "IndexedScores.pm",
     "SpliceAIStarter.pm",
     "SpliceAI-MANE1.5-gene-map.json",
@@ -108,7 +114,12 @@ CONTAINER_FINGERPRINT_FILES = (
 RESTART_EXIT_CODE = 75
 TERMINAL_STATUSES = {"succeeded", "failed", "cancelled", "interrupted"}
 ALLOWED_PROFILES = {"local", "wsl-local"}
+from local_service import custom_scores, element_gene_links
+from pipeline import gpn_star
+
 ANNOTATION_SOURCE_PATHS = {
+    **{key: ("wgs_review", key) for key in gpn_star.MODELS},
+    "encode_re2g": ("wgs_review", "encode_re2g"),
     "dbnsfp": ("plugins", "dbNSFP"),
     "loftee": ("plugins", "LoF"),
     "spliceai": ("plugins", "SpliceAI"),
@@ -130,6 +141,7 @@ ANNOTATION_SOURCE_PATHS = {
 }
 REQUIRED_DIAGNOSTIC_SOURCES = {"dbnsfp", "loftee", "spliceai", "loftee_ptc_50bp", "clingen_erepo"}
 SOURCE_RECOMMENDATION_DEFAULTS = {
+    "encode_re2g": "recommended_wgs",
     "dbnsfp": "required",
     "loftee": "required",
     "spliceai": "recommended_wgs",
@@ -203,16 +215,22 @@ class _OmimRedirectHandler(urllib.request.HTTPRedirectHandler):
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
         try:
-            validate_omim_download_url(newurl, self.filename)
+            download_url, _ = validate_omim_download_url(newurl, self.filename)
         except ValueError as exc:
             # The caller converts this into a filename-only error. Keeping the
             # credential out of the exception message prevents accidental logs.
             raise urllib.error.HTTPError(
                 req.full_url, code, "unsafe OMIM redirect refused", headers, fp
             ) from exc
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
+        return super().redirect_request(req, fp, code, msg, headers, download_url)
 
 ANNOTATION_SOURCE_SETUP = {
+    **{key: {
+        "setup_mode": "download", "access": "public", "recommendation": "optional",
+        "download_id": key, "reference_url": "https://huggingface.co/datasets/songlab/gpn-star-scores",
+        "reference_label": "Official GPN-Star scores", "size_hint": "About 59 GB per model",
+        "instructions": ["Download the GRCh38 scores for this model. Each chromosome is checksum-verified. Interrupted downloads can be resumed."],
+    } for key in gpn_star.MODELS},
     "dbnsfp": {
         "setup_mode": "manual",
         "prepare_id": "dbnsfp",
@@ -403,6 +421,13 @@ ANNOTATION_SOURCE_SETUP = {
             "When raw sequencing reads are available, re-alignment to GRCh38 is preferable to conversion.",
         ],
     },
+    "encode_re2g": {
+        "setup_mode": "download", "download_id": "encode_re2g",
+        "reference_url": "https://doi.org/10.1038/s41586-026-10781-4",
+        "reference_label": "ENCODE-rE2G published manuscript",
+        "size_hint": "5.08 GB download plus local indexing",
+        "instructions": ["Download the published links and build the local interval index. Retry resumes at the last completed ENCODE file."],
+    },
     "screen_context": {
         "setup_mode": "download",
         "download_id": "screen_context",
@@ -457,6 +482,8 @@ ANNOTATION_SOURCE_SETUP = {
     },
 }
 RESOURCE_DOWNLOAD_COMMANDS = {
+    **{key: ("pipeline/gpn_star.py",) for key in gpn_star.PACKAGES},
+    "encode_re2g": ("scripts/install_encode_re2g.py",),
     "alphagenome_avi": ("scripts/download_avi.sh",),
     "spliceai": ("scripts/download_references.sh", "--only", "spliceai"),
     "cadd_wgs": ("scripts/download_cadd_wgs.sh",),
@@ -490,6 +517,10 @@ SPLICEAI_LOOKUP_URL = "https://spliceai-38-xwkwwwxdwq-uc.a.run.app/spliceai/"
 SPLICEAI_LOOKUP_DISTANCE = 500
 SPLICEAI_LOOKUP_MASK = 1
 RESOURCE_DOWNLOAD_OUTPUTS = {
+    **{key: [(("wgs_review", key, "directory"), 58 * GIB, True)] for key in gpn_star.MODELS},
+    gpn_star.EXOME_RESOURCE: [(("wgs_review", "gpn_star_v", "directory"),
+                              sum(p["size"] for p in gpn_star.assets(gpn_star.EXOME_PACKAGE).values()), True)],
+    "encode_re2g": [(("wgs_review", "encode_re2g", "directory"), 32 * GIB, True)],
     "spliceai": [(("plugins", "SpliceAI", "snv"), 35 * GIB, False)],
     # Check the two CADD payloads together when they share a filesystem.
     "cadd_wgs": [
@@ -527,6 +558,7 @@ RESOURCE_DOWNLOAD_OUTPUTS = {
         (("custom_tracks", "AlphaGenomeAVI", "dest_dir"), 80 * GIB, True),
         (("plugins", "SpliceAI", "snv"), 35 * GIB, False),
         (("wgs_review", "screen_context", "manifest"), 2 * GIB, False),
+        (("wgs_review", "encode_re2g", "directory"), 32 * GIB, True),
     ],
     "refresh_updates": [
         (("clinvar", "dest_dir"), 2 * GIB, True),
@@ -543,7 +575,17 @@ WGS_RECOMMENDED_DOWNLOAD_BYTES = {
     "spliceai": 34_317_245_229,
     "screen_context": 1_500_000_000,
     "alphagenome_avi": 75_800_000_000,
+    "encode_re2g": 5_079_580_057,
 }
+
+
+def _resource_environment() -> dict[str, str]:
+    # Some shell steps honor IEI_PYTHON_BIN and others invoke python3 via PATH.
+    return {
+        **os.environ,
+        "IEI_PYTHON_BIN": sys.executable,
+        "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", os.defpath),
+    }
 
 
 def utc_now() -> str:
@@ -697,16 +739,19 @@ class JobStore:
             )
         return self.get(values["id"])
 
-    def update(self, job_id: str, **values) -> dict | None:
+    def update(self, job_id: str, *, expected: tuple[str, ...] = (), **values) -> dict | None:
         if not values:
             return self.get(job_id)
         values["updated_at"] = utc_now()
         assignments = ", ".join(f"{column} = ?" for column in values)
+        guard = " AND status IN (" + ",".join("?" for _ in expected) + ")" if expected else ""
         with self._session() as connection:
-            connection.execute(
-                f"UPDATE annotation_jobs SET {assignments} WHERE id = ?",
-                (*values.values(), job_id),
-            )
+            changed = connection.execute(
+                f"UPDATE annotation_jobs SET {assignments} WHERE id = ?{guard}",
+                (*values.values(), job_id, *expected),
+            ).rowcount
+        if not changed:
+            return None
         return self.get(job_id)
 
     def get(self, job_id: str) -> dict | None:
@@ -870,12 +915,13 @@ class AnnotationJobService:
             # unreadable; the profile endpoint reports that configuration
             # problem separately, and these stock managed paths remain safe.
             pass
+        bundled_knowledge = self.pipeline_root / "webui" / "public" / "bundled-data" / "gene_knowledge_public.sqlite3"
         self.gene_knowledge = GeneKnowledgeStore(
-            gene_knowledge_override if gene_knowledge_override.is_file() else
-            self.pipeline_root / "webui" / "public" / "bundled-data" / "gene_knowledge_public.sqlite3",
+            gene_knowledge_override if gene_knowledge_override.is_file() else bundled_knowledge,
             self.state_dir / "gene-knowledge" / "omim.sqlite3",
             genia_database,
             genia_reference_fasta,
+            bundled_database=bundled_knowledge,
         )
         self.genia = self.gene_knowledge.genia
         self.clingen_erepo = ClinGenErepoStore(
@@ -2031,17 +2077,12 @@ class AnnotationJobService:
                 self._copy_tree_verified(child, destination / name, copied)
 
     def _copy_data_root_verified(self, source: Path, destination: Path, copied: Callable[[int], None]) -> None:
-        database_names = {"cohort.sqlite3", "workbench.sqlite3"}
+        database_names = {db.name for db in source.glob("*.sqlite3") if db.is_file()}
+        snapshot_files = {name + suffix for name in database_names
+                          for suffix in ("", "-wal", "-shm", "-journal")}
 
         def skip(relative: Path) -> bool:
-            name = relative.name
-            return (
-                relative.parent == Path(".")
-                and (
-                    name in database_names
-                    or name.endswith((".sqlite3-wal", ".sqlite3-shm", ".sqlite3-journal"))
-                )
-            )
+            return relative.parent == Path(".") and relative.name in snapshot_files
 
         self._copy_tree_verified(source, destination, copied, skip=skip)
         for name in database_names:
@@ -2053,7 +2094,7 @@ class AnnotationJobService:
 
     @staticmethod
     def _backup_sqlite(source: Path, destination: Path) -> None:
-        source_connection = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+        source_connection = sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)
         destination_connection = sqlite3.connect(destination)
         try:
             source_connection.backup(destination_connection)
@@ -2231,41 +2272,39 @@ class AnnotationJobService:
         # The service remains on the old workspace until restart, but database
         # records are updated now so the new process will reopen the copied
         # indexed VCF cache rather than a stale absolute path.
-        if self.cohort.database_path.is_file():
-            connection = sqlite3.connect(self.cohort.database_path)
+        moved_roots = set(self._migration_named_roots())
+
+        def moved_path(value):
+            path = Path(value)
+            if not path.is_absolute():
+                return None
             try:
-                try:
-                    for column in ("path", "prepared_path", "index_path"):
-                        rows = connection.execute(
-                            f"SELECT id,{column} FROM cohort_files WHERE {column} IS NOT NULL"
-                        ).fetchall()
-                        for row_id, value in rows:
-                            replacement = self._rewrite_prefixed_path(value, old_root, new_root)
-                            if replacement:
-                                connection.execute(
-                                    f"UPDATE cohort_files SET {column}=? WHERE id=?",
-                                    (replacement, row_id),
-                                )
-                except sqlite3.OperationalError:
-                    pass
-                try:
-                    rows = connection.execute(
-                        "SELECT id,original_path FROM library_datasets WHERE original_path IS NOT NULL"
-                    ).fetchall()
+                relative = path.resolve().relative_to(old_root)
+            except ValueError:
+                return None
+            if relative.parts and relative.parts[0] in moved_roots:
+                return str(new_root / relative)
+            return None
+
+        if not self.cohort.database_path.is_file():
+            return
+        with closing(sqlite3.connect(self.cohort.database_path)) as connection, connection:
+            for table, columns in (("cohort_files", ("path", "prepared_path", "index_path")),
+                                   ("library_datasets", ("original_path",))):
+                present = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+                for column in columns:
+                    if column not in present:
+                        continue
+                    rows = connection.execute(f"SELECT id,{column} FROM {table} WHERE {column} IS NOT NULL").fetchall()
                     for row_id, value in rows:
-                        replacement = self._rewrite_prefixed_path(value, old_root, new_root)
+                        replacement = moved_path(value)
+                        if column == "original_path" and value.startswith("@workspace/"):
+                            relative = Path(value.removeprefix("@workspace/"))
+                            candidate = (old_root / relative).resolve()
+                            if relative.parts and relative.parts[0] not in moved_roots and old_root in candidate.parents:
+                                replacement = str(candidate)
                         if replacement:
-                            # A temporary source is outside the Sample Library
-                            # root, so it remains an absolute path after move.
-                            connection.execute(
-                                "UPDATE library_datasets SET original_path=? WHERE id=?",
-                                (replacement, row_id),
-                            )
-                except sqlite3.OperationalError:
-                    pass
-                connection.commit()
-            finally:
-                connection.close()
+                            connection.execute(f"UPDATE {table} SET {column}=? WHERE id=?", (replacement, row_id))
 
     def open_storage_location(self, payload: dict) -> dict:
         kind = self._storage_kind(payload.get("kind"))
@@ -2366,28 +2405,38 @@ class AnnotationJobService:
         if resource_id not in RESOURCE_DOWNLOAD_COMMANDS:
             raise ValueError(f"resource cannot be downloaded from the UI: {resource_id}")
         installed_profile = False
+        selected = None
         if resource_id in {"recommended_exome", "recommended_wgs"}:
             profile_name = (
                 "exome" if resource_id == "recommended_exome" else "whole_genome"
             )
-            installed_profile = bool(
+            profile = (
                 self._annotation_profile()
                 .get("recommended_profiles", {})
                 .get(profile_name, {})
-                .get("installed", False)
             )
+            installed_profile = bool(profile.get("installed"))
+            if resource_id == "recommended_wgs":
+                selected = profile["missing"]
         # Avoid walking large installed cache directories merely to calculate
         # first-install disk allowance. The fast installer will record a
         # successful no-op and point users to the separate update action.
         if not installed_profile:
-            self._ensure_annotation_download_space(resource_id)
+            self._ensure_annotation_download_space(resource_id, wgs_missing=selected)
         specification = RESOURCE_DOWNLOAD_COMMANDS[resource_id]
-        if resource_id == "gene_knowledge":
+        if resource_id in {"gene_knowledge", "refresh_updates"}:
             destination = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
             command = [
-                "bash", str(self.pipeline_root / specification[0]), str(destination),
+                "bash", str(self.pipeline_root / specification[0]),
+                *([str(self._write_resource_config(resource_id))] if resource_id == "refresh_updates" else []),
+                str(destination),
                 str(destination.with_name("manifest.json")),
             ]
+        elif resource_id in gpn_star.PACKAGES:
+            command = [sys.executable, str(self.pipeline_root / specification[0]), "install",
+                       str(self._write_resource_config(resource_id)), resource_id]
+        elif resource_id == "encode_re2g":
+            command = [sys.executable, str(self.pipeline_root / specification[0]), str(self.annotation_root)]
         elif resource_id in {"screen_context", "screen_context_build"}:
             # Both scripts take a data root, not a config file. Downloads and
             # prepared matrices live under annotation storage; the post-job
@@ -2403,14 +2452,23 @@ class AnnotationJobService:
                 *specification[1:],
             ]
             if resource_id == "recommended_wgs":
-                missing = self._annotation_profile()["recommended_profiles"]["whole_genome"]["missing"]
-                command += [str(self.annotation_root / "screen-context"), ",".join(missing)]
-        return self._start_resource_job(resource_id, command, "download")
+                command += [str(self.annotation_root / "screen-context"), ",".join(selected)]
+            elif resource_id == "recommended_exome":
+                plan = subprocess.run(command + ["--print-missing"], cwd=self.pipeline_root,
+                                      env=_resource_environment(), capture_output=True, text=True)
+                if plan.returncode:
+                    raise ValueError(plan.stderr.strip() or "Could not determine the missing exome datasets.")
+                missing_csv = plan.stdout.strip()
+                selected = missing_csv.split(",") if missing_csv else []
+                command += ["--components", missing_csv]
+        return self._start_resource_job(resource_id, command, "download", components=selected)
 
     def _ensure_annotation_download_space(
         self,
         resource_id: str,
         output_overrides: dict[tuple[str, ...], Path] | None = None,
+        *,
+        wgs_missing: list[str] | None = None,
     ) -> None:
         output_specs = RESOURCE_DOWNLOAD_OUTPUTS.get(resource_id)
         if not output_specs:
@@ -2422,13 +2480,19 @@ class AnnotationJobService:
             config.setdefault("plugins", {})["SpliceAI"] = full_install_config(
                 (config.get("plugins") or {}).get("SpliceAI"))
         if resource_id == "recommended_wgs":
-            missing = self._annotation_profile()["recommended_profiles"]["whole_genome"]["missing"]
-            ids = ("alphagenome_avi", "spliceai", "screen_context")
-            output_specs = [spec for source_id, spec in zip(ids, output_specs) if source_id in missing]
+            if wgs_missing is None:
+                wgs_missing = self._annotation_profile()["recommended_profiles"]["whole_genome"]["missing"]
+            ids = ("alphagenome_avi", "spliceai", "screen_context", "encode_re2g")
+            output_specs = [spec for source_id, spec in zip(ids, output_specs) if source_id in wgs_missing]
             output_overrides = dict(output_overrides or {})
             output_overrides[("wgs_review", "screen_context", "manifest")] = (
                 self.annotation_root / "screen-context" / "prepared" / "screen.registry-v4.immune-contexts.json"
             )
+        if resource_id in {"encode_re2g", "recommended_wgs"}:
+            output_overrides = dict(output_overrides or {})
+            output_overrides[("wgs_review", "encode_re2g", "directory")] = (
+                self.annotation_root / element_gene_links.DATABASE
+            ).parent
         locations: dict[int, dict] = {}
         for key_path, required, is_directory in output_specs:
             resolved = (output_overrides or {}).get(key_path)
@@ -2466,7 +2530,10 @@ class AnnotationJobService:
                 "required": 0,
                 "destinations": [],
             })
-            credit = self._resumable_download_credit(resolved, is_directory)
+            credit_path = resolved
+            if resource_id in gpn_star.PACKAGES:
+                credit_path = gpn_star.release_dir(resolved or self.annotation_root / "gpn-star", gpn_star.PACKAGES[resource_id])
+            credit = self._resumable_download_credit(credit_path, is_directory)
             entry["required"] += max(0, required - credit)
             entry["destinations"].append(destination)
 
@@ -2597,6 +2664,7 @@ class AnnotationJobService:
             "logofunc": ("file", "Choose the downloaded LoGoFunc .csv.gz file"),
             "funcvep": ("file", "Choose the downloaded official FuncVEP .zip archive"),
             "omim": ("folder", "Choose the folder containing the four OMIM data files"),
+            "custom_scores": ("files", "Choose local GRCh38 tab-separated score tables"),
             "genia": ("files", "Choose one or more GenIA export files"),
             "storage_annotation": ("folder", "Choose the folder for annotation datasets"),
             "storage_data": ("folder", "Choose the folder for the Sample Library & Cohort"),
@@ -2604,7 +2672,7 @@ class AnnotationJobService:
         }
         if resource_id not in choices:
             raise ValueError(
-                "resource picker supports dbNSFP, PromoterAI, LoGoFunc, FuncVEP, OMIM, GenIA, or a storage location"
+                "resource picker supports dbNSFP, PromoterAI, LoGoFunc, FuncVEP, OMIM, GenIA, custom scores, or a storage location"
             )
         selection_type, prompt = choices[resource_id]
         system = platform.system()
@@ -2647,6 +2715,8 @@ class AnnotationJobService:
                 file_filter = (
                     "ZIP archive (*.zip)|*.zip|All files (*.*)|*.*"
                     if resource_id in {"funcvep", "alphagenome_avi"}
+                    else "Score tables (*.tsv;*.txt;*.gz;*.bgz;*.bgzf)|*.tsv;*.txt;*.gz;*.bgz;*.bgzf|All files (*.*)|*.*"
+                    if resource_id == "custom_scores"
                     else "GenIA exports (*.csv;*.tsv;*.vcf;*.vcf.gz)|*.csv;*.tsv;*.vcf;*.vcf.gz|All files (*.*)|*.*"
                     if resource_id == "genia"
                     else "Compressed table (*.csv.gz)|*.csv.gz|All files (*.*)|*.*"
@@ -2708,7 +2778,7 @@ class AnnotationJobService:
         if not paths or not valid:
             raise ValueError(f"one or more selected {selection_type} are no longer available")
         if selection_type == "files":
-            inspection = self.genia.inspect(paths)
+            inspection = self.genia.inspect(paths) if resource_id == "genia" else {}
             return {
                 "cancelled": False,
                 "resource_id": resource_id,
@@ -3296,22 +3366,56 @@ class AnnotationJobService:
                 pass
         path.unlink(missing_ok=True)
 
+    def _existing_resource_job(self, resource_id: str, components: frozenset[str]) -> dict | None:
+        """Check admission while holding _resource_lock through insertion of the new job."""
+        active = [job for job in self._resource_jobs.values() if job["status"] in {"queued", "running"}]
+        for job in active:
+            if job["resource_id"] == resource_id:
+                if resource_id == "custom_scores":
+                    raise ValueError("Wait for the active custom score import to finish.")
+                return job
+        for job in active:
+            overlap = components & job["_components"]
+            if overlap:
+                if "gene_knowledge" in overlap:
+                    raise ValueError("A public gene-knowledge update is already running. Wait for it to finish.")
+                raise ValueError(f"Wait for {job['resource_id']} to finish before starting {resource_id}. "
+                                 f"Both jobs use {', '.join(sorted(overlap))}.")
+        return None
+
+    @staticmethod
+    def _resource_components(resource_id: str, selected: list[str] | None) -> frozenset[str]:
+        if selected is None:
+            if resource_id in {"recommended_exome", "recommended_wgs"}:
+                raise ValueError(f"The planned components are required to start {resource_id}.")
+            if resource_id == "refresh_updates":
+                selected = ["clinvar", "clingen_erepo", "gene_knowledge"]
+            elif resource_id == "screen_context_build":
+                selected = ["screen_context"]
+            else:
+                selected = [resource_id]
+        # ClinGen resolves alleles against these inputs and hashes them again
+        # for its manifest. Keep both snapshots stable throughout that work.
+        if "clingen_erepo" in selected:
+            return frozenset((*selected, "clinvar", "fasta"))
+        return frozenset(selected)
+
     def _start_resource_job(
         self,
         resource_id: str,
         command: list[str],
         operation: str,
         sensitive_paths: tuple[Path, ...] = (),
+        *,
+        components: list[str] | None = None,
     ) -> dict:
+        reserved = self._resource_components(resource_id, components)
         with self._resource_lock:
-            for job in self._resource_jobs.values():
-                if (
-                    job["resource_id"] == resource_id
-                    and job["status"] in {"queued", "running"}
-                ):
-                    for path in sensitive_paths:
-                        path.unlink(missing_ok=True)
-                    return self._resource_job_copy(job)
+            existing = self._existing_resource_job(resource_id, reserved)
+            if existing:
+                for path in sensitive_paths:
+                    path.unlink(missing_ok=True)
+                return self._resource_job_copy(existing)
             job_id = uuid.uuid4().hex
             job = {
                 "id": job_id,
@@ -3327,6 +3431,7 @@ class AnnotationJobService:
                 "log_path": str(self.resource_logs_dir / f"{job_id}.log"),
                 "operation": operation,
                 "_command": command,
+                "_components": reserved,
                 "_sensitive_paths": [str(path) for path in sensitive_paths],
             }
             self._resource_jobs[job_id] = job
@@ -3345,16 +3450,16 @@ class AnnotationJobService:
         resource_id: str,
         operation: str,
         runner: Callable[[Callable[[str, float | None], None]], dict],
+        *,
+        components: list[str] | None = None,
         **public_values,
     ) -> dict:
         """Start a memory-only resource worker with no credential-bearing argv."""
+        reserved = self._resource_components(resource_id, components)
         with self._resource_lock:
-            for job in self._resource_jobs.values():
-                if (
-                    job["resource_id"] == resource_id
-                    and job["status"] in {"queued", "running"}
-                ):
-                    return self._resource_job_copy(job)
+            existing = self._existing_resource_job(resource_id, reserved)
+            if existing:
+                return self._resource_job_copy(existing)
             job_id = uuid.uuid4().hex
             job = {
                 "id": job_id,
@@ -3370,6 +3475,7 @@ class AnnotationJobService:
                 "log_path": str(self.resource_logs_dir / f"{job_id}.log"),
                 "operation": operation,
                 "_runner": runner,
+                "_components": reserved,
                 **public_values,
             }
             self._resource_jobs[job_id] = job
@@ -3387,6 +3493,7 @@ class AnnotationJobService:
     def _resource_job_copy(job: dict) -> dict:
         result = dict(job)
         result.pop("_command", None)
+        result.pop("_components", None)
         result.pop("_runner", None)
         result.pop("_sensitive_paths", None)
         result.pop("_cancel_requested", None)
@@ -3550,6 +3657,7 @@ class AnnotationJobService:
                         raise RuntimeError("Annotation-engine preparation stopped by the user.")
                     process = subprocess.Popen(
                         command, cwd=self.pipeline_root, stdout=subprocess.PIPE,
+                        env=_resource_environment(),
                         stderr=subprocess.STDOUT, text=True, bufsize=1,
                         start_new_session=(os.name == "posix"),
                     )
@@ -3579,7 +3687,8 @@ class AnnotationJobService:
                 exit_code = process.wait()
             if job.get("_cancel_requested"):
                 raise RuntimeError("Annotation-engine preparation stopped by the user.")
-            if exit_code:
+            partial_refresh = resource_id == "refresh_updates" and exit_code == 20
+            if exit_code and not partial_refresh:
                 raise RuntimeError(last_line or f"download exited with code {exit_code}")
             if resource_id in {"annotation_engine", "essential_setup"}:
                 # A profile may have been created after this service started
@@ -3596,21 +3705,18 @@ class AnnotationJobService:
                     if essential_status["missing"] or not essential_status["package"]["available"]:
                         raise RuntimeError("Essential annotation validation failed; retry preparation. "
                                            + ", ".join(essential_status["missing"]))
-            elif resource_id == "gene_knowledge":
+            elif resource_id in {"gene_knowledge", "refresh_updates"}:
                 updated = self.annotation_root / "gene-knowledge" / "gene_knowledge_public.sqlite3"
-                if not updated.is_file():
+                if updated.is_file():
+                    self.gene_knowledge.public_database = updated
+                elif not partial_refresh:
                     raise RuntimeError("gene-knowledge update did not create its database")
-                self.gene_knowledge.public_database = updated
             elif resource_id == "clingen_erepo":
                 status = self.clingen_erepo.status()
                 if not status.get("available"):
                     raise RuntimeError(status.get("error") or "ClinGen snapshot validation failed")
-            elif resource_id in {"screen_context", "screen_context_build", "recommended_wgs"}:
-                # Register the freshly downloaded/prepared bundle; install
-                # validates the manifest and matrices before storing the
-                # pointer. The recommended-WGS bulk install includes the
-                # bundle, so registration must happen there too (skipped
-                # quietly if a registration already points at it).
+            elif "screen_context" in job["_components"]:
+                # Register only when this job actually prepared the bundle.
                 manifest = (
                     self.annotation_root / "screen-context" / "prepared"
                     / "screen.registry-v4.immune-contexts.json"
@@ -3619,14 +3725,17 @@ class AnnotationJobService:
                     self.install_screen_context({"manifest_path": str(manifest)})
             self._update_resource_job(
                 job_id,
-                status="succeeded",
+                status="partial" if partial_refresh else "succeeded",
                 progress=100.0,
-                message=f"{operation.capitalize()} complete.",
+                message=last_line if resource_id == "refresh_updates" else f"{operation.capitalize()} complete.",
                 finished_at=utc_now(),
-                exit_code=0,
+                exit_code=exit_code,
                 error="",
             )
         except Exception as exc:
+            # Keep the reservation until a child with a broken output stream
+            # has stopped writing to the component files.
+            self._stop_resource_process(process, job_id)
             self._update_resource_job(
                 job_id,
                 status="interrupted" if job.get("_cancel_requested") else "failed",
@@ -4626,8 +4735,8 @@ class AnnotationJobService:
         input_path = self._required_path(payload, "input_path", must_exist=True)
         output_path = self._required_path(payload, "output_path", must_exist=False)
         input_name = input_path.name.lower()
-        if not (input_name.endswith(".vcf") or input_name.endswith(".vcf.gz")):
-            raise ValueError("input_path must end in .vcf or .vcf.gz")
+        if not input_name.endswith(VCF_SUFFIXES):
+            raise ValueError("input_path must end in .vcf, .vcf.gz, .vcf.bgz, or .vcf.bgzf")
         if [suffix.lower() for suffix in output_path.suffixes[-2:]] != [".vcf", ".gz"]:
             raise ValueError("output_path must end in .vcf.gz")
         if input_path == output_path:
@@ -4701,27 +4810,18 @@ class AnnotationJobService:
         )[:80]
         if not safe_batch:
             raise ValueError("a valid upload batch is required")
-        raw_parts = Path(relative_path or filename).parts
-        safe_parts = [
-            part for part in raw_parts
-            if part not in {"", ".", "..", "/", "\\"}
-        ]
+        basename = Path(filename).name
+        if not basename.lower().endswith(VCF_SUFFIXES):
+            raise ValueError("only .vcf, .vcf.gz, .vcf.bgz, and .vcf.bgzf files can be staged")
+        directories = Path(relative_path or filename).parts[:-1]
         safe_parts = [
             "".join(
                 character for character in part
                 if character.isalnum() or character in " ._-()"
             ).strip()
-            for part in safe_parts
+            for part in (*directories, basename)
         ]
-        safe_parts = [part for part in safe_parts if part]
-        safe_name = Path(filename).name
-        if not safe_parts:
-            safe_parts = [safe_name]
-        elif safe_parts[-1] != safe_name:
-            safe_parts[-1] = safe_name
-        lower_name = safe_name.lower()
-        if not (lower_name.endswith(".vcf") or lower_name.endswith(".vcf.gz")):
-            raise ValueError("only .vcf and .vcf.gz files can be staged")
+        safe_parts = [part for part in safe_parts if part not in {"", ".", ".."}]
 
         batch_root = (self.workspace_dir / "uploads" / safe_batch).resolve()
         destination = (batch_root.joinpath(*safe_parts)).resolve()
@@ -4917,7 +5017,7 @@ class AnnotationJobService:
         if not paths:
             return
         if resource_id == "alphagenome_avi":
-            if require_installed and not valid_avi_bundle(Path(paths["manifest"])):
+            if require_installed and not avi_bundle_present(Path(paths["manifest"])):
                 return
             config.setdefault("custom_tracks", {}).setdefault("AlphaGenomeAVI", {}).update(paths)
             return
@@ -4957,8 +5057,16 @@ class AnnotationJobService:
         }[resource_id]
         config.setdefault("plugins", {}).setdefault(plugin_name, {}).update(paths)
 
-    def _prefer_installed_managed_resources(self, config: dict) -> dict:
+    def _prefer_installed_managed_resources(self, config: dict, *, required_only: bool = False) -> dict:
+        # Older saved configurations predate these independently downloadable models.
+        for key in gpn_star.MODELS:
+            config.setdefault("wgs_review", {}).setdefault(key, {"enabled": False, "directory": "references/gpn-star"})
         for resource_id in ("dbnsfp", "promoterai", "logofunc", "funcvep", "alphagenome_avi"):
+            if required_only:
+                location = ANNOTATION_SOURCE_PATHS[resource_id]
+                block = (config.get(location[0]) or {}).get(location[1]) or {}
+                if resource_id not in self._required_sources(config) and not block.get("required"):
+                    continue
             self._set_managed_preparation_paths(
                 config, resource_id, require_installed=True
             )
@@ -5022,7 +5130,7 @@ class AnnotationJobService:
         # new subset package merely to reopen the application after an update.
         legacy_ready = False
         if not package["available"]:
-            legacy_ready = bool(self._annotation_profile().get("datasets_ready"))
+            legacy_ready = bool(self._annotation_profile(required_only=True).get("datasets_ready"))
         probe = self.annotation_root
         while not probe.exists() and probe != probe.parent:
             probe = probe.parent
@@ -5216,13 +5324,18 @@ class AnnotationJobService:
     @staticmethod
     def _required_sources(config: dict) -> set[str]:
         plugins = config.get("plugins") or {}
-        if (plugins.get("dbNSFP", {}).get("required") is False
-                and all(plugins.get(name, {}).get("enabled") and plugins[name].get("file")
-                        for name in ("AlphaMissenseStarter", "CADDStarter"))):
+        if all(plugins.get(name, {}).get("enabled") and plugins[name].get("file")
+               for name in ("AlphaMissenseStarter", "CADDStarter")):
             return REQUIRED_DIAGNOSTIC_SOURCES - {"dbnsfp"}
         return REQUIRED_DIAGNOSTIC_SOURCES
 
-    def _annotation_profile(self) -> dict:
+    def _annotation_profile(self, *, required_only: bool = False) -> dict:
+        """Inspect dataset availability; startup requests only required sources.
+
+        Optional multi-gigabyte datasets must not gate essential startup. AVI
+        availability uses metadata here; installation and annotation perform
+        checksum verification outside these synchronous UI requests.
+        """
         config_path = self.pipeline_root / "config" / "annotation.config.yaml"
         # Card copy is written for clinicians and wet-lab scientists: the tool
         # name stays as the title (it is what reports and literature use); the
@@ -5237,19 +5350,22 @@ class AnnotationJobService:
             "cadd_wgs": ("CADD scores for non-coding regions", "Genome-wide CADD deleteriousness scores for variants outside protein-coding regions. Coding-SNV CADD is included in essential setup — install this only for whole-genome, non-coding analysis"),
             "logofunc": ("LoGoFunc", "Research-grade prediction of whether a missense variant causes gain of function, loss of function, or neither — a mechanism hint, not a clinical classifier"),
             "funcvep": ("FuncVEP", "Research-grade estimates of a missense variant's functional effect from three complementary model settings — not a clinical pathogenicity classification"),
+            "gpn_star_m": ("GPN-Star-M", "Genome-wide SNV effects predicted from the mammalian alignment"),
+            "gpn_star_v": ("GPN-Star-V", "Genome-wide SNV effects predicted from the vertebrate alignment"),
             "alphagenome_avi": ("AlphaGenome AVI", "Genome-wide predicted functional impact of single-nucleotide variants, shown as an AVI Phred score"),
             "clinvar": ("ClinVar", "What clinical laboratories have reported about each variant. Reports come from many submitters and can conflict; review status matters. Refreshed automatically before every run"),
             "loftee_ptc_50bp": ("Nonsense-mediated decay 50-bp rule re-calculation", "Re-checks frameshift variants at the position of the new stop codon they create and flags cases where the rule suggests possible NMD escape"),
             "clinvar_aa_match": ("Clinical protein-change and residue matching", "Identifies P/LP reports in ClinVar, ClinGen, and an installed GenIA variant export with the same protein change or a different missense change at the same residue. These are candidate PS1/PM5 evidence only; the reviewer must confirm transcript, condition, review status, disease mechanism, and evidence independence"),
             "liftover": ("GRCh37/hg19 input conversion", "Lets you analyze VCFs made against the older GRCh37/hg19 reference. Variants are converted to GRCh38 with safeguards and a full audit trail — nothing is silently dropped"),
             "ccre": ("ENCODE cCRE regions", "The genome-wide catalog of candidate cis-regulatory elements (cCREs) — regions such as promoters and enhancers likely to control gene activity. Aggregate level (combined across samples, not tissue-specific); used by whole-genome import to keep potentially regulatory variants"),
+            "encode_re2g": ("ENCODE-rE2G", "Predicted target genes of regulatory elements across reference biosamples"),
             "screen_context": ("ENCODE tissue and immune contexts (SCREEN)", "For whole-genome analyses: SCREEN records a positive regulatory signature in reference tissues and immune cell types, adding context to the aggregate cCRE map"),
             "clingen_erepo": ("ClinGen", "Variant interpretations from ClinGen's disease-specific expert panels — the highest review level available. Stored locally; your variants are never sent to any server"),
             "genia": ("GenIA", "Registered-user GenIA evidence for immune gene–disease knowledge, reported phenotypes, and exact GRCh38 alleles. Install any available component; source files stay on this computer"),
         }
         try:
             config = self._prefer_installed_managed_resources(
-                self._load_config(config_path)
+                self._load_config(config_path), required_only=required_only
             )
         except ValueError as exc:
             return {
@@ -5284,6 +5400,8 @@ class AnnotationJobService:
                     block.get("transcript_map"),
                     block.get("manifest"),
                 ]
+            elif source_id in gpn_star.MODELS:
+                values = [block.get("directory")]
             elif source_id == "cadd_wgs":
                 values = [block.get("snv"), block.get("indels")]
             elif source_id == "logofunc":
@@ -5333,11 +5451,13 @@ class AnnotationJobService:
         for source_id, location in ANNOTATION_SOURCE_PATHS.items():
             parent = config.get(location[0]) or {}
             block = parent if location[1] is None else parent.get(location[1]) or {}
-            paths = source_path(source_id, block)
             enabled = bool(block.get("enabled", False))
             required = source_id in self._required_sources(config) or bool(
                 block.get("required", False)
             )
+            if required_only and not (enabled and required):
+                continue
+            paths = source_path(source_id, block)
             # ClinVar can be fetched when a run starts, so an absent local copy
             # is not a setup blocker.
             auto_fetch = source_id == "clinvar" and bool(
@@ -5366,6 +5486,11 @@ class AnnotationJobService:
                 # install. The empty-paths rule above must not label this
                 # derived feature "Bundled file missing".
                 installed = True
+            if source_id in gpn_star.MODELS:
+                installed = bool(paths and gpn_star.runtime_ready() and gpn_star.installed(paths[0], gpn_star.MODELS[source_id]))
+            if source_id == "encode_re2g":
+                paths = [self.annotation_root / element_gene_links.DATABASE]
+                installed = element_gene_links.installed(paths[0])
             if source_id == "screen_context":
                 # The active bundle is the pointer-registered (or env/config
                 # named) manifest, independent of the config path above.
@@ -5399,7 +5524,7 @@ class AnnotationJobService:
                     registry=indexed_registry,
                 )
             if installed and source_id == "alphagenome_avi":
-                installed = len(paths) == 2 and valid_avi_bundle(paths[1])
+                installed = len(paths) == 2 and avi_bundle_present(paths[1])
                 if installed:
                     installed = paths[0].resolve() == (paths[1].parent / "avi.grch38.vcf.gz").resolve()
             if installed and source_id == "spliceai" and block.get("format") == SPLICEAI_SHARDED:
@@ -5447,6 +5572,19 @@ class AnnotationJobService:
             available = auto_fetch or installed
             label, description = labels[source_id]
             setup = dict(ANNOTATION_SOURCE_SETUP[source_id])
+            if source_id == "gpn_star_v":
+                compact = bool(paths and gpn_star.runtime_ready() and gpn_star.installed(paths[0], gpn_star.EXOME_PACKAGE))
+                pin = gpn_star.exome_pin()
+                size = sum(shard["size"] for shard in pin["shards"].values()) / 1e9
+                setup["exome_setup"] = {
+                    "description": "Coding + splice flanks · GRCh38 SNVs from the vertebrate alignment",
+                    "installed": installed or compact,
+                    "available": installed or compact,
+                    "download_id": None if installed else gpn_star.EXOME_RESOURCE,
+                    "size_hint": "Genome-wide files installed and reused" if installed else f"{size:.2f} GB · coding + splice flanks",
+                    "instructions": ["Includes coding sequence, stop codons and splice flanks in the default Ensembl 113 exome regions. "
+                                     "The score belongs to the exact allele across transcripts."],
+                }
             compact_splice = source_id == "spliceai" and bool(block.get("coverage"))
             if compact_splice:
                 description = ("Essential-site starter installed: MANE v1.5 donor/acceptor SNVs, D=500, M=1. "
@@ -5478,7 +5616,7 @@ class AnnotationJobService:
                 source_version = str(component.get("installed_at") or "")[:10]
             available_in = (
                 ["whole_genome"]
-                if source_id in {"promoterai", "cadd_wgs", "ccre", "screen_context", "alphagenome_avi"}
+                if source_id in {"promoterai", "cadd_wgs", "ccre", "screen_context", "alphagenome_avi", "encode_re2g", "gpn_star_m"}
                 else ["exome", "whole_genome"]
             )
             sources.append({
@@ -5508,6 +5646,28 @@ class AnnotationJobService:
             (config.get("reference") or {}).get("vep_cache_dir")
         )
         fasta_path = self._resolved_reference_path(fasta.get("path"))
+        if required_only:
+            return {"datasets_ready": bool(
+                cache_path and cache_path.exists() and fasta_path and fasta_path.exists()
+                and all(source["available"] for source in sources)
+            )}
+        public_resources, _ = self.gene_knowledge.public_resources()
+        gencc = next((row for row in public_resources if row["id"] == "gencc"), None)
+        sources.append({
+            "id": "gencc", "label": "GenCC",
+            "description": "Gene–disease validity classifications from Gene Curation Coalition member organizations, grouped by disease and inheritance.",
+            "installed": bool(gencc), "available": bool(gencc), "enabled": bool(gencc),
+            "required": False, "recommendation": "included", "setup_mode": "bundled",
+            "access": "bundled", "download_id": "gene_knowledge",
+            "available_in": ["exome", "whole_genome"],
+            "configured_paths": [str(self.gene_knowledge.public_database)],
+            "version": gencc["release"] if gencc else "",
+            "size_hint": f"{gencc['record_count']:,} submissions" if gencc else "",
+            "status": "ready" if gencc else "optional_missing",
+            "reference_url": "https://thegencc.org/", "reference_label": "GenCC website",
+            "instructions": ["Open the Gene tab in Variant Review to see submissions.",
+                             "GenCC updates with the public gene-knowledge bundle."],
+        })
         cache_release, container_release = self._installed_vep_releases(config)
         container_status = self._container_image_status(config)
         container_available = bool(container_status["available"])
@@ -5585,7 +5745,7 @@ class AnnotationJobService:
                 "installed": not wgs_missing,
                 "missing": wgs_missing,
                 "download_bytes": sum(WGS_RECOMMENDED_DOWNLOAD_BYTES[key] for key in wgs_missing),
-                "setup_bytes": sum({"spliceai": 35, "screen_context": 2, "alphagenome_avi": 80}[key]
+                "setup_bytes": sum({"spliceai": 35, "screen_context": 2, "alphagenome_avi": 80, "encode_re2g": 32}[key]
                                    * GIB for key in wgs_missing),
             },
         }
@@ -5629,7 +5789,7 @@ class AnnotationJobService:
             raise ValueError("analysis_scope must be exome or whole_genome")
         if analysis_scope == "exome":
             unavailable = [
-                source_id for source_id in ("promoterai", "cadd_wgs", "ccre")
+                source_id for source_id in ("promoterai", "cadd_wgs", "ccre", "gpn_star_m")
                 if options.get(source_id) is True
             ]
             if unavailable:
@@ -5637,7 +5797,7 @@ class AnnotationJobService:
                     "annotation source is available only for whole-genome analysis: "
                     + ", ".join(unavailable)
                 )
-            for source_id in ("promoterai", "cadd_wgs", "ccre"):
+            for source_id in ("promoterai", "cadd_wgs", "ccre", "gpn_star_m"):
                 location = ANNOTATION_SOURCE_PATHS[source_id]
                 config.setdefault(location[0], {}).setdefault(
                     location[1], {}
@@ -5655,8 +5815,11 @@ class AnnotationJobService:
             block = parent if location[1] is None else parent.setdefault(location[1], {})
             block["enabled"] = bool(options[source_id]) and (
                 analysis_scope == "whole_genome"
-                or source_id not in {"promoterai", "cadd_wgs", "ccre", "alphagenome_avi"}
+                or source_id not in {"promoterai", "cadd_wgs", "ccre", "alphagenome_avi", "gpn_star_m"}
             )
+        if "dbnsfp" in options:
+            block = config["plugins"]["dbNSFP"]
+            block["required"] = bool(block["enabled"])
         if "fork" in options:
             try:
                 fork = int(options["fork"])
@@ -5774,34 +5937,29 @@ class AnnotationJobService:
         return path
 
     def cancel(self, job_id: str) -> dict:
-        job = self.store.get(job_id)
-        if not job:
-            raise NotFoundError(f"job not found: {job_id}")
-        if job["status"] in TERMINAL_STATUSES:
-            return job
-        if job["status"] == "queued":
-            return self.store.update(
-                job_id,
-                status="cancelled",
-                finished_at=utc_now(),
-                error="Cancelled before execution.",
-            )
         with self._process_lock:
+            job = self.store.get(job_id)
+            if not job:
+                raise NotFoundError(f"job not found: {job_id}")
+            if job["status"] in TERMINAL_STATUSES:
+                return job
+            cancelled = self.store.update(
+                job_id, expected=("queued", "running"), status="cancelled",
+                finished_at=utc_now(), pid=None,
+                error="Cancelled before execution." if job["status"] == "queued" else "Cancelled by the user.",
+            )
+            if cancelled is None:
+                return self.store.get(job_id)
             process = self._processes.get(job_id)
-        if process and process.poll() is None:
-            try:
-                if os.name == "posix":
-                    os.killpg(process.pid, signal.SIGTERM)
-                else:
-                    process.terminate()
-            except ProcessLookupError:
-                pass
-        return self.store.update(
-            job_id,
-            status="cancelled",
-            finished_at=utc_now(),
-            error="Cancelled by the user.",
-        )
+            if process and process.poll() is None:
+                try:
+                    if os.name == "posix":
+                        os.killpg(process.pid, signal.SIGTERM)
+                    else:
+                        process.terminate()
+                except ProcessLookupError:
+                    pass
+            return cancelled
 
     def log_tail(self, job_id: str, max_bytes: int = 64_000) -> str:
         job = self.store.get(job_id)
@@ -5890,7 +6048,7 @@ class AnnotationJobService:
             if current and current["status"] in {"queued", "running"}:
                 self.store.update(
                     job_id,
-                    status="failed",
+                    expected=("queued", "running"), status="failed",
                     finished_at=utc_now(),
                     exit_code=1,
                     pid=None,
@@ -5920,40 +6078,56 @@ class AnnotationJobService:
         if not job or job["status"] != "queued":
             return
         commands = self._commands(job)
-        self.store.update(
-            job_id,
+        if not self.store.update(
+            job_id, expected=("queued",),
             status="running",
             started_at=utc_now(),
             command_json=json.dumps(commands),
             error=None,
-        )
+        ):
+            return
         log_path = Path(job["log_path"])
         exit_code = 0
         try:
             with log_path.open("a", encoding="utf-8", buffering=1) as log:
                 log.write(f"[{utc_now()}] Job {job_id} started\n")
                 for command in commands:
-                    current = self.store.get(job_id)
-                    if not current or current["status"] in {"cancelled", "interrupted"}:
-                        return
                     log.write("$ " + " ".join(json.dumps(item) for item in command) + "\n")
                     with self._process_lock:
                         # Shutdown snapshots owned processes under this lock.
                         # Do not spawn an untracked child after that snapshot.
+                        current = self.store.get(job_id)
+                        if not current or current["status"] != "running":
+                            return
                         if self._stop.is_set():
-                            self.store.update(job_id, status="interrupted",
+                            self.store.update(job_id, expected=("running",), status="interrupted",
                                               finished_at=utc_now(), pid=None,
                                               error="The local service was stopped.")
                             return
                         process = subprocess.Popen(
                             command,
                             cwd=self.pipeline_root,
+                            env={**os.environ, "IEI_GPN_PYTHON": sys.executable},
                             stdout=log,
                             stderr=subprocess.STDOUT,
                             start_new_session=(os.name == "posix"),
                         )
                         self._processes[job_id] = process
-                    self.store.update(job_id, pid=process.pid)
+                        try:
+                            self.store.update(job_id, expected=("running",), pid=process.pid)
+                        except Exception:
+                            # A child whose PID could not be recorded must not
+                            # keep writing after its owner reports a failure.
+                            if process.poll() is None:
+                                try:
+                                    if os.name == "posix":
+                                        os.killpg(process.pid, signal.SIGKILL)
+                                    else:
+                                        process.kill()
+                                except ProcessLookupError:
+                                    pass
+                            process.wait()
+                            raise
                     exit_code = process.wait()
                     with self._process_lock:
                         self._processes.pop(job_id, None)
@@ -5968,7 +6142,7 @@ class AnnotationJobService:
                 log.write(f"[{utc_now()}] Job completed: {final_output}\n")
             self.store.update(
                 job_id,
-                status="succeeded",
+                expected=("running",), status="succeeded",
                 finished_at=utc_now(),
                 final_output_path=str(final_output),
                 exit_code=0,
@@ -5980,7 +6154,7 @@ class AnnotationJobService:
                 return
             self.store.update(
                 job_id,
-                status="failed",
+                expected=("running",), status="failed",
                 finished_at=utc_now(),
                 exit_code=exit_code or 1,
                 pid=None,
@@ -6040,7 +6214,7 @@ class AnnotationJobService:
             for job_id, process in running:
                 if process.poll() is None:
                     self.store.update(
-                        job_id, status="interrupted", finished_at=utc_now(),
+                        job_id, expected=("running",), status="interrupted", finished_at=utc_now(),
                         error="The local service was stopped.",
                     )
         for job_id, process in running:
@@ -6082,6 +6256,14 @@ class AnnotationJobService:
         for thread in storage_threads:
             thread.join(timeout=5)
         self._release_instance_lock()
+
+
+def decode_route_id(segment: str) -> str:
+    """Decode one generated dataset or job identifier after matching the route."""
+    identifier = unquote(segment, errors="strict")
+    if identifier in {".", ".."} or not re.fullmatch(r"[A-Za-z0-9._~-]+", identifier):
+        raise ValueError("invalid identifier in request path")
+    return identifier
 
 
 class WorkbenchRequestHandler(BaseHTTPRequestHandler):
@@ -6145,12 +6327,15 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         # local tools are unaffected.
         if self._reject_cross_site():
             return
-        parsed_url = urlparse(self.path)
+        parsed_url = urlsplit(self.path)
         path = parsed_url.path
         query = parse_qs(parsed_url.query)
         if getattr(self.server, "web_root", None) and not path.startswith("/api/"):
             from local_service.static_site import serve_static
             serve_static(self, self.server.web_root)
+            return
+        if path == "/api/custom-scores":
+            self._json(custom_scores.datasets(self.service.annotation_root / "custom-scores"))
             return
         if path == "/api/service/status":
             self._json(self.service.lifecycle_status())
@@ -6234,16 +6419,16 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json({"profiles": self.service.sample_library.profiles()})
         elif path == "/api/bulk-intake":
             self._json(self.service.bulk_intake_snapshot())
-        elif path.startswith("/api/bulk-intake/"):
-            self._json(self.service.bulk_intake_snapshot(path.split("/")[3]))
+        elif match := re.fullmatch(r"/api/bulk-intake/([^/]*)", path):
+            self._json(self.service.bulk_intake_snapshot(decode_route_id(match[1])))
         elif path == "/api/storage":
             self._json(self.service.storage_stats())
         elif path == "/api/storage/locations":
             self._json(self.service.storage_configuration(include_usage=False))
         elif path == "/api/storage/migrations":
             self._json({"jobs": self.service.storage_migrations()})
-        elif path.startswith("/api/sample-library/") and path.endswith("/file"):
-            dataset_id = path.split("/")[3]
+        elif match := re.fullmatch(r"/api/sample-library/([^/]*)/file", path):
+            dataset_id = decode_route_id(match[1])
             mutation_started = False
             try:
                 # Reviews open the dataset's own sample projection; a
@@ -6267,12 +6452,12 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             finally:
                 if mutation_started:
                     self.service.end_storage_mutation()
-        elif path.startswith("/api/sample-library/") and path.endswith("/phenotype"):
-            dataset_id = path.split("/")[3]
+        elif match := re.fullmatch(r"/api/sample-library/([^/]*)/phenotype", path):
+            dataset_id = decode_route_id(match[1])
             phenotype = self.service.sample_library.phenotype(dataset_id)
             self._json({"phenotype": phenotype})
-        elif path.startswith("/api/sample-library/"):
-            dataset_id = path.removeprefix("/api/sample-library/")
+        elif match := re.fullmatch(r"/api/sample-library/([^/]*)", path):
+            dataset_id = decode_route_id(match[1])
             record = self.service.sample_library.get(dataset_id)
             self._json(
                 record if record else {"error": "library dataset not found"},
@@ -6285,8 +6470,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 query=(query.get("query") or [""])[0],
                 limit=int((query.get("limit") or ["500"])[0]),
             )})
-        elif path.startswith("/api/cohort/import-jobs/"):
-            job_id = path.removeprefix("/api/cohort/import-jobs/")
+        elif match := re.fullmatch(r"/api/cohort/import-jobs/([^/]*)", path):
+            job_id = decode_route_id(match[1])
             job = self.service.cohort.get_import_job(job_id)
             self._json(
                 job if job else {"error": "cohort import job not found"},
@@ -6296,11 +6481,17 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             self._json(self.service.phenotypes.stats())
         elif path == "/api/phenotypes/profiles":
             self._json({"profiles": self.service.phenotypes.profiles()})
+        elif path == "/api/phenotypes/ids":
+            self._json({"ids": self.service.phenotypes.individual_ids()})
+        elif path == "/api/phenotypes" and "individual_id" in query:
+            record = self.service.phenotypes.get(query["individual_id"][0])
+            self._json({"individuals": [record] if record else [], "has_more": False})
         elif path == "/api/phenotypes":
-            self._json({"individuals": self.service.phenotypes.list(
+            self._json(self.service.phenotypes.list_page(
                 query=(query.get("query") or [""])[0],
                 limit=int((query.get("limit") or ["500"])[0]),
-            )})
+                offset=int((query.get("offset") or ["0"])[0]),
+            ))
         elif path.startswith("/api/phenotypes/by-sample/"):
             sample_id = unquote(path.removeprefix("/api/phenotypes/by-sample/"))
             self._json({"individuals": self.service.phenotypes.by_sample(sample_id)})
@@ -6311,14 +6502,14 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 record if record else {"error": "individual not found"},
                 HTTPStatus.OK if record else HTTPStatus.NOT_FOUND,
             )
-        elif path.startswith("/api/jobs/") and path.endswith("/log"):
-            job_id = path.split("/")[3]
+        elif match := re.fullmatch(r"/api/jobs/([^/]*)/log", path):
+            job_id = decode_route_id(match[1])
             try:
                 self._json({"job_id": job_id, "log": self.service.log_tail(job_id)})
             except KeyError:
                 self._json({"error": "job not found"}, HTTPStatus.NOT_FOUND)
-        elif path.startswith("/api/jobs/") and path.endswith("/review-file"):
-            job_id = path.split("/")[3]
+        elif match := re.fullmatch(r"/api/jobs/([^/]*)/review-file", path):
+            job_id = decode_route_id(match[1])
             try:
                 self._file(self.service.review_file(job_id))
             except KeyError:
@@ -6341,8 +6532,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             except ValueError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        elif path.startswith("/api/wgs-review/") and path.endswith("/file"):
-            review_id = path.split("/")[3]
+        elif match := re.fullmatch(r"/api/wgs-review/([^/]*)/file", path):
+            review_id = decode_route_id(match[1])
             try:
                 self._file(self.service.wgs_review_file(review_id))
             except KeyError:
@@ -6351,15 +6542,15 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 self._json({"error": str(exc)}, HTTPStatus.NOT_FOUND)
             except ValueError as exc:
                 self._json({"error": str(exc)}, HTTPStatus.BAD_REQUEST)
-        elif path.startswith("/api/wgs-review/"):
-            job_id = path.removeprefix("/api/wgs-review/")
+        elif match := re.fullmatch(r"/api/wgs-review/([^/]*)", path):
+            job_id = decode_route_id(match[1])
             job = self.service.get_wgs_review_job(job_id)
             self._json(
                 job if job else {"error": "WGS review job not found"},
                 HTTPStatus.OK if job else HTTPStatus.NOT_FOUND,
             )
-        elif path.startswith("/api/jobs/"):
-            job_id = path.split("/")[3]
+        elif match := re.fullmatch(r"/api/jobs/([^/]*)", path):
+            job_id = decode_route_id(match[1])
             job = self.service.store.get(job_id)
             if job:
                 job = self.service.with_job_progress(job)
@@ -6395,7 +6586,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         if self._reject_cross_site():
             return
-        path = urlparse(self.path).path
+        path = urlsplit(self.path).path
         mutation_started = False
         try:
             # Migration takes a point-in-time verified copy. Do not permit a
@@ -6412,6 +6603,7 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     "/api/storage/location",
                     "/api/storage/migrate",
                     "/api/storage/compact",
+                    "/api/custom-scores/remove",
                     "/api/cohort/import-jobs",
                     "/api/cohort/samples/remove",
                     "/api/phenotypes/import",
@@ -6465,6 +6657,40 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/ccre-context":
                 self._json(self.service.ccre_context(self._body()))
                 return
+            if path == "/api/custom-scores/remove":
+                self._json(custom_scores.remove(self.service.annotation_root / "custom-scores", self._body().get("id")))
+                return
+            if path == "/api/custom-scores/inspect":
+                self._json(custom_scores.inspect(custom_scores.source_paths(self._body().get("paths"))))
+                return
+            if path == "/api/resource-preparations/custom-scores":
+                self.service._ensure_active_storage_available(require_annotation_root=True)
+                body = self._body()
+                paths = custom_scores.source_paths(body.get("paths"))
+                root = self.service.annotation_root / "custom-scores"
+                self._json(self.service._start_internal_resource_job(
+                    "custom_scores", "installation",
+                    lambda report: custom_scores.install(root, paths, body, report),
+                ), HTTPStatus.ACCEPTED)
+                return
+            if path == "/api/custom-scores/lookup":
+                self._json(custom_scores.datasets(self.service.annotation_root / "custom-scores", self._body()))
+                return
+            if path == "/api/element-gene-links":
+                body = self._body()
+                index = element_gene_links.provider_index(self.service.annotation_root, body)
+                self._json(element_gene_links.lookup(index, body))
+                return
+            if path == "/api/element-gene-links/filter":
+                body = self._body()
+                index = element_gene_links.provider_index(self.service.annotation_root, body)
+                self._json(element_gene_links.filter_targets(index, body))
+                return
+            if path == "/api/element-gene-links/search-status":
+                body = self._body()
+                index = element_gene_links.provider_index(self.service.annotation_root, body)
+                self._json(element_gene_links.target_search_status(index, body.get("gene", "")))
+                return
             if path == "/api/screen-context":
                 self._json(self.service.screen_context(self._body()))
                 return
@@ -6474,10 +6700,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/screen-context/install":
                 self._json(self.service.install_screen_context(self._body()))
                 return
-            if path.startswith("/api/resource-downloads/"):
-                resource_id = unquote(
-                    path.removeprefix("/api/resource-downloads/")
-                )
+            if match := re.fullmatch(r"/api/resource-downloads/([^/]*)", path):
+                resource_id = decode_route_id(match[1])
                 self._json(
                     self.service.start_resource_download(resource_id),
                     HTTPStatus.ACCEPTED,
@@ -6607,9 +6831,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/bulk-intake":
                 self._json(self.service.start_bulk_intake(self._body()), HTTPStatus.CREATED)
                 return
-            if path.startswith("/api/bulk-intake/") and path.endswith("/cancel"):
+            if match := re.fullmatch(r"/api/bulk-intake/([^/]*)/cancel", path):
                 try:
-                    self._json(self.service.cancel_bulk_intake(path.split("/")[3]))
+                    self._json(self.service.cancel_bulk_intake(decode_route_id(match[1])))
                 except KeyError:
                     self._json({"error": "bulk intake job not found"}, HTTPStatus.NOT_FOUND)
                 return
@@ -6665,31 +6889,31 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
             if path == "/api/sample-library/inspect":
                 self._json(self.service.inspect_sample_library(self._body()))
                 return
-            if path.startswith("/api/sample-library/") and path.endswith("/identity"):
-                dataset_id = path.split("/")[3]
+            if match := re.fullmatch(r"/api/sample-library/([^/]*)/identity", path):
+                dataset_id = decode_route_id(match[1])
                 self._json(self.service.sample_library.map_identity(dataset_id, self._body()))
                 return
-            if path.startswith("/api/sample-library/") and path.endswith("/metadata"):
-                dataset_id = path.split("/")[3]
+            if match := re.fullmatch(r"/api/sample-library/([^/]*)/metadata", path):
+                dataset_id = decode_route_id(match[1])
                 self._json(self.service.sample_library.update_metadata(dataset_id, self._body()))
                 return
-            if path.startswith("/api/sample-library/") and path.endswith("/reindex"):
-                dataset_id = path.split("/")[3]
+            if match := re.fullmatch(r"/api/sample-library/([^/]*)/reindex", path):
+                dataset_id = decode_route_id(match[1])
                 body = self._body()
                 self._json(self.service.sample_library.reindex(
                     dataset_id, full_wgs=bool(body.get("full_wgs", False))
                 ))
                 return
-            if path.startswith("/api/sample-library/") and path.endswith("/activate-version"):
-                dataset_id = path.split("/")[3]
+            if match := re.fullmatch(r"/api/sample-library/([^/]*)/activate-version", path):
+                dataset_id = decode_route_id(match[1])
                 self._json(self.service.sample_library.activate_version(dataset_id))
                 return
-            if path.startswith("/api/sample-library/") and path.endswith("/cohort/remove"):
-                dataset_id = path.split("/")[3]
+            if match := re.fullmatch(r"/api/sample-library/([^/]*)/cohort/remove", path):
+                dataset_id = decode_route_id(match[1])
                 self._json(self.service.sample_library.exclude_from_cohort(dataset_id))
                 return
-            if path.startswith("/api/sample-library/") and path.endswith("/remove"):
-                dataset_id = path.split("/")[3]
+            if match := re.fullmatch(r"/api/sample-library/([^/]*)/remove", path):
+                dataset_id = decode_route_id(match[1])
                 body = self._body()
                 self._json(self.service.sample_library.remove(
                     dataset_id,
@@ -6731,7 +6955,9 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                 ))
                 return
             if path == "/api/cohort/query":
-                self._json(self.service.cohort.query(self._body()))
+                body = self._body()
+                index = element_gene_links.provider_index(self.service.annotation_root, body) if body.get("mode") == "target_gene" else None
+                self._json(self.service.cohort.query(body, links_path=index))
                 return
             if path == "/api/cohort/variant-detail":
                 body = self._body()
@@ -6772,8 +6998,8 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
                     HTTPStatus.CREATED,
                 )
                 return
-            if path.startswith("/api/jobs/") and path.endswith("/cancel"):
-                job_id = path.split("/")[3]
+            if match := re.fullmatch(r"/api/jobs/([^/]*)/cancel", path):
+                job_id = decode_route_id(match[1])
                 self._json(self.service.cancel(job_id))
                 return
             if path == "/api/software-update/check":
@@ -6834,13 +7060,19 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
         if length > max_bytes:
             raise ValueError("request body is too large")
         raw = self.rfile.read(length)
-        value = json.loads(raw or b"{}")
+        value = json.loads(raw or b"{}", parse_constant=finite_float, parse_float=finite_float)
         if not isinstance(value, dict):
             raise ValueError("JSON body must be an object")
         return value
 
     def _json(self, value, status: HTTPStatus = HTTPStatus.OK) -> None:
-        payload = json.dumps(value).encode("utf-8")
+        try:
+            payload = json.dumps(value, allow_nan=False)
+        except ValueError:
+            # Older indexes may contain non-finite REALs. Return those values
+            # as missing while preserving every other field in the response.
+            payload = json.dumps(json.loads(json.dumps(value), parse_constant=lambda _: None), allow_nan=False)
+        payload = payload.encode("utf-8")
         self.send_response(status)
         self._cors_headers()
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -6895,22 +7127,50 @@ class WorkbenchRequestHandler(BaseHTTPRequestHandler):
 class LoopbackHTTPServer(ThreadingHTTPServer):
     """HTTP server that avoids a slow reverse-DNS lookup during local startup."""
 
+    allow_reuse_port = False
+
     def server_bind(self) -> None:
         socketserver.TCPServer.server_bind(self)
         self.server_name = str(self.server_address[0])
         self.server_port = int(self.server_address[1])
 
 
+def _bind_desktop_server(address, handler):
+    port = address[1]
+    with ExitStack() as guards:
+        if port:
+            guards.enter_context(guard_loopback_aliases(port))
+        server = LoopbackHTTPServer(address, handler, bind_and_activate=False)
+        try:
+            server.server_bind()
+            if not port:
+                # Keep the kernel-selected socket bound while checking its port.
+                guards.enter_context(guard_loopback_aliases(server.server_port))
+            server.server_activate()
+        except BaseException:
+            server.server_close()
+            raise
+        return server
+
+
 def create_server(
     service: AnnotationJobService, host: str = "127.0.0.1", port: int = 43117,
-    web_root: Path | None = None,
+    web_root: Path | None = None, *, auto_port: bool = False,
 ) -> ThreadingHTTPServer:
     handler = type(
         "ConfiguredWorkbenchRequestHandler",
         (WorkbenchRequestHandler,),
         {"service": service},
     )
-    server = LoopbackHTTPServer((host, port), handler)
+    bind_server = _bind_desktop_server if auto_port else LoopbackHTTPServer
+    try:
+        server = bind_server((host, port), handler)
+    except OSError as exc:
+        if not auto_port or exc.errno != errno.EADDRINUSE:
+            raise
+        # The kernel selects AND binds the free port. Do not probe, close,
+        # and re-bind a supposedly free fallback (that has a startup race).
+        server = bind_server((host, 0), handler)
     server.web_root = web_root.resolve() if web_root else None
     return server
 
@@ -6944,6 +7204,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=43117, type=int)
+    parser.add_argument("--auto-port", action="store_true", help="Use a kernel-assigned port if the preferred port is occupied")
     parser.add_argument("--state-dir", type=Path)
     parser.add_argument("--storage-registry", type=Path)
     parser.add_argument("--web-root", type=Path, help="Serve the packaged static interface on the API port")
@@ -7054,7 +7315,7 @@ def main() -> None:
         print(f"ERROR: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_ALREADY_RUNNING)
     try:
-        server = create_server(service, args.host, args.port, web_root=args.web_root)
+        server = create_server(service, args.host, args.port, web_root=args.web_root, auto_port=args.auto_port)
     except OSError as exc:
         # Bind failure after the lock was acquired: another process (not a
         # GUIDE-IEI service, or one on a different state directory) holds
@@ -7062,7 +7323,16 @@ def main() -> None:
         service.shutdown()
         print(f"ERROR: cannot listen on http://{args.host}:{args.port}: {exc}", file=sys.stderr)
         raise SystemExit(EXIT_ALREADY_RUNNING)
-    print(f"IEI local service listening on http://{args.host}:{args.port}")
+    endpoint_path = os.environ.get("IEI_DESKTOP_ENDPOINT_FILE")
+    if endpoint_path:
+        from local_service.desktop_endpoint import write_endpoint
+        try:
+            write_endpoint(endpoint_path, server.server_port, service._instance_id)
+        except OSError:
+            server.server_close()
+            service.shutdown()
+            raise
+    print(f"IEI local service listening on http://{args.host}:{server.server_port}", flush=True)
     print(f"State: {service.state_dir}")
     _install_shutdown_signal_handlers(server)
     try:

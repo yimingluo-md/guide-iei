@@ -477,16 +477,54 @@ class SoftwareUpdateTests(unittest.TestCase):
             **{"docs/Guide.md": None, "docs/guide.md": b"guide v2\n"},
         ))
         summary = self.updater(second).install()
-        self.assertNotIn("docs/Guide.md", summary["files_removed"])
-        # The manifest-named file must carry the new content. On a
-        # case-insensitive filesystem (the clinician default) both
-        # spellings are one file — the deletion skip is what keeps it
-        # alive; on a case-sensitive one the old spelling lingers as a
-        # harmless stale copy (the documented cost of the skip), so only
-        # the new spelling's content is asserted.
-        self.assertEqual(
-            (self.repo / "docs" / "guide.md").read_text(), "guide v2\n"
-        )
+        self.assertIn("docs/Guide.md", summary["files_removed"])
+        self.assertEqual([p.name for p in (self.repo / "docs").iterdir()], ["guide.md"])
+        self.assertEqual((self.repo / "docs/guide.md").read_text(), "guide v2\n")
+        self.updater(second).rollback()
+        self.assertEqual([p.name for p in (self.repo / "docs").iterdir()], ["Guide.md"])
+        self.assertEqual((self.repo / "docs/Guide.md").read_text(), "guide v1\n")
+
+    def test_first_release_manifest_and_file_directory_swaps_round_trip(self):
+        (self.repo / "release-manifest.txt").write_text("scripts/run.sh\nscripts/retired\nscripts/package/main.py\n")
+        (self.repo / "scripts/retired").touch()
+        (self.repo / "scripts/package").mkdir()
+        (self.repo / "scripts/package/main.py").write_text("initial")
+        files = self.release_files(**{"scripts/run.sh": None, "scripts/run.sh/main": b"entry", "scripts/package": b"single"})
+        updater = self.updater(FakeGitHub("0.6.0", files))
+        updater.install()
+        self.assertFalse((self.repo / "scripts/retired").exists())
+        self.assertEqual((self.repo / "scripts/run.sh/main").read_bytes(), b"entry")
+        self.assertEqual((self.repo / "scripts/package").read_bytes(), b"single")
+        updater.rollback()
+        self.assertTrue((self.repo / "scripts/retired").is_file())
+        self.assertEqual((self.repo / "scripts/run.sh").read_text(), "old script\n")
+        self.assertEqual((self.repo / "scripts/package/main.py").read_text(), "initial")
+
+    def test_first_update_of_clone_retires_only_clean_tracked_files(self):
+        import subprocess
+        def git(*args):
+            subprocess.run(["git", "-C", str(self.repo), *args], check=True, capture_output=True)
+        old = self.repo / "scripts/retired"
+        edited = self.repo / "scripts/customized"
+        old.write_text("original")
+        edited.write_text("original")
+        git("init", "-q")
+        git("add", "scripts/retired", "scripts/customized")
+        git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "-qm", "initial")
+        edited.write_text("local edit")
+        self.updater(FakeGitHub("0.6.0", self.release_files())).install()
+        self.assertFalse(old.exists())
+        self.assertEqual(edited.read_text(), "local edit")
+
+    def test_linked_folder_is_reported_before_install(self):
+        target = self.repo / "resources"
+        target.mkdir()
+        (self.repo / "alias").symlink_to(target, target_is_directory=True)
+        files = self.release_files(**{"alias/notes.txt": b"notes"})
+        with self.assertRaisesRegex(ValueError, "symbolic link"):
+            self.updater(FakeGitHub("0.6.0", files)).install()
+        self.assertEqual((self.repo / "VERSION").read_text(), "0.5.0\n")
+        self.assertEqual(list(target.iterdir()), [])
 
     def test_interrupted_install_is_detected_and_repairable(self):
         """A crash mid-swap can leave the tree claiming the NEW version;

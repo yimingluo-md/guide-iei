@@ -14,6 +14,7 @@ import csv
 import gzip
 import hashlib
 import json
+import os
 import re
 import sqlite3
 from collections import Counter, defaultdict
@@ -369,7 +370,9 @@ def main() -> int:
         "assertions": dict(sorted(Counter(row["Assertion"] for row in active_rows).items())),
         "retracted_rows": len(rows) - len(active_rows),
         "unmapped_active_rows": len(active_rows) - mapped_active,
-        "vcf": str(args.output_vcf), "sqlite": str(args.output_sqlite),
+        # Publication moves the manifest and artifacts together out of staging.
+        "vcf": os.path.relpath(args.output_vcf, args.manifest.parent),
+        "sqlite": os.path.relpath(args.output_sqlite, args.manifest.parent),
     }
     args.manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(f"ClinGen Evidence Repository: {mapped_active}/{len(active_rows)} active assertions mapped ({rate:.2%}); {allele_count} alleles")

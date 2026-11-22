@@ -15,6 +15,8 @@ class RecommendedWgsTests(unittest.TestCase):
         self.script = self.root / "install_recommended_wgs.sh"
         shutil.copyfile(Path(__file__).resolve().parents[1] / "scripts" / self.script.name, self.script)
         self.log = self.root / "calls"
+        (self.root / "install_encode_re2g.py").write_text(
+            'import sys, os\nwith open(os.environ["CALL_LOG"], "a") as f: print("re2g", sys.argv[1], file=f)\n')
         for name in ("download_references.sh", "download_screen_context_bundle.sh", "download_avi.sh"):
             (self.root / name).write_text(
                 '#!/bin/bash\nprintf "%s\\n" "$(basename "$0") $*" >> "$CALL_LOG"\n'
@@ -28,13 +30,14 @@ class RecommendedWgsTests(unittest.TestCase):
         return subprocess.run(args, env={**os.environ, "CALL_LOG": str(self.log), "FAIL_SCRIPT": fail},
                               capture_output=True, text=True)
 
-    def test_default_contains_only_full_spliceai_screen_and_avi(self):
+    def test_default_installs_expected_wgs_resources(self):
         result = self.run_batch()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.log.read_text().splitlines(), [
             "download_references.sh /data with spaces/config.yaml --only spliceai --skip-final-status",
             "download_screen_context_bundle.sh /external drive/screen-context",
             "download_avi.sh /data with spaces/config.yaml",
+            "re2g /external drive",
         ])
 
     def test_retry_only_missing_and_installed_noop(self):

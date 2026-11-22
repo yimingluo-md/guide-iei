@@ -132,7 +132,7 @@ class Reference:
     the reference amino acids the catalog knows at that position, PER
     TRANSCRIPT. Protein positions are only meaningful within one
     transcript's numbering, so both structures carry the version-stripped
-    transcript VEP --pick chose at build time; a patient entry matches
+    transcript retained at build time; a patient entry matches
     only against rows numbered on its own transcript. A patient entry
     whose OWN reference residue differs from those rows is a different
     isoform numbering and never matches.
@@ -250,7 +250,7 @@ def load_reference(path: str) -> Reference:
             parts = [part.strip() for part in line.split("\t")]
             if len(parts) < 2:
                 continue
-            sym, pos = parts[0], parts[1]
+            sym, pos = parts[0].upper(), parts[1]
             if not (sym and pos and pos != "-"):
                 continue
             if len(parts) >= 4:
@@ -339,7 +339,7 @@ def match_alleles_with_details(
         pos = vals[idx_pos]
         if not pos or pos == "-":
             continue
-        sym = vals[idx_sym]
+        sym = vals[idx_sym].strip().upper()
         rows = ref.residues.get((sym, pos))
         if not rows:
             continue

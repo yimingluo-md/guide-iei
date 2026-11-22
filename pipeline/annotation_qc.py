@@ -23,10 +23,12 @@ from typing import Iterable
 import yaml
 
 try:
+    from .genia_alleles import snv_key
     from .promoterai_evidence import SCORE_FIELDS as _PROMOTERAI_SCORE_FIELDS
     from .research_use_notice import RESEARCH_USE_NOTICE
     from .starter_evidence import starter_observation
 except ImportError:  # direct script execution
+    from genia_alleles import snv_key
     from promoterai_evidence import SCORE_FIELDS as _PROMOTERAI_SCORE_FIELDS
     from research_use_notice import RESEARCH_USE_NOTICE
     from starter_evidence import starter_observation
@@ -153,7 +155,6 @@ DELIBERATE_PTC_SKIP_PREFIXES = (
     "not_applicable_single_exon_transcript",
     "unsupported_transcript_biotype:",
     "transcript_version_mismatch",
-    "outside_cds",
     # Selenoprotein transcripts (annotated UGA-Sec codon in the CDS): the
     # recomputation is refused on purpose, LOFTEE's verdict stands.
     "selenoprotein_transcript_unsupported",
@@ -222,6 +223,8 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     funcvep_enabled = bool(
         (((config.get("plugins") or {}).get("FuncVEP") or {}).get("enabled"))
     )
+    gpn_models = {model: label for key, model, label in (("gpn_star_m", "m447", "M"), ("gpn_star_v", "v100", "V"))
+                  if ((config.get("wgs_review") or {}).get(key) or {}).get("enabled")}
     avi_enabled = bool(((config.get("custom_tracks") or {}).get("AlphaGenomeAVI") or {}).get("enabled"))
 
     counters = Counter()
@@ -232,6 +235,7 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     sample_names: list[str] = []
     dbnsfp_annotated = Counter()
     header_info_fields: set[str] = set()
+    compact_gpn_coverage = None
     vep_header = None
     clinvar_aa_release = None
 
@@ -244,6 +248,8 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
         for line in handle:
             if line.startswith("##VEP="):
                 vep_header = line.rstrip("\n")
+            if line.startswith("##GPNStar_v100_coverage="):
+                compact_gpn_coverage = line.partition("=")[2].strip()
             if line.startswith("##INFO=<ID="):
                 match = re.match(r"##INFO=<ID=([^,>]+)", line)
                 if match:
@@ -284,7 +290,20 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
             # AVI is allele-scoped, including gene-less CSQ entries. Count
             # each eligible ALT once, not once per affected transcript.
             avi_contig = columns[0].removeprefix("chr")
-            for alt_number, alt in enumerate(columns[4].split(","), 1):
+            alts = columns[4].split(",")
+            gpn_slots = {model: [info.get(f"GPN{model}_{field}", "").split(",") for field in ("LLR", "ABSLLR")]
+                         for model in gpn_models}
+            for alt_number, alt in enumerate(alts, 1):
+                if gpn_slots and avi_contig in AVI_CONTIGS and snv_key(int(columns[1]), columns[3], alt) is not None:
+                    counters["gpn_snv_alleles_eligible"] += 1
+                    for model, score_columns in gpn_slots.items():
+                        try:
+                            scored = all(len(slots) == len(alts) and math.isfinite(float(slots[alt_number - 1]))
+                                         for slots in score_columns)
+                        except ValueError:
+                            scored = False
+                        if scored:
+                            counters[f"gpn_{model}_scored_alleles"] += 1
                 if avi_contig not in AVI_CONTIGS or columns[3] not in SNV_BASES or alt not in SNV_BASES or alt == columns[3]:
                     continue
                 counters["avi_snv_alleles_eligible"] += 1
@@ -430,28 +449,22 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
                 }
                 for status in statuses:
                     counters[f"ptc50_status:{status}"] += 1
-                recomputed = any(
-                    entry.get("PTC_calc_status", "").startswith("ok")
-                    and present(entry.get("LoF_50_BP_RULE_PTC"))
-                    for entry in frameshift
-                )
-                deliberate_only = bool(statuses) and all(
-                    status.startswith(DELIBERATE_PTC_SKIP_PREFIXES)
-                    for status in statuses
-                )
-                if recomputed:
-                    counters["ptc50_frameshift_eligible"] += 1
-                    counters["ptc50_recomputed"] += 1
-                elif deliberate_only:
-                    # A documented refusal (single-exon transcript, unsupported
-                    # biotype, version mismatch, outside CDS) is correct
-                    # behaviour, not missing coverage. Counting these in the
-                    # denominator produced false WARNs and remediation lists
-                    # of variants needing no remediation.
+                eligible_entries = [
+                    entry for entry in frameshift
+                    if not entry.get("PTC_calc_status", "").startswith(DELIBERATE_PTC_SKIP_PREFIXES)
+                ]
+                if not eligible_entries:
                     counters["ptc50_not_applicable"] += 1
                 else:
                     counters["ptc50_frameshift_eligible"] += 1
-                    note_missing("LOFTEE_PTC_50BP", key)
+                    if all(
+                        entry.get("PTC_calc_status", "").startswith("ok")
+                        and present(entry.get("LoF_50_BP_RULE_PTC"))
+                        for entry in eligible_entries
+                    ):
+                        counters["ptc50_recomputed"] += 1
+                    else:
+                        note_missing("LOFTEE_PTC_50BP", key)
                 if any(entry.get("LoF_50_BP_RULE_changed") == "1" for entry in frameshift):
                     counters["ptc50_changed"] += 1
 
@@ -577,6 +590,19 @@ def build_report(config_path: Path, vcf_path: Path, max_examples: int | None = N
     elif not avi_metric["schema_present"]:
         avi_metric["status"] = "FAIL" if avi_config.get("required") else "SKIPPED_NOT_INSTALLED"
     metrics.append(avi_metric)
+    for model, label in gpn_models.items():
+        result = metric(f"GPN-Star-{label} on primary-contig SNV alleles", counters["gpn_snv_alleles_eligible"],
+                        counters[f"gpn_{model}_scored_alleles"], 0.0)
+        result.update(unit="alleles", warning_threshold=None, schema_present=all(
+            f"GPN{model}_{field}" in header_info_fields for field in ("LLR", "ABSLLR")))
+        if not result["schema_present"]:
+            result["status"] = "FAIL"
+        elif result["coverage"] == 0:
+            result["status"] = "WARN"
+            result["coverage_note"] = "No eligible SNV received a score. Check the installed package’s coverage for these variants."
+        if model == "v100" and compact_gpn_coverage:
+            result["coverage_note"] = " ".join(filter(None, (result.get("coverage_note"), compact_gpn_coverage)))
+        metrics.append(result)
     plugins = config.get("plugins") or {}
     dbnsfp_config = plugins.get("dbNSFP") or {}
     loftee_config = plugins.get("LoF") or {}
@@ -1123,6 +1149,8 @@ def render_html(report: dict) -> str:
         note = (f"<br><small>{item['duplicate_match_records']} record(s) with duplicate matches. "
                 f"{html.escape(item['remediation'])}</small>"
                 if item.get("duplicate_match_records") else "")
+        if item.get("coverage_note"):
+            note += f"<br><small>{html.escape(item['coverage_note'])}</small>"
         rows.append(
             "<tr>"
             f"<td>{html.escape(item['name'])}{note}</td>"
@@ -1181,6 +1209,7 @@ def main(argv: Iterable[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--vcf", required=True, type=Path)
+    parser.add_argument("--reported-vcf", type=Path, help="Published path when reading a staged VCF")
     parser.add_argument("--json", type=Path)
     parser.add_argument("--html", type=Path)
     parser.add_argument("--max-missing-examples", type=int)
@@ -1193,6 +1222,8 @@ def main(argv: Iterable[str] | None = None) -> int:
     json_path = args.json or Path(str(args.vcf) + ".annotation_qc.json")
     html_path = args.html or Path(str(args.vcf) + ".annotation_qc.html")
     report = build_report(args.config, args.vcf, args.max_missing_examples)
+    if args.reported_vcf:
+        report["input_vcf"] = str(args.reported_vcf)
     if args.note:
         report["run_notes"] = list(args.note)
     write_report(report, json_path, html_path)
