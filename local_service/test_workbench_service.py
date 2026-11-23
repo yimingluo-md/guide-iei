@@ -225,7 +225,9 @@ class AnnotationJobServiceTests(unittest.TestCase):
                         (job_id, pid),
                     )
             time.sleep(0.2)
-            reopened = AnnotationJobService(self.root, state, start_worker=False)
+            # Linux ps can truncate the identifying path when COLUMNS is set.
+            with patch.dict(os.environ, {"COLUMNS": "40"}):
+                reopened = AnnotationJobService(self.root, state, start_worker=False)
             try:
                 deadline = time.time() + 5
                 while orphan.poll() is None and time.time() < deadline:

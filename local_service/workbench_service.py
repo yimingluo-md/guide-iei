@@ -3310,7 +3310,7 @@ class AnnotationJobService:
         for job_id, pid in orphans:
             try:
                 probe = subprocess.run(
-                    ["ps", "-o", "command=", "-p", str(pid)],
+                    ["ps", "-ww", "-o", "command=", "-p", str(pid)],
                     capture_output=True, text=True, check=False,
                 )
             except OSError:
@@ -3350,7 +3350,7 @@ class AnnotationJobService:
             # still one of this pipeline's own scripts.
             try:
                 probe = subprocess.run(
-                    ["ps", "-o", "command=", "-p", str(pid)],
+                    ["ps", "-ww", "-o", "command=", "-p", str(pid)],
                     capture_output=True, text=True, check=False,
                 )
             except OSError:
