@@ -1067,6 +1067,10 @@ tbody tr:last-child td { border-bottom: 0; }
 .section-title { display: flex; align-items: end; justify-content: space-between; gap: 20px; }
 .section-title h2, .evidence-section h2 { margin: 0; color: #2e403b; font-family: Georgia, serif; font-size: 20px; font-weight: 500; }
 .section-title > span { color: #8b9692; font: 9px var(--font-geist-mono); }
+.cadd-provider-details { margin-top: 12px; }
+.cadd-provider-details summary { cursor: pointer; }
+.cadd-provider-details dl > div { display: flex; gap: 1em; margin-top: 6px; }
+.cadd-provider-details dd { margin: 0; }
 .predictor-card-grid { margin-top: 17px; display: grid; grid-template-columns: repeat(4, minmax(125px, 1fr)); gap: 9px; }
 .predictor-card { min-height: 105px; padding: 13px; display: flex; flex-direction: column; border: 1px solid #dfe5e2; border-radius: 6px; background: #fafbfa; }
 .predictor-card > span { color: #71807b; font-size: 9px; text-transform: uppercase; letter-spacing: .055em; }

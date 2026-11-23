@@ -114,9 +114,10 @@ def unambiguous_integer(raw: str) -> int | None:
         try:
             number = finite_float(token)
         except ValueError:
-            continue
-        if number.is_integer():
-            values.add(int(number))
+            return None
+        if not number.is_integer():
+            return None
+        values.add(int(number))
     return values.pop() if len(values) == 1 else None
 
 
@@ -124,9 +125,10 @@ def normalized_strand(raw: str) -> str:
     """'+' / '-' from VEP's 1/-1 or +/- encodings; '' when absent or mixed."""
     if raw in EMPTY:
         return ""
-    strands = {
-        _STRAND_ENCODING[token] for token in _tokens(raw) if token in _STRAND_ENCODING
-    }
+    tokens = [token for token in _tokens(raw) if token not in {"", "."}]
+    if any(token not in _STRAND_ENCODING for token in tokens):
+        return ""
+    strands = {_STRAND_ENCODING[token] for token in tokens}
     return strands.pop() if len(strands) == 1 else ""
 
 

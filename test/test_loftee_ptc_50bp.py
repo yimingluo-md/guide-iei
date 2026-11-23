@@ -10,6 +10,7 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 from pipeline.loftee_ptc_50bp import (
+    APPENDED_FIELDS,
     SELENOPROTEIN_SKIP_STATUS,
     Transcript,
     allele_index,
@@ -18,6 +19,7 @@ from pipeline.loftee_ptc_50bp import (
     load_transcripts,
     prepare_transcript,
     process_vcf,
+    revcomp,
 )
 
 
@@ -73,6 +75,16 @@ def test_padding_outside_cds_does_not_change_a_coding_edit():
         assert padded["status"] == "ok"
 
 
+def test_right_padded_repeat_deletion_keeps_the_left_vcf_anchor():
+    tx = model()
+    tx.blocks = [(100, 102, 0), (200, 214, 3)]
+    tx.last_exon_junction_cds = 4
+    # The A at 199 is the intronic anchor. The deleted A at 200 is coding.
+    for ref, alt in [("AA", "A"), ("AAAA", "AAA")]:
+        result = calculate(tx, 199, ref, alt, "frameshift_variant", "", 50)
+        assert (result["status"], result["ptc_cds"], result["dist"]) == ("ok", 19, -15)
+
+
 def test_record_wide_csq_indel_anchor():
     alts = ["A", "ATT"]
     assert allele_index({"Allele": "-"}, "AT", alts) == 0
@@ -81,6 +93,9 @@ def test_record_wide_csq_indel_anchor():
     assert allele_index({"Allele": "TT"}, "AT", ["ATT", "ATTT"]) is None
     # AT is the stripped form of AAT and the suffix-trimmed form of ATA.
     assert allele_index({"Allele": "AT"}, "A", ["AAT", "ATA"]) is None
+    # Biallelic PTC inputs use prefix-first spelling even in a repeat.
+    assert allele_index({"Allele": "TA"}, "A", ["ATA"]) == 0
+    assert allele_index({"Allele": "AT"}, "A", ["ATA"]) is None
 
 
 def test_frameshift_is_scored_at_downstream_ptc():
@@ -384,6 +399,90 @@ def _feature(kind, start, end, strand, transcript="ENST00000000009"):
     )
 
 
+def test_right_padded_boundary_edits_through_postprocessor(tmp_path):
+    source = pathlib.Path(__file__).parent / "contracts" / "loftee-ptc-boundary.vcf"
+    wanted, fields = collect_transcripts(source)
+    # Both genomes have AG at 115-116 in the CDS, then GGT in the intron.
+    # On + the edit shortens the exon before the junction. On - it shortens
+    # the exon after the junction, so the junction stays at CDS position 16.
+    cases = [
+        ("+", 100, "ATG" + "AAA" * 4 + "AG", "AATAAAATAA", (19, -2), (16, 1)),
+        ("-", 105, revcomp("CTAATAAAATAA"), revcomp("ATG" + "AAA" * 4), (16, 0), (19, -3)),
+    ]
+    for strand, start, low_exon, high_exon, deletion, delins in cases:
+        genome = "N" * (start - 1) + low_exon + "GGT" + "N" * 80 + high_exon
+        features = [
+            _feature(kind, left, right, strand)
+            for left, right in [(start, 116), (200, 199 + len(high_exon))]
+            for kind in ["exon", "CDS"]
+        ]
+        models = load_transcripts(_gtf(features, tmp_path), wanted, StubFasta(genome))
+        output = tmp_path / "scored.vcf"
+        report = process_vcf(source, output, models, fields, 50, True, {})
+        _, output_fields = collect_transcripts(output)
+        entries = {}
+        for line in output.read_text().splitlines():
+            if not line.startswith("#"):
+                record = line.split("\t")
+                entries[record[2]] = [
+                    dict(zip(output_fields, csq.split("|")))
+                    for csq in record[7].removeprefix("CSQ=").split(",")
+                ]
+
+        for name, (ptc, distance) in [("deletion", deletion), ("delins", delins)]:
+            compact = entries[name][0]
+            padded = entries["padded_" + name][0]
+            for field in APPENDED_FIELDS:
+                assert padded[field] == compact[field], (strand, name, field)
+            assert padded["PTC_calc_status"] == "ok"
+            assert padded["PTC_cds_pos"] == str(ptc)
+            assert padded["PTC_dist_from_last_exon"] == str(distance)
+            assert padded["PTC_dist_from_last_coding_exon"] == str(distance)
+            assert padded["LoF_info"] == compact["LoF_info"] == "50_BP_RULE:FAIL"
+            assert padded["LoF_50_BP_RULE_original"] == "PASS"
+
+        for entry, status in [
+            (entries["padded_deletion"][1], "outside_cds"),
+            (entries["padded_deletion"][2], "allele_mapping_failed"),
+            (entries["bad_padding"][0], "ref_mismatch"),
+        ]:
+            assert entry["PTC_calc_status"] == status
+            assert entry["LoF_50_BP_RULE_PTC"] == ""
+            assert entry["LoF_info"] == "50_BP_RULE:PASS"
+        assert report["recomputed"] == report["changed"] == 4
+
+
+def test_multiallelic_padded_insertion_preserves_coding_cut(tmp_path):
+    tx = "ENST00000000009"
+    source = tmp_path / "insertions.vcf"
+    source.write_text(
+        '##fileformat=VCFv4.2\n'
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|Consequence|Feature|LoF_info">\n'
+        '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n'
+        f'1\t115\tcompact\tA\tAG\t.\tPASS\tCSQ=G|1|frameshift_variant|{tx}|50_BP_RULE:PASS\n'
+        f'1\t115\tpadded\tAGGGT\tA,AGGGGT\t.\tPASS\tCSQ=GGGGT|2|frameshift_variant|{tx}|50_BP_RULE:PASS\n'
+    )
+    wanted, fields = collect_transcripts(source)
+    for strand, start, left, right, expected_ptc in [
+        ("+", 100, "ATG" + "AAA" * 4 + "AG", "TAAAAAATAA", 19),
+        ("-", 105, revcomp("CTAAATAAATAA"), revcomp("ATG" + "AAA" * 4), 22),
+    ]:
+        genome = "N" * (start - 1) + left + "GGT" + "N" * 80 + right
+        features = [_feature(kind, x, y, strand)
+                    for x, y in [(start, 116), (200, 199 + len(right))] for kind in ("exon", "CDS")]
+        models = load_transcripts(_gtf(features, tmp_path), wanted, StubFasta(genome))
+        output = tmp_path / "scored.vcf"
+        report = process_vcf(source, output, models, fields, 50, True, {})
+        assert report["recomputed"] == report["changed"] == 2
+        _, names = collect_transcripts(output)
+        compact, padded = [dict(zip(names, line.split("\t")[7][4:].split("|")))
+                           for line in output.read_text().splitlines() if not line.startswith("#")]
+        assert all(compact[k] == padded[k] for k in APPENDED_FIELDS)
+        assert padded["PTC_calc_status"] == "ok"
+        assert padded["PTC_cds_pos"] == str(expected_ptc)
+        assert padded["LoF_info"] == "50_BP_RULE:FAIL"
+
+
 def test_selenoprotein_transcript_is_a_deliberate_skip(tmp_path):
     # Review M4: an in-frame UGA at an annotated selenocysteine position is
     # sense, so the model is intact — but the recomputation is refused with
@@ -478,6 +577,9 @@ if __name__ == "__main__":
         test_frameshift_is_scored_at_downstream_ptc,
         test_boundary_insertions_use_the_transcript_side_of_the_cut,
         test_padding_outside_cds_does_not_change_a_coding_edit,
+        test_right_padded_repeat_deletion_keeps_the_left_vcf_anchor,
+        test_right_padded_boundary_edits_through_postprocessor,
+        test_multiallelic_padded_insertion_preserves_coding_cut,
         test_record_wide_csq_indel_anchor,
         test_successful_recomputation_replaces_lof_info_and_preserves_original,
         test_unscored_transcript_does_not_get_fabricated_lof_info,

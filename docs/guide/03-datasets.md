@@ -195,6 +195,13 @@ the upstream database. MANE AlphaMissense and coding-SNV CADD remain available
 without it; VEP supplies basic gene/transcript, HGVS, and configured gnomAD
 frequency annotations independently.
 
+For each run, GUIDE-IEI checks the selected dbNSFP columns against the installed
+table header. It skips the automatic AlphaMissense starter when dbNSFP supplies
+both `AlphaMissense_score` and `AlphaMissense_pred`. It skips the automatic CADD
+starter when dbNSFP supplies `CADD_phred`. If you turn off dbNSFP, the verified
+starter package supplies both predictors under the default configuration.
+Explicit starter settings in your YAML take precedence.
+
 **pLI and LOEUF do not depend on dbNSFP.** They come from the bundled gnomAD
 v4.1.1 constraint table (19,638 genes), using one representative transcript per
 gene, preferentially MANE Select and then canonical. No extra download is needed.
@@ -355,7 +362,7 @@ exports and retains only its derived component database.
 
 Under **Optional add-ons → Custom score tables**, choose one or more local GRCh38 tab-separated files. Each needs a header, 1-based positions, and one sequence-resolved REF/ALT pair per row. Compressed TSVs work too. Use **Add files** to combine chromosome files with the same columns.
 
-Rows can arrive in any order. The importer skips wild-type rows where REF equals ALT and rows with `-` or `*` in either allele column. The installed dataset shows how many rows were skipped. **Remove index** deletes the local lookup index and keeps your original tables.
+Rows can arrive in any order. The importer skips wild-type rows, unanchored or symbolic alleles, missing ALT (`.`), and comma-separated ALT rows, whose scores cannot be safely assigned to one allele. The installed dataset shows how many rows were skipped. Score cells are trimmed; empty cells, `.`, `NA`, and `N/A` (case-insensitive) are treated as missing. **Remove index** deletes the local lookup index and keeps your original tables.
 
 Confirm the chromosome, position, REF and ALT columns. Include strand, gene or transcript when scores depend on them. Search the remaining columns, select the scores you want, and give each a display name. The preview shows example rows with your chosen columns before you start the import.
 

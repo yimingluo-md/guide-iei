@@ -128,6 +128,45 @@ class ElementGeneTests(unittest.TestCase):
         rows = store.query(dict(mode="target_gene", gene="DISTANT", impacts=[]), links_path=self.path)["rows"]
         self.assertEqual({(r["pos"], r["gene"]) for r in rows}, {(100, "NFKB1")})
 
+    def test_clinical_transcripts_in_region_and_target_queries(self):
+        source = self.root / "regulatory.vcf"
+        annotations = [
+            "intergenic_variant|MODIFIER||||||",
+            "regulatory_region_variant&TF_binding_site_variant|MODIFIER|||RegulatoryFeature|element||",
+            "regulatory_region_variant|MODIFIER|||Transcript|element||",
+            "intergenic_variant|MODIFIER||ENSG1||||",
+            "regulatory_region_variant|MODIFIER|NEARBY||RegulatoryFeature|element||",
+            "intergenic_variant&intron_variant|MODIFIER||||||",
+            "intron_variant|MODIFIER||||||",
+            "regulatory_region_variant|MODIFIER||||ENST00000001||",
+            "regulatory_region_variant|MODIFIER||||ENSR00000001||",
+            "missense_variant|MODERATE|CODING|ENSG2|Transcript|picked||1,"
+            "G|missense_variant|MODERATE|CODING|ENSG2|Transcript|mane|NM_TEST|",
+            "missense_variant|MODERATE|CODING|ENSG2|Transcript|fallback||1",
+        ]
+        source.write_text("\n".join([
+            "##fileformat=VCFv4.2", "##reference=GRCh38", "##contig=<ID=1,length=248956422>",
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|IMPACT|'
+            'SYMBOL|Gene|Feature_type|Feature|MANE_SELECT|PICK">',
+            "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSYNTHETIC",
+            *(f"1\t{pos}\t.\tA\tG\t99\tPASS\tCSQ=G|{annotation}\tGT\t0/1"
+              for pos, annotation in enumerate(annotations, 100)), "",
+        ]))
+        with closing(sqlite3.connect(self.path)) as db, db:
+            db.execute("UPDATE links SET end=120 WHERE symbol='DISTANT'")
+        store = CohortStore(self.root / "cohort.sqlite")
+        store.import_vcf(source)
+        for query in [dict(mode="region", region="1:100-120"), dict(mode="target_gene", gene="DISTANT")]:
+            with self.subTest(query=query):
+                self.assertEqual(store.query(query, links_path=self.path)["variants"], len(annotations))
+                clinical = dict(query, mane_only=True)
+                rows = store.query(clinical, links_path=self.path)["rows"]
+                self.assertEqual({r["pos"]: r["transcript"] for r in rows},
+                                 {100: "", 101: "element", 108: "ENSR00000001", 109: "mane", 110: "fallback"})
+                self.assertEqual(next(r for r in rows if r["pos"] == 101)["feature_type"], "RegulatoryFeature")
+                coding = store.query(dict(clinical, impacts=["MODERATE"]), links_path=self.path)
+                self.assertEqual({r["pos"] for r in coding["rows"]}, {109, 110})
+
     def test_target_gene_bounds_and_single_overlap_pass(self):
         source = self.root / "bounded.vcf"
         write_vcf(source)

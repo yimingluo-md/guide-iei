@@ -388,23 +388,23 @@ sub run {
   }
   my $vf = eval { $tva->variation_feature };
   return {} unless $vf;
-  my ($pos, $ref, $alt) = transcript_edit($tva);
+  my ($pos, $ref, $alt, $input_start) = transcript_edit($tva);
   return {} unless defined $pos;
 
   my $chr = $vf->{chr};
   return {} unless defined $chr && length $chr;
   $chr =~ s/^chr//i;
   $chr = 'MT' if uc($chr) eq 'M';
-  # Tabix indexes the source's VCF position. An unanchored indel can
-  # start one base after its VCF anchor (or use a right anchor at base 1).
-  my $start = $pos;
-  --$start if $pos > 1 && (!length($ref) || !length($alt));
+  # The table is point-indexed at the source POS. Include the input's left
+  # padding and a possible preceding VCF anchor, including for delins.
+  my $start = $input_start;
+  --$start if $start > 1 && length($ref) != length($alt);
   my @records = @{$self->get_data($chr, $start, $pos, $self->{indexed_score_file})};
   my @allele_matches;
   for my $record (@records) {
     next if defined $record->{chr} && $record->{chr} ne $chr;
     my ($source_pos, $source_ref, $source_alt) =
-      sequence_edit($record->{start}, $record->{ref}, $record->{alt});
+      sequence_edit($record->{start}, $record->{ref}, $record->{alt}, 'vcf');
     push @allele_matches, $record if defined $source_pos && $source_pos == $pos
       && $source_ref eq $ref && $source_alt eq $alt;
   }

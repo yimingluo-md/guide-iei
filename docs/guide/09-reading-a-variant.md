@@ -216,7 +216,10 @@ applicable, the genome-wide sources on every annotation:
   can use the optional **CADD_WGS** track so non-coding records are scored too.
   When several sources cover an allele, the card uses genome-wide CADD first,
   then an exact starter score, then dbNSFP. A displayed Phred score and raw score
-  come from the same provider.
+  come from the same provider. In **Predictors**, open **CADD scores by provider**
+  when a VCF has values from multiple sources. Each row shows one provider’s
+  Phred and raw values. A dash means that provider supplied no value for that
+  metric. The coding-SNV starter supplies Phred only.
 - **GPN-Star-M and GPN-Star-V.** Exome review supports V, and whole-genome review supports both models. The Predictors cards show the calibrated LLR for an exact chromosome, position, reference and alternate match. More negative LLR indicates greater predicted constraint. The second value, calibrated absLLR, compares effect magnitude with a neutral substitution and can itself be negative. Both values come directly from the source. The M and V models can have different coverage. Indels and uncovered SNVs have no score. Use **Display settings** to choose which models to show. [Official score definitions](https://huggingface.co/datasets/songlab/gpn-star-scores)
 - **AlphaGenome AVI** — genome-wide SNV impact predictions from the separately
   installed AVI dataset. AVI Phred is shown by default in WGS review; raw

@@ -1,0 +1,8 @@
+##fileformat=VCFv4.2
+##INFO=<ID=CSQ,Number=.,Type=String,Description="VEP annotations. Format: Allele|ALLELE_NUM|Consequence|Feature|LoF_info">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO
+1	115	deletion	AG	A	.	PASS	CSQ=-||frameshift_variant|ENST00000000009|50_BP_RULE:PASS
+1	115	padded_deletion	AGGGT	A,AGGT	.	PASS	CSQ=GGT||frameshift_variant|ENST00000000009|50_BP_RULE:PASS,-|1|frameshift_variant|ENST00000000009|50_BP_RULE:PASS,-||frameshift_variant|ENST00000000009|50_BP_RULE:PASS
+1	115	delins	AG	T	.	PASS	CSQ=T||frameshift_variant|ENST00000000009|50_BP_RULE:PASS
+1	115	padded_delins	AGGGT	TGGT,A	.	PASS	CSQ=T||frameshift_variant|ENST00000000009|50_BP_RULE:PASS
+1	115	bad_padding	ATGGT	TGGT,A	.	PASS	CSQ=TGGT||frameshift_variant|ENST00000000009|50_BP_RULE:PASS

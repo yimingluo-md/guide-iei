@@ -165,6 +165,53 @@ class PhenotypeStoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate individual IDs"):
             self.store.import_records(payload)
 
+    def test_manual_age_pairs_survive_save_and_update(self):
+        def assert_ages(evaluation, onset):
+            record = self.store.get("AGE-1")
+            self.assertEqual((record["age_at_evaluation"], record["age_at_evaluation_unit"]), evaluation)
+            self.assertEqual((record["age_at_onset"], record["age_at_onset_unit"]), onset)
+
+        self.store.save_individual({
+            "individual_id": "AGE-1",
+            "age_at_evaluation": "180 days",
+            "age_at_onset": "24 months",
+        })
+        assert_ages((180, "days"), (24, "months"))
+
+        self.store.save_individual({
+            "individual_id": "AGE-1",
+            "age_at_evaluation": 0,
+            "age_at_evaluation_unit": " Wk ",
+            "age_at_onset": "180 years",
+            "age_at_onset_unit": "MO",
+        })
+        assert_ages((0, "weeks"), (180, "months"))
+
+    def test_manual_blank_and_missing_ages_match_import(self):
+        self.store.save_individual({
+            "individual_id": "MANUAL", "age_at_evaluation": 3, "age_at_onset": 1,
+        })
+        self.store.save_individual({
+            "individual_id": "MANUAL",
+            "age_at_evaluation": "   ",
+            "age_at_evaluation_unit": "unknown",
+            "age_at_onset_unit": "unknown",
+        })
+        self.store.import_records({
+            "filename": "ages.csv", "header_row": 1,
+            "content_base64": encoded(b"ID,Age,Unit,Onset Unit\nIMPORTED, ,unknown,unknown\n"),
+            "mapping": {
+                "individual_id": "ID", "age_at_evaluation": "Age",
+                "age_at_evaluation_unit": "Unit", "age_at_onset_unit": "Onset Unit",
+            },
+        })
+        for individual_id in ("MANUAL", "IMPORTED"):
+            record = self.store.get(individual_id)
+            for field in ("age_at_evaluation", "age_at_onset"):
+                with self.subTest(individual_id=individual_id, field=field):
+                    self.assertIsNone(record[field])
+                    self.assertEqual(record[f"{field}_unit"], "")
+
     def test_infant_ages_are_valid_in_their_own_units(self):
         """The 130 ceiling is a YEARS bound: '180 days' is a six-month-old,
         not an out-of-range age — the raw-number check used to reject

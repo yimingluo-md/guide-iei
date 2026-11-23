@@ -228,7 +228,8 @@ core:
 plugins:
 
   # Standalone providers. Omit enabled for automatic managed activation once
-  # a validated bundle is installed. Set enabled: false to opt out explicitly.
+  # a validated bundle is installed and selected dbNSFP fields lack its evidence.
+  # Set enabled: true to request both providers, or false to opt out of the starter.
   # Before installation these path-less providers are inactive.
   # Supply the prepared table and indexed.manifest.json together. Never copy
   # starter fields into dbNSFP columns: their matching/provenance differs.

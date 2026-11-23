@@ -312,27 +312,106 @@ class SampleLibraryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "at least one dataset"):
             self.library.review_file_combined([])
 
-    def test_metadata_edit_never_relabels_the_co_resident_sample(self):
-        """cohort_files carries one profile per indexed file; editing P1's
-        capture kit must not rewrite the profile P2's cohort rows filter
-        under."""
-        import sqlite3
-        result = self.library.import_vcf(self.vcf, self.payload(include=True))
-        by_sample = {d["vcf_sample_name"]: d for d in result["datasets"]}
-        with sqlite3.connect(self.database) as connection:
-            before = connection.execute(
-                "SELECT profile_label FROM cohort_files"
-            ).fetchall()
-        self.library.update_metadata(
-            by_sample["P1"]["id"], {"capture_kit": "NewKit v9"}
-        )
-        record = self.library.get(by_sample["P1"]["id"])
-        self.assertIn("NewKit v9", record["capture_kit"])
-        with sqlite3.connect(self.database) as connection:
-            after = connection.execute(
-                "SELECT profile_label FROM cohort_files"
-            ).fetchall()
-        self.assertEqual(before, after)
+    def assert_sample_profiles(self, expected):
+        # Both samples carry NFKB1 variants, so an accidental file-wide match
+        # returns the sibling too. Check the actual rows as well as readiness.
+        listed = {d["id"]: d for d in self.library.list()}
+        samples = {s["id"]: s for s in self.cohort.list_samples()}
+        profiles = {p["profile_hash"]: p for p in self.cohort.profiles()}
+        self.assertEqual(set(profiles), {d["settings_hash"] for d in expected})
+        for dataset in expected:
+            name = dataset["vcf_sample_name"]
+            profile = dataset["settings_hash"]
+            with self.subTest(sample=name, profile=profile):
+                current = self.library.get(dataset["id"])
+                self.assertEqual(current["cohort_index_status"], "ready")
+                self.assertEqual(listed[dataset["id"]]["cohort_index_status"], "ready")
+                self.assertEqual(current["settings_hash"], profile)
+                entry = samples[current["cohort_sample_entry_id"]]
+                self.assertEqual((entry["name"], entry["profile_hash"]), (name, profile))
+                self.assertEqual(entry["profile_label"], dataset["profile_label"])
+                self.assertEqual(profiles[profile]["profile_label"], dataset["profile_label"])
+                self.assertEqual(profiles[profile]["files"], 1)
+                self.assertEqual(profiles[profile]["sample_entries"], 1)
+                self.assertEqual(profiles[profile]["settings"], dataset["complete_settings"])
+                hits = self.cohort.query({"mode": "gene", "query": "NFKB1", "profile_hashes": [profile]})
+                self.assertEqual({(r["sample"], r["profile_hash"]) for r in hits["rows"]}, {(name, profile)})
+                self.assertEqual(hits["represented_profiles"], [profile])
+                self.assertEqual(hits["individuals"], 1)
+
+    def divergent_profiles(self):
+        imported = self.library.import_vcf(self.vcf, self.payload())
+        first, second = imported["datasets"]
+        sibling = self.library.get(second["id"])
+        edited = self.library.update_metadata(first["id"], {"capture_kit": "NewKit v9"})
+        self.assertNotEqual(edited["settings_hash"], sibling["settings_hash"])
+        self.assertEqual(edited["cohort_file_id"], sibling["cohort_file_id"])
+        return edited, sibling
+
+    def test_shared_file_metadata_and_repair_preserve_filtered_membership(self):
+        edited, sibling = self.divergent_profiles()
+        self.assert_sample_profiles([edited, sibling])
+        # Exercise Repair against a genuinely missing sample, then rebuild
+        # the sibling to catch a loop in either direction.
+        self.cohort.remove_samples([edited["cohort_sample_entry_id"]])
+        self.assertEqual(self.library.get(edited["id"])["cohort_index_status"], "needs_repair")
+        self.assertEqual(self.library.get(sibling["id"])["cohort_index_status"], "ready")
+        self.library.reindex(edited["id"])
+        self.assert_sample_profiles([edited, sibling])
+        self.assertEqual(self.library.get(sibling["id"])["cohort_sample_entry_id"], sibling["cohort_sample_entry_id"])
+        self.library.reindex(sibling["id"])
+        self.assert_sample_profiles([edited, sibling])
+        reused = self.library.import_vcf(self.vcf, self.payload())
+        for dataset in reused["datasets"]:
+            self.assertEqual(dataset["cohort_sample_entry_id"], self.library.get(dataset["id"])["cohort_sample_entry_id"])
+
+    def test_reindex_publishes_metadata_edited_during_scan(self):
+        imported = self.library.import_vcf(self.vcf, {**self.payload(), "analysis_scope": "whole_genome"})
+        first, second = imported["datasets"]
+        sibling = self.library.get(second["id"])
+        original_import = self.cohort.import_vcf
+        for full_wgs, kit in [(False, "Compact kit"), (True, "Full kit")]:
+            def edit_during_scan(path, **kwargs):
+                self.library.update_metadata(first["id"], {"capture_kit": kit})
+                return original_import(path, **kwargs)
+
+            with mock.patch.object(self.cohort, "import_vcf", side_effect=edit_during_scan):
+                indexed = self.library.reindex(first["id"], full_wgs=full_wgs)["dataset"]
+            self.assertEqual(indexed["complete_settings"]["capture_kit"], kit)
+            self.assert_sample_profiles([indexed, sibling])
+
+    def test_restore_shared_file_with_divergent_capture_kits(self):
+        edited, sibling = self.divergent_profiles()
+        updated = self.state / "reannotated.vcf"
+        updated.write_text(self.vcf.read_text().replace("##fileformat=VCFv4.2\n",
+                           "##fileformat=VCFv4.2\n##annotation_release=2\n", 1))
+        imported = self.library.import_vcf(updated, self.payload())
+        self.assertEqual(imported["import_outcome"], "updated_annotation")
+        restored = self.library.activate_version(edited["id"])
+        self.assertFalse(restored["already_current"])
+        self.assertEqual(restored["warning"], "")
+        self.assertEqual({d["id"] for d in restored["datasets"]}, {edited["id"], sibling["id"]})
+        self.assert_sample_profiles([edited, sibling])
+
+    def test_upgrade_file_level_profiles_with_divergent_capture_kits(self):
+        edited, sibling = self.divergent_profiles()
+        # Reconstruct the old on-disk shape after repairing the edited sample:
+        # both indexed entries exist and the file advertises only its kit.
+        with self.library._session() as connection:
+            connection.execute("""
+                UPDATE cohort_files SET (profile_hash,profile_label,profile_json)=(
+                    SELECT settings_hash,profile_label,complete_settings FROM library_datasets WHERE id=?
+                ) WHERE id=?
+            """, (edited["id"], edited["cohort_file_id"]))
+            for column in ("profile_hash", "profile_label", "profile_json"):
+                connection.execute(f"ALTER TABLE cohort_samples DROP COLUMN {column}")
+            connection.execute("DELETE FROM sample_library_meta WHERE key='sample_cohort_profiles_v1'")
+        for _ in range(2):
+            self.cohort = CohortStore(self.database)
+            self.library = SampleLibrary(self.state, self.cohort)
+            self.assert_sample_profiles([edited, sibling])
+            for dataset in (edited, sibling):
+                self.assertEqual(self.library.get(dataset["id"])["cohort_sample_entry_id"], dataset["cohort_sample_entry_id"])
 
     def test_import_and_listing_expose_cohort_sample_entry_identity(self):
         result = self.library.import_vcf(self.vcf, self.payload(include=True))
@@ -583,6 +662,7 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(profiles[0]["settings_hash"], records[0]["settings_hash"])
         cohort_profiles = self.cohort.profiles()
         self.assertEqual(cohort_profiles[0]["profile_hash"], records[0]["settings_hash"])
+        self.assertEqual((cohort_profiles[0]["files"], cohort_profiles[0]["sample_entries"]), (1, 2))
         matched = self.cohort.query({
             "mode": "variant", "query": "1:100:A:G",
             "profile_hashes": [records[0]["settings_hash"]],
@@ -778,20 +858,6 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(sibling_after["settings_hash"], sibling_before["settings_hash"])
         self.assertEqual(sibling_after["profile_label"], sibling_before["profile_label"])
 
-    def test_reindex_profile_rewrite_spares_diverged_sibling_profile(self):
-        # The sibling keeps its linkage and its independently edited profile.
-        imported = self.library.import_vcf(self.vcf, self.payload(include=True))
-        first, second = imported["datasets"]
-        self.library.update_metadata(second["id"], {"capture_kit": "Sibling kit"})
-        sibling_before = self.library.get(second["id"])
-        self.library.reindex(first["id"])
-        sibling_after = self.library.get(second["id"])
-        self.assertEqual(sibling_after["settings_hash"], sibling_before["settings_hash"])
-        self.assertEqual(sibling_after["profile_label"], sibling_before["profile_label"])
-        # The sibling's edited profile still differs from the file-level profile.
-        self.assertIsNotNone(sibling_after["cohort_file_id"])
-        self.assertEqual(sibling_after["cohort_index_status"], "needs_repair")
-
     def test_full_wgs_reindex_does_not_repoint_sibling_linkage(self):
         # The full index holds only this dataset's re-imported source; a
         # path-scoped update repointed siblings' cohort_file_id at the new
@@ -902,6 +968,9 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(
             sorted(name for file_id, name in entries if file_id == full_file_id), ["P1"],
         )
+        edited = self.library.update_metadata(p1["id"], {"capture_kit": "Full WGS assay"})
+        self.assertEqual(edited["complete_settings"]["retention_routes"], ["all PASS carrier calls"])
+        self.assert_sample_profiles([edited, p2_after])
         # Carrier rows: variant 1:200 C>T is carried by P2 only (1/1); it
         # must appear in exactly one cohort file.
         hits = self.cohort.query({"mode": "variant", "query": "1:200:C:T", "limit": 50})
@@ -920,6 +989,7 @@ class SampleLibraryTests(unittest.TestCase):
         self.assertEqual(p1_final["cohort_index_status"], "ready")
         self.assertEqual(p2_final["cohort_index_status"], "ready")
         self.assertEqual(p1_final["cohort_file_id"], p2_final["cohort_file_id"])
+        self.assert_sample_profiles([edited, p2_final])
         entries = [(item["file_id"], item["name"]) for item in self.cohort.list_samples()]
         self.assertEqual(sorted(name for _, name in entries), ["P1", "P2"])
 
@@ -1024,7 +1094,7 @@ class SampleLibraryTests(unittest.TestCase):
             self.assertEqual(record["callset_id"], record["managed_checksum"])
         status = library.migration_status()
         self.assertTrue(all(item["applied_at"] for item in status["migrations"]))
-        self.assertEqual(status["schema_version"], "portable_paths_v2")
+        self.assertEqual(status["schema_version"], "sample_cohort_profiles_v1")
 
     def test_migration_step_is_atomic_with_its_marker(self):
         """A step that fails half-way leaves neither columns nor marker: the

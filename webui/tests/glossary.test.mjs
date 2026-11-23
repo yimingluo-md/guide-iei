@@ -8,7 +8,7 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText;
 const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`;
-const { GLOSSARY, GLOSSARY_CATEGORIES, segmentText } = await import(moduleUrl);
+const { GLOSSARY, GLOSSARY_CATEGORIES, searchGlossary, segmentText } = await import(moduleUrl);
 
 test("glossary data is well-formed", () => {
   const ids = new Set();
@@ -49,8 +49,24 @@ test("word boundaries prevent partial-word matches", () => {
 });
 
 test("short abbreviations match case-sensitively", () => {
-  assert.ok(segmentText("Check DP at this site.").some((segment) => segment.entry?.id === "read-depth"));
+  for (const [alias, id] of [["DP", "read-depth"], ["GQ", "genotype-quality"], ["AB", "allele-balance"]]) {
+    assert.ok(segmentText(`Check ${alias} at this site.`).some((segment) => segment.entry?.id === id));
+    assert.ok(segmentText(alias.toLowerCase()).every((segment) => segment.entry?.id !== id));
+  }
   assert.ok(segmentText("deep intronic changes").every((segment) => !segment.entry || segment.entry.id !== "read-depth"));
+});
+
+test("glossary search prioritizes exact abbreviations and retains other search matches", () => {
+  for (const [alias, id] of [["DP", "read-depth"], ["GQ", "genotype-quality"], ["AB", "allele-balance"]]) {
+    assert.equal(searchGlossary(alias)[0]?.id, id);
+    assert.equal(searchGlossary(` ${alias.toLowerCase()} `)[0]?.id, id);
+  }
+  assert.ok(searchGlossary("AB").some((entry) => entry.id !== "allele-balance"));
+  assert.ok(searchGlossary("read dep").some((entry) => entry.id === "read-depth"));
+  assert.ok(searchGlossary("GRCh37").some((entry) => entry.id === "genome-build"));
+  assert.ok(searchGlossary("sequencing reads covered").some((entry) => entry.id === "read-depth"));
+  assert.deepEqual(searchGlossary("  "), GLOSSARY);
+  assert.deepEqual(searchGlossary("no such glossary entry xyz"), []);
 });
 
 test("plain text passes through untouched", () => {

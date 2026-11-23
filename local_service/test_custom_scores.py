@@ -6,6 +6,7 @@ import sqlite3
 from contextlib import closing
 import tempfile
 import unittest
+import zlib
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -86,6 +87,46 @@ class CustomScoresTests(unittest.TestCase):
         self.spec["scores"] = []
         with self.assertRaisesRegex(ValueError, "at least one"):
             self.install()
+
+    def test_unsupported_alts_are_counted_without_assigning_multiallelic_scores(self):
+        skipped = [[*self.plus[:3], alt, *self.plus[4:-1], "99"]
+                   for alt in (".", "<DEL>", "<*>", "A,C", "A]2:10]", "*", "-")]
+        insertion = [*self.plus]
+        insertion[1:4] = ["20", "A", "AC"]
+        self.write(self.file, self.cols, [self.plus, *skipped, insertion])
+        result = self.install()
+        self.assertEqual((result["rows"], result["skipped_rows"]), (2, 7))
+        self.assertEqual([m["values"] for m in self.matches()], [["0"]])
+        self.assertEqual(self.matches(pos=11, ref="AC", alt="A"), [])
+        self.assertEqual(self.matches(pos=20, ref="A", alt="AC")[0]["values"], ["0"])
+
+    def test_score_whitespace_and_missing_values_in_new_and_existing_indexes(self):
+        values = ["  0  ", " . ", " na ", " N/a ", "  ", "  label  "]
+        rows = [[*self.plus[:-1], value] for value in values]
+        self.write(self.file, self.cols, rows)
+        result = self.install()
+        expected = [["0"], [None], [None], [None], [None], ["label"]]
+        self.assertEqual([m["values"] for m in self.matches()], expected)
+        # Simulate an older index, which stored score cells without trimming.
+        with closing(sqlite3.connect(self.root / (result["id"] + ".sqlite3"))) as db:
+            payload = "\n".join("\t".join(["12", "C", "T", "+", "GENE1", "ENST11.3", value])
+                                for value in values)
+            db.execute("UPDATE blocks SET payload=?", (zlib.compress(payload.encode()),))
+            db.commit()
+        self.assertEqual([m["values"] for m in self.matches()], expected)
+
+    def test_skipped_rows_still_validate_structure_and_empty_import_reports_count(self):
+        missing_alt = [*self.plus]
+        missing_alt[3] = "."
+        self.write(self.file, self.cols, [missing_alt])
+        with self.assertRaisesRegex(ValueError, "Skipped 1 .*unsupported"):
+            self.install()
+        for index, value, message in ((1, "bad", "position"), (2, "?", "REF"), (4, "?", "strand")):
+            bad = [*missing_alt]
+            bad[index] = value
+            self.write(self.file, self.cols, [self.plus, bad])
+            with self.assertRaisesRegex(ValueError, f"data row 2: .*{message}"):
+                self.install()
 
     def test_refseq_versions_case_gene_id_and_optional_dash_convention(self):
         self.plus[4:7] = ["-", "Gene1", "NM_003998.4"]

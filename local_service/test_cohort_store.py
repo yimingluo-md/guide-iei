@@ -331,6 +331,79 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(review["analysis_scope"], "whole_genome")
         self.assertEqual(review["files"][0]["analysis_scope"], "whole_genome")
 
+    def test_restricted_publish_counts_all_carriers_and_restores_complete_mtime(self):
+        source = self.root / "three.vcf"
+        write_vcf(source)
+        # P1 carries three alleles, P2 carries two, and P3 carries none.
+        lines = source.read_text().splitlines()
+        for i, line in enumerate(lines):
+            if line.startswith("#CHROM"):
+                lines[i] += "\tP3"
+            elif not line.startswith("#"):
+                lines[i] += "\t0/0"
+        source.write_text("\n".join(lines) + "\n")
+        mtime = source.stat().st_mtime_ns
+
+        def assert_file(samples, carriers, expected_mtime):
+            with self.store._session() as db:
+                row = db.execute(
+                    "SELECT sample_count, carrier_count, mtime_ns FROM cohort_files WHERE id=?",
+                    (file_id,),
+                ).fetchone()
+            self.assertEqual(tuple(row), (samples, carriers, expected_mtime))
+
+        file_id = self.store.import_vcf(source, restrict_samples=["P1"])["id"]
+        assert_file(1, 3, -1)
+        self.store.import_vcf(source, restrict_samples=["P2"])
+        assert_file(2, 5, -1)
+        self.store.import_vcf(source, restrict_samples=["P3"])
+        assert_file(3, 5, mtime)
+        reindex = self.store.import_vcf(source, restrict_samples=["P2"], force=True)
+        self.assertEqual(reindex["carrier_count"], 2)  # work done by this import
+        assert_file(3, 5, mtime)
+
+        self.store = CohortStore(self.root / "cohort.sqlite3")
+        sample_ids = {s["name"]: s["id"] for s in self.store.list_samples()}
+        self.store.remove_samples([sample_ids["P1"], sample_ids["P3"]])
+        assert_file(1, 2, -1)
+        self.store.import_vcf(source, restrict_samples=["P3"])
+        assert_file(2, 2, -1)
+        self.store.import_vcf(source, restrict_samples=["P1"])
+        assert_file(3, 5, mtime)
+        repeated = self.store.import_vcf(source)
+        self.assertEqual((repeated["status"], repeated["carrier_count"]), ("unchanged", 5))
+
+    def test_full_import_rejects_old_partial_membership_with_matching_mtime(self):
+        for legacy_importer in ("0", "1"):
+            with self.subTest(legacy_importer=legacy_importer):
+                database = self.root / f"partial-{legacy_importer}.sqlite3"
+                store = CohortStore(database, enable_auto_index=False)
+                store.import_vcf(self.vcf, restrict_samples=["P2"])
+                with store._session() as db:
+                    # Old restricted imports stamped a partial file as complete.
+                    db.execute("UPDATE cohort_files SET mtime_ns=?", (self.vcf.stat().st_mtime_ns,))
+                reopened = CohortStore(database, enable_auto_index=False)
+                with patch.dict(os.environ, IEI_COHORT_LEGACY_IMPORT=legacy_importer):
+                    result = reopened.import_vcf(self.vcf)
+                    self.assertEqual(result["status"], "imported")
+                    self.assertEqual((result["sample_count"], result["carrier_count"]), (2, 5))
+                    self.assertEqual(reopened.import_vcf(self.vcf)["status"], "unchanged")
+
+    def test_upgrade_recounts_file_carriers_from_published_genotypes(self):
+        self.store.import_vcf(self.vcf)
+        other = self.root / "other.vcf"
+        write_vcf(other)
+        self.store.import_vcf(other, restrict_samples=["P1"])
+        with self.store._session() as db:
+            db.execute("UPDATE cohort_files SET carrier_count=2")
+            db.execute("DELETE FROM cohort_meta WHERE key='file_carriers_recounted'")
+        reopened = CohortStore(self.root / "cohort.sqlite3")
+        with reopened._session() as db:
+            counts = dict(db.execute("SELECT path, carrier_count FROM cohort_files"))
+        self.assertEqual(counts, {str(self.vcf.resolve()): 5, str(other.resolve()): 3})
+        result = reopened.import_vcf(self.vcf)
+        self.assertEqual((result["status"], result["carrier_count"]), ("unchanged", 5))
+
     def test_background_import_reports_file_byte_and_record_progress(self):
         job = self.store.start_import_paths([str(self.vcf)])
         for _ in range(200):
@@ -413,6 +486,7 @@ class CohortStoreTests(unittest.TestCase):
         self.assertEqual(cohort_tables, {
             "cohort_files", "cohort_samples", "cohort_variants",
             "cohort_annotations", "cohort_genotypes", "cohort_source_scores",
+            "cohort_annotation_evidence", "cohort_variant_metadata",
             # Never dropped: it carries the file-id allocator (H1).
             "cohort_meta",
         })
@@ -858,6 +932,8 @@ class CohortStoreTests(unittest.TestCase):
         self.assertIsNone(changed("1:200:C:T"))
         self.assertIs(changed("1:100:A:G"), False)
         with self.store._connect() as connection:
+            # Pre-upgrade summaries have no per-record flag provenance.
+            connection.execute("UPDATE cohort_annotations SET loftee_changed_known=NULL")
             connection.execute("DELETE FROM prediction_values WHERE metric='rule_changed'")
         self.assertIsNone(changed("1:100:A:G"))
         with self.store._connect() as connection:
@@ -1991,7 +2067,8 @@ class ChunkedMergeTests(unittest.TestCase):
                     "ORDER BY v.variant_key, o.predictor_id, o.target_scope, o.target_key, val.metric"
                 ),
                 "samples": rows("SELECT file_id, name FROM cohort_samples ORDER BY file_id, name"),
-                "files": rows("SELECT id, path, import_state, sample_count, variant_count FROM cohort_files ORDER BY id"),
+                "files": rows("SELECT id, path, import_state, sample_count, variant_count, carrier_count, "
+                              "mtime_ns FROM cohort_files ORDER BY id"),
             }
         finally:
             connection.close()

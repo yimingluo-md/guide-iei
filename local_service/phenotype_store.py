@@ -154,6 +154,14 @@ def infer_age_unit(value: str, explicit: str) -> str:
     raise ValueError(f"unsupported age unit: {explicit}")
 
 
+def normalize_age(value: str, explicit_unit: str) -> tuple[float | None, str]:
+    if not value:
+        return None, ""
+    # An explicit unit takes precedence over a unit embedded in the value.
+    unit = infer_age_unit(value, explicit_unit)
+    return parse_age(value, unit), unit
+
+
 def decode_upload(filename: str, encoded: str) -> bytes:
     if not filename or not encoded:
         raise ValueError("filename and content_base64 are required")
@@ -638,8 +646,8 @@ class PhenotypeStore:
         def value(field: str) -> str:
             return clean(row.get(mapping.get(field, ""), ""))
 
-        age_evaluation_raw = value("age_at_evaluation")
-        age_onset_raw = value("age_at_onset")
+        evaluation, evaluation_unit = normalize_age(value("age_at_evaluation"), value("age_at_evaluation_unit"))
+        onset, onset_unit = normalize_age(value("age_at_onset"), value("age_at_onset_unit"))
         mapped_columns = {column for column in mapping.values() if column}
         custom = {
             key: clean(item) for key, item in row.items()
@@ -649,24 +657,10 @@ class PhenotypeStore:
             "individual_id": value("individual_id"),
             "sample_ids": split_values(value("sample_ids")),
             "sex_at_birth": normalize_sex(value("sex_at_birth")),
-            "age_at_evaluation": parse_age(
-                age_evaluation_raw,
-                infer_age_unit(age_evaluation_raw, value("age_at_evaluation_unit"))
-                if age_evaluation_raw else "years",
-            ),
-            "age_at_evaluation_unit": (
-                infer_age_unit(age_evaluation_raw, value("age_at_evaluation_unit"))
-                if age_evaluation_raw else ""
-            ),
-            "age_at_onset": parse_age(
-                age_onset_raw,
-                infer_age_unit(age_onset_raw, value("age_at_onset_unit"))
-                if age_onset_raw else "years",
-            ),
-            "age_at_onset_unit": (
-                infer_age_unit(age_onset_raw, value("age_at_onset_unit"))
-                if age_onset_raw else ""
-            ),
+            "age_at_evaluation": evaluation,
+            "age_at_evaluation_unit": evaluation_unit,
+            "age_at_onset": onset,
+            "age_at_onset_unit": onset_unit,
             "reported_race": split_values(value("reported_race")),
             "reported_ethnicity": split_values(value("reported_ethnicity")),
             "phenotype_summary": value("phenotype_summary"),
@@ -759,26 +753,20 @@ class PhenotypeStore:
             custom_fields = {}
         if not isinstance(custom_fields, dict):
             raise ValueError("custom_fields must be an object")
+        evaluation, evaluation_unit = normalize_age(
+            clean(payload.get("age_at_evaluation")), clean(payload.get("age_at_evaluation_unit")),
+        )
+        onset, onset_unit = normalize_age(
+            clean(payload.get("age_at_onset")), clean(payload.get("age_at_onset_unit")),
+        )
         record = {
             "individual_id": individual_id,
             "sample_ids": values("sample_ids"),
             "sex_at_birth": normalize_sex(clean(payload.get("sex_at_birth"))),
-            "age_at_evaluation": parse_age(
-                clean(payload.get("age_at_evaluation")),
-                infer_age_unit(
-                    clean(payload.get("age_at_evaluation")),
-                    clean(payload.get("age_at_evaluation_unit")),
-                ),
-            ),
-            "age_at_evaluation_unit": clean(payload.get("age_at_evaluation_unit")) or "years",
-            "age_at_onset": parse_age(
-                clean(payload.get("age_at_onset")),
-                infer_age_unit(
-                    clean(payload.get("age_at_onset")),
-                    clean(payload.get("age_at_onset_unit")),
-                ),
-            ),
-            "age_at_onset_unit": clean(payload.get("age_at_onset_unit")) or "years",
+            "age_at_evaluation": evaluation,
+            "age_at_evaluation_unit": evaluation_unit,
+            "age_at_onset": onset,
+            "age_at_onset_unit": onset_unit,
             "reported_race": values("reported_race"),
             "reported_ethnicity": values("reported_ethnicity"),
             "phenotype_summary": clean(payload.get("phenotype_summary")),

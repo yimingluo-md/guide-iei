@@ -384,8 +384,6 @@ test("provides a full variant review workspace with configurable evidence", asyn
   assert.match(source, /noteWhenMissing: selectedManeAlphaMissenseMissing/);
   assert.doesNotMatch(source, /AlphaMissense scores are available on/);
   assert.doesNotMatch(source, /predictor-transcript-alternatives/);
-  assert.match(source, /const restorationIdentity = row\.carriers/);
-  assert.match(source, /Any indexed carrier can retrieve the same complete source/);
   assert.match(source, /attachLibraryIdentity\(row, identityBySample\)/);
   assert.doesNotMatch(styles, /\.predictor-transcript-alternatives/);
   assert.match(source, /CADD raw/);

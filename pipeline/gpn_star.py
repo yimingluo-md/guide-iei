@@ -104,6 +104,11 @@ def release_dir(directory, model):
     return directory / REVISION / model
 
 
+def configured_directory(value):
+    """Resolve configured paths relative to the project after expanding the home directory."""
+    return ROOT / Path(value).expanduser()
+
+
 def shard_name(chrom):
     return f"llr_chr{chrom}.parquet"
 
@@ -361,7 +366,7 @@ def main():
         directory = (blocks.get(key) or {}).get("directory")
         if not directory:
             raise ValueError(f"Configure wgs_review.{key}.directory")
-        install(ROOT / directory, PACKAGES[args.resource])
+        install(configured_directory(directory), PACKAGES[args.resource])
         return
     scope = args.scope or ("exome" if cfg.get("region", {}).get("coding_only", True) else "whole_genome")
     folders = {}
@@ -372,7 +377,7 @@ def main():
             continue
         if not block.get("directory"):
             raise ValueError(f"Configure wgs_review.{key}.directory")
-        directory = ROOT / block["directory"]
+        directory = configured_directory(block["directory"])
         packages[model] = select_package(directory, model, scope)
         folders[model] = release_dir(directory, packages[model])
         if packages[model] == EXOME_PACKAGE:

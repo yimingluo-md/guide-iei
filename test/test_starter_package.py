@@ -1,5 +1,6 @@
 """Synthetic downloadable components; no public downloads or workstation data."""
 import copy
+import gzip
 import hashlib
 import json
 from pathlib import Path
@@ -142,18 +143,67 @@ def test_starter_activation_preserves_installed_full_sources_and_explicit_provid
     assert config["plugins"]["CADDStarter"]["enabled"]
 
 
-def test_full_dbnsfp_is_optional_to_select_but_validated_when_selected(tmp_path):
+AM_FIELDS = ["AlphaMissense_score", "AlphaMissense_pred"]
+FULL_FIELDS = AM_FIELDS + ["CADD_phred", "CADD_raw"]
+
+
+@pytest.mark.parametrize(("columns", "header", "expected"), [
+    (FULL_FIELDS, FULL_FIELDS, []),
+    ("ALL", FULL_FIELDS, []),
+    (["ALL"], AM_FIELDS, ["CADDStarter"]),
+    (AM_FIELDS, FULL_FIELDS, ["CADDStarter"]),
+    (["CADD_phred"], FULL_FIELDS, ["AlphaMissenseStarter"]),
+    (["CADD_raw", "AlphaMissense_score"], FULL_FIELDS, ["AlphaMissenseStarter", "CADDStarter"]),
+    (FULL_FIELDS, ["CADD_phred", "AlphaMissense_score"], ["AlphaMissenseStarter"]),
+    ([], FULL_FIELDS, ["AlphaMissenseStarter", "CADDStarter"]),
+])
+def test_auto_starters_fill_gaps_in_requested_and_installed_columns(tmp_path, columns, header, expected):
+    table = tmp_path / "scores.gz"
+    with gzip.open(table, "wt") as handle:
+        handle.write("#chr\t" + "\t".join(header) + "\n")
+    Path(str(table) + ".csi").touch()
+    cfg = {"plugins": {"dbNSFP": {"enabled": True, "path": str(table), "columns": columns}}}
+    paths = {kind: tmp_path / kind for kind in ("alphamissense", "cadd", "spliceai")}
+    apply_starters(cfg, paths, lambda p: Path(p) if p else None)
+    assert [name for name in ("AlphaMissenseStarter", "CADDStarter") if cfg["plugins"][name].get("enabled")] == expected
+    assert cfg["plugins"]["dbNSFP"]["required"]
+
+
+def test_table_without_index_keeps_both_starters(tmp_path):
+    table = tmp_path / "unindexed.tsv"
+    table.write_text("#chr\t" + "\t".join(FULL_FIELDS) + "\n")
+    cfg = {"plugins": {"dbNSFP": {"enabled": True, "path": str(table), "columns": FULL_FIELDS}}}
+    paths = {kind: tmp_path / kind for kind in ("alphamissense", "cadd", "spliceai")}
+    apply_starters(cfg, paths, lambda p: Path(p) if p else None)
+    assert not cfg["plugins"]["dbNSFP"]["enabled"]
+    assert all(cfg["plugins"][name]["enabled"] for name in ("AlphaMissenseStarter", "CADDStarter"))
+
+
+def test_user_starter_choices_survive_full_coverage(tmp_path):
+    table = tmp_path / "scores.tsv"
+    table.write_text("#chr\t" + "\t".join(FULL_FIELDS) + "\n")
+    Path(str(table) + ".tbi").touch()
+    paths = {kind: tmp_path / kind for kind in ("alphamissense", "cadd", "spliceai")}
+    custom = {"enabled": True, "required": False, "file": "lab.tsv.gz", "manifest": "lab.json"}
+    cfg = {"plugins": {"dbNSFP": {"enabled": True, "path": str(table), "columns": FULL_FIELDS},
+                       "AlphaMissenseStarter": custom.copy(), "CADDStarter": {"enabled": True}}}
+    apply_starters(cfg, paths, lambda p: Path(p) if p else None)
+    assert cfg["plugins"]["AlphaMissenseStarter"] == custom
+    assert cfg["plugins"]["CADDStarter"]["file"] == str(paths["cadd"] / "cadd.tsv.gz")
+
+
+def test_selected_dbnsfp_is_validated_even_with_starter_package(tmp_path):
     import yaml
-    from local_service.workbench_service import AnnotationJobService
     from pipeline.validate_vep_output import validate
 
     table = tmp_path / "scores.gz"
-    table.touch()
+    with gzip.open(table, "wt") as out:
+        out.write("#chr\tCADD_phred\n")
     Path(str(table) + ".tbi").touch()
     config = {"plugins": {"dbNSFP": {"path": str(table), "enabled": True, "columns": ["CADD_phred"]}}}
     apply_starters(config, {kind: tmp_path / kind for kind in ("alphamissense", "cadd", "spliceai")},
                    lambda value: Path(value) if value else None)
-    assert "dbnsfp" not in AnnotationJobService._required_sources(config)
+    assert not config["plugins"]["CADDStarter"].get("enabled")
     assert config["plugins"]["dbNSFP"]["required"]
     job = tmp_path / "job.yaml"
     job.write_text(yaml.safe_dump(config))
@@ -171,13 +221,13 @@ def test_explicit_disabled_pathless_starter_stays_disabled(tmp_path, name):
     assert cfg["plugins"][name] == {"enabled": False}
 
 
-def test_shipped_auto_starter_defaults_activate_after_installation(tmp_path):
+def test_shipped_auto_starter_defaults_activate_without_full_installation(tmp_path):
     import yaml
     cfg = yaml.safe_load((Path(__file__).resolve().parents[1] / "config/annotation.config.yaml").read_text())
     paths = {key: tmp_path / key for key in ("alphamissense", "cadd", "spliceai")}
     for name in ("AlphaMissenseStarter", "CADDStarter"):
         assert "enabled" not in cfg["plugins"][name]
-    apply_starters(cfg, paths, lambda p: Path(p) if p else None)
+    apply_starters(cfg, paths, lambda p: tmp_path / p if p else None)
     assert all(cfg["plugins"][name]["enabled"] for name in ("AlphaMissenseStarter", "CADDStarter"))
 
 

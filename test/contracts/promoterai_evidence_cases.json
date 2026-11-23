@@ -270,6 +270,109 @@
         "strand": "+",
         "distance": null
       }
+    },
+    {
+      "name": "malformed integer sibling",
+      "record": {
+        "PromoterAI_score": "0.8",
+        "PromoterAI_TSS": "100&bad",
+        "PromoterAI_strand": "1",
+        "PromoterAI_source_transcript": "ENST1",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": 0.8,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "exact_version",
+        "source_transcript": "ENST1",
+        "tss": null,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "malformed strand sibling",
+      "record": {
+        "PromoterAI_score": "0.8",
+        "PromoterAI_TSS": "100",
+        "PromoterAI_strand": "1&bad",
+        "PromoterAI_source_transcript": "ENST1",
+        "PromoterAI_match": "exact_version",
+        "STRAND": "1"
+      },
+      "expected": {
+        "score": 0.8,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "exact_version",
+        "source_transcript": "ENST1",
+        "tss": 100,
+        "strand": "",
+        "distance": null
+      }
+    },
+    {
+      "name": "repeated values and missing tokens",
+      "record": {
+        "PromoterAI_score": "0.8",
+        "PromoterAI_TSS": "100&100&.&-",
+        "PromoterAI_strand": "1&1&.",
+        "PromoterAI_source_transcript": "ENST1",
+        "PromoterAI_match": "exact_version",
+        "PromoterAI_distance": "-2&-2"
+      },
+      "expected": {
+        "score": 0.8,
+        "usable_score": 0.8,
+        "match_status": "exact",
+        "match": "exact_version",
+        "source_transcript": "ENST1",
+        "tss": 100,
+        "strand": "+",
+        "distance": -2
+      }
+    },
+    {
+      "name": "malformed distance sibling",
+      "record": {
+        "PromoterAI_score": "0.8",
+        "PromoterAI_TSS": "100",
+        "PromoterAI_strand": "1",
+        "PromoterAI_source_transcript": "ENST1",
+        "PromoterAI_match": "exact_version",
+        "PromoterAI_distance": "2&bad"
+      },
+      "expected": {
+        "score": 0.8,
+        "usable_score": 0.8,
+        "match_status": "exact",
+        "match": "exact_version",
+        "source_transcript": "ENST1",
+        "tss": 100,
+        "strand": "+",
+        "distance": null
+      }
+    },
+    {
+      "name": "fractional sibling",
+      "record": {
+        "PromoterAI_score": "0.8",
+        "PromoterAI_TSS": "100&1.5",
+        "PromoterAI_strand": "1",
+        "PromoterAI_source_transcript": "ENST1",
+        "PromoterAI_match": "exact_version"
+      },
+      "expected": {
+        "score": 0.8,
+        "usable_score": null,
+        "match_status": "partial",
+        "match": "exact_version",
+        "source_transcript": "ENST1",
+        "tss": null,
+        "strand": "+",
+        "distance": null
+      }
     }
   ]
 }

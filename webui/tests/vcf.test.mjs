@@ -40,6 +40,7 @@ const {
   collapseToOneRowPerVariant, summarizeReviewGenes,
   withTranscriptEvidence,
   preferredClinicalTranscriptRows,
+  isGenelessRegulatoryConsequence,
   variantQcFailures,
 } = await import(moduleUrl);
 
@@ -61,7 +62,7 @@ for (const item of starterContract.cases) {
 test("starter providers populate the existing review cards without cross-transcript or cross-allele transfer", async () => {
   const starter = { ...starterContract.bases.alphamissense, ...starterContract.bases.cadd_coding };
   const fields = ["Allele", "ALLELE_NUM", "Consequence", "IMPACT", "SYMBOL", "Gene",
-    ...Object.keys(starter), "AlphaMissense_score", "AlphaMissense_pred", "CADD_phred", "CADD_raw"];
+    ...Object.keys(starter), "AlphaMissense_score", "AlphaMissense_pred", "CADD_phred", "CADD_raw", "CADD_PHRED", "CADD_RAW"];
   const entry = (alt, number, overrides) => {
     const record = { ...starter, Allele: alt, ALLELE_NUM: number,
       Consequence: "missense_variant", IMPACT: "MODERATE", SYMBOL: "GENE1", Gene: "ENSG1",
@@ -76,7 +77,8 @@ test("starter providers populate the existing review cards without cross-transcr
       entry("A", "1", {}),
       entry("A", "1", { Feature: "ENST9999", HGVSp: "ENSP2:p.Ala9Val", StarterCADD_phred: "" }),
       entry("G", "2", { StarterAM_match_status: "partial", StarterCADD_phred: "0" }),
-    ].join(",")}\tGT\t1/2`, ""].join("\n");
+    ].join(",")}\tGT\t1/2`,
+    `1\t101\t.\tT\tA\t99\tPASS\tCSQ=${entry("A", "1", { CADD_PHRED: "0" })}\tGT\t0/1`, ""].join("\n");
   const { rows } = await parseVcfFiles([new File([vcf], "starter.vcf")]);
   const exact = rows.find((r) => r.alt === "A" && r.transcript === starter.Feature);
   assert.equal(exact.alphaMissense, 0.1201);
@@ -95,6 +97,12 @@ test("starter providers populate the existing review cards without cross-transcr
   assert.equal(otherAlt.alphaMissense, 0.99);
   assert.equal(otherAlt.predictions.starter_alphamissense?.values.score, undefined);
   assert.equal(otherAlt.cadd, 0);
+  const wgs = rows.find((row) => row.pos === 101);
+  assert.equal(wgs.cadd, 0);
+  assert.equal(wgs.caddRaw, null);
+  assert.deepEqual(wgs.predictions.cadd_wgs.values, { phred: 0 });
+  assert.deepEqual(wgs.predictions.cadd_coding.values, { phred: 50, raw: 4 });
+  assert.equal(wgs.predictions.starter_cadd.values.phred, 23.4);
 });
 
 test("AVI reads scalar Phred and raw logits without merging alleles or discarding zero", () => {
@@ -376,6 +384,16 @@ test("row limit distinguishes variants from transcripts and retained reviews com
   assert.equal(compact.rows[0].mane, true);
   assert.equal(compact.rows[0].compactTranscriptView, true);
   assert.match(compact.summary.warnings.join("\n"), /Responsive clinical-transcript view/);
+});
+
+test("clinical compaction preserves each eligible gene-less annotation at a mixed locus", async () => {
+  const vcf = await readFile(new URL("../../test/contracts/geneless-regulatory.vcf", import.meta.url));
+  for (const clinicalTranscriptsOnly of [false, true]) {
+    const { rows } = await parseVcfFiles([new File([vcf], "mixed.vcf")], {clinicalTranscriptsOnly});
+    const eligible = rows.filter(isGenelessRegulatoryConsequence);
+    assert.deepEqual(eligible.map(row => row.transcript), ["", "element", "motif"]);
+    assert(eligible.every(row => !row.picked && !row.mane));
+  }
 });
 
 test("cohort files parse variant-centrically: one row per variant with carriers", async () => {

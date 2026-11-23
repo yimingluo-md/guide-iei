@@ -56,7 +56,8 @@ existing AlphaMissense/CADD cards and cohort search columns, not extra cards.
 - Score magnitude never chooses a provider. Starter Phred is not paired with a
   raw score from dbNSFP. If both providers appear in an external VCF, both source
   observations are retained separately for provenance, but the UI card remains
-  singular.
+  singular. In a mixed VCF, **CADD scores by provider** shows each provider’s
+  Phred and raw values together.
 - SQLite import retains the starter provider identity and binds exact
   transcript/protein observations only to their matching annotation.
 - Annotation QC reports starter AlphaMissense coverage on MANE Select missense
@@ -64,9 +65,14 @@ existing AlphaMissense/CADD cards and cohort search columns, not extra cards.
   dbNSFP coverage. Run manifests record configured provider IDs, logical IDs,
   match scopes and fields; this is not a claim that every variant has a score.
 
-A complete verified package activates managed starter paths before per-job user
-overrides. Installed full dbNSFP/SpliceAI paths and explicit starter paths are
-preserved. Without a complete package, the existing dbNSFP requirement remains.
+With a complete verified package, job creation selects automatic starters after
+applying the run’s dbNSFP selection. An enabled, indexed dbNSFP table covers
+the AlphaMissense starter when both `AlphaMissense_score` and `AlphaMissense_pred`
+are requested and present in its header. For CADD, `CADD_phred` suffices.
+`columns: ALL` requests every field in the header. Each uncovered predictor
+uses its starter independently. Explicit starter enablement, opt-outs and
+configured table paths are preserved. Full SpliceAI keeps its own selection
+rules. Without a complete package, the existing dbNSFP requirement remains.
 
 ## Unified first-launch setup (development)
 

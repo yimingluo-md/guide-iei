@@ -18,6 +18,7 @@ from http import HTTPStatus
 from pathlib import Path
 from unittest.mock import Mock, patch
 from urllib.parse import urlencode
+from pipeline import gpn_star
 
 import subprocess
 import sys
@@ -1432,6 +1433,40 @@ printf '{}' > "$2"
         config["plugins"]["CADDStarter"]["enabled"] = False
         self.assertIn("dbnsfp", self.service._required_sources(config))
 
+    def test_job_selects_auto_starters_after_dbnsfp_override(self):
+        import yaml
+        from pipeline.build_vep_command import build_vep_command
+
+        path = self.root / "config" / "annotation.config.yaml"
+        config = yaml.safe_load(path.read_text())
+        table = self.service.annotation_root / "dbnsfp" / "dbNSFP5.4a_grch38.gz"
+        table.parent.mkdir(parents=True, exist_ok=True)
+        fields = ["AlphaMissense_score", "AlphaMissense_pred", "CADD_phred", "CADD_raw"]
+        with gzip.open(table, "wt") as handle:
+            handle.write("#chr\t" + "\t".join(fields) + "\n")
+        Path(str(table) + ".tbi").touch()
+        paths = {kind: self.root / kind for kind in ("alphamissense", "cadd", "spliceai")}
+        config["plugins"]["dbNSFP"] = {"enabled": True, "path": "references/dbnsfp/" + table.name, "columns": fields}
+        with patch("local_service.workbench_service.load_starter_plan"), patch(
+            "local_service.workbench_service.starter_paths", return_value=paths
+        ):
+            for default, override, full in [(True, {}, True), (True, {"dbnsfp": False}, False),
+                                            (False, {}, False), (False, {"dbnsfp": True}, True)]:
+                with self.subTest(default=default, options=override):
+                    config["plugins"]["dbNSFP"]["enabled"] = default
+                    path.write_text(yaml.safe_dump(config))
+                    profile = self.service._annotation_profile()
+                    db = next(source for source in profile["sources"] if source["id"] == "dbnsfp")
+                    self.assertTrue(db["installed"])
+                    self.assertFalse(db["required"])
+                    self.assertEqual(db["enabled"], default)
+                    result = self.service._write_job_config("providers", path, override)
+                    job = yaml.safe_load(result.read_text())
+                    self.assertEqual(job["plugins"]["dbNSFP"]["required"], full)
+                    plan = build_vep_command(job, str(self.input), str(self.output), check_exists=False)
+                    self.assertEqual(any(arg.startswith("dbNSFP,") for arg in plan.argv), full)
+                    self.assertEqual(sum(arg.startswith("IndexedScores,") for arg in plan.argv), 0 if full else 2)
+
     def test_wgs_config_uses_full_spliceai_not_starter(self):
         config_path = self.root / "config" / "annotation.config.yaml"
         import yaml
@@ -2341,11 +2376,58 @@ python3 -c 'import os, sys; assert os.path.samefile(sys.prefix, os.environ["EXPE
         for location in (
             f"https://example.invalid/{filename}?key=synthetic",
             "https://data.omim.org/morbidmap.txt?key=synthetic",
+            f"http://data.omim.org/{filename}?key=synthetic",
+            f"https://user:password@data.omim.org/{filename}?key=synthetic",
         ):
             with self.subTest(location=location):
                 with self.assertRaises(urllib.error.HTTPError) as raised:
                     handler.redirect_request(request, None, 302, "Found", {}, location)
                 self.assertNotIn("synthetic", str(raised.exception))
+
+    def test_omim_download_requests_unwrapped_validated_url(self):
+        filename = "genemap2.txt"
+        target = f"https://data.omim.org/downloads/{filename}?key=synthetic"
+        wrapped = "https://nam02.safelinks.protection.outlook.com/?" + urlencode(
+            {"url": target + "#section", "data": "tracking"}
+        )
+        payload = b"synthetic OMIM data\n"
+
+        class FakeResponse(io.BytesIO):
+            headers = {"Content-Length": str(len(payload))}
+
+            def geturl(self):
+                return target
+
+        opener = Mock()
+        opener.open.return_value = FakeResponse(payload)
+        destination = self.root / filename
+        with patch(
+            "local_service.workbench_service.urllib.request.build_opener",
+            return_value=opener,
+        ):
+            self.service._download_omim_file(wrapped, filename, destination, lambda _: None)
+
+        request = opener.open.call_args.args[0]
+        self.assertEqual(request.full_url, target)
+        self.assertEqual(destination.read_bytes(), payload)
+
+    def test_omim_download_rejects_unsafe_initial_url_before_transport(self):
+        filename = "genemap2.txt"
+        for target in (
+            f"http://data.omim.org/{filename}",
+            f"https://example.invalid/{filename}",
+            f"https://user:password@data.omim.org/{filename}",
+            "https://data.omim.org/morbidmap.txt",
+        ):
+            wrapped = "https://nam02.safelinks.protection.outlook.com/?" + urlencode({"url": target})
+            with self.subTest(target=target), patch(
+                "local_service.workbench_service.urllib.request.build_opener"
+            ) as build_opener:
+                with self.assertRaises(ValueError):
+                    self.service._download_omim_file(
+                        wrapped, filename, self.root / filename, lambda _: None
+                    )
+                build_opener.assert_not_called()
 
     def test_omim_email_block_download_stays_out_of_jobs_and_logs(self):
         secret = "private-omim-account-key"
@@ -2551,6 +2633,25 @@ python3 -c 'import os, sys; assert os.path.samefile(sys.prefix, os.environ["EXPE
         self.assertTrue(source.is_file())
         with self.assertRaisesRegex(ValueError,"Download / resume"):
             self.service.start_avi_preparation({"source_path":str(source)})
+
+    def test_gpn_home_directory_capability_matches_installation(self):
+        config_path = self.root / "config/annotation.config.yaml"
+        with config_path.open("a") as config:
+            config.write("  gpn_star_v:\n    enabled: true\n    directory: '~/gpn-scores'\n")
+        home = Path(self.temp.name) / "home"
+        folder = gpn_star.release_dir(home / "gpn-scores", gpn_star.EXOME_PACKAGE)
+        folder.mkdir(parents=True)
+        (folder / "installed.json").write_text(json.dumps({"revision": gpn_star.REVISION, "model": gpn_star.EXOME_PACKAGE}))
+        with patch.dict(os.environ, {"HOME": str(home)}), patch.object(gpn_star, "assets", return_value={}), \
+                patch.object(gpn_star, "runtime_ready", return_value=True), \
+                patch.object(self.service, "_container_image_status", return_value={"available": False, "state": "missing", "message": "test"}):
+            profile = self.service._annotation_profile()
+            source = next(s for s in profile["sources"] if s["id"] == "gpn_star_v")
+            self.assertFalse(source["installed"])
+            self.assertTrue(source["exome_setup"]["installed"])
+            generated = self.service._load_config(self.service._write_resource_config(gpn_star.EXOME_RESOURCE))
+            self.assertEqual(gpn_star.configured_directory(generated["wgs_review"]["gpn_star_v"]["directory"]),
+                             home / "gpn-scores")
 
     def test_gpn_packages_are_optional_and_scope_aware(self):
         with patch.object(self.service, "_container_image_status", return_value={"available": False, "state": "missing", "message": "test"}):

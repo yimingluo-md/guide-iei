@@ -25,6 +25,31 @@ FIELDS = [
 
 
 class ClinGenErepoTests(unittest.TestCase):
+    def test_store_matches_contig_aliases_and_only_active_assertions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            database = root / "assertions.sqlite3"
+            write_sqlite(database, [], {}, {})
+            with sqlite3.connect(database) as connection:
+                connection.executemany(
+                    "INSERT INTO assertions(chrom,pos,ref,alt,uuid,active) VALUES(?,?,?,?,?,?)",
+                    [("MT", 8993, "T", "G", "mito-active", 1),
+                     ("MT", 8993, "T", "G", "mito-retracted", 0),
+                     ("1", 100, "A", "G", "nuclear-active", 1)],
+                )
+            manifest = root / "manifest.json"
+            manifest.write_text("{}")
+            store = ClinGenErepoStore(database, manifest)
+            for chrom in ("chrM", "M", "MT", "chrMT", "mt"):
+                with self.subTest(chrom=chrom):
+                    assertions = store.variant(chrom, 8993, "T", "G")["assertions"]
+                    self.assertEqual([row["uuid"] for row in assertions], ["mito-active"])
+            for chrom in ("1", "chr1"):
+                with self.subTest(chrom=chrom):
+                    assertions = store.variant(chrom, 100, "A", "G")["assertions"]
+                    self.assertEqual([row["uuid"] for row in assertions], ["nuclear-active"])
+            self.assertEqual(store.variant("1", 8993, "T", "G")["assertions"], [])
+
     def test_store_closes_each_read_even_on_query_failure(self):
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "clingen.sqlite3"

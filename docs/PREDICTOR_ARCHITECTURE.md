@@ -222,6 +222,22 @@ and that every output/provenance field agrees with the registry's type, range,
 direction, role and filterability. It then invokes one `IndexedScores` plugin
 for that resource.
 
+For indels, the adapter removes a shared VCF left anchor, trims common suffix
+padding, then trims the remaining common prefix. At POS 100, both `GAA→GA`
+and `GA→G` therefore delete the A at 101. VEP can report the first input as a
+deletion at 102 after trimming. When the original VCF record is available,
+the adapter applies the transcript allele's edit to that REF and uses the
+recovered padding only if the result is one of the record's ALTs.
+
+The table is indexed by source POS. The indel lookup spans one base before the
+available input start (bounded at base 1) through the first changed position.
+For example, a VEP edit of `CG→T` at 101 can find `ACG→AT` indexed at 100.
+Extra source-only left padding can put a row outside this interval. Likewise,
+a repeat-shifted allele can have a different edit position when the sequence
+needed to align it is absent from the input. Resources requiring matches
+across those representations should left-align and minimize both the input VCF
+and the source alleles against the same GRCh38 FASTA before indexing the table.
+
 A numeric registry metric may declare `binary_classification` when an upstream
 release publishes an authoritative binary cutoff. The threshold must be finite,
 inside the metric's value range, and use the comparison implied by score

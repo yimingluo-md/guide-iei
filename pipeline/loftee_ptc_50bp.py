@@ -489,6 +489,11 @@ def score_edit(
             expected = model.cds[cds_pos - 1]
             if base != (expected if model.strand == 1 else revcomp(expected)):
                 return empty_result("ref_mismatch")
+    if len(ref) != len(alt):
+        # Remove right padding before a repeated prefix can move an indel
+        # across a junction. Keep the anchor of the shorter allele.
+        while len(ref) > 1 and len(alt) > 1 and ref[-1] == alt[-1]:
+            ref, alt = ref[:-1], alt[:-1]
     while ref and alt and ref[0] == alt[0]:
         ref, alt, pos = ref[1:], alt[1:], pos + 1
     while ref and alt and ref[-1] == alt[-1]:

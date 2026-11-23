@@ -13,10 +13,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from local_service import cohort_store
 from local_service.cohort_store import (
     PREDICTOR_REGISTRY,
     CohortStore,
     _clingen_assertions_for_alt,
+    _prediction_match_status,
     annotation_from,
     parse_genotype,
 )
@@ -126,6 +128,38 @@ def write_predictor_vcf(path: Path) -> None:
         "\tGT:AD:DP:GQ\t0/1:10,10:20:99\n",
         encoding="utf-8",
     )
+
+
+def write_collision_vcf(path, *, exact_first):
+    lines = [
+        "##fileformat=VCFv4.2", "##reference=GRCh38",
+        "##contig=<ID=1,length=248956422>",
+        '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+        + "|".join(PREDICTOR_FIELDS) + '">',
+        '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">',
+        "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\tP2",
+    ]
+    for index, exact in enumerate((exact_first, not exact_first)):
+        transcript = "ENST1.2" if exact else "ENST1.9"
+        csq = _csq(
+            Allele="G", ALLELE_NUM=1, Consequence="missense_variant",
+            Feature=transcript, HGVSp="p.Lys1Arg", SYMBOL="GENE1",
+            CADD_phred=0 if exact else 30, CADD_raw="" if exact else 5,
+            LoGoFunc_source_transcript=transcript, LoGoFunc_source_HGVSp="p.Lys1Arg",
+            LoGoFunc_GOF=0.8, LoGoFunc_allele_available=int(exact),
+            LoGoFunc_match="allele_transcript_protein" if exact else "allele_only",
+        )
+        genotypes = "0/1\t0/0" if index == 0 else "0/0\t0/1"
+        lines.append(f"1\t100\t.\tA\tG\t99\tPASS\tCSQ={csq}\tGT\t{genotypes}")
+    path.write_text("\n".join(lines) + "\n")
+
+
+def ambiguous_cadd_with_raw(predictor_id, scope, values, provenance):
+    # Exercise a value-bearing non-exact observation at the storage boundary.
+    # The current embedded CADD reader normally emits only exact rows.
+    if predictor_id == "cadd_coding" and "raw" in values:
+        return "ambiguous"
+    return _prediction_match_status(predictor_id, scope, values, provenance)
 
 
 def write_cadd_vcf(path: Path, score: float | None) -> None:
@@ -337,7 +371,7 @@ class PredictorStorageTests(unittest.TestCase):
         release = self.release()
         initial = self.prediction(
             release["id"],
-            provenance={"line": 42},
+            match_status="partial", provenance={"line": 42},
             values={"cti": 0.87, "allele_available": False},
         )
         self.assertIs(initial["provenance"]["allele_available"], False)
@@ -357,6 +391,43 @@ class PredictorStorageTests(unittest.TestCase):
         )
         self.assertEqual(restored["values"], {"cti": 0.93})
         self.assertNotIn("withheld_metrics", restored["provenance"])
+
+    def test_nonexact_upsert_preserves_entire_exact_observation(self):
+        release_id = self.release()["id"]
+        exact = self.prediction(release_id, units={"cti": "index"})
+        for status in ("partial", "ambiguous", "unmatched"):
+            for replace in (False, True):
+                with self.subTest(status=status, replace=replace):
+                    result = self.prediction(
+                        release_id, match_status=status, replace_values=replace,
+                        values={"cti": None, "cte": 0, "allele_available": False},
+                        provenance={"line": 99},
+                    )
+                    self.assertEqual(result, exact)
+        replacement = self.prediction(
+            release_id, replace_values=True, values={"sp": 0},
+            provenance={"line": 99},
+        )
+        self.assertEqual(replacement["id"], exact["id"])
+        self.assertEqual(replacement["values"], {"sp": 0})
+        self.assertNotIn("allele_available", replacement["provenance"])
+
+    def test_promotion_drops_metrics_and_provenance_from_partial_upsert(self):
+        options = dict(predictor_id="cadd_coding", target_scope="allele")
+        release_id = self.release(resource_id="dbnsfp", source_uri="")["id"]
+        partial = self.prediction(
+            release_id, **options, match_status="partial",
+            values={"raw": 5, "phred": 30}, provenance={"partial_only": True},
+        )
+        self.assertEqual(partial["values"], {"raw": 5, "phred": 30})
+        exact = self.prediction(release_id, **options, values={"phred": 0})
+        self.assertEqual(exact["id"], partial["id"])
+        self.assertEqual(exact["values"], {"phred": 0})
+        self.assertNotIn("partial_only", exact["provenance"])
+        ignored = self.prediction(
+            release_id, **options, match_status="ambiguous", values={"raw": 3, "phred": 15}
+        )
+        self.assertEqual(ignored, exact)
 
     def test_phase_set_missing_sentinel_and_pid_fallback(self):
         missing = parse_genotype("GT:PS", "0|1:.", 0)
@@ -904,6 +975,8 @@ class PredictorImportIntegrationTests(unittest.TestCase):
         store = CohortStore(database)
         store.import_vcf(sparse)
         with store._session() as connection:
+            connection.execute("DROP TABLE cohort_annotation_evidence")
+            connection.execute("ALTER TABLE cohort_samples DROP COLUMN annotation_evidence_complete")
             connection.execute("DROP TABLE cohort_source_scores")
             connection.execute("DELETE FROM cohort_meta WHERE key='source_score_first_file'")
         store = CohortStore(database)
@@ -938,6 +1011,54 @@ class PredictorImportIntegrationTests(unittest.TestCase):
                     store.import_vcf(path)
                     obs, = store.query_predictions(predictor_id="funcvep")
                     self.assertEqual((obs["match_status"], obs["values"]["cti"]), ("exact", 0.2))
+
+    @patch.object(cohort_store, "_prediction_match_status", ambiguous_cadd_with_raw)
+    def test_exact_collision_keeps_values_and_source_transcript_across_import_paths(self):
+        path = self.root / "collisions.vcf"
+        for exact_first in (True, False):
+            write_collision_vcf(path, exact_first=exact_first)
+            for mode in ("batch", "flush", "append", "legacy"):
+                env = {"IEI_COHORT_LEGACY_IMPORT": "1" if mode == "legacy" else "0"}
+                with self.subTest(mode=mode, exact_first=exact_first), patch.dict(os.environ, env):
+                    store = CohortStore(self.root / f"{mode}-{exact_first}.db")
+                    store.stage_batch_records = 1 if mode == "flush" else 100
+                    if mode == "append":
+                        store.import_vcf(path, restrict_samples=["P1"])
+                        store.import_vcf(path, restrict_samples=["P2"])
+                    else:
+                        store.import_vcf(path)
+                    cadd, = store.query_predictions(predictor_id="cadd_coding")
+                    self.assertEqual(cadd["match_status"], "exact")
+                    self.assertEqual(cadd["values"], {"phred": 0})
+                    logo, = store.query_predictions(predictor_id="logofunc")
+                    self.assertEqual(logo["transcript_id"], "ENST1.2")
+                    self.assertEqual(logo["provenance"]["source_transcript"], "ENST1.2")
+                    self.assertIs(logo["provenance"]["allele_available"], True)
+                    self.assertEqual(logo["values"], {"gof": 0.8})
+                    with store._session() as connection:
+                        owner, = connection.execute(
+                            "SELECT transcript FROM cohort_annotations WHERE id = ?",
+                            (logo["annotation_id"],),
+                        ).fetchone()
+                    self.assertEqual(owner, "ENST1.2")
+
+    @patch.object(cohort_store, "_prediction_match_status", ambiguous_cadd_with_raw)
+    def test_interrupted_promotion_restores_partial_metrics_before_retry(self):
+        path = self.root / "collisions.vcf"
+        write_collision_vcf(path, exact_first=False)
+        store = CohortStore(self.root / "rollback.db")
+        store.import_vcf(path, restrict_samples=["P1"])
+        before = store.query_predictions()
+        partial, = store.query_predictions(predictor_id="cadd_coding")
+        self.assertEqual(partial["values"], {"raw": 5, "phred": 30})
+        with patch.object(store, "_yield_to_waiting_writers", side_effect=RuntimeError("interrupted")):
+            with self.assertRaisesRegex(RuntimeError, "interrupted"):
+                store.import_vcf(path, restrict_samples=["P2"])
+        store = CohortStore(store.database_path)
+        self.assertEqual(store.query_predictions(), before)
+        store.import_vcf(path, restrict_samples=["P2"])
+        exact, = store.query_predictions(predictor_id="cadd_coding")
+        self.assertEqual(exact["values"], {"phred": 0})
 
     def test_gene_list_returns_both_overlapping_genes_and_counts_one_allele(self):
         path = self.root / "panel.vcf"

@@ -1,6 +1,6 @@
 "use client";
 
-import {CustomScoreSetup, CustomScoreDisplaySettings, useCustomReviewScores, resetCustomScoreDisplay} from "./custom-scores";
+import {CustomScoreSetup, CustomScoreDisplaySettings, useCustomReviewScores, resetCustomScoreDisplay, refreshCustomScoreDatasets} from "./custom-scores";
 import Image from "next/image";
 import DataLicensesPanel from "./DataLicensesPanel";
 import { datasetForScope, groupDatasetSources } from "./dataset-setup";
@@ -232,28 +232,33 @@ function attachLibraryIdentity(
   row: VariantRow,
   identities: ReadonlyMap<string, LibraryReviewIdentity>,
 ) {
-  const directIdentity = identities.get(row.sample);
-  if (directIdentity) {
-    return {
+  if (row.carriers) {
+    // Separately called files can annotate the same allele differently.
+    // Restore from a carrier in the file that supplied this row's annotations.
+    let origin: LibraryReviewIdentity | undefined;
+    for (const carrier of row.carriers) {
+      if (carrier.source !== row.source) continue;
+      const identity = identities.get(carrier.sample);
+      if (identity?.cohort_sample_entry_id != null) {
+        origin = identity;
+        break;
+      }
+      origin ??= identity;
+    }
+    return origin ? {
       ...row,
-      libraryDatasetId: directIdentity.id,
-      librarySampleId: directIdentity.sample_id,
-      libraryIndividualId: directIdentity.individual_id,
-      transcriptSourceDatasetId: directIdentity.id,
-      cohortSampleEntryId: directIdentity.cohort_sample_entry_id ?? undefined,
-    };
+      transcriptSourceDatasetId: origin.id,
+      cohortSampleEntryId: origin.cohort_sample_entry_id ?? undefined,
+    } : row;
   }
-  // A jointly called cohort is represented by one browser row whose sample
-  // label is "Cohort", so it cannot match a Sample Library individual by
-  // that label. Any indexed carrier can retrieve the same complete source
-  // record and restore its transcript annotations when the row is opened.
-  const restorationIdentity = row.carriers
-    ?.map((carrier) => identities.get(carrier.sample))
-    .find((identity) => identity?.cohort_sample_entry_id);
-  return restorationIdentity ? {
+  const directIdentity = identities.get(row.sample);
+  return directIdentity ? {
     ...row,
-    transcriptSourceDatasetId: restorationIdentity.id,
-    cohortSampleEntryId: restorationIdentity.cohort_sample_entry_id ?? undefined,
+    libraryDatasetId: directIdentity.id,
+    librarySampleId: directIdentity.sample_id,
+    libraryIndividualId: directIdentity.individual_id,
+    transcriptSourceDatasetId: directIdentity.id,
+    cohortSampleEntryId: directIdentity.cohort_sample_entry_id ?? undefined,
   } : row;
 }
 
@@ -1161,7 +1166,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
     if (impacts.size && !impacts.has(row.impact)) return false;
     if (popmax !== null && row.gnomadPopmax !== null && row.gnomadPopmax > popmax) return false;
     if (maneOnly && !preferredClinicalKeys.has(row.key)
-      && !(regulatoryGeneSearch && isGenelessRegulatoryConsequence(row))) return false;
+      && !isGenelessRegulatoryConsequence(row)) return false;
     if (excludeRepeat && row.repeat) return false;
     if (excludeSegdup && row.segdup) return false;
     if (clinvarOnly && !isPathogenic(row.clinvar)) return false;
@@ -1181,7 +1186,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
       && row.haplotypeFrameStatus === "FRAME_RESTORED_CONFIRMED"
     ) return false;
     return true;
-  }), [referencedRows, preferredClinicalKeys, directGeneFilter, regulatoryGeneSearch, samples, impacts, popmax, maneOnly, excludeRepeat, excludeSegdup, clinvarOnly, clinvarConflictOnly, clingenPathogenicOnly, geniaPathogenicOnly, proteinChangeMatchOnly, proteinResidueMatchOnly, excludeConfirmedFrameRestored, qcSettings, includeQcFailing]);
+  }), [referencedRows, preferredClinicalKeys, directGeneFilter, samples, impacts, popmax, maneOnly, excludeRepeat, excludeSegdup, clinvarOnly, clinvarConflictOnly, clingenPathogenicOnly, geniaPathogenicOnly, proteinChangeMatchOnly, proteinResidueMatchOnly, excludeConfirmedFrameRestored, qcSettings, includeQcFailing]);
 
   const selectedRegulatorySet = useMemo(
     () => activeRegulatorySet(screenCatalog, regulatoryContextSets, activeRegulatorySetId),
@@ -2312,6 +2317,25 @@ function PredictorCard({ item }: { item: PredictorCardItem }) {
   </div>;
 }
 
+function CaddProviderDetails({ predictions }: Pick<VariantRow, "predictions">) {
+  const providers = [
+    ["cadd_wgs", "Genome-wide CADD"],
+    ["starter_cadd", "Coding-SNV starter"],
+    ["cadd_coding", "dbNSFP"],
+  ].flatMap(([id, label]) => {
+    const values = predictions?.[id]?.values;
+    if (values?.phred == null && values?.raw == null) return [];
+    return [{ label, phred: values.phred ?? "—", raw: values.raw ?? "—" }];
+  });
+  if (providers.length < 2) return null;
+  return <details className="cadd-provider-details">
+    <summary>CADD scores by provider</summary>
+    <dl>{providers.map(({ label, phred, raw }) => <div key={label}>
+      <dt>{label}</dt><dd>Phred {phred} · Raw {raw}</dd>
+    </div>)}</dl>
+  </details>;
+}
+
 function ccreDistanceLabel(distance: number) {
   if (distance === 0) return "0 bp · TSS overlaps cCRE";
   const direction = distance > 0 ? "downstream" : "upstream";
@@ -2439,7 +2463,9 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
     { key: "primateAi", label: "PrimateAI", value: selected.primateAi, note: selected.primateAiPrediction },
     { key: "sift", label: "SIFT", value: selected.sift, note: selected.siftPrediction || (selected.sift !== null && selected.sift !== undefined ? "lower is more deleterious" : undefined), strong: selected.sift !== null && selected.sift !== undefined && selected.sift <= 0.05 },
     { key: "polyPhen", label: "PolyPhen HDIV", value: selected.polyPhen, note: selected.polyPhenPrediction, strong: (selected.polyPhen ?? 0) >= 0.957 },
-    { key: "caddRaw", label: "CADD raw", value: selected.caddRaw },
+    { key: "caddRaw", label: "CADD raw", value: selected.caddRaw, note: caddSource
+      || (evidence?.cadd_coding?.values.raw != null ? "dbNSFP · allele score"
+        : evidence?.cadd_wgs?.values.raw != null ? "Genome-wide CADD" : "") },
     { key: "gerp", label: "GERP++ RS", value: selected.gerpRs },
     { key: "phyloP", label: "phyloP 100-way", value: selected.phyloP100way },
     { key: "phastCons", label: "phastCons 100-way", value: selected.phastCons100way },
@@ -2561,7 +2587,9 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
       <header className="review-hero"><div><div className="review-kickers"><span className={`impact-pill ${selected.impact.toLowerCase()}`}>{selected.impact}</span>{isStartLostVariant(selected) && <span className="review-badge amber">Start-loss</span>}{selectedQcFailures.length > 0 && <span className="review-badge qc-fail-flag">QC fail</span>}{selected.duplicateRecord && <span className="review-badge amber">{selected.duplicateRecordKind === "liftover_collision" ? "Lift-over collision" : "Duplicate record"}</span>}{deNovo && ["high_confidence", "possible", "possible_parental_mosaicism"].includes(deNovo.status) && <span className={`review-badge family-status ${deNovo.status}`}>{deNovoLabel(deNovo.status)}</span>}{isReferenceDisruptedTranscript(selected) && <span className="review-badge amber" title="This transcript's ORF is disrupted on the reference-genome haplotype and may be translated only on other haplotypes.">Reference-disrupted transcript</span>}{selected.liftedFromGrch37 && <span className="review-badge amber">Lifted from GRCh37</span>}{selected.assemblyAlleleSwap && <span className="review-badge amber" title="A source allele became the GRCh38 reference; genotype and allele-indexed annotations were remapped">Assembly allele swap</span>}{selected.mane && <span className="review-badge" title={selected.maneSelect ? "MANE Select transcript" : "MANE Plus Clinical — an additional clinically designated transcript alongside MANE Select"}>{selected.maneSelect ? "MANE Select" : "MANE Plus Clinical"}</span>}{selected.picked && !selected.mane && <span className="review-badge">PICK fallback</span>}{isCompound && <span className="review-badge amber">candidate comp het</span>}</div><button className="review-gene-link" onClick={() => setReviewSection("gene")} title="Open gene-level evidence">{selected.gene}</button><p>{selected.hgvsP || selected.hgvsC || fullVariantId(selected)}</p><div className="review-hero-locus"><VariantIdentifier row={selected}/><span>· {selected.sample} · {selected.genotype}</span></div>{selected.liftedFromGrch37 && selected.originalChrom && <span className="cell-sub mono">Original GRCh37: {selected.originalChrom}:{selected.originalPos} {selected.originalRef}›{selected.originalAlt}</span>}</div><div className="hero-score"><span title={frequencySourceLabel(selectedFrequencySource)}>{frequencySourceLabel(selectedFrequencySource, true)}</span><strong>{compactNumber(selected.gnomadPopmax)}</strong></div></header>
 
       {reviewSection === "gene" ? <GeneKnowledgePanel gene={selected.gene} constraintRow={selected} relatedRows={rows.filter((row) => row.gene.toUpperCase() === selected.gene.toUpperCase())}/> : reviewSection === "phenotype" ? <PhenotypeReviewPanel sample={selected.sample} onManage={onManagePhenotype}/> : analysisScope === "whole_genome" && reviewSection === "regulatory" ? <RegulatoryEvidencePanel variant={selected} geneKnowledge={gene => <GeneKnowledgePanel key={gene} gene={gene}/>} catalog={screenCatalog} evidence={screenEvidence} loading={screenEvidenceLoading} error={screenEvidenceError} activeSetId={activeRegulatorySetId} setActiveSetId={setActiveRegulatorySetId} customSets={regulatoryContextSets} setCustomSets={setRegulatoryContextSets} onCatalogInstalled={setScreenCatalog}><CcreContextPanel compact chrom={selected.chrom} pos={selected.pos} refAllele={selected.ref} altAllele={selected.alt}/></RegulatoryEvidencePanel> : <>
-      <section className="review-section"><div className="section-title"><div><p className="eyebrow">Computational evidence</p><h2>Predictors</h2></div><span>{allPredictorCards.length} shown</span></div>{customScores.error && <p role="alert">{customScores.error}</p>}<div className="predictor-card-grid">{allPredictorCards.map((item) => <PredictorCard item={item} key={item.key}/>)}</div>{visibleInfo.has("loGoFunc") && selected.loGoFuncAlleleAvailable && <div className="logofunc-evidence"><div><span>LoGoFunc missense mechanism</span><strong>{selected.loGoFuncPrediction || "Allele available · no verified classification"}{selectedLoGoFuncScore !== null ? ` · ${compactNumber(selectedLoGoFuncScore, 3)}` : ""}</strong><small>Research prediction; not a clinical classification or LOFTEE result.</small></div><dl><div><dt>Neutral</dt><dd>{compactNumber(selected.loGoFuncNeutral, 3)}</dd></div><div><dt>GOF</dt><dd>{compactNumber(selected.loGoFuncGof, 3)}</dd></div><div><dt>LOF</dt><dd>{compactNumber(selected.loGoFuncLof, 3)}</dd></div></dl><p>Source {selected.loGoFuncSourceTranscript || "—"} · {selected.loGoFuncSourceHgvsp || "—"} · {cleanLabel(selected.loGoFuncMatch)}</p></div>}{visibleInfo.has("loftee") && <div className="loftee-line loftee-detail-line"><span>LOFTEE</span><div className="loftee-line-content"><strong>{selected.haplotypeFrameStatus === "FRAME_RESTORED_CONFIRMED" ? `Not LoF after confirmed haplotype reconstruction · per-variant ${lofteeDisplayLabel(selected)}` : lofteeDisplayLabel(selected)}</strong>{isReferenceDisruptedTranscript(selected) && !selected.loftee && <small>LOFTEE evaluates standard protein-coding transcripts. This transcript&apos;s reference-genome haplotype already has a disrupted open reading frame, although other human haplotypes may be translated.</small>}{isStartLostVariant(selected) && !selected.loftee && <small>Start-loss variants require separate assessment of downstream in-frame initiation sites and transcript context. No PVS1 conclusion is assigned here.</small>}{lofteeCodes(selected.lofteeFilter).map((code) => <small key={`filter:${code}`}><b>LC reason:</b> {lofteeExplanation(code, "filter")} <code>{code}</code></small>)}{lofteeCodes(selected.lofteeFlags).map((code) => <small key={`flag:${code}`}><b>Flag:</b> {lofteeExplanation(code, "flag")} <code>{code}</code></small>)}</div></div>}{visibleInfo.has("loftee") && selected.ptcCalcStatus && <div className="loftee-line loftee-detail-line"><span>Frameshift PTC calculation</span><div className="loftee-line-content"><strong>{isReferenceDisruptedTranscript(selected) ? "Not calculated · reference transcript CDS is already disrupted" : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? "Not applicable · single-exon transcript" : ptcCalculationStatusLabel(selected.ptcCalcStatus)}</strong>{isReferenceDisruptedTranscript(selected) ? <><small>A reliable patient-specific PTC/NMD position cannot be calculated against an already-disrupted reference ORF.</small><small>Technical status: <code>{selected.ptcCalcStatus}</code></small></> : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? <><small>This transcript has no downstream exon–exon junction, so the conventional 50–55-nt exon-junction NMD rule is not applicable.</small><small>Premature stops in single-exon transcripts may escape exon-junction-complex-dependent NMD; assess transcript-specific RNA and protein evidence separately.</small>{(selected.loftee50bp || selected.loftee50bpOriginal) && <small>Stored technical value: <code>{selected.loftee50bp || selected.loftee50bpOriginal}</code> · not interpreted for this transcript</small>}</> : <>{selected.ptcDistanceFromLastExon !== null && <small>{ptcDistanceLabel(selected.ptcDistanceFromLastExon)}</small>}{selected.loftee50bp && <small><b>{ptcRuleLabel(selected.loftee50bp)}</b></small>}{selected.loftee50bpChanged && <small>Replaced original LOFTEE coordinate-based result: {selected.loftee50bpOriginal || "not recorded"}</small>}</>}</div></div>}{selected.haplotypeFrameStatus && <div className="loftee-line"><span>Sample haplotype</span><strong>{haplotypeFrameLabel(selected.haplotypeFrameStatus)}{selected.haplotypeFramePartners?.length ? ` · partner ${selected.haplotypeFramePartners.join(", ")}` : ""}{selected.haplotypeProteinChange ? ` · ${selected.haplotypeProteinChange}` : ""}</strong></div>}</section>
+      <section className="review-section"><div className="section-title"><div><p className="eyebrow">Computational evidence</p><h2>Predictors</h2></div><span>{allPredictorCards.length} shown</span></div>{customScores.error && <p role="alert">{customScores.error}</p>}<div className="predictor-card-grid">{allPredictorCards.map((item) => <PredictorCard item={item} key={item.key}/>)}</div>
+        {(visibleInfo.has("cadd") || visibleInfo.has("caddRaw")) && <CaddProviderDetails predictions={evidence}/>}
+        {visibleInfo.has("loGoFunc") && selected.loGoFuncAlleleAvailable && <div className="logofunc-evidence"><div><span>LoGoFunc missense mechanism</span><strong>{selected.loGoFuncPrediction || "Allele available · no verified classification"}{selectedLoGoFuncScore !== null ? ` · ${compactNumber(selectedLoGoFuncScore, 3)}` : ""}</strong><small>Research prediction; not a clinical classification or LOFTEE result.</small></div><dl><div><dt>Neutral</dt><dd>{compactNumber(selected.loGoFuncNeutral, 3)}</dd></div><div><dt>GOF</dt><dd>{compactNumber(selected.loGoFuncGof, 3)}</dd></div><div><dt>LOF</dt><dd>{compactNumber(selected.loGoFuncLof, 3)}</dd></div></dl><p>Source {selected.loGoFuncSourceTranscript || "—"} · {selected.loGoFuncSourceHgvsp || "—"} · {cleanLabel(selected.loGoFuncMatch)}</p></div>}{visibleInfo.has("loftee") && <div className="loftee-line loftee-detail-line"><span>LOFTEE</span><div className="loftee-line-content"><strong>{selected.haplotypeFrameStatus === "FRAME_RESTORED_CONFIRMED" ? `Not LoF after confirmed haplotype reconstruction · per-variant ${lofteeDisplayLabel(selected)}` : lofteeDisplayLabel(selected)}</strong>{isReferenceDisruptedTranscript(selected) && !selected.loftee && <small>LOFTEE evaluates standard protein-coding transcripts. This transcript&apos;s reference-genome haplotype already has a disrupted open reading frame, although other human haplotypes may be translated.</small>}{isStartLostVariant(selected) && !selected.loftee && <small>Start-loss variants require separate assessment of downstream in-frame initiation sites and transcript context. No PVS1 conclusion is assigned here.</small>}{lofteeCodes(selected.lofteeFilter).map((code) => <small key={`filter:${code}`}><b>LC reason:</b> {lofteeExplanation(code, "filter")} <code>{code}</code></small>)}{lofteeCodes(selected.lofteeFlags).map((code) => <small key={`flag:${code}`}><b>Flag:</b> {lofteeExplanation(code, "flag")} <code>{code}</code></small>)}</div></div>}{visibleInfo.has("loftee") && selected.ptcCalcStatus && <div className="loftee-line loftee-detail-line"><span>Frameshift PTC calculation</span><div className="loftee-line-content"><strong>{isReferenceDisruptedTranscript(selected) ? "Not calculated · reference transcript CDS is already disrupted" : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? "Not applicable · single-exon transcript" : ptcCalculationStatusLabel(selected.ptcCalcStatus)}</strong>{isReferenceDisruptedTranscript(selected) ? <><small>A reliable patient-specific PTC/NMD position cannot be calculated against an already-disrupted reference ORF.</small><small>Technical status: <code>{selected.ptcCalcStatus}</code></small></> : isSingleExonTranscript(selected.exon) || selected.ptcCalcStatus === "not_applicable_single_exon_transcript" ? <><small>This transcript has no downstream exon–exon junction, so the conventional 50–55-nt exon-junction NMD rule is not applicable.</small><small>Premature stops in single-exon transcripts may escape exon-junction-complex-dependent NMD; assess transcript-specific RNA and protein evidence separately.</small>{(selected.loftee50bp || selected.loftee50bpOriginal) && <small>Stored technical value: <code>{selected.loftee50bp || selected.loftee50bpOriginal}</code> · not interpreted for this transcript</small>}</> : <>{selected.ptcDistanceFromLastExon !== null && <small>{ptcDistanceLabel(selected.ptcDistanceFromLastExon)}</small>}{selected.loftee50bp && <small><b>{ptcRuleLabel(selected.loftee50bp)}</b></small>}{selected.loftee50bpChanged && <small>Replaced original LOFTEE coordinate-based result: {selected.loftee50bpOriginal || "not recorded"}</small>}</>}</div></div>}{selected.haplotypeFrameStatus && <div className="loftee-line"><span>Sample haplotype</span><strong>{haplotypeFrameLabel(selected.haplotypeFrameStatus)}{selected.haplotypeFramePartners?.length ? ` · partner ${selected.haplotypeFramePartners.join(", ")}` : ""}{selected.haplotypeProteinChange ? ` · ${selected.haplotypeProteinChange}` : ""}</strong></div>}</section>
 
       {isHighImpactSpliceVariant(selected) && <div className="splicing-evidence-row"><span>Splicing evidence</span><div><small>Site</small><strong>{spliceSiteLabel(selected)}</strong></div><div title={cleanLabel(selected.consequence)}><small>VEP</small><strong>{selected.impact} · {primarySpliceConsequenceLabel(selected.consequence)}</strong></div><div><small>LOFTEE</small><strong>{selected.loftee || "Not annotated"}</strong></div><div><small>SpliceAI</small><strong>{spliceAiDisplay(selected.spliceAI)}</strong></div></div>}
 
@@ -3792,7 +3820,14 @@ function CohortPanel({ onReview }: {
     try {
       const detail = await getCohortVariantDetail(row.variant_key);
       if (signal.aborted) return;
-      setVariantDetail(detail);
+      // The unfiltered exact lookup can rank a different annotation first.
+      // Keep the region/target hit for each matched carrier's compact fallback.
+      const matched = mode === "region" || mode === "target_gene"
+        ? detail.annotations.find(a => a.gene === row.gene && a.transcript === row.transcript
+          && a.consequence === row.consequence && a.hgvsc === row.hgvsc && a.hgvsp === row.hgvsp
+          && isGenelessRegulatoryConsequence({ ...a, geneId: a.gene_id, featureType: a.feature_type ?? undefined }))
+        : undefined;
+      setVariantDetail(matched ? { ...detail, rows: detail.rows.map(carrier => ({ ...carrier, ...matched })) } : detail);
     } catch (reason) {
       if (signal.aborted) return;
       setError(reason instanceof Error ? reason.message : "Variant details could not be loaded.");
@@ -3810,6 +3845,11 @@ function CohortPanel({ onReview }: {
       <Stat value={stats?.variants ?? 0} label="unique variants"/>
       <Stat value={stats?.carrier_observations ?? 0} label="carrier calls"/>
     </div>
+    {!!stats?.annotation_reindex_samples && <p className="alert">
+      {stats.annotation_reindex_samples} indexed sample entries need reindexing to attribute variant and transcript evidence to individual sources.
+      Older results may include stale rsIDs, original coordinates, or transcript annotations. Open Manage samples to identify
+      the affected entries, then rebuild them from their annotated VCFs.
+    </p>}
     {stats && <div className={`cohort-profile-banner ${stats.prefiltered_files ? "prefiltered" : "full"}`}><strong>{stats.prefiltered_files ? stats.full_files ? "Mixed cohort index" : "Compact clinical cohort index" : "Full cohort index"}</strong><span>{stats.full_files.toLocaleString()} full file{stats.full_files === 1 ? "" : "s"} · {stats.prefiltered_files.toLocaleString()} prefiltered file{stats.prefiltered_files === 1 ? "" : "s"}{stats.prefiltered_files ? " · absent noncoding variants may have been excluded during import" : " · exact searches are exhaustive for indexed PASS carrier calls"}</span></div>}
 
 
@@ -3821,7 +3861,7 @@ function CohortPanel({ onReview }: {
           <div className="cohort-results-head"><div><p className="eyebrow">Indexed entries</p><h2>Manage cohort samples</h2></div><span>Removal is recoverable by reimporting the source VCF.</span></div>
           <div className="sample-manager-toolbar"><label className="search"><Icon name="search"/><input value={sampleQuery} onChange={(event) => setSampleQuery(event.target.value)} onKeyDown={(event) => event.key === "Enter" && void loadSamples()} placeholder="Find sample ID…"/></label><button className="secondary-button" disabled={sampleWorking} onClick={() => void loadSamples()}>{sampleOperation === "removing" ? "Removing…" : sampleOperation === "loading" ? "Loading…" : "Search"}</button><button className="secondary-button" disabled={!cohortSamples.length} onClick={() => setSelectedSampleIds(selectedSampleIds.size === cohortSamples.length ? new Set() : new Set(cohortSamples.map((sample) => sample.id)))}>{selectedSampleIds.size === cohortSamples.length && cohortSamples.length ? "Clear all" : "Select all shown"}</button><button className="danger-button" disabled={sampleWorking || !selectedSampleIds.size} onClick={() => void removeSelectedSamples()}>Remove selected ({selectedSampleIds.size})</button></div>
           {sampleMessage && <div className={sampleOperation === "removing" ? "alert" : "alert success"}>{sampleMessage}</div>}
-          {cohortSamples.length ? <div className="cohort-sample-list">{cohortSamples.map((sample) => <label key={sample.id}><input type="checkbox" checked={selectedSampleIds.has(sample.id)} onChange={(event) => setSelectedSampleIds((current) => toggleSet(current, sample.id, event.target.checked))}/><span><strong>{sample.name}</strong><small title={sample.source_path}>{fileName(sample.source_path)} · {sample.carrier_observations.toLocaleString()} carrier calls</small></span><em className={sample.import_profile}>{cohortProfileLabel(sample.import_profile, sample.analysis_scope)}</em></label>)}</div> : !sampleWorking && <div className="empty-state compact"><h2>No indexed samples</h2><p>Add an annotated VCF to populate the cohort.</p></div>}
+          {cohortSamples.length ? <div className="cohort-sample-list">{cohortSamples.map((sample) => <label key={sample.id}><input type="checkbox" checked={selectedSampleIds.has(sample.id)} onChange={(event) => setSelectedSampleIds((current) => toggleSet(current, sample.id, event.target.checked))}/><span><strong>{sample.name}</strong><small title={sample.source_path}>{fileName(sample.source_path)} · {sample.carrier_observations.toLocaleString()} carrier calls{(sample.annotation_evidence_complete === 0 || sample.variant_metadata_complete === 0) && " · rebuild variant annotations"}</small></span><em className={sample.import_profile}>{cohortProfileLabel(sample.import_profile, sample.analysis_scope)}</em></label>)}</div> : !sampleWorking && <div className="empty-state compact"><h2>No indexed samples</h2><p>Add an annotated VCF to populate the cohort.</p></div>}
         </section>}
       </section>
 
@@ -4105,40 +4145,52 @@ function StoragePanel() {
   const [editing, setEditing] = useState<StorageLocationKind | null>(null);
   const [pathDraft, setPathDraft] = useState("");
   const [locationTest, setLocationTest] = useState<StorageLocationTest | null>(null);
-  const refresh = async (includeUsage = true) => {
+  const { begin: beginRefresh, invalidate: invalidateRefresh } = useLatestRequest();
+  const { begin: beginRestart } = useLatestRequest();
+  const refresh = useCallback(async (includeUsage = true) => {
+    const signal = beginRefresh();
     try {
       if (includeUsage) {
         const [nextStats, nextMigrations] = await Promise.all([
-          getStorageStats(), getStorageMigrations(),
+          getStorageStats(signal), getStorageMigrations(signal),
         ]);
+        signal.throwIfAborted();
         setStats(nextStats); setConfiguration(nextStats.storage_configuration); setMigrations(nextMigrations); setError(nextStats.storage_error || "");
       } else {
         const [nextConfiguration, nextMigrations] = await Promise.all([
-          getStorageConfiguration(), getStorageMigrations(),
+          getStorageConfiguration(signal), getStorageMigrations(signal),
         ]);
+        signal.throwIfAborted();
+        const nextStats = !nextMigrations.some((job) => job.status === "queued" || job.status === "running")
+          ? await getStorageStats(signal) : null;
+        signal.throwIfAborted();
         setConfiguration((current) => ({
-          ...nextConfiguration,
-          locations: nextConfiguration.locations.map((location) => ({
+          ...(nextStats?.storage_configuration ?? nextConfiguration),
+          locations: (nextStats?.storage_configuration ?? nextConfiguration).locations.map((location) => ({
             ...location,
             used_bytes: location.used_bytes ?? current?.locations.find((item) => item.id === location.id)?.used_bytes ?? null,
           })),
         }));
         setMigrations(nextMigrations);
-        if (!nextMigrations.some((job) => job.status === "queued" || job.status === "running")) {
-          const nextStats = await getStorageStats();
-          setStats(nextStats); setConfiguration(nextStats.storage_configuration); setError(nextStats.storage_error || "");
-        }
+        if (nextStats) { setStats(nextStats); setError(nextStats.storage_error || ""); }
       }
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Storage information is unavailable.");
+      if (!signal.aborted) setError(reason instanceof Error ? reason.message : "Storage information is unavailable.");
     }
-  };
-  useEffect(() => { void refresh(); }, []);
+  }, [beginRefresh]);
+  useEffect(() => { void refresh(); }, [refresh]);
+  const migrationActive = migrations.some((job) => job.status === "queued" || job.status === "running");
   useEffect(() => {
-    if (!migrations.some((job) => job.status === "queued" || job.status === "running")) return;
-    const timer = window.setInterval(() => { void refresh(false); }, 1000);
-    return () => window.clearInterval(timer);
-  }, [migrations]);
+    if (!migrationActive) return;
+    let stopped = false;
+    let timer: number;
+    const poll = async () => {
+      await refresh(false);
+      if (!stopped) timer = window.setTimeout(poll, 1000);
+    };
+    timer = window.setTimeout(poll, 1000);
+    return () => { stopped = true; window.clearTimeout(timer); };
+  }, [migrationActive, refresh]);
   const locationLabel: Record<StorageLocationKind, string> = {
     annotation: "Annotation datasets",
     data: "Sample Library & Cohort",
@@ -4163,22 +4215,27 @@ function StoragePanel() {
   const [restarting, setRestarting] = useState(false);
   async function restartService() {
     if (!window.confirm("Restart the local workbench service now? This page stays open; the service is unavailable for a few seconds while pending storage locations become active.")) return;
+    const signal = beginRestart();
+    invalidateRefresh();
     setRestarting(true); setError(""); setMessage("Restarting the workbench service…");
     try {
       await restartWorkbenchService();
       const deadline = Date.now() + 90_000;
       let healthy = false;
       while (Date.now() < deadline) {
-        await new Promise((resolve) => window.setTimeout(resolve, 1000));
-        try { await getServiceHealth(); healthy = true; break; } catch { /* service still restarting */ }
+        await waitForPoll(signal, 1000);
+        try { await getServiceHealth(signal); healthy = true; break; } catch { /* service still restarting */ }
       }
+      signal.throwIfAborted();
       if (!healthy) throw new Error("The service did not come back within 90 seconds. Check the terminal running start_workbench.sh.");
+      refreshCustomScoreDatasets();
       setMessage("Workbench service restarted; the new storage locations are active.");
       await refresh();
     } catch (reason) {
+      if (signal.aborted) return;
       setError(reason instanceof Error ? reason.message : "The service could not be restarted.");
       setMessage("");
-    } finally { setRestarting(false); }
+    } finally { if (!signal.aborted) setRestarting(false); }
   }
   const beginEdit = (location: StorageLocation) => {
     setEditing(location.id); setPathDraft(location.follows_data_root ? "" : location.path); setLocationTest(null); setError(""); setMessage("");
@@ -4206,6 +4263,7 @@ function StoragePanel() {
       setWorking(true); setError("");
       try {
         const result = await setStorageLocation({ kind: "temporary", follow_data_root: true });
+        invalidateRefresh();
         setConfiguration(result.storage); setMessage(result.message); setEditing(null);
       } catch (reason) { setError(reason instanceof Error ? reason.message : "Storage location could not be saved."); }
       finally { setWorking(false); }
@@ -4219,6 +4277,7 @@ function StoragePanel() {
     setWorking(true); setError("");
     try {
       const result = await setStorageLocation({ kind: editing, path: pathDraft.trim() });
+      invalidateRefresh();
       setConfiguration(result.storage); setMessage(result.message); setEditing(null); setLocationTest(null);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Storage location could not be saved."); }
     finally { setWorking(false); }
@@ -4230,6 +4289,7 @@ function StoragePanel() {
     setWorking(true); setError("");
     try {
       const job = await startStorageMigration(editing, pathDraft.trim());
+      invalidateRefresh();
       setMigrations((current) => [job, ...current]);
       setMessage("Safe storage migration started. The current location remains active until restart.");
       setEditing(null); setLocationTest(null);
@@ -4823,6 +4883,7 @@ function annotationSourceIsEnabled(
   if (annotationSourceIsLocked(source)) return source.installed;
   if (selections[source.id] !== undefined) return source.available && selections[source.id];
   if (!source.available) return false;
+  if (source.id === "dbnsfp") return source.enabled;
   return source.installed || source.enabled;
 }
 
@@ -6057,6 +6118,7 @@ function cohortRowForReview(row: CohortQueryRow): VariantRow {
     qual: row.qual,
     gene: row.gene,
     geneId: row.gene_id,
+    featureType: row.feature_type ?? undefined,
     transcript: row.transcript,
     hgvsC: row.hgvsc,
     hgvsP: row.hgvsp,

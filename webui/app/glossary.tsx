@@ -4,7 +4,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  GLOSSARY, GLOSSARY_CATEGORIES, segmentText,
+  searchGlossary, segmentText,
 } from "./glossary-data";
 
 /** Render authored copy with tap-for-definition on recognized genetics terms. */
@@ -60,12 +60,8 @@ export function GlossaryText({ text }: { text: string }) {
 /** The Glossary page: searchable definitions grouped by category. */
 export function GlossaryView() {
   const [query, setQuery] = useState("");
-  const needle = query.trim().toLowerCase();
-  const visible = GLOSSARY.filter((entry) =>
-    !needle
-    || entry.term.toLowerCase().includes(needle)
-    || (entry.aliases ?? []).some((alias) => alias.toLowerCase().includes(needle))
-    || entry.definition.toLowerCase().includes(needle));
+  const visible = searchGlossary(query);
+  const categories = [...new Set(visible.map((entry) => entry.category))];
   return (
     <div className="glossary-view">
       <div className="section-title">
@@ -81,7 +77,7 @@ export function GlossaryView() {
           spellCheck={false}
         />
       </label>
-      {GLOSSARY_CATEGORIES.map((category) => {
+      {categories.map((category) => {
         const entries = visible.filter((entry) => entry.category === category);
         if (!entries.length) return null;
         return (

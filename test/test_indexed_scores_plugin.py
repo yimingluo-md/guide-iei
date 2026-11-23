@@ -99,6 +99,7 @@ class IndexedScoresPluginTests(unittest.TestCase):
                 sub add_file { $_[0]{file} = $_[1]; }
                 sub get_data {
                   my ($self, $chr, $start, $end) = @_;
+                  die "invalid tabix interval" unless $start >= 1 && $end >= $start;
                   $self->{get_data_calls}++;
                   return [grep { $_->{start} >= $start && $_->{start} <= $end } @{$self->{test_data}}];
                 }
@@ -153,20 +154,42 @@ class IndexedScoresPluginTests(unittest.TestCase):
                 my $synonymous_lookups = $plugin->{get_data_calls} - $calls_before_synonymous;
                 $plugin->{test_data} = [$gene_record, $gene_record];
                 my $ambiguous = $plugin->run(TVA->new(Gene->new('ENSG00000000001')));
-                my @edit_scores;
+                my %edit_scores;
+                # Source rows are point-indexed at POS 100 by default. Supply VEP's
+                # post-parser REF/ALT and, when retained, its original VCF line.
                 for my $case (
-                    [99, 101, 'CAT', 'CTT', 'A', 'T'],
-                    [101, 100, '-', 'T', 'A', 'AT'],
-                    [101, 101, 'T', '-', 'AT', 'A'],
-                    [101, 102, 'TG', '-', 'ATG', 'A'],
+                    ['padded_snv', 99, 101, 'CAT', 'CTT', 'A', 'T'],
+                    ['insertion', 101, 100, '-', 'T', 'A', 'AT'],
+                    ['deletion', 101, 101, 'T', '-', 'AT', 'A'],
+                    ['long_deletion', 101, 102, 'TG', '-', 'ATG', 'A'],
+                    ['padded_query_del', 102, 102, 'A', '-', 'GA', 'G', 'GAA', 'GA'],
+                    ['padded_source_del', 101, 101, 'A', '-', 'GAA', 'GA', 'GA', 'G'],
+                    ['padded_query_ins', 102, 101, '-', 'A', 'G', 'GA', 'GA', 'GAA'],
+                    ['padded_source_ins', 101, 100, '-', 'A', 'GA', 'GAA', 'G', 'GA'],
+                    ['shared_repeat_anchor', 101, 101, 'A', '-', 'AA', 'A'],
+                    ['right_anchor_base_one', 1, 1, 'C', '-', 'CA', 'A', 'CA', 'A', 1],
+                    ['anchored_delins', 101, 102, 'CG', 'T', 'ACG', 'AT'],
+                    ['long_shared_prefix', 103, 104, 'CG', 'T', 'GGACG', 'GGAT', 'GGACG', 'GGAT'],
+                    ['multiallelic_del', 101, 102, 'AA', 'A', 'GA', 'G', 'GAA', 'GCA,GA'],
+                    ['other_alt', 101, 102, 'AA', 'CA', 'GA', 'G', 'GAA', 'GCA,GA'],
+                    ['wrong_delins', 101, 102, 'CG', 'A', 'ACG', 'AT'],
+                    ['different_position', 102, 102, 'A', '-', 'GA', 'G'],
+                    ['inconsistent_vcf', 102, 102, 'A', '-', 'GA', 'G', 'GAA', 'GCA'],
                 ) {
-                    my ($start,$end,$ref,$alt,$table_ref,$table_alt) = @$case;
+                    my ($name,$start,$end,$ref,$alt,$table_ref,$table_alt,$vcf_ref,$vcf_alts,$table_pos) = @$case;
+                    $table_pos //= 100;
                     my $query = TVA->new(Gene->new('ENSG00000000001'), $alt);
                     $query->{vf} = bless {chr=>'1',start=>$start,end=>$end,ref=>$ref}, 'VF';
-                    $plugin->{test_data} = [{%$gene_record, ref=>$table_ref, alt=>$table_alt}];
-                    push @edit_scores, $plugin->run($query)->{FuncVEP_CTI};
+                    $query->{vf}{_line} = ['1', $table_pos, '.', $vcf_ref, $vcf_alts, '.', 'PASS', '.']
+                        if defined $vcf_ref;
+                    $plugin->{test_data} = [{%$gene_record, start=>$table_pos, ref=>$table_ref, alt=>$table_alt}];
+                    $edit_scores{$name} = $plugin->run($query);
+                    if ($name eq 'padded_query_del') {
+                        push @{$plugin->{test_data}}, {%$gene_record, ref=>'GAA', alt=>'GA'};
+                        $edit_scores{duplicate_deletion} = $plugin->run($query);
+                    }
                 }
-                print encode_json({edit_scores=>\@edit_scores, exact=>$exact, partial=>$partial, missing=>$missing,
+                print encode_json({edit_scores=>\%edit_scores, exact=>$exact, partial=>$partial, missing=>$missing,
                                    absent=>$absent, ambiguous=>$ambiguous,
                                    synonymous=>$synonymous,
                                    synonymous_lookups=>$synonymous_lookups});
@@ -182,7 +205,14 @@ class IndexedScoresPluginTests(unittest.TestCase):
                 text=True,
             )
             observed = json.loads(result.stdout)
-            self.assertEqual(observed["edit_scores"], ["0.11"] * 4)
+            for name, record in observed["edit_scores"].items():
+                with self.subTest(edit=name):
+                    if name in {"other_alt", "wrong_delins", "different_position", "inconsistent_vcf"}:
+                        self.assertEqual(record, {})
+                    elif name == "duplicate_deletion":
+                        self.assertEqual(record, observed["ambiguous"])
+                    else:
+                        self.assertEqual(record, observed["exact"])
             self.assertEqual(observed["exact"]["FuncVEP_match_status"], "exact")
             self.assertEqual(observed["exact"]["FuncVEP_match"], "allele_gene")
             self.assertEqual(observed["exact"]["FuncVEP_CTE"], "0.22")

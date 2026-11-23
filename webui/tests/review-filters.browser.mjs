@@ -14,11 +14,11 @@ const compiled = ts.transpileModule(parser, { compilerOptions: { module: ts.Modu
 const { parseVcfFiles } = await import(`data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`);
 const fixture = await parseVcfFiles([new File([
   '##fileformat=VCFv4.2\n##reference=GRCh38\n##contig=<ID=1,length=248956422>\n',
-  '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|IMPACT|SYMBOL|Gene|Feature|HGVSc|HGVSp|MANE_SELECT|PICK">\n',
+  '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|IMPACT|SYMBOL|Gene|Feature|HGVSc|HGVSp|MANE_SELECT|PICK|CADD_phred|CADD_raw|StarterCADD_phred|StarterCADD_match|StarterCADD_match_status">\n',
   '##INFO=<ID=GPNm447_LLR,Number=A,Type=Float,Description="test">\n##INFO=<ID=GPNm447_ABSLLR,Number=A,Type=Float,Description="test">\n',
   '##INFO=<ID=GPNv100_LLR,Number=A,Type=Float,Description="test">\n##INFO=<ID=GPNv100_ABSLLR,Number=A,Type=Float,Description="test">\n',
   '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSYNTHETIC_ONLY\n',
-  '1\t100\t.\tA\tG\t99\tPASS\tGPNm447_LLR=0;GPNm447_ABSLLR=-0.5;GPNv100_LLR=-2;GPNv100_ABSLLR=0.25;CSQ=G|missense_variant|MODERATE|AJAP1|ENSG_TEST|ENST00000378191|ENST00000378191.5:c.829+12772C>T||NM_TEST|1\tGT:DP:GQ:AD\t0/1:40:99:20,20\n',
+  '1\t100\t.\tA\tG\t99\tPASS\tGPNm447_LLR=0;GPNm447_ABSLLR=-0.5;GPNv100_LLR=-2;GPNv100_ABSLLR=0.25;CSQ=G|missense_variant|MODERATE|AJAP1|ENSG_TEST|ENST00000378191|ENST00000378191.5:c.829+12772C>T||NM_TEST|1|30|0|23.4|allele|exact\tGT:DP:GQ:AD\t0/1:40:99:20,20\n',
 ], "synthetic-screen.vcf")]);
 const base = fixture.rows[0];
 fixture.rows = Array.from({ length: 1501 }, (_, i) => ({ ...base, key: `synthetic:${i}`, pos: 100 + i,
@@ -74,6 +74,10 @@ try {
   const testMapping = {chrom:"chr", pos:"pos", ref:"ref", alt:"alt", strand:"strand", gene:"", transcript:""};
   const columns = ["chr", "pos", "ref", "alt", "strand", ...Array.from({length:78}, (_,i) => "detail_" + i), "overall"];
   let imported;
+  let scoreLists = 0;
+  let scoreLookups = 0;
+  let scoreListError = false;
+  let scoreLookupError = false;
   let batches = 0;
   let failScreen = false;
   let missingLinks = false;
@@ -107,7 +111,11 @@ try {
       imported = JSON.parse(request.postData());
       return json({id:"mock",resource_id:"custom_scores",status:"succeeded",message:"Import complete"});
     }
+    if (url.pathname === "/api/custom-scores/remove") { imported = undefined; return json({id: "mock"}); }
     if (url.pathname === "/api/custom-scores" || url.pathname === "/api/custom-scores/lookup") {
+      if (url.pathname.endsWith("/lookup")) scoreLookups++; else scoreLists++;
+      if (url.pathname.endsWith("/lookup") ? scoreLookupError : scoreListError)
+        return request.respond({status: 503, headers, contentType: "application/json", body: '{"error":"Synthetic score failure"}'});
       return json(imported ? [{...imported, id:"mock", rows:1, matches:[{context:{strand:"+"}, unresolved:["strand"], values:["0"]}]}] : []);
     }
     if (url.pathname === "/api/element-gene-links/search-status") {
@@ -135,7 +143,8 @@ try {
       const data = JSON.parse(request.postData());
       for (const variant of data.variants) if (variant.pos >= 9001) distalScreenPositions.add(variant.pos);
       return request.respond({ status: 200, headers, contentType: "application/json", body: JSON.stringify({ available: true,
-        matching_keys: data.variants.slice(0, batches === 1 ? 2 : 1).map((item) => item.key) }) });
+        matching_keys: [...data.variants.slice(0, batches === 1 ? 2 : 1),
+          ...data.variants.filter(item => item.pos === 9002)].map(item => item.key) }) });
     }
     return request.respond({ status: 503, headers, contentType: "application/json", body: '{"error":"Synthetic test: unavailable"}' });
   });
@@ -160,6 +169,23 @@ try {
   await waitGene("APPROVED");
   assert.deepEqual(geneLookups, ["unresolved", "alias", "alias"]);
   console.log("PASS: Gene Knowledge requests only submitted identifiers, including after an unresolved search");
+  await page.evaluate((data) => {
+    const node = document.querySelector(".app-shell");
+    let fiber = node[Object.keys(node).find((key) => key.startsWith("__reactFiber$"))];
+    while (fiber && typeof fiber.memoizedProps?.setRows !== "function") fiber = fiber.return;
+    fiber.memoizedProps.setRows(data.rows);
+    fiber.memoizedProps.setSummary(data.summary);
+    fiber.memoizedProps.setReviewAnalysisScope("whole_genome");
+    [...document.querySelectorAll(".nav-item")].find((item) => item.firstElementChild.textContent === "Variants").click();
+  }, fixture);
+  await page.waitForSelector(".table-frame tbody tr");
+  for (const index of [0, 1]) {
+    const before = scoreLists;
+    await page.click(`.table-frame tbody tr:nth-child(${index + 1})`);
+    await page.waitForFunction(n => performance.getEntriesByType("resource").filter(e => e.name.endsWith("/api/custom-scores")).length >= n, {}, before + 1);
+    await page.click(".review-toolbar .back-button");
+  }
+  assert.equal(scoreLookups, 0, "Empty library must not issue variant lookups");
   await page.evaluate(() => [...document.querySelectorAll(".nav-item")].find(el => el.textContent.includes("Import & QC")).click());
   await page.click(".intake-mode-switch button");
   await page.click(".dataset-setup-entry button");
@@ -189,8 +215,14 @@ try {
   }, fixture);
   await page.waitForSelector(".table-frame tbody tr");
   await page.click(".table-frame tbody tr");
+  await page.click(".cadd-provider-details summary");
+  assert.deepEqual(await page.$$eval(".cadd-provider-details dl > div", rows =>
+    rows.map(row => [row.querySelector("dt").innerText, row.querySelector("dd").innerText])), [
+    ["Coding-SNV starter", "Phred 23.4 · Raw —"], ["dbNSFP", "Phred 30 · Raw 0"],
+  ]);
   const customCard = () => [...document.querySelectorAll(".predictor-card")].find(card => card.textContent.includes("Example metric"));
   await page.waitForFunction(customCard);
+  assert.equal(scoreLookups, 1, "An existing table must trigger one lookup");
   assert.equal(await page.evaluate(() => [...document.querySelectorAll(".predictor-card")].find(card => card.textContent.includes("Example metric")).querySelector("strong").textContent), "0");
   await page.click(".review-toolbar .display-settings > button");
   await page.waitForSelector(".custom-score-settings input");
@@ -199,6 +231,45 @@ try {
   await page.click(".custom-score-settings input");
   await page.waitForFunction(customCard);
   await page.click(".review-toolbar .display-settings > button");
+  scoreLookupError = true;
+  await page.evaluate(() => window.dispatchEvent(new Event("iei-custom-scores-datasets-updated")));
+  await page.waitForFunction(() => document.querySelector(".review-section [role=alert]")?.textContent.includes("Synthetic score failure"));
+  scoreLookupError = false;
+  await page.evaluate(() => window.dispatchEvent(new Event("iei-custom-scores-datasets-updated")));
+  await page.waitForFunction(customCard);
+  imported.scores[0].label = "Repaired metric";
+  await page.evaluate(() => window.dispatchEvent(new Event("iei-custom-scores-datasets-updated")));
+  await page.waitForFunction(() => [...document.querySelectorAll(".predictor-card")].some(card => card.textContent.includes("Repaired metric")));
+  imported.scores[0].label = "Example metric";
+  scoreListError = true;
+  const beforeListError = scoreLookups;
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith("/api/custom-scores")),
+    page.evaluate(() => window.dispatchEvent(new Event("focus"))),
+  ]);
+  await page.waitForFunction(() => document.querySelector(".review-section [role=alert]")?.textContent.includes("Synthetic score failure"));
+  assert.equal(scoreLookups, beforeListError, "A failed listing must not start a lookup");
+  scoreListError = false;
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await page.waitForFunction(customCard);
+  await page.click(".review-toolbar .back-button");
+  await page.evaluate(() => [...document.querySelectorAll(".nav-item")].find(el => el.textContent.includes("Import & QC")).click());
+  await page.click(".intake-mode-switch button");
+  await page.click(".dataset-setup-entry button");
+  await page.click(".custom-score-setup > summary");
+  await page.waitForSelector(".custom-score-setup .danger-text-button");
+  page.once("dialog", dialog => dialog.accept());
+  await page.click(".custom-score-setup .danger-text-button");
+  await page.waitForFunction(() => !document.querySelector(".custom-score-setup .danger-text-button"));
+  await page.evaluate(() => [...document.querySelectorAll(".nav-item")].find(el => el.firstElementChild.textContent === "Variants").click());
+  await page.waitForSelector(".table-frame tbody tr");
+  const beforeRemovalReview = scoreLookups;
+  await Promise.all([
+    page.waitForResponse(response => response.url().endsWith("/api/custom-scores")),
+    page.click(".table-frame tbody tr"),
+  ]);
+  assert.equal(scoreLookups, beforeRemovalReview, "Removing the last table must stop lookups");
+  assert(!(await page.evaluate(customCard)));
   await page.click(".review-toolbar .back-button");
   console.log("PASS: custom score selection, preview, import, review display, and immediate hide/show");
   const geneSearch = await page.$('input[aria-label="Search by gene, HGVS, ID or locus"]');
@@ -296,7 +367,7 @@ try {
   const toggleScreen = () => page.evaluate(() => [...document.querySelectorAll(".check-row")]
     .find((label) => label.textContent.startsWith("Immune context")).click());
   await toggleScreen();
-  await page.waitForFunction(() => document.body.textContent.includes("Screened 1,000 of 1,501"));
+  await page.waitForFunction(() => document.body.textContent.includes("Screened 1,000 of 1,503"));
   assert(await page.evaluate(() => document.body.textContent.includes("results are incomplete")));
   assert.equal(await page.$$eval(".table-frame tbody tr", (rows) => rows.length), 2);
   assert(await page.evaluate(() => [...document.querySelectorAll("button")].find((button) => button.textContent === "Export TSV").disabled));
@@ -308,11 +379,14 @@ try {
   await page.click('button[aria-label="Remove AlphaGenome AVI · Phred filter"]');
   releaseSecond();
   await page.waitForFunction(() => !document.body.textContent.includes("results are incomplete"));
-  assert.equal(await page.$$eval(".table-frame tbody tr", (rows) => rows.length), 3);
-  assert.equal(distalScreenPositions.size, 0, "Annotated genes retains its ordinary transcript filter");
+  assert.equal(await page.$$eval(".table-frame tbody tr", (rows) => rows.length), 4);
+  assert.deepEqual([...distalScreenPositions].sort(), [9001, 9002]);
+  await page.locator('.table-frame tbody .variant-id[title="1:9002:A:G"]').click();
+  await page.locator('.review-hero-locus .variant-id[title="1:9002:A:G"]').wait();
+  await page.locator(".review-toolbar .back-button").click();
   await geneMode(true);
   await page.waitForFunction(() => !document.body.textContent.includes("results are incomplete"));
-  await waitCount(2);
+  await waitCount(3);
   assert.deepEqual([...distalScreenPositions].sort(), [9001, 9002]);
   await geneMode(false);
   await toggleScreen();
@@ -334,9 +408,9 @@ try {
   await page.select('select[aria-label="SpliceAI max operator"]', "missing");
   await waitCount(1);
   await page.click('button[aria-label="Remove AlphaGenome AVI · Phred filter"]');
-  await waitCount(1500);
+  await waitCount(1502);
   await page.click('button[aria-label="Remove SpliceAI max filter"]');
-  await waitCount(1501);
+  await waitCount(1503);
   failScreen = true;
   await toggleScreen();
   await page.waitForFunction(() => document.body.textContent.includes("SCREEN filtering could not finish"));

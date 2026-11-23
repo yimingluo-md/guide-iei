@@ -223,6 +223,20 @@ export const GLOSSARY: GlossaryEntry[] = [
 
 export type TextSegment = { text: string; entry?: GlossaryEntry };
 
+/** Search all displayed spellings and definitions, placing exact aliases first. */
+export function searchGlossary(query: string): GlossaryEntry[] {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return GLOSSARY;
+  const isExactAlias = (entry: GlossaryEntry) =>
+    (entry.exactAliases ?? []).some((alias) => alias.toLowerCase() === needle);
+  return GLOSSARY.filter((entry) =>
+    isExactAlias(entry)
+    || entry.term.toLowerCase().includes(needle)
+    || (entry.aliases ?? []).some((alias) => alias.toLowerCase().includes(needle))
+    || entry.definition.toLowerCase().includes(needle))
+    .sort((a, b) => Number(isExactAlias(b)) - Number(isExactAlias(a)));
+}
+
 type Needle = { needle: string; entry: GlossaryEntry; exact: boolean };
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

@@ -30,6 +30,7 @@ from local_service.cohort_store import (
     normalize_chromosome,
     parse_csq_entries,
     read_vcf_header,
+    regulatory_consequence,
     wgs_retained_alts,
 )
 from local_service.element_gene_links import interval as affected_bed_interval
@@ -67,7 +68,7 @@ NONCODING_MODES = {"ccre", "all", "none"}
 UNSCORED_SPLICEAI_INTRONIC = "SpliceAI_intronic"
 UNSCORED_PROMOTERAI_PROMOTER = "PromoterAI_promoter"
 PROMOTERAI_WINDOW_BP = 500
-REVIEW_FORMAT_VERSION = 8
+REVIEW_FORMAT_VERSION = 9
 
 
 @dataclass(frozen=True)
@@ -564,12 +565,16 @@ def compact_review_transcripts(line: str, header: VcfHeader) -> tuple[str, int, 
         return ""
 
     groups: dict[tuple[str, str], list[int]] = {}
+    selected: set[int] = set()
     for index, row in enumerate(parsed):
         allele = value(row, "ALLELE_NUM", "Allele") or "1"
-        gene = value(row, "Gene", "SYMBOL", "HGNC") or "intergenic"
+        gene = value(row, "Gene", "SYMBOL", "HGNC")
+        if not gene and regulatory_consequence(
+            value(row, "Feature_type"), value(row, "Feature"), value(row, "Consequence"),
+        ):
+            selected.add(index)
         groups.setdefault((allele, gene), []).append(index)
 
-    selected: set[int] = set()
     for indexes in groups.values():
         mane = [
             index for index in indexes

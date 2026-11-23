@@ -4,6 +4,7 @@ The application ships the release manifest, not a mutable remote manifest.
 Each component is verified in staging and published atomically. Failed jobs
 keep their resumable downloads; existing installed versions are never removed.
 """
+import gzip
 import hashlib
 import json
 import os
@@ -134,10 +135,22 @@ def installed_paths(root, plan):
             if component_valid(component_path(root, c), c)}
 
 
-def apply_starters(config, paths, resolve):
-    """Activate only a complete verified package; preserve installed full tables.
+def dbnsfp_header_columns(path):
+    if not path or not path.is_file():
+        return set()
+    opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
+    try:
+        with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
+            return set(handle.readline().rstrip("\r\n").lstrip("#").split("\t"))
+    except (OSError, EOFError, UnicodeError):
+        return set()
 
-    Called before per-job user overrides. This never edits the user's config.
+
+def apply_starters(config, paths, resolve, *, for_setup=False):
+    """Resolve a verified package against the job's selected full providers.
+
+    The setup view includes available fallbacks so it can determine whether
+    dbNSFP may be deselected before a job is created.
     """
     from .spliceai_dataset import FORMAT, prefer_legacy
     splice = (config.get("plugins") or {}).get("SpliceAI", {})
@@ -152,14 +165,24 @@ def apply_starters(config, paths, resolve):
     if not indexed(full_db):
         db["enabled"] = False
     db["required"] = bool(db.get("enabled"))
-    for kind, name in (("alphamissense", "AlphaMissenseStarter"), ("cadd", "CADDStarter")):
+    supplied = set()
+    if db.get("enabled") and not for_setup:
+        requested = db.get("columns") or []
+        if isinstance(requested, str):
+            requested = [requested]
+        header = dbnsfp_header_columns(full_db)
+        supplied = header if "ALL" in requested else header.intersection(requested)
+    for kind, name, fields in (
+        ("alphamissense", "AlphaMissenseStarter", {"AlphaMissense_score", "AlphaMissense_pred"}),
+        ("cadd", "CADDStarter", {"CADD_phred"}),
+    ):
         block = plugins.setdefault(name, {})
-        if block.get("enabled") is False:
+        if block.get("enabled") is False or block.get("file") or block.get("manifest"):
             continue
-        # A user-configured provider path is an explicit choice, not our default.
-        if not block.get("file"):
-            block.update(enabled=True, required=True, file=str(paths[kind] / (kind + ".tsv.gz")),
-                         manifest=str(paths[kind] / "indexed.manifest.json"))
+        if block.get("enabled") is not True and fields <= supplied:
+            continue
+        block.update(enabled=True, required=True, file=str(paths[kind] / (kind + ".tsv.gz")),
+                     manifest=str(paths[kind] / "indexed.manifest.json"))
     splice = plugins.setdefault("SpliceAI", {})
     full_splice = resolve(splice.get("snv"))
     sharded = splice.get("format") == FORMAT and full_splice and full_splice.exists()

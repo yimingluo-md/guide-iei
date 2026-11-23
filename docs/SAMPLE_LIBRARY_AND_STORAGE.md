@@ -97,7 +97,9 @@ of an externally annotated VCF; that caveat is stored with the bundle record.
 ## Cohort comparability
 
 Carrier results show profile labels and can be filtered by WES/WGS assay or
-exact profile hash. Positive carrier findings remain useful across profiles.
+exact profile hash. Each indexed sample has its own profile, including when
+samples with different capture kits share one VCF. Positive carrier findings
+remain useful across profiles.
 Absence from a candidate index is not a negative genotype result, because
 capture, callability, QC, and retention routes may differ.
 
@@ -309,15 +311,43 @@ semantics:
   (pre-upgrade index)*), and a forced re-import replaces the value and the
   label.
 
-An **ordinary** re-import of an unchanged file is a no-op by design (the
-file is recognised by content); use the forced re-import (or remove and
-re-add the dataset) to refresh derived columns from the source.
+The cohort stores each imported CSQ contribution with its source file and
+the sample entries carrying that record. On retirement it replays the surviving
+contributions in import order for the affected alleles. An exact allele search
+can therefore keep returning a carrier even after a transcript or a HIGH
+impact call disappears from the gene search. The separate predictor-observation index still groups
+observations by release, source file, predictor and target. Multiple records
+in the same VCF can therefore share a typed predictor observation.
+
+For each allele the index also tracks which source records and carriers supplied
+its rsID, unscored-indel reason, and original coordinates. Retiring a source
+restores the latest surviving rsID and reason. The original locus comes from
+the earliest surviving record that supplied original coordinates. Its assembly,
+chromosome, position, REF, and ALT are kept together. When the last source of
+a value is removed, the field becomes empty. The normalized allele remains
+searchable while any sample carries it.
+
+Older indexes recorded shared variant or transcript summaries. Cohort Search flags the
+affected sample entries in **Manage samples** until their annotated VCFs are
+reindexed. Untouched historical summaries may still contain retired values.
+When a source is retired, a historical score snapshot or transcript-bound
+observation can identify a surviving transcript, but fields such as impact
+and MANE need their original CSQ record. The index clears unsupported fields
+on the affected alleles and uses an unannotated allele when no transcript can
+be attributed. If membership of a historical file has changed, a file-level
+score alone cannot identify which remaining sample carried its transcript. Rebuilding each flagged sample restores the available evidence
+from the managed review VCF or, for a full WGS entry, the original VCF.
+An ordinary cohort import rereads flagged entries even if the bytes are
+unchanged. Subsequent imports of the same content skip the indexed entries.
 
 ### Schema migrations
 
 Sample Library schema changes run as an ordered list of named steps
-(`library_versions_v1`, `library_current_uniqueness_v1`, `portable_paths_v2`;
-the last applied name is stored as `sample_library_meta.library_schema_version`).
+(`library_versions_v1`, `library_current_uniqueness_v1`, `portable_paths_v2`,
+and `sample_cohort_profiles_v1`). The last applied name is stored in
+`sample_library_meta.library_schema_version`. The sample profile migration
+recovers capture-kit and target-BED edits from the linked library datasets
+without rescanning their VCFs.
 Every step executes inside one transaction together with its marker, so a
 crash or kill during a step rolls the whole step back — the columns it added
 and the backfill it performed — and the next open runs it again from the

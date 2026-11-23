@@ -21,6 +21,51 @@ except ImportError:
 
 
 class GpnStarTest(unittest.TestCase):
+    def test_configured_directory_expands_home_and_preserves_other_paths(self):
+        with patch.dict(os.environ, {"HOME": "/tmp/gpn-home"}):
+            self.assertEqual(gpn.configured_directory("~/scores"), Path("/tmp/gpn-home/scores"))
+            self.assertEqual(gpn.configured_directory("/tmp/scores"), Path("/tmp/scores"))
+            self.assertEqual(gpn.configured_directory("references/scores"), gpn.ROOT / "references/scores")
+
+    @unittest.skipUnless(pq, "requires optional Parquet reader")
+    def test_home_directory_install_and_annotation_package_selection(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"HOME": tmp}), \
+                patch.object(gpn, "install_runtime"):
+            root = Path(tmp) / "scores"
+            cfg = Path(tmp) / "config.yaml"
+            cfg.write_text("wgs_review: {gpn_star_v: {enabled: true, directory: '~/scores'}}\n"
+                           "region: {bed: custom.bed, padding_bp: 100}\n")
+            source = Path(tmp) / "input.vcf"
+            source.write_text("##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+                              "1\t100\t.\tA\tG\t.\tPASS\t.\n1\t200\t.\tA\tG\t.\tPASS\t.\n")
+            for package, positions in ((gpn.EXOME_PACKAGE, [100]), ("v100", [100, 200])):
+                folder = gpn.release_dir(root, package)
+                folder.mkdir(parents=True)
+                shard = folder / gpn.shard_name("1")
+                pq.write_table(pa.table({"pos": positions, "ref": ["A"] * len(positions),
+                                         "alt": ["G"] * len(positions),
+                                         "llr_calibrated": [-1.0] * len(positions),
+                                         "abs_llr_calibrated": [0.5] * len(positions)}), shard)
+                pins = {"1": {"size": shard.stat().st_size, "sha256": gpn.sha256(shard)}}
+                resource = gpn.EXOME_RESOURCE if package == gpn.EXOME_PACKAGE else "gpn_star_v"
+                with patch.object(gpn, "assets", return_value=pins):
+                    with patch.object(sys, "argv", ["gpn_star.py", "install", str(cfg), resource]), \
+                            patch.object(sys, "stdout", new_callable=io.StringIO):
+                        gpn.main()
+                    self.assertTrue(gpn.installed(root, package))
+                    with patch.object(sys, "argv", ["gpn_star.py", "annotate", str(cfg), str(source)]), \
+                            patch.object(sys, "stdout", new_callable=io.StringIO) as out, \
+                            patch.object(sys, "stderr", new_callable=io.StringIO) as log:
+                        gpn.main()
+                    result = out.getvalue()
+                    self.assertIn(f"##GPNStar_v100_package={package}", result)
+                    records = [line.split("\t")[-1] for line in result.splitlines() if not line.startswith("#")]
+                    self.assertIn("GPNv100_LLR=-1.0", records[0])
+                    self.assertEqual(records[1] == ".", package == gpn.EXOME_PACKAGE)
+                    for text in (result, log.getvalue()):
+                        self.assertEqual("custom BED" in text, package == gpn.EXOME_PACKAGE)
+                        self.assertEqual("wider padding" in text, package == gpn.EXOME_PACKAGE)
+
     def test_proxy_declines_resume_and_fresh_transfer_is_verified(self):
         pin = {"size": 4, "sha256": hashlib.sha256(b"good").hexdigest()}
         with tempfile.TemporaryDirectory() as tmp, patch.object(gpn, "install_runtime"), patch.object(

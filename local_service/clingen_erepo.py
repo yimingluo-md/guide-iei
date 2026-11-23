@@ -6,6 +6,8 @@ import sqlite3
 from contextlib import closing
 from pathlib import Path
 
+from pipeline.genia_alleles import normalize_chrom
+
 
 class ClinGenErepoStore:
     def __init__(self, database: Path, manifest: Path):
@@ -63,5 +65,5 @@ class ClinGenErepoStore:
             "evidence_repo_link", "mapping_method",
         ]
         with closing(sqlite3.connect(f"{self.database.resolve().as_uri()}?mode=ro&immutable=1", uri=True)) as connection:
-            rows = connection.execute(query, (chrom.removeprefix("chr"), pos, ref, alt)).fetchall()
+            rows = connection.execute(query, (normalize_chrom(chrom), pos, ref, alt)).fetchall()
         return {**status, "assertions": [dict(zip(columns, row)) for row in rows]}

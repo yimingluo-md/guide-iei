@@ -15,6 +15,8 @@ const roles = Object.keys(roleLabels) as (keyof ScoreMapping)[];
 const required = roles.slice(0, 4);
 const preference = "iei-hidden-custom-scores-v1";
 const preferenceEvent = "iei-custom-scores-display";
+const datasetsEvent = "iei-custom-scores-datasets-updated";
+export function refreshCustomScoreDatasets() { window.dispatchEvent(new Event(datasetsEvent)); }
 function subscribe(listener: () => void) {
   window.addEventListener("storage", listener);
   window.addEventListener(preferenceEvent, listener);
@@ -37,15 +39,22 @@ function saveHidden(hidden: Set<string>) {
 export function resetCustomScoreDisplay() { saveHidden(new Set()); }
 
 function useDatasets(refresh?: string) {
-  const [datasets, setDatasets] = useState<CustomDataset[]>([]);
-  const [error, setError] = useState("");
+  const [result, setResult] = useState<{datasets: CustomDataset[]; error: string}>();
   useEffect(() => {
     let active = true;
-    customScoreDatasets().then(result => { if (active) {setDatasets(result); setError("");} })
-      .catch(e => { if (active) setError(String(e)); });
-    return () => { active = false; };
+    let request = 0;
+    const reload = () => {
+      const current = ++request;
+      setResult(undefined);
+      customScoreDatasets().then(datasets => { if (active && current === request) setResult({datasets, error: ""}); })
+        .catch(e => { if (active && current === request) setResult({datasets: [], error: String(e)}); });
+    };
+    reload();
+    window.addEventListener(datasetsEvent, reload);
+    window.addEventListener("focus", reload);
+    return () => { active = false; window.removeEventListener(datasetsEvent, reload); window.removeEventListener("focus", reload); };
   }, [refresh]);
-  return {datasets, error};
+  return {datasets: result?.datasets ?? [], error: result?.error ?? "", result};
 }
 
 export function CustomScoreDisplaySettings() {
@@ -65,6 +74,7 @@ export function CustomScoreDisplaySettings() {
 }
 
 export function useCustomReviewScores(row: VariantRow) {
+  const {result} = useDatasets();
   const hgvsTranscript = row.hgvsC?.split(":")[0];
   const selectedTranscript = row.transcript;
   const versionedTranscript = hgvsTranscript && selectedTranscript && (hgvsTranscript === selectedTranscript
@@ -72,15 +82,17 @@ export function useCustomReviewScores(row: VariantRow) {
   const query = JSON.stringify({chrom: row.chrom, pos: row.pos, ref: row.ref, alt: row.alt, gene: row.gene,
     geneId: row.geneId, strand: row.transcriptStrand, transcript: row.transcript,
     versionedTranscript});
-  const [state, setState] = useState<{query: string; data?: Awaited<ReturnType<typeof lookupCustomScores>>; error?: string}>();
+  const [state, setState] = useState<{query: string; datasets: typeof result; data?: Awaited<ReturnType<typeof lookupCustomScores>>; error?: string}>();
   const hidden = useHiddenMetrics();
   useEffect(() => {
     let active = true;
-    lookupCustomScores(JSON.parse(query)).then(data => { if (active) setState({query, data}); })
-      .catch(e => { if (active) setState({query, error: String(e)}); });
+    if (result?.datasets.length) {
+      lookupCustomScores(JSON.parse(query)).then(data => { if (active) setState({query, datasets: result, data}); })
+        .catch(e => { if (active) setState({query, datasets: result, error: String(e)}); });
+    }
     return () => { active = false; };
-  }, [query]);
-  const current = state?.query === query ? state : undefined;
+  }, [query, result]);
+  const current = state?.query === query && state.datasets === result ? state : undefined;
   const cards = (current?.data ?? []).flatMap(d => d.scores.flatMap((s, i) => {
     const key = d.id + ":" + s.column;
     if (hidden.has(key)) return [];
@@ -94,7 +106,7 @@ export function useCustomReviewScores(row: VariantRow) {
         note: [d.name, ...context].join(" · "), noteWhenMissing: true};
     });
   }));
-  return {cards, error: current?.error || current?.data?.flatMap(d => d.error ? [d.error] : []).join(" ")};
+  return {cards, error: result?.error || current?.error || current?.data?.flatMap(d => d.error ? [d.error] : []).join(" ")};
 }
 
 export function CustomScoreSetup({job, onStarted}: {
@@ -112,6 +124,11 @@ export function CustomScoreSetup({job, onStarted}: {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const running = job?.status === "queued" || job?.status === "running";
+  const jobId = job?.id;
+  const jobStatus = job?.status;
+  useEffect(() => {
+    if (jobId && jobStatus !== "queued" && jobStatus !== "running") refreshCustomScoreDatasets();
+  }, [jobId, jobStatus]);
   const [repairName, setRepairName] = useState<string | null>(null);
   const replacing = repairName === name || datasets.some(d => d.name.toLowerCase() === name.trim().toLowerCase());
   async function choose(append: boolean) {
@@ -147,6 +164,7 @@ export function CustomScoreSetup({job, onStarted}: {
     setBusy(true); setError("");
     try {
       await removeCustomScores(dataset.id);
+      refreshCustomScoreDatasets();
       setRepairName(null);
       setRevision(value => value + 1);
     } catch (e) { setError(String(e)); } finally { setBusy(false); }

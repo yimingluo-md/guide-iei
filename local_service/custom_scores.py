@@ -27,6 +27,11 @@ STRANDS = {"+": "+", "1": "+", "+1": "+", "-": "-", "-1": "-"}
 BIN_SIZE = 1024
 
 
+def score_value(value):
+    value = value.strip()
+    return None if value.upper() in MISSING else value
+
+
 def source_paths(raw):
     if not isinstance(raw, list) or not raw or not all(isinstance(p, str) for p in raw):
         raise ValueError("Choose one or more local tab-separated files.")
@@ -194,16 +199,27 @@ def _install_locked(root, paths, spec, report):
                         try:
                             row = fields(line, names)
                             chrom = normalize_chrom(row[ix["chrom"]])
-                            ref, alt = row[ix["ref"]].upper(), row[ix["alt"]].upper()
-                            if ref in {"-", "*"} or alt in {"-", "*"} or (ref == alt and re.fullmatch(r"[ACGTN]+", ref)):
-                                skipped += 1
-                                continue
-                            pos, ref, alt = normalize_allele(row[ix["pos"]], row[ix["ref"]], row[ix["alt"]])
+                            ref, alt = row[ix["ref"]].strip().upper(), row[ix["alt"]].strip().upper()
+                            try:
+                                pos = int(row[ix["pos"]])
+                            except ValueError as exc:
+                                raise ValueError("position must be an integer") from exc
+                            if pos < 1:
+                                raise ValueError("position must be positive")
+                            if ref not in {"-", "*"} and not re.fullmatch(r"[ACGTN]+", ref):
+                                raise ValueError("REF must contain only A, C, G, T, or N")
                             context = [row[ix[k]].strip() if k in ix else "" for k in CONTEXT]
                             context[0] = "" if meta["dash_is_missing_strand"] and context[0] == "-" else strand(context[0])
+                            if (ref in {"-", "*"} or alt in {"-", "*", "."}
+                                    or "," in alt or re.fullmatch(r"<[^<>]+>", alt)
+                                    or "[" in alt or "]" in alt
+                                    or (ref == alt and re.fullmatch(r"[ACGTN]+", ref))):
+                                skipped += 1
+                                continue
+                            pos, ref, alt = normalize_allele(pos, ref, alt)
                         except ValueError as exc:
                             raise ValueError(f"{path.name}, data row {number:,}: {exc}") from exc
-                        line = "\t".join([str(pos), ref, alt, *context, *(row[i] for i in score_ix)])
+                        line = "\t".join([str(pos), ref, alt, *context, *(score_value(row[i]) or "" for i in score_ix)])
                         batch.append((chrom, pos // BIN_SIZE, count, line))
                         count += 1
                         if len(batch) == 2048:
@@ -213,7 +229,7 @@ def _install_locked(root, paths, spec, report):
                             report(f"Importing {path.name} · {count:,} rows read", None)
                             last_report = time.monotonic()
             if not count:
-                raise ValueError(f"No indexable variants. Skipped {skipped:,} wild-type or unanchored/symbolic rows.")
+                raise ValueError(f"No indexable variants. Skipped {skipped:,} wild-type or unsupported allele rows (including multi-ALT rows).")
             db.executemany("INSERT INTO spool VALUES(?,?,?,?)", batch)
             meta.update(rows=count, skipped_rows=skipped)
             report(f"Indexing {count:,} rows", None)
@@ -330,5 +346,5 @@ def matches(db, mapping, variant):
                     break
             else:
                 result.append({"context": context, "unresolved": unresolved,
-                               "values": [None if v in MISSING else v for v in row[6:]]})
+                               "values": [score_value(v) for v in row[6:]]})
     return result

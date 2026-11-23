@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 import errno
-import gzip
 import hashlib
 import html
 import json
@@ -46,7 +45,9 @@ from local_service.essential_setup import missing_resources, package_status, ref
 from pipeline.numeric import finite_float
 
 from pipeline.vcf_io import VCF_SUFFIXES
-from pipeline.starter_package import load_plan as load_starter_plan, installed_paths as starter_paths, apply_starters
+from pipeline.starter_package import (
+    apply_starters, dbnsfp_header_columns, installed_paths as starter_paths, load_plan as load_starter_plan,
+)
 from pipeline.spliceai_dataset import (
     FORMAT as SPLICEAI_SHARDED, valid as valid_full_spliceai, full_install_config,
 )
@@ -2943,7 +2944,7 @@ class AnnotationJobService:
         on_rate_limit: Callable[[float, int, int], None] | None = None,
     ) -> None:
         """Download one licensed OMIM file without exposing its URL."""
-        validate_omim_download_url(url, filename)
+        url, _ = validate_omim_download_url(url, filename)
         opener = urllib.request.build_opener(_OmimRedirectHandler(filename))
         rate_limit_attempts = 0
         while True:
@@ -5057,7 +5058,13 @@ class AnnotationJobService:
         }[resource_id]
         config.setdefault("plugins", {}).setdefault(plugin_name, {}).update(paths)
 
-    def _prefer_installed_managed_resources(self, config: dict, *, required_only: bool = False) -> dict:
+    def _prefer_installed_managed_resources(
+        self, config: dict, *, required_only: bool = False, for_setup: bool = False
+    ) -> dict:
+        self._prefer_installed_full_resources(config, required_only=required_only)
+        return self._apply_installed_starters(config, for_setup=for_setup)
+
+    def _prefer_installed_full_resources(self, config: dict, *, required_only: bool = False) -> None:
         # Older saved configurations predate these independently downloadable models.
         for key in gpn_star.MODELS:
             config.setdefault("wgs_review", {}).setdefault(key, {"enabled": False, "directory": "references/gpn-star"})
@@ -5077,12 +5084,14 @@ class AnnotationJobService:
             # provider without editing user YAML. Keep enable/required choices.
             full.update({key: splice[key] for key in ("enabled", "required") if key in splice})
             config.setdefault("plugins", {})["SpliceAI"] = full
+
+    def _apply_installed_starters(self, config: dict, *, for_setup: bool = False) -> dict:
         try:
             paths = starter_paths(self.annotation_root, load_starter_plan(
                 self.pipeline_root / "config/essential-annotations.json"))
         except (OSError, ValueError, KeyError, TypeError):
             paths = {}
-        return apply_starters(config, paths, self._resolved_reference_path)
+        return apply_starters(config, paths, self._resolved_reference_path, for_setup=for_setup)
 
     def recommended_wgs_status(self) -> dict:
         """Compact, read-only native setup view of the existing WGS contract."""
@@ -5312,14 +5321,7 @@ class AnnotationJobService:
     def _dbnsfp_header_columns(self, config: dict) -> set[str]:
         block = ((config.get("plugins") or {}).get("dbNSFP") or {})
         path = self._resolved_reference_path(block.get("path"))
-        if not path or not path.is_file():
-            return set()
-        opener = gzip.open if path.name.lower().endswith((".gz", ".bgz")) else open
-        try:
-            with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
-                return set(handle.readline().rstrip("\r\n").lstrip("#").split("\t"))
-        except (OSError, UnicodeError):
-            return set()
+        return dbnsfp_header_columns(path)
 
     @staticmethod
     def _required_sources(config: dict) -> set[str]:
@@ -5365,7 +5367,7 @@ class AnnotationJobService:
         }
         try:
             config = self._prefer_installed_managed_resources(
-                self._load_config(config_path), required_only=required_only
+                self._load_config(config_path), required_only=required_only, for_setup=True
             )
         except ValueError as exc:
             return {
@@ -5448,13 +5450,12 @@ class AnnotationJobService:
             generic_indexed_resources = set()
 
         sources = []
+        required_sources = self._required_sources(config)
         for source_id, location in ANNOTATION_SOURCE_PATHS.items():
             parent = config.get(location[0]) or {}
             block = parent if location[1] is None else parent.get(location[1]) or {}
             enabled = bool(block.get("enabled", False))
-            required = source_id in self._required_sources(config) or bool(
-                block.get("required", False)
-            )
+            required = source_id in required_sources or (source_id != "dbnsfp" and bool(block.get("required")))
             if required_only and not (enabled and required):
                 continue
             paths = source_path(source_id, block)
@@ -5598,7 +5599,7 @@ class AnnotationJobService:
                 or SOURCE_RECOMMENDATION_DEFAULTS.get(source_id)
                 or ("required" if required else "optional")
             )
-            if source_id == "dbnsfp" and source_id not in self._required_sources(config):
+            if source_id == "dbnsfp" and source_id not in required_sources:
                 recommendation = "optional"
                 setup["recommendation"] = "optional"
                 setup["instructions"] = [line for line in setup.get("instructions", [])
@@ -5779,11 +5780,9 @@ class AnnotationJobService:
     def _write_job_config(
         self, job_id: str, base_config_path: Path, options: dict
     ) -> Path:
-        config = self._absolutize_annotation_paths(
-            self._prefer_installed_managed_resources(
-                self._load_config(base_config_path)
-            )
-        )
+        config = self._load_config(base_config_path)
+        self._prefer_installed_full_resources(config)
+        config = self._absolutize_annotation_paths(config)
         analysis_scope = str(options.get("analysis_scope") or "exome")
         if analysis_scope not in {"exome", "whole_genome"}:
             raise ValueError("analysis_scope must be exome or whole_genome")
@@ -5803,11 +5802,6 @@ class AnnotationJobService:
                     location[1], {}
                 )["enabled"] = False
         config.setdefault("region", {})["coding_only"] = analysis_scope == "exome"
-        for source_id in self._required_sources(config):
-            if options.get(source_id) is False:
-                raise ValueError(
-                    f"{source_id} is required by the diagnostic annotation profile"
-                )
         for source_id, location in ANNOTATION_SOURCE_PATHS.items():
             if source_id not in options:
                 continue
@@ -5817,9 +5811,6 @@ class AnnotationJobService:
                 analysis_scope == "whole_genome"
                 or source_id not in {"promoterai", "cadd_wgs", "ccre", "alphagenome_avi", "gpn_star_m"}
             )
-        if "dbnsfp" in options:
-            block = config["plugins"]["dbNSFP"]
-            block["required"] = bool(block["enabled"])
         if "fork" in options:
             try:
                 fork = int(options["fork"])
@@ -5865,6 +5856,17 @@ class AnnotationJobService:
                     "UI predictor selection requires dbNSFP columns to be a YAML list"
                 )
             dbnsfp["columns"] = list(dict.fromkeys(base_columns + requested_columns))
+
+        self._apply_installed_starters(config)
+        if "dbnsfp" in options:
+            # Keep an explicit selection required even if discovery found only starters.
+            selected_dbnsfp = bool(options["dbnsfp"])
+            config["plugins"]["dbNSFP"].update(enabled=selected_dbnsfp, required=selected_dbnsfp)
+        for source_id in self._required_sources(config):
+            if options.get(source_id) is False:
+                raise ValueError(
+                    f"{source_id} is required by the diagnostic annotation profile"
+                )
 
         # These consumers historically resolve paths relative to the config
         # location. Make the two affected values absolute in the generated,

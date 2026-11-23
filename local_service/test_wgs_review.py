@@ -9,7 +9,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from local_service.cohort_store import CohortStore, VcfHeader
+from local_service.cohort_store import CohortStore, VcfHeader, read_vcf_header
 from local_service.test_cohort_store import FakeHtsBackend, write_parallel_vcf
 from local_service.wgs_review import (
     WgsPrefilterOptions,
@@ -329,6 +329,17 @@ class WgsPrefilterTests(unittest.TestCase):
         self.assertIn("ENST_PICK", compacted)
         self.assertIn("ENST_FALLBACK", compacted)
         self.assertNotIn("ENST_REDUNDANT", compacted)
+
+    def test_compact_review_keeps_geneless_features_at_a_mixed_locus(self):
+        source = Path(__file__).resolve().parents[1] / "test/contracts/geneless-regulatory.vcf"
+        record = source.read_text().splitlines()[-1]
+        entries = record.split("\t")[7][4:].split(",")
+        compacted, scanned, retained = compact_review_transcripts(record, read_vcf_header(source))
+        # Keep ordinary group fallbacks (tx1 and the ENSG1 row) as well as all
+        # three eligible non-transcript annotations. tx2 and the mixed term drop.
+        expected = [entries[i] for i in (0, 1, 2, 3, 5)]
+        self.assertEqual((scanned, retained), (len(entries), len(expected)))
+        self.assertEqual(compacted.split("\t")[7], "CSQ=" + ",".join(expected))
 
     def test_compact_review_preserves_one_strict_logofunc_source_per_allele_and_gene(self):
         fields = (

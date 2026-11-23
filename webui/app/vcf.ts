@@ -994,9 +994,18 @@ const GENELESS_REGULATORY_TERMS = new Set([
   "regulatory_region_amplification", "TF_binding_site_variant", "TFBS_ablation", "TFBS_amplification",
 ]);
 
-export function isGenelessRegulatoryConsequence(row: VariantRow) {
-  if ((row.gene && row.gene !== "—") || row.geneId || row.featureType === "Transcript") return false;
-  return row.consequence.split(/[&,]/).every(term => GENELESS_REGULATORY_TERMS.has(term));
+function regulatoryConsequence(featureType: string | undefined, feature: string | undefined, consequence: string) {
+  if (featureType) {
+    if (featureType !== "RegulatoryFeature" && featureType !== "MotifFeature") return false;
+  } else if (feature && !/^ENS[RM][0-9]/.test(feature)) {
+    return false;
+  }
+  return consequence.split(/[&,]/).every(term => GENELESS_REGULATORY_TERMS.has(term));
+}
+
+export function isGenelessRegulatoryConsequence(row: Pick<VariantRow, "gene" | "geneId" | "featureType" | "transcript" | "consequence">) {
+  return (!row.gene || row.gene === "—") && !row.geneId
+    && regulatoryConsequence(row.featureType, row.transcript, row.consequence);
 }
 
 const EMPTY = new Set(["", ".", "-"]);
@@ -1052,12 +1061,18 @@ function compactClinicalConsequences(
   alleleInfo: Record<string, string>,
 ) {
   const groups = new Map<string, Record<string, string>[]>();
+  const regulatory = new Set<Record<string, string>>();
   consequences.forEach((csq) => {
     const combined = { ...alleleInfo, ...csq };
-    const gene = consequenceGene(combined) || "intergenic";
+    const gene = consequenceGene(combined);
+    if (!gene && regulatoryConsequence(
+      first(combined, ["Feature_type"]), first(combined, ["Feature"]), first(combined, ["Consequence"]),
+    )) {
+      regulatory.add(csq);
+    }
     groups.set(gene, [...(groups.get(gene) ?? []), csq]);
   });
-  return [...groups.values()].flatMap((entries) => {
+  const preferred = [...groups.values()].flatMap(entries => {
     const mane = entries.filter((csq) => truthy(first(
       { ...alleleInfo, ...csq }, ["MANE_SELECT", "MANE_PLUS_CLINICAL"],
     )));
@@ -1067,6 +1082,9 @@ function compactClinicalConsequences(
     )));
     return picked.length ? picked : entries.slice(0, 1);
   });
+  if (!regulatory.size) return preferred;
+  const retained = new Set([...preferred, ...regulatory]);
+  return consequences.filter(csq => retained.has(csq));
 }
 
 function decode(value: string | undefined) {
@@ -1142,12 +1160,10 @@ function promoterAiFirstNumber(raw: string): number | null {
 
 function promoterAiUnambiguousInteger(raw: string): number | null {
   if (EMPTY.has(raw)) return null;
-  const values = [...new Set(
-    promoterAiTokens(raw)
-      .filter((token) => !EMPTY.has(token))
-      .map((token) => Number(token))
-      .filter((value) => Number.isFinite(value) && Number.isInteger(value)),
-  )];
+  const tokens = promoterAiTokens(raw).filter((token) => !EMPTY.has(token));
+  const numbers = tokens.map((token) => Number(token));
+  if (numbers.some((value) => !Number.isFinite(value) || !Number.isInteger(value))) return null;
+  const values = [...new Set(numbers)];
   return values.length === 1 ? values[0] : null;
 }
 
@@ -1156,12 +1172,9 @@ function promoterAiNormalizedStrand(raw: string): "" | "+" | "-" {
   const encoding: Record<string, "+" | "-"> = {
     "+": "+", "1": "+", "-": "-", "-1": "-",
   };
-  const strands = [...new Set(
-    promoterAiTokens(raw).flatMap((token) => {
-      const strand = encoding[token];
-      return strand ? [strand] : [];
-    }),
-  )];
+  const tokens = promoterAiTokens(raw).filter((token) => token !== "" && token !== ".");
+  if (tokens.some((token) => !Object.hasOwn(encoding, token))) return "";
+  const strands = [...new Set(tokens.map((token) => encoding[token]))];
   return strands.length === 1 ? strands[0] : "";
 }
 

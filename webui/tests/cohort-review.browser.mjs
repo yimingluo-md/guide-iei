@@ -37,8 +37,11 @@ const browser = await puppeteer.launch({ headless: true,
   executablePath: process.env.CHROME_PATH || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" });
 try {
   const page = await browser.newPage();
+  page.on("pageerror", error => { throw error; });
   await page.setViewport({ width: 1440, height: 1000 });
   let clinical = true;
+  let regulatoryCarrier;
+  let compact = false;
   const handoffs = [];
   await page.setRequestInterception(true);
   page.on("request", request => {
@@ -51,13 +54,32 @@ try {
     const file = carrier => ({ name: carrier.sample + ".vcf", source_path: carrier.source_path,
       import_profile: "full", analysis_scope: "exome" });
     switch (url.pathname) {
+      case "/api/service/status":
+      case "/api/service/watch": return json({service: "GUIDE-IEI", instance_id: "test", watch_supported: false});
       case "/api/cohort/stats": return json({ individuals: 2, files: 2, variants: 2,
         full_files: 2, prefiltered_files: 0, carrier_observations: 3 });
       case "/api/cohort/profiles": return json({ profiles: [] });
-      case "/api/cohort/query": return json({ rows: carriers, variants: 1, individuals: 2, total: 2,
+      case "/api/cohort/variant-detail": {
+        assert.equal(JSON.parse(request.postData()).variant_key, regulatoryCarrier.variant_key);
+        const alternate = { ...regulatoryCarrier, consequence: "intron_variant", gene: "NEARBY",
+          feature_type: "Transcript", transcript: "OTHER" };
+        return json({ rows: [alternate], individuals: 1, annotations: [alternate, regulatoryCarrier] });
+      }
+      case "/api/cohort/query": return json({ rows: regulatoryCarrier ? [regulatoryCarrier] : carriers,
+        variants: 1, individuals: regulatoryCarrier ? 1 : 2, total: regulatoryCarrier ? 1 : 2,
         represented_profiles: [], truncated: false });
       case "/api/cohort/review-records":
         handoffs.push(JSON.parse(request.postData()));
+        if (regulatoryCarrier) {
+          const row = regulatoryCarrier;
+          const record = [
+            "##fileformat=VCFv4.2", "##reference=GRCh38", "##contig=<ID=1,length=248956422>",
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|IMPACT|SYMBOL|Feature_type|Feature|PICK">',
+            `#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t${row.sample}`,
+            `1\t${row.pos}\t.\tA\tG\t99\tPASS\tCSQ=G|${row.consequence}|MODIFIER||${row.feature_type}|${row.transcript}|,G|intron_variant|MODIFIER|NEARBY|Transcript|OTHER|\tGT\t0/1`, "",
+          ].join("\n");
+          return json({ files: compact ? [] : [{...file(row), vcf: record, selections: [row]}], warnings: [] });
+        }
         return json({ files: carriers.map(carrier => ({ ...file(carrier), vcf: vcf(carrier, clinical),
           selections: [carrier] })), warnings: [] });
       case "/api/cohort/sample-review":
@@ -136,6 +158,41 @@ try {
   assert.equal(await page.$(".review-detail"), null);
   assert.match(await page.$eval(".content-header .subtitle", el => el.textContent), /^0 transcript-level rows/);
   console.log("PASS: both cohort handoffs preserve declared empty metrics and open the prepared review list");
+  for (const [pos, consequence, feature_type, transcript] of [
+    [200, "intergenic_variant", "", ""],
+    [300, "regulatory_region_variant", "RegulatoryFeature", "element"],
+  ]) {
+    regulatoryCarrier = { ...carriers[0], pos, variant_key: `1:${pos}:A:G`, analysis_scope: "whole_genome",
+      gene: "—", gene_id: "", transcript, feature_type, consequence, impact: "MODIFIER",
+      hgvsp: "", hgvsc: "", mane: false, picked: false,
+      dp: 40, gq: 99, qual: 99, allele_balance: 0.5, ptc_distance: null };
+    for (compact of [false, true]) {
+      await page.locator('.nav-item ::-p-text(Cohort search)').click();
+      await page.locator('.cohort-query-tabs ::-p-text(Genomic region)').click();
+      await page.locator('.query-card input[placeholder*="Mb"]').fill(`1:${pos}-${pos}`);
+      await page.locator(".qualifying-checks label:first-child").click();
+      await page.locator('.query-card ::-p-text(Find carriers)').click();
+      await page.locator(".cohort-variant-table tbody tr").click();
+      await page.locator(".cohort-transcript-list article").wait();
+      await page.locator('.cohort-detail-head ::-p-text(REVIEW THIS VARIANT)').click();
+      const detailLocus = `.review-hero-locus .variant-id[title="${regulatoryCarrier.variant_key}"]`;
+      await page.waitForSelector(detailLocus);
+      const detail = await page.$eval(".review-detail", el => el.textContent);
+      assert(detail.includes(consequence.replaceAll("_", " ")));
+      assert.equal(detail.includes(regulatoryCarrier.source_path), !compact, "restored VCF or compact index");
+      assert.equal(await page.$(".transcript-table-scroll"), null, "the unpicked intron must stay excluded");
+      await page.locator(".review-list-head button").click();
+      await page.waitForSelector(".table-frame tbody tr:has(.impact-pill)");
+      assert.match(await page.$eval(".content-header .subtitle", el => el.textContent), /^1 transcript-level row/);
+      await page.locator(".table-frame tbody tr:has(.impact-pill)").click();
+      await page.waitForSelector(detailLocus);
+      await page.locator(".review-list-head button").click();
+      assert.deepEqual(handoffs.at(-1), {selections: [{
+        sample_entry_id: regulatoryCarrier.sample_entry_id, variant_key: regulatoryCarrier.variant_key,
+      }]});
+    }
+  }
+  console.log("PASS: gene-less Cohort findings open from results through detail with restored and compact annotations");
 } finally {
   await browser.close();
 }

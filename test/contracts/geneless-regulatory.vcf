@@ -1,0 +1,6 @@
+##fileformat=VCFv4.2
+##reference=GRCh38
+##contig=<ID=1,length=248956422>
+##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|IMPACT|Feature_type|Feature|Gene|SYMBOL|PICK">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	SYNTHETIC
+1	100	.	A	G	99	PASS	CSQ=G|intron_variant|MODIFIER|Transcript|tx1|||,G|intergenic_variant|MODIFIER|||||,G|regulatory_region_variant|MODIFIER|RegulatoryFeature|element|||,G|TF_binding_site_variant&TFBS_ablation|MODIFIER|MotifFeature|motif|||,G|regulatory_region_variant|MODIFIER|Transcript|tx2|||,G|regulatory_region_variant|MODIFIER|||ENSG1||,G|intergenic_variant&intron_variant|MODIFIER|||||	GT	0/1

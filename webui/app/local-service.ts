@@ -519,6 +519,7 @@ export type StagedAnnotationFile = {
 };
 
 export type CohortStats = {
+  annotation_reindex_samples?: number;
   files: number;
   sample_entries: number;
   individuals: number;
@@ -529,6 +530,8 @@ export type CohortStats = {
 };
 
 export type CohortSample = {
+  annotation_evidence_complete?: number;
+  variant_metadata_complete?: number;
   id: number;
   name: string;
   file_id: number;
@@ -632,6 +635,7 @@ export type CohortQueryRow = {
   unscored_indel_reasons: string | null;
   gene: string;
   gene_id: string;
+  feature_type?: string | null;
   transcript: string;
   hgvsc: string;
   hgvsp: string;
@@ -698,7 +702,7 @@ export type CohortQueryResult = {
 };
 
 export type CohortVariantAnnotation = Pick<CohortQueryRow,
-  "gene" | "gene_id" | "transcript" | "hgvsc" | "hgvsp" |
+  "gene" | "gene_id" | "feature_type" | "transcript" | "hgvsc" | "hgvsp" |
   "consequence" | "impact" | "gnomad_popmax" | "cadd" |
   "alpha_missense" | "spliceai" | "promoterai" |
   "logofunc_prediction" | "logofunc_neutral" | "logofunc_gof" |
@@ -1718,16 +1722,16 @@ export async function removeSampleLibraryDataset(datasetId: string, removeManage
   );
 }
 
-export async function getStorageStats() {
-  return request<StorageStats>("/api/storage");
+export async function getStorageStats(signal?: AbortSignal) {
+  return request<StorageStats>("/api/storage", { signal });
 }
 
-export async function getStorageConfiguration() {
-  return request<StorageConfiguration>("/api/storage/locations");
+export async function getStorageConfiguration(signal?: AbortSignal) {
+  return request<StorageConfiguration>("/api/storage/locations", { signal });
 }
 
-export async function getStorageMigrations() {
-  return (await request<{ jobs: StorageMigrationJob[] }>("/api/storage/migrations")).jobs;
+export async function getStorageMigrations(signal?: AbortSignal) {
+  return (await request<{ jobs: StorageMigrationJob[] }>("/api/storage/migrations", { signal })).jobs;
 }
 
 export async function testStorageLocation(kind: StorageLocationKind, path: string) {
