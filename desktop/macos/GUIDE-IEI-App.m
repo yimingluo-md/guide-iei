@@ -222,7 +222,7 @@
 }
 - (void)request:(NSString *)route body:(NSDictionary *)body done:(void (^)(NSDictionary *, NSString *))done {
     NSURL *base = self.baseURL;
-    if (!base) { done(nil, @"Starting the workbench…"); return; }
+    if (!base) { dispatch_async(dispatch_get_main_queue(), ^{ done(nil, @"Starting the workbench…"); }); return; }
     NSMutableURLRequest *request = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:route relativeToURL:base]];
     request.timeoutInterval = 5;
     if (body) {
@@ -495,7 +495,7 @@
     [self showControls:nil]; return YES;
 }
 - (BOOL)windowShouldClose:(NSWindow *)sender { [sender orderOut:nil]; return NO; }
-- (void)checkSetupQuitReply:(NSString *)requestID {
+- (void)checkSetupQuitReply:(NSString *)requestID deadline:(NSDate *)deadline {
     if (!self.quitting || !self.worker.running) return;
     NSDictionary *status = [self startupStatus];
     NSString *failure = status[@"quit_error"];
@@ -507,8 +507,15 @@
         [self alert:failure];
         return;
     }
+    if (deadline.timeIntervalSinceNow <= 0) {
+        self.quitting = NO;
+        [NSApp replyToApplicationShouldTerminate:NO];
+        [self refreshStatus:nil];
+        [self alert:@"The workbench has not finished stopping. It may still complete the confirmed Quit; you can also try Quit again."];
+        return;
+    }
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2), dispatch_get_main_queue(), ^{
-        [self checkSetupQuitReply:requestID];
+        [self checkSetupQuitReply:requestID deadline:deadline];
     });
 }
 - (NSApplicationTerminateReply)requestSetupQuit {
@@ -518,7 +525,8 @@
         [self refreshStatus:nil];
         return NSTerminateCancel;
     }
-    dispatch_async(dispatch_get_main_queue(), ^{ [self checkSetupQuitReply:requestID]; });
+    NSDate *deadline = [NSDate dateWithTimeIntervalSinceNow:180];
+    dispatch_async(dispatch_get_main_queue(), ^{ [self checkSetupQuitReply:requestID deadline:deadline]; });
     return NSTerminateLater;
 }
 - (NSApplicationTerminateReply)applicationShouldTerminate:(NSApplication *)app {
@@ -532,7 +540,9 @@
             if ([confirm runModal] != NSAlertFirstButtonReturn) return NSTerminateCancel;
         }
         self.quitting = YES; self.statusLabel.stringValue = @"Stopping GUIDE-IEI…";
-        if (self.preparing) return [self requestSetupQuit];
+        // The owned supervisor survives service restarts and keeps this
+        // channel until a replacement service can check shutdown blockers.
+        if (self.preparing || self.ownsService) return [self requestSetupQuit];
         if (!self.ownsService && !self.baseURL) { [self.worker terminate]; return NSTerminateLater; }
         [self request:@"/api/service/quit" body:@{@"confirm": @YES, @"instance_id": self.instanceID} done:^(NSDictionary *value, NSString *failure) {
             (void)value;

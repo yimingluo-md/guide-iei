@@ -142,6 +142,8 @@ tiers, and each remembers its own edits while the query panel is open.
 
 If Cohort Search shows a reindexing notice after a software update, open **Manage samples** to identify the flagged entries. In **Sample Library**, expand the callset, find each affected sample, and choose **More actions → Rebuild search index**. If the sample shows **Cohort index needs repair**, choose **Repair Cohort Search**. Rebuilding rereads the annotated VCF. A full WGS index requires access to the original annotated file.
 
+If you remove or replace a sample before rebuilding, the workbench may need to reread other flagged samples’ annotated VCFs to preserve their evidence. If it cannot verify a surviving source, restore the original file at the path shown and retry.
+
 Each sample keeps its own capture profile when several samples share a VCF. When you remove or replace a sample, Cohort Search updates the transcript evidence, rsID, original coordinates, and unscored-indel reason using the surviving sources. If only the removed sample supplied an rsID, search by chromosome, position, reference, and alternate allele to find any remaining carriers.
 
 ## Building a large collection: bulk import

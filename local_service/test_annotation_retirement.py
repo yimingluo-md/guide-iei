@@ -191,7 +191,7 @@ class AnnotationRetirementTests(unittest.TestCase):
         self.assert_survivor()
         self.assertEqual(self.store.query({"mode": "variant", "query": KEY})["individuals"], 2)
 
-    def test_legacy_retirement_clears_unattributed_claims_until_ordinary_reimport(self):
+    def test_legacy_retirement_recovers_properties_from_the_surviving_source(self):
         self.store.import_vcf(self.low)
         self.store.import_vcf(self.high)
         with self.store._session() as c:
@@ -201,14 +201,10 @@ class AnnotationRetirementTests(unittest.TestCase):
         self.store = CohortStore(self.db)
         self.assertEqual(self.store.stats()["annotation_reindex_samples"], 2)
         self.assertEqual(self.high_samples(), {"Low", "High"})
-        # Even a sole remaining carrier does not establish which transcript
-        # it contributed, nor its impact, flags, or clinical assertions.
+        # Only the verified surviving source establishes these properties.
         high = next(s for s in self.store.list_samples() if s["name"] == "High")
         self.store.remove_samples([high["id"]])
-        row, = self.annotations()
-        self.assertEqual((row["impact"], row["consequence"], row["transcript"]), ("UNKNOWN", "unannotated", ""))
-        self.assertFalse(row["clinvar"])
-        self.assertEqual(self.high_samples(), set())
+        self.assert_survivor()
         self.assertEqual(self.store.import_vcf(self.low)["status"], "imported")
         self.assertEqual(self.store.stats()["annotation_reindex_samples"], 0)
         self.assertEqual(self.store.import_vcf(self.low)["status"], "unchanged")
@@ -237,8 +233,9 @@ class AnnotationRetirementTests(unittest.TestCase):
         summary = {r["transcript"]: r for r in self.annotations()}
         self.assertEqual(set(summary), {"ENST_GENE", "ENST_OTHER"})
         self.assertEqual(summary["ENST_GENE"]["cadd"], 0)
-        self.assertTrue(all(row["impact"] == "UNKNOWN" and not row["mane"] for row in summary.values()))
-        self.assertEqual(self.high_samples(), set())
+        self.assertEqual(summary["ENST_GENE"]["impact"], "MODERATE")
+        self.assertEqual(summary["ENST_OTHER"]["impact"], "HIGH")
+        self.assertTrue(summary["ENST_OTHER"]["mane"])
         self.store.remove_samples([ids["Sibling"]])
         recovered, = self.annotations()
         self.assertEqual((recovered["transcript"], recovered["consequence"], recovered["cadd"]),
@@ -284,9 +281,11 @@ class AnnotationRetirementTests(unittest.TestCase):
         content = self.low.read_text()
         self.low.write_text(content.replace("missense_variant", "nonsense_variant"))
         ids = {s["name"]: s["id"] for s in self.store.list_samples()}
-        self.store.remove_samples([ids["Sibling"]])
-        row, = self.annotations()
-        self.assertEqual((row["transcript"], row["consequence"], row["cadd"]), ("", "unannotated", None))
+        before = self.annotations()
+        with self.assertRaisesRegex(ValueError, "source fingerprint changed"):
+            self.store.remove_samples([ids["Sibling"]])
+        self.assertEqual({s["id"] for s in self.store.list_samples()}, set(ids.values()))
+        self.assertEqual(self.annotations(), before)
 
     def test_library_supersession_and_reactivation_on_a_shared_allele(self):
         self.store.import_vcf(self.low)

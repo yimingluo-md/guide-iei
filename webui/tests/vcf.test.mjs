@@ -2229,3 +2229,29 @@ test("single-copy discovery respects GT ploidy, PAR, sex and carrier QC", () => 
   assert.equal(hasSingleCopyCandidate(cohort, "unknown", { ...NO_VARIANT_QC, minDp: 10 }), false);
   assert.equal(hasSingleCopyCandidate({ ...cohort, carriers: [{ sample: "S", evidence: { ...evidence, called: false } }] }, "unknown"), false);
 });
+
+test("uses declared bcftools provenance for both split siblings and warns when lost", async () => {
+  const source = await readFile(new URL("../../test/contracts/bcftools-1.24-split-csq.vcf", import.meta.url), "utf8");
+  for (const mode of ["declared", "reannotated", "absent", "forged", "invalid"]) {
+    let vcf = source;
+    if (mode === "reannotated") vcf = vcf.replace("CSQ=TG|1|SNVGENE|missense_variant,-|2|DELGENE|frameshift_variant;ORIG=1|100|ACG|ATG,A|2", "CSQ=-|1|DELGENE|frameshift_variant;ORIG=1|100|ACG|ATG,A|2");
+    if (mode === "absent") vcf = vcf.replace(/^##INFO=<ID=ORIG,.*\n/m, "").replaceAll(/;ORIG=1\|100\|ACG\|ATG,A\|[12]/g, "");
+    if (mode === "forged") vcf = vcf.replace("Original variant. Format: CHR|POS|REF|ALT|USED_ALT_IDX", "Untrusted field");
+    if (mode === "invalid") vcf = vcf.replace("ORIG=1|100|ACG|ATG,A|1", "ORIG=1|100|ACG|ATG,A|2");
+    const result = await parseVcfFiles([new File([vcf], "split.vcf")]);
+    const byAlt = Object.fromEntries(result.rows.map(row => [row.alt, row.gene]));
+    assert.equal(byAlt.A, "DELGENE", mode);
+    assert.equal(byAlt.T, ["declared", "reannotated"].includes(mode) ? "SNVGENE" : "—", mode);
+    assert.equal(result.summary.warnings.some(w => w.includes("could not be assigned")), !["declared", "reannotated"].includes(mode), mode);
+  }
+});
+
+test("matches VEP symbolic deletion without assigning it to another symbolic allele", async () => {
+  const vcf = ["##fileformat=VCFv4.2", "##reference=GRCh38",
+    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|SYMBOL">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\t<DEL>\t.\tPASS\tCSQ=deletion|DELGENE\tGT\t0/1",
+    "1\t200\t.\tA\t<DUP>\t.\tPASS\tCSQ=deletion|WRONG\tGT\t0/1"].join("\n");
+  const result = await parseVcfFiles([new File([vcf], "symbolic.vcf")]);
+  assert.deepEqual(result.rows.map(row => row.gene), ["DELGENE", "—"]);
+});

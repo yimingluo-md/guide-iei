@@ -1022,6 +1022,11 @@ class PredictorImportIntegrationTests(unittest.TestCase):
                 if scenario == "missing":
                     path.unlink()
                 sample = next(s for s in store.list_samples() if s["name"] == "A")
+                if scenario in {"missing", "changed", "genotype_mismatch"}:
+                    with self.assertRaisesRegex(ValueError, "Cannot preserve legacy annotations"):
+                        store.remove_samples([sample["id"]])
+                    self.assertEqual({s["name"] for s in store.list_samples()}, {"A", "B"})
+                    continue
                 store.remove_samples([sample["id"]])
                 with store._session() as c:
                     scores = tuple(c.execute("SELECT spliceai,alpha_missense FROM cohort_annotations").fetchone())

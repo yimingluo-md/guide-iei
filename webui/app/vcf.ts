@@ -1566,9 +1566,13 @@ function consequenceMatchesAlt(
   if (alts.length !== 1 && /^\d+$/.test(alleleNumber)) return Number(alleleNumber) === altIndex + 1;
   const allele = consequence.Allele || "";
   if (!allele || allele === ".") {
-    return alts.length === 1 && (!alleleNumber || alleleNumber === "." || alleleNumber === "1");
+    return false;
   }
   const token = allele.toUpperCase();
+  if (token === "DELETION") {
+    const matches = alts.flatMap((alt, index) => alt.toUpperCase() === "<DEL>" ? [index] : []);
+    return matches.length === 1 && matches[0] === altIndex;
+  }
   // VEP 113 strips one common anchor across the record, including from
   // same-length siblings of an indel. Star alleles keep their spelling.
   const starAllele = (alt: string) => alt === "*" || alt === "<*>";
@@ -1586,6 +1590,27 @@ function consequenceMatchesAlt(
     if (matches.length) return matches.length === 1 && matches[0] === altIndex;
   }
   return false;
+}
+
+function oldRecordContext(info: Record<string, string>, tags: string[], chrom: string,
+  pos: number, ref: string, alts: string[]): [string, string[], number] | null {
+  if (alts.length !== 1) return null;
+  const contexts: [string, string[], number][] = [];
+  for (const tag of tags) {
+    const parts = (info[tag] ?? "").split("|");
+    if (parts.length !== 5 || !/^\d+$/.test(parts[1]) || !/^\d+$/.test(parts[4])) continue;
+    const [oldChrom, oldPos, oldRef, rawAlts, used] = parts;
+    const oldAlts = rawAlts.split(",");
+    const index = Number(used) - 1;
+    if (index < 0 || index >= oldAlts.length || Number(oldPos) < 1
+      || !/^[ACGTN]+$/i.test(oldRef) || !/^[ACGTN]+$/i.test(oldAlts[index])
+      || !/^[ACGTN]+$/i.test(ref) || !/^[ACGTN]+$/i.test(alts[0])) continue;
+    if (canonicalVariantKey(oldChrom, Number(oldPos), oldRef, oldAlts[index])
+      !== canonicalVariantKey(chrom, pos, ref, alts[0])) continue;
+    contexts.push([oldRef, oldAlts, index]);
+  }
+  return contexts.length && contexts.every(c => JSON.stringify(c) === JSON.stringify(contexts[0]))
+    ? contexts[0] : null;
 }
 
 function minimum(record: Record<string, string>, keys: string[]) {
@@ -1998,6 +2023,7 @@ export async function parseVcfFiles(
   let filesWithContigDefinitions = 0;
   let duplicateRecordOccurrences = 0;
   let fullTranscriptRows = 0;
+  let unmatchedCsq = false;
   const annotationFields = new Set<string>();
 
   for (const file of files) {
@@ -2020,6 +2046,7 @@ export async function parseVcfFiles(
     const lines = await vcfHeaderLines(file);
     const infoNumbers = new Map<string, string>();
     let csqFields: string[] = [];
+    const oldRecordTags: string[] = [];
     for (const line of lines) {
       if (!line.startsWith("##INFO=<")) continue;
       // Quoted descriptions may contain commas or text resembling attributes.
@@ -2029,6 +2056,10 @@ export async function parseVcfFiles(
       ));
       if (!attributes.ID) continue;
       infoNumbers.set(attributes.ID, attributes.Number ?? "");
+      if (attributes.Number === "1" && attributes.Type === "String"
+        && attributes.Description === '"Original variant. Format: CHR|POS|REF|ALT|USED_ALT_IDX"') {
+        oldRecordTags.push(attributes.ID);
+      }
       if (attributes.ID === "CSQ") {
         const schema = attributes.Description?.match(/Format:\s*([^">]+)/i);
         if (schema) csqFields = schema[1].trim().split("|");
@@ -2250,9 +2281,17 @@ export async function parseVcfFiles(
         // shared array those rows reference. The popmax decision is made
         // once per variant, at parse time, so the union of many exomes
         // stays bounded (an unavailable popmax always retains the variant).
+        const original = oldRecordContext(info, oldRecordTags, chrom, pos, ref, alts);
         const matching = consequences.filter(
-          (csq) => consequenceMatchesAlt(csq, ref, alts, altIndex),
+          (csq) => original
+            ? consequenceMatchesAlt(csq, original[0], original[1], original[2])
+              || (csq.ALLELE_NUM === "1" && consequenceMatchesAlt(csq, ref, alts, altIndex)
+                && consequenceMatchesAlt({ Allele: csq.Allele }, original[0], original[1], original[2]))
+            : consequenceMatchesAlt(csq, ref, alts, altIndex),
         );
+        if (alts.length === 1 && info.CSQ && info.CSQ !== "." && !matching.length) {
+          unmatchedCsq = true;
+        }
         const allSelected = matching.length ? matching : [{} as Record<string, string>];
         let effectiveCarriers = cohortCarriers;
         if (aggregatedCohort && cohortCarriers) {
@@ -3293,6 +3332,7 @@ export async function parseVcfFiles(
       + "without a record at a site is not confirmed reference.",
     );
   }
+  if (unmatchedCsq) warnings.push("Some CSQ annotations could not be assigned to their ALT. Reannotate the original VCF or preserve original-record provenance with bcftools norm --old-rec-tag ORIG when splitting.");
   if (options.clinicalTranscriptsOnly && fullTranscriptRows > rows.length) {
     warnings.push(
       `Responsive clinical-transcript view: showing ${rows.length.toLocaleString()} MANE, `

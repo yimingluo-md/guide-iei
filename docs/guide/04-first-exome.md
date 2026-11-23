@@ -43,6 +43,12 @@ routes:
 
 Drag the VCF file onto the drop zone, or click to browse.
 
+If review reports that some VEP consequences could not be assigned to an ALT,
+the file may have been split and normalized after annotation. Review the original
+annotated VCF, or normalize the input before annotating it again. If your
+pipeline splits an annotated VCF with bcftools, use `--old-rec-tag ORIG` when
+splitting to preserve the original allele identities.
+
 GUIDE-IEI recognizes chromosome aliases such as `chrM` and `MT`. If it reports
 that two contigs in the same VCF map to one chromosome, ask the file provider
 for an export with consistent chromosome names. Simply renaming both could

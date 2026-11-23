@@ -35,6 +35,7 @@ from local_service.cohort_store import (
 )
 from local_service.element_gene_links import interval as affected_bed_interval
 from pipeline.numeric import finite_float
+from pipeline.genia_alleles import old_record_context
 
 from pipeline.vcf_io import COMPRESSED_SUFFIXES
 from pipeline.promoterai_evidence import (
@@ -68,7 +69,7 @@ NONCODING_MODES = {"ccre", "all", "none"}
 UNSCORED_SPLICEAI_INTRONIC = "SpliceAI_intronic"
 UNSCORED_PROMOTERAI_PROMOTER = "PromoterAI_promoter"
 PROMOTERAI_WINDOW_BP = 500
-REVIEW_FORMAT_VERSION = 9
+REVIEW_FORMAT_VERSION = 10
 
 
 @dataclass(frozen=True)
@@ -162,7 +163,7 @@ def _filter_header(
         f"ExomeRegions={'CandidateRoute' if retain_exome_regions else 'Disabled'},"
         f"CCREResource={ccre_bed_path.name if ccre_bed_path else 'Unavailable'},"
         f"PromoterMap={promoter_map_path.name if promoter_map_path else 'Unavailable'},"
-        "UnscoredIndelSafety=Enabled,"
+        "UnscoredIndelSafety=Enabled,UnassignedCSQ=RetainForReview,"
         "Transcripts=MANEThenPICKThenOnePerGene,LoGoFunc=RetainStrictSource>\n"
     )
 
@@ -390,6 +391,7 @@ def _evaluate_alts(
     consequences = parse_csq_entries(info.get("CSQ", ""), csq_fields)
     ref = columns[3]
     alts = tuple(columns[4].split(","))
+    original = old_record_context(info, header.old_record_tags, columns[0], pos, ref, alts)
     source_retained = wgs_retained_alts(info, len(alts))
     reasons_by_alt: list[tuple[str, ...]] = []
     retained = [False] * len(alts)
@@ -401,7 +403,7 @@ def _evaluate_alts(
             continue
         matched = [
             entry for entry in consequences
-            if consequence_matches_alt(entry, ref=ref, alts=alts, alt_index=alt_index)
+            if consequence_matches_alt(entry, ref=ref, alts=alts, alt_index=alt_index, original=original)
         ]
         frequencies = _population_frequencies(matched, info, alt_index, len(alts))
         if (

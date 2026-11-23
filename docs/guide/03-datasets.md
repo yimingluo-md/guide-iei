@@ -362,7 +362,9 @@ exports and retains only its derived component database.
 
 Under **Optional add-ons → Custom score tables**, choose one or more local GRCh38 tab-separated files. Each needs a header, 1-based positions, and one sequence-resolved REF/ALT pair per row. Compressed TSVs work too. Use **Add files** to combine chromosome files with the same columns.
 
-Rows can arrive in any order. The importer skips wild-type rows, unanchored or symbolic alleles, missing ALT (`.`), and comma-separated ALT rows, whose scores cannot be safely assigned to one allele. The installed dataset shows how many rows were skipped. Score cells are trimmed; empty cells, `.`, `NA`, and `N/A` (case-insensitive) are treated as missing. **Remove index** deletes the local lookup index and keeps your original tables.
+Rows can arrive in any order. The importer accepts DNA alleles containing A, C, G, T, or N. It skips rows with other IUPAC ambiguity codes (such as R or Y), a missing REF or ALT (`.`), wild-type calls, unanchored or symbolic alleles, and comma-separated ALT lists. The import reports how many rows it skipped, including when none could be indexed.
+
+The importer trims score cells and treats empty cells, `.`, `NA`, and `N/A` as missing regardless of letter case. **Remove index** deletes the local lookup index and keeps your original tables.
 
 Confirm the chromosome, position, REF and ALT columns. Include strand, gene or transcript when scores depend on them. Search the remaining columns, select the scores you want, and give each a display name. The preview shows example rows with your chosen columns before you start the import.
 

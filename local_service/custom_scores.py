@@ -206,14 +206,19 @@ def _install_locked(root, paths, spec, report):
                                 raise ValueError("position must be an integer") from exc
                             if pos < 1:
                                 raise ValueError("position must be positive")
-                            if ref not in {"-", "*"} and not re.fullmatch(r"[ACGTN]+", ref):
-                                raise ValueError("REF must contain only A, C, G, T, or N")
+                            unsupported_ref = ref in {"-", "*", "."}
+                            unsupported_alt = (alt in {"-", "*", "."} or "," in alt
+                                               or re.fullmatch(r"<[^<>]+>", alt)
+                                               or "[" in alt or "]" in alt)
+                            for allele, label, unsupported in ((ref, "REF", unsupported_ref),
+                                                               (alt, "ALT", unsupported_alt)):
+                                if not unsupported and not re.fullmatch(r"[ACGTNRYSWKMBDHV]+", allele):
+                                    raise ValueError(f"{label} must contain only valid DNA bases")
                             context = [row[ix[k]].strip() if k in ix else "" for k in CONTEXT]
                             context[0] = "" if meta["dash_is_missing_strand"] and context[0] == "-" else strand(context[0])
-                            if (ref in {"-", "*"} or alt in {"-", "*", "."}
-                                    or "," in alt or re.fullmatch(r"<[^<>]+>", alt)
-                                    or "[" in alt or "]" in alt
-                                    or (ref == alt and re.fullmatch(r"[ACGTN]+", ref))):
+                            if (unsupported_ref or unsupported_alt
+                                    or not re.fullmatch(r"[ACGTN]+", ref)
+                                    or not re.fullmatch(r"[ACGTN]+", alt) or ref == alt):
                                 skipped += 1
                                 continue
                             pos, ref, alt = normalize_allele(pos, ref, alt)

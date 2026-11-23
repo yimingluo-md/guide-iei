@@ -1,0 +1,11 @@
+##fileformat=VCFv4.2
+##reference=GRCh38
+##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">
+##FILTER=<ID=PASS,Description="All filters passed">
+##contig=<ID=1,length=248956422>
+##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|SYMBOL|Consequence">
+##INFO=<ID=ORIG,Number=1,Type=String,Description="Original variant. Format: CHR|POS|REF|ALT|USED_ALT_IDX">
+##bcftools_normVersion=1.24+htslib-1.23.1
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	PATIENT
+1	100	.	ACG	A	.	PASS	CSQ=TG|1|SNVGENE|missense_variant,-|2|DELGENE|frameshift_variant;ORIG=1|100|ACG|ATG,A|2	GT	0/1
+1	101	.	C	T	.	PASS	CSQ=TG|1|SNVGENE|missense_variant,-|2|DELGENE|frameshift_variant;ORIG=1|100|ACG|ATG,A|1	GT	0/1

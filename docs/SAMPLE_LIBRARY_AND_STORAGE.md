@@ -330,12 +330,12 @@ searchable while any sample carries it.
 Older indexes recorded shared variant or transcript summaries. Cohort Search flags the
 affected sample entries in **Manage samples** until their annotated VCFs are
 reindexed. Untouched historical summaries may still contain retired values.
-When a source is retired, a historical score snapshot or transcript-bound
-observation can identify a surviving transcript, but fields such as impact
-and MANE need their original CSQ record. The index clears unsupported fields
-on the affected alleles and uses an unannotated allele when no transcript can
-be attributed. If membership of a historical file has changed, a file-level
-score alone cannot identify which remaining sample carried its transcript. Rebuilding each flagged sample restores the available evidence
+When removing or replacing a sample, Cohort Search reads affected surviving
+historical VCFs and matches each allele to the genotype of a remaining carrier.
+It replays the verified source transcript annotations and scores. If a source
+cannot be read or verified, the operation stops so the existing evidence can
+be preserved. Restore the original file at the indicated path before retrying.
+Rebuilding each flagged sample restores the available evidence
 from the managed review VCF or, for a full WGS entry, the original VCF.
 An ordinary cohort import rereads flagged entries even if the bytes are
 unchanged. Subsequent imports of the same content skip the indexed entries.

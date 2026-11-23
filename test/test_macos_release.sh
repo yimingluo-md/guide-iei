@@ -46,3 +46,6 @@ echo "MACOS STANDALONE RELEASE TEST PASSED"
 xcrun clang -fobjc-arc -Wall -Wextra -Werror -framework Cocoa \
     "${ROOT}/test/native_wgs_setup_smoke.m" -o "${TEMP}/native-wgs-setup-smoke"
 "${TEMP}/native-wgs-setup-smoke"
+
+# Exercise actual AppKit Quit against an isolated supervisor and service.
+python3 "${ROOT}/test/run_native_quit_smoke.py"

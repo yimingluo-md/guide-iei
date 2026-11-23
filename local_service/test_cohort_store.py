@@ -34,7 +34,7 @@ def test_consequence_allele_resolution_order():
         ("AT", ("ATT",), {"Allele": "TT", "ALLELE_NUM": "2"}, [0]),
         ("A", ("T",), {"Allele": "", "ALLELE_NUM": "2"}, []),
         ("A", ("T",), {"Allele": ".", "ALLELE_NUM": "bad"}, []),
-        ("A", ("T",), {}, [0]),
+        ("A", ("T",), {}, []),
     ]
     for ref, alts, entry, expected in cases:
         assert [i for i in range(len(alts)) if consequence_matches_alt(
@@ -274,6 +274,82 @@ def review_text(store, review, index=0):
 
 
 class CohortStoreTests(unittest.TestCase):
+    def _historical_shared_sources(self, partial=False):
+        fields = "Allele|Consequence|IMPACT|SYMBOL|Gene|Feature|HGVSc|HGVSp|SpliceAI_pred_DS_AG|CADD_phred|DS_AG|am_pathogenicity"
+        paths = []
+        for name in ("A", "B"):
+            path = self.root / f"{name}.vcf"
+            path.write_text(
+                '##fileformat=VCFv4.2\n##reference=GRCh38\n'
+                '##contig=<ID=1,length=248956422>\n'
+                f'##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: {fields}">\n'
+                '##FORMAT=<ID=GT,Number=1,Type=String,Description="Genotype">\n'
+                f'#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\t{name}\n'
+                '1\t100\t.\tA\tG\t.\tPASS\tCSQ=G|splice_donor_variant|HIGH|BTK|GB|TB|c.1A>G||.95|25||\tGT\t0/1\n'
+                '1\t200\t.\tC\tT\t.\tPASS\tCSQ=T|missense_variant|MODERATE|BTK|GB|TB|c.2C>T|p.A1V|||.94|.83\tGT\t0/1\n'
+                '1\t300\t.\tA\tC\t.\tPASS\tCSQ=C|missense_variant|MODERATE|OTHER|GO|TO|c.3A>C|p.A1P||||\tGT\t0/1\n'
+            )
+            if partial and name == 'A':
+                lines = path.read_text().splitlines()
+                path.write_text('\n'.join(line + ('\tA2' if line.startswith('#CHROM') else '\t0/1' if not line.startswith('#') else '') for line in lines) + '\n')
+            self.store.import_vcf(path)
+            paths.append(path)
+        with self.store._session() as db:
+            db.execute('DELETE FROM cohort_annotation_evidence')
+            db.execute('DELETE FROM cohort_source_scores')
+            db.execute('DELETE FROM prediction_observations')
+            db.execute('UPDATE cohort_samples SET annotation_evidence_complete=0')
+            db.execute("UPDATE cohort_files SET content_sha256='', content_probe=''")
+        return paths
+
+    def test_historical_intact_source_annotations_survive_removal(self):
+        self._historical_shared_sources()
+        ids = {s['name']: s['id'] for s in self.store.list_samples()}
+        self.store.remove_samples([ids['B']])
+        with self.store._session() as db:
+            rows = [tuple(r) for r in db.execute('SELECT gene,consequence,impact,spliceai,cadd,alpha_missense FROM cohort_annotations ORDER BY variant_id')]
+        self.assertEqual(rows, [('BTK','splice_donor_variant','HIGH',.95,25,None),
+                                ('BTK','missense_variant','MODERATE',.94,None,.83),
+                                ('OTHER','missense_variant','MODERATE',None,None,None)])
+
+    def test_historical_missing_source_blocks_removal_and_reimport_atomically(self):
+        a, b = self._historical_shared_sources()
+        ids = {s['name']: s['id'] for s in self.store.list_samples()}
+        a.unlink()
+        with self.assertRaisesRegex(ValueError, 'Cannot preserve legacy annotations'):
+            self.store.remove_samples([ids['B']])
+        with self.assertRaisesRegex(ValueError, 'Cannot preserve legacy annotations'):
+            self.store.import_vcf(b, force=True)
+        self.assertEqual({s['name'] for s in self.store.list_samples()}, {'A', 'B'})
+        with self.store._session() as db:
+            self.assertEqual(db.execute('SELECT COUNT(*) FROM cohort_annotations').fetchone()[0], 3)
+
+    def test_historical_partial_source_remains_recoverable(self):
+        self._historical_shared_sources(partial=True)
+        ids = {s['name']: s['id'] for s in self.store.list_samples()}
+        self.store.remove_samples([ids['A2']])
+        self.store.remove_samples([ids['B']])
+        with self.store._session() as db:
+            scores = [tuple(r) for r in db.execute('SELECT spliceai,cadd,alpha_missense FROM cohort_annotations ORDER BY variant_id')]
+        self.assertEqual(scores, [(.95,25,None), (.94,None,.83), (None,None,None)])
+
+    def test_historical_changed_source_blocks_removal(self):
+        a, _ = self._historical_shared_sources()
+        ids = {s['name']: s['id'] for s in self.store.list_samples()}
+        a.write_text(a.read_text().replace('.95', '.15'))
+        with self.assertRaisesRegex(ValueError, 'Cannot preserve legacy annotations'):
+            self.store.remove_samples([ids['B']])
+        self.assertEqual({s['name'] for s in self.store.list_samples()}, {'A', 'B'})
+
+    def test_historical_survivor_scores_remain_after_reimport(self):
+        _, b = self._historical_shared_sources()
+        self.store.import_vcf(b, force=True)
+        ids = {s['name']: s['id'] for s in self.store.list_samples()}
+        self.store.remove_samples([ids['B']])
+        with self.store._session() as db:
+            scores = [tuple(r) for r in db.execute('SELECT spliceai,cadd,alpha_missense FROM cohort_annotations ORDER BY variant_id')]
+        self.assertEqual(scores, [(.95,25,None), (.94,None,.83), (None,None,None)])
+
     def test_split_single_alt_import_filters_record_wide_annotations(self):
         source = self.root / "split.vcf"
         source.write_text(

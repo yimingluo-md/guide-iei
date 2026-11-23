@@ -78,6 +78,20 @@ separate protein-match calculation, source alleles are annotated locally with
 the same VEP cache to derive comparison coordinates only; no GenIA disease
 context is inferred.
 
+When splitting an annotated VCF, VEP’s CSQ entries can remain record-wide after
+`bcftools norm -m- -f ref.fa`, while allele spellings and coordinates change.
+Review assigns only identifiable consequences and warns when an ALT cannot be
+matched. If the original ALT identity has been lost, reannotate the original
+VCF (preferably normalize before VEP), or preserve provenance during splitting
+with `bcftools norm -m- -f ref.fa --old-rec-tag ORIG`. Review recognizes the
+bcftools header declaration and validates the tagged original against the
+current allele when their equivalence can be established by trimming. Some
+repeat-left-aligned alleles need reannotation because equivalence cannot be
+verified without the reference at review time. A CSQ allele number alone is
+not reliable after splitting. Reimport previously indexed files to apply the
+updated matching and warnings. In whole-genome candidate mode, a score can
+qualify an allele for retention only when it can be assigned to that allele.
+
 ## Loss-of-function curation details
 
 For frameshift consequences, the postprocessor recalculates LOFTEE's

@@ -165,6 +165,9 @@ int main(int argc, const char *argv[]) {
         guide.snapshot = @{@"phase": @"ready", @"quit_request_id": secondQuit, @"quit_error": @"Migration active"};
         [NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.7]];
         NSCAssert(!guide.quitting && [guide.lastAlert isEqual:@"Migration active"], @"Report a repeated blocker for the new request");
+        guide.lastAlert = nil; guide.quitting = YES; guide.snapshot = @{@"phase": @"checking"};
+        [guide checkSetupQuitReply:@"timed-out" deadline:[NSDate dateWithTimeIntervalSinceNow:-1]];
+        NSCAssert(!guide.quitting && [guide.lastAlert containsString:@"not finished stopping"], @"A stalled supervisor must release the pending Quit");
         [guide.window orderOut:nil];
         puts("NATIVE WGS SETUP PASSED: default off, scroll layout, essential handoff, later opt-in, progress, failure, retry, installed reuse, storage restart, correlated quit replies");
     }

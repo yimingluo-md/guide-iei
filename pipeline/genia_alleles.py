@@ -50,7 +50,10 @@ def csq_allele_index(entry: dict[str, str], ref: str, alts: Sequence[str]) -> in
         index = int(number) - 1
         return index if 0 <= index < len(alts) else None
     if allele in {"", "."}:
-        return 0 if len(alts) == 1 and (not number or number == "." or number == "1") else None
+        return None
+    if allele == "DELETION":
+        matches = [i for i, alt in enumerate(alts) if alt.upper() == "<DEL>"]
+        return matches[0] if len(matches) == 1 else None
     record_alts = _vep_record_alts(ref, alts)
     if len(alts) == 1 and re.fullmatch(r"[ACGTN]+", ref, re.I) and re.fullmatch(r"[ACGTN]+", alts[0], re.I) and alts[0][0].upper() == ref[0].upper():
         record_alts = [alts[0][1:] or "-"]
@@ -59,6 +62,36 @@ def csq_allele_index(entry: dict[str, str], ref: str, alts: Sequence[str]) -> in
         if candidates:
             return candidates[0] if len(candidates) == 1 else None
     return None
+
+
+def old_record_context(info: dict[str, str], tags: Sequence[str], chrom: str, pos: int,
+                       ref: str, alts: Sequence[str]) -> tuple[str, tuple[str, ...], int] | None:
+    """Validate a declared bcftools old-record tag against this split row.
+
+    Without a reference, accept only representation changes provable by trimming;
+    repeat left-alignment cannot be verified and is deliberately not inferred.
+    """
+    if len(alts) != 1:
+        return None
+    contexts = []
+    for tag in tags:
+        parts = info.get(tag, "").split("|")
+        if len(parts) != 5 or not re.fullmatch(r"[0-9]+", parts[1]) or not re.fullmatch(r"[0-9]+", parts[4]):
+            continue
+        old_chrom, old_pos, old_ref, raw_alts, used = parts
+        old_alts = tuple(raw_alts.split(","))
+        index = int(used) - 1
+        if not 0 <= index < len(old_alts):
+            continue
+        try:
+            if normalize_chrom(old_chrom) != normalize_chrom(chrom):
+                continue
+            if normalize_allele(int(old_pos), old_ref, old_alts[index]) != normalize_allele(pos, ref, alts[0]):
+                continue
+        except ValueError:
+            continue
+        contexts.append((old_ref, old_alts, index))
+    return contexts[0] if contexts and all(c == contexts[0] for c in contexts) else None
 
 
 def normalize_chrom(value: object) -> str:

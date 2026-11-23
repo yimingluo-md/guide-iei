@@ -25,14 +25,14 @@ import threading
 import uuid
 from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
 from contextlib import contextmanager, nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Iterable, Iterator
 from urllib.parse import unquote, urlsplit
 
 from local_service.element_gene_links import region_matcher, target_regions
 from local_service.errors import CohortMergeBusyError
-from pipeline.genia_alleles import csq_allele_index
+from pipeline.genia_alleles import csq_allele_index, old_record_context
 from pipeline.numeric import finite_float
 
 from pipeline.predictor_registry import (
@@ -205,6 +205,7 @@ class VcfHeader:
     csq_fields: tuple[str, ...]
     contigs: tuple[str, ...]
     info_fields: tuple[str, ...] = ()
+    old_record_tags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -417,12 +418,20 @@ def is_bgzf(path: Path) -> bool:
     return False
 
 
+CSQ_ASSIGNMENT_WARNING = (
+    "Some CSQ annotations could not be assigned to their ALT. Reannotate the original VCF "
+    "or preserve original alleles when splitting with bcftools norm --old-rec-tag ORIG."
+)
+BCFTOOLS_OLD_RECORD_SCHEMA = 'Number=1,Type=String,Description="Original variant. Format: CHR|POS|REF|ALT|USED_ALT_IDX"'
+
+
 def read_vcf_header(path: Path) -> VcfHeader:
     opener = gzip.open if path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
     samples: tuple[str, ...] = ()
     csq_fields: tuple[str, ...] = ()
     contigs: list[str] = []
     info_fields: list[str] = []
+    old_record_tags: list[str] = []
     saw_fileformat = False
     with opener(path, "rt", encoding="utf-8", errors="replace") as handle:
         for line in handle:
@@ -455,6 +464,8 @@ def read_vcf_header(path: Path) -> VcfHeader:
                 identifier = re.search(r"(?:^|[,<])ID=([^,>]+)", line)
                 if identifier:
                     info_fields.append(identifier.group(1))
+                    if BCFTOOLS_OLD_RECORD_SCHEMA in line:
+                        old_record_tags.append(identifier.group(1))
             elif line.startswith("#CHROM"):
                 columns = line.rstrip("\r\n").split("\t")
                 samples = tuple(columns[9:])
@@ -474,6 +485,7 @@ def read_vcf_header(path: Path) -> VcfHeader:
         csq_fields=csq_fields,
         contigs=tuple(contigs),
         info_fields=tuple(info_fields),
+        old_record_tags=tuple(old_record_tags),
     )
 
 
@@ -1021,7 +1033,17 @@ def parse_csq_entries(raw: str, fields: list[str]) -> list[dict[str, str]]:
 
 def consequence_matches_alt(
     consequence: dict[str, str], *, ref: str, alts: tuple[str, ...], alt_index: int,
+    original: tuple[str, tuple[str, ...], int] | None = None,
 ) -> bool:
+    if original is not None:
+        old_ref, old_alts, old_index = original
+        if csq_allele_index(consequence, old_ref, old_alts) == old_index:
+            return True
+        # Reannotation after splitting can assign number 1 to the former ALT 2.
+        # Accept it only if its spelling identifies this ALT in both records.
+        return (consequence.get("ALLELE_NUM") == "1"
+                and csq_allele_index(consequence, ref, alts) == alt_index
+                and csq_allele_index({"Allele": consequence.get("Allele", "")}, old_ref, old_alts) == old_index)
     return csq_allele_index(consequence, ref, alts) == alt_index
 
 
@@ -2286,6 +2308,7 @@ def _stage_vcf_records(
     pass_records = 0
     excluded_records = 0
     carrier_count = 0
+    unmatched_csq = 0
     active_predictors = _active_predictors(
         (*header.csq_fields, *header.info_fields)
     )
@@ -2478,13 +2501,16 @@ def _stage_vcf_records(
                     metadata_ordinal += 1
                     metadata_rows.append((key, metadata_ordinal, carrier_names, *metadata))
 
+                original = old_record_context(info, header.old_record_tags, chrom_raw, pos, ref, alts)
                 matching = [
                     consequence
                     for consequence in consequences
                     if consequence_matches_alt(
-                        consequence, ref=ref, alts=alts, alt_index=alt_index
+                        consequence, ref=ref, alts=alts, alt_index=alt_index, original=original
                     )
                 ]
+                if len(alts) == 1 and info.get("CSQ") not in (None, "", ".") and not matching:
+                    unmatched_csq += 1
                 prediction_info = _prediction_info_for_alt(
                     info,
                     alt=alt,
@@ -2584,6 +2610,7 @@ def _stage_vcf_records(
         "pass_records": pass_records,
         "excluded_records": excluded_records,
         "carrier_count": carrier_count,
+        "unmatched_csq": unmatched_csq,
     }
     if progress:
         progress({
@@ -4653,160 +4680,21 @@ class CohortStore:
             WHERE v.id IN ({scope})
         """, parameters)
 
-    @staticmethod
-    def _restore_legacy_scores(connection, low, high):
-        """Recover score columns with historical provenance for the replay baseline."""
-        bounds = (low, high)
-        scope = "SELECT id FROM retiring_variants WHERE id > ? AND id <= ?"
-        annotations = connection.execute(f"""
-            SELECT a.id, a.variant_id, a.gene, a.transcript FROM cohort_annotations a
-            JOIN rebuilt_annotations r ON r.id=a.id
-            WHERE a.variant_id IN ({scope})
-        """, bounds).fetchall()
-        if not annotations:
-            return
-        metrics = {
-            "cadd_coding": {"phred": "cadd"}, "starter_cadd": {"phred": "cadd"},
-            "cadd_wgs": {"phred": "cadd"}, "alphamissense": {"score": "alpha_missense"},
-            "starter_alphamissense": {"score": "alpha_missense"},
-            "promoterai": {"score": "promoterai"},
-            "logofunc": {"prediction": "logofunc_prediction", "neutral": "logofunc_neutral",
-                         "gof": "logofunc_gof", "lof": "logofunc_lof"},
-        }
-        blank = dict.fromkeys(SOURCE_SCORE_COLUMNS)
-        blank["logofunc_allele_available"] = 0
-        by_variant = {}
-        for annotation in annotations:
-            by_variant.setdefault(annotation["variant_id"], []).append(annotation)
-        source_scores = {}
-        # Older files lack per-CSQ display snapshots. Use their source-bound
-        # observations where the provider and target can be recovered.
-        first_tracked = int(connection.execute(
-            "SELECT value FROM cohort_meta WHERE key='source_score_first_file'"
-        ).fetchone()[0])
-        observations = connection.execute("""
-            SELECT o.id, o.source_file_id, o.variant_id, o.annotation_id, o.predictor_id, o.gene_symbol, o.match_status,
-                   o.transcript_id, o.protein_change, o.provenance_json, v.metric,
-                   COALESCE(v.numeric_value, v.text_value) AS value
-            FROM legacy_annotation_sources src
-            CROSS JOIN prediction_observations o ON o.variant_id=src.variant_id AND +o.source_file_id=src.file_id
-            LEFT JOIN prediction_values v ON v.observation_id=o.id
-            WHERE src.intact AND o.source_file_id < ?
-              AND o.predictor_id IN ('cadd_coding','starter_cadd','cadd_wgs','alphamissense',
-                                     'starter_alphamissense','spliceai','promoterai','logofunc')
-            ORDER BY o.source_file_id, CASE o.predictor_id WHEN 'cadd_wgs' THEN 2
-              WHEN 'starter_cadd' THEN 1 WHEN 'starter_alphamissense' THEN 1 ELSE 0 END, o.id
-        """, (first_tracked,))
-        splice_observation = {}
-        for obs in observations:
-            predictor = obs["predictor_id"]
-            for annotation in by_variant.get(obs["variant_id"], ()):
-                source_key = (obs["source_file_id"], annotation["id"])
-                scores = source_scores.setdefault(source_key, {})
-                if predictor == "logofunc":
-                    scores["logofunc_allele_available"] = 1
-                if obs["match_status"] != "exact":
-                    continue
-                if predictor == "spliceai":
-                    if obs["gene_symbol"] != annotation["gene"] or not str(obs["metric"]).startswith("delta_"):
-                        continue
-                    if obs["metric"].startswith("delta_position") or obs["value"] is None:
-                        continue
-                    if splice_observation.get(annotation["id"]) != obs["id"]:
-                        scores["spliceai"] = None
-                        splice_observation[annotation["id"]] = obs["id"]
-                    scores["spliceai"] = max(scores.get("spliceai") or 0, obs["value"])
-                    continue
-                if predictor not in {"cadd_coding", "starter_cadd", "cadd_wgs"} and obs["annotation_id"] != annotation["id"]:
-                    continue
-                column = metrics[predictor].get(obs["metric"])
-                if column and obs["value"] is not None:
-                    scores[column] = obs["value"]
-                if predictor == "logofunc":
-                    scores["logofunc_source_transcript"] = obs["transcript_id"]
-                    scores["logofunc_source_hgvsp"] = obs["protein_change"]
-                    scores["logofunc_match"] = json.loads(obs["provenance_json"]).get("match")
-        for rec in connection.execute(f"""
-            SELECT src.file_id,src.annotation_id,src.scores FROM cohort_annotations a
-            JOIN cohort_source_scores src ON src.annotation_id=a.id
-            JOIN legacy_annotation_sources legacy ON legacy.variant_id=a.variant_id AND legacy.file_id=src.file_id
-            WHERE legacy.intact AND a.variant_id IN ({scope})
-        """, bounds):
-            source_scores[rec["file_id"], rec["annotation_id"]] = dict(zip(SOURCE_SCORE_COLUMNS, json.loads(rec["scores"])))
-        by_annotation = {row["id"]: blank.copy() for row in annotations}
-        for (_, annotation_id), contribution in sorted(source_scores.items()):
-            scores = by_annotation.get(annotation_id)
-            if scores is None:
-                continue
-            for col, value in contribution.items():
-                if col == "logofunc_allele_available":
-                    scores[col] = max(scores[col], value or 0)
-                elif value is not None and value != "":
-                    scores[col] = value
-        setters = ", ".join(f"{column}=:{column}" for column in blank)
-        connection.executemany(
-            f"UPDATE rebuilt_annotations SET {setters} WHERE id=:id",
-            (dict(scores, id=key) for key, scores in by_annotation.items()),
-        )
-
-    def _seed_legacy_annotations(self, connection, low, high):
-        connection.execute("""
-            CREATE TEMP TABLE IF NOT EXISTS legacy_annotation_sources(
-                variant_id INTEGER, file_id INTEGER, intact INTEGER,
-                PRIMARY KEY(variant_id, file_id)
-            ) WITHOUT ROWID
-        """)
-        connection.execute("DELETE FROM legacy_annotation_sources")
-        # Historic scores have file attribution only. A partial removal marks
-        # the file's mtime -1. A restricted reindex mixes upgraded and older
-        # samples in a file. In either case its remaining record carriers are
-        # ambiguous, even if a sibling still carries the same allele.
-        count = connection.execute("""
-            INSERT OR IGNORE INTO legacy_annotation_sources
-            SELECT g.variant_id,s.file_id,f.mtime_ns>=0 AND NOT EXISTS (
-                SELECT 1 FROM cohort_samples other WHERE other.file_id=s.file_id
-                  AND other.annotation_evidence_complete=1
-            )
-            FROM retiring_variants v
-            CROSS JOIN cohort_genotypes g ON g.variant_id=v.id
-            CROSS JOIN cohort_samples s ON s.id=g.sample_id
-            CROSS JOIN cohort_files f ON f.id=s.file_id
-            WHERE v.id>? AND v.id<=? AND s.annotation_evidence_complete=0
-        """, (low, high)).rowcount
-        if not count:
-            return
-        # Pre-upgrade shared CSQ properties have no source attribution. A
-        # file-bound score snapshot or linked observation can establish an
-        # identity, but cannot establish its historical impact or flags.
-        connection.execute("""
-            INSERT INTO rebuilt_annotations(id,impact,mane,picked,repeat_masker,segdup,
-                                           logofunc_allele_available,loftee_50bp_changed)
-            SELECT a.id,'UNKNOWN',0,0,0,0,0,0 FROM cohort_annotations a
-            WHERE a.variant_id IN (SELECT variant_id FROM legacy_annotation_sources) AND (
-                EXISTS (SELECT 1 FROM cohort_source_scores src
-                            JOIN legacy_annotation_sources l ON l.variant_id=a.variant_id AND l.file_id=src.file_id
-                            WHERE l.intact AND src.annotation_id=a.id)
-                OR EXISTS (
-                    SELECT 1 FROM prediction_observations o WHERE o.annotation_id=a.id
-                      AND EXISTS (SELECT 1 FROM legacy_annotation_sources l
-                                  WHERE l.variant_id=a.variant_id AND l.file_id=o.source_file_id AND l.intact)
-                )
-            )
-        """)
-
     def _stage_legacy_source_records(self, connection):
-        """Scan each ambiguous surviving source once, staging carrier-bound scores."""
-        connection.execute("CREATE TEMP TABLE IF NOT EXISTS recovered_legacy_scores (file_id INTEGER, annotation_id INTEGER, scores TEXT)")
+        """Scan surviving legacy sources once, staging carrier-bound scores."""
+        connection.execute("CREATE TEMP TABLE IF NOT EXISTS recovered_legacy_scores (file_id INTEGER, annotation_id INTEGER, properties TEXT)")
         connection.execute("CREATE INDEX IF NOT EXISTS recovered_legacy_by_annotation ON recovered_legacy_scores(annotation_id)")
         connection.execute("DELETE FROM recovered_legacy_scores")
+        connection.execute("CREATE TEMP TABLE IF NOT EXISTS legacy_excluded_samples(id INTEGER PRIMARY KEY)")
+        connection.execute("CREATE TEMP TABLE IF NOT EXISTS recovered_legacy_identity(file_id INTEGER PRIMARY KEY, sha256 TEXT)")
+        connection.execute("DELETE FROM recovered_legacy_identity")
         files = connection.execute("""
             SELECT DISTINCT f.* FROM retiring_variants r
             CROSS JOIN cohort_genotypes g ON g.variant_id=r.id
             CROSS JOIN cohort_samples s ON s.id=g.sample_id
             CROSS JOIN cohort_files f ON f.id=s.file_id
-            WHERE s.annotation_evidence_complete=0 AND f.mtime_ns<0
-              AND NOT EXISTS (SELECT 1 FROM cohort_samples other WHERE other.file_id=f.id
-                              AND other.annotation_evidence_complete=1)
+            WHERE s.annotation_evidence_complete=0
+              AND NOT EXISTS (SELECT 1 FROM legacy_excluded_samples x WHERE x.id=s.id)
             ORDER BY f.id DESC
         """).fetchall()
         for file in files:
@@ -4814,12 +4702,14 @@ class CohortStore:
             try:
                 before = path.stat()
                 if before.st_size != file["size_bytes"]:
-                    continue
+                    raise ValueError("source size changed")
                 if file["content_sha256"]:
                     if _full_content_sha256(path, limit=before.st_size) != file["content_sha256"]:
-                        continue
+                        raise ValueError("source checksum changed")
                 elif file["content_probe"] and _content_probe(path) != file["content_probe"]:
-                    continue
+                    raise ValueError("source fingerprint changed")
+                elif not file["content_probe"] and before.st_mtime_ns != file["mtime_ns"]:
+                    raise ValueError("source identity cannot be verified")
                 header = read_vcf_header(path)
                 indices = {name: i for i, name in enumerate(header.samples)}
                 opener = gzip.open if path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
@@ -4849,13 +4739,17 @@ class CohortStore:
                                 JOIN cohort_genotypes g ON g.variant_id=v.id
                                 JOIN cohort_samples s ON s.id=g.sample_id
                                 WHERE v.variant_key=? AND s.file_id=? AND s.annotation_evidence_complete=0
+                                  AND NOT EXISTS (SELECT 1 FROM legacy_excluded_samples x WHERE x.id=s.id)
                             """, (key, file["id"])).fetchall()
                             if not any(row["name"] in indices and
                                        (gt := parse_genotype(cols[8], cols[9+indices[row["name"]]], alt_index))["carrier"]
                                        and gt["gt"] == row["genotype"] for row in carriers):
                                 continue
-                            matching = [entry for entry in parse_csq_entries(info.get("CSQ", ""), list(header.csq_fields))
-                                        if consequence_matches_alt(entry, ref=cols[3], alts=alts, alt_index=alt_index)]
+                            original = old_record_context(info, header.old_record_tags, cols[0], pos, cols[3], alts)
+                            matching = [
+                                entry for entry in parse_csq_entries(info.get("CSQ", ""), list(header.csq_fields))
+                                if consequence_matches_alt(entry, ref=cols[3], alts=alts, alt_index=alt_index, original=original)
+                            ]
                             prediction_info = _prediction_info_for_alt(info, alt=alt, alt_index=alt_index, alts=alts)
                             for record in _prediction_annotation_records(prediction_info, matching):
                                 annotation = annotation_from(record)
@@ -4868,41 +4762,50 @@ class CohortStore:
                                 """, identity).fetchone()
                                 if row:
                                     connection.execute("INSERT INTO recovered_legacy_scores VALUES (?,?,?)",
-                                                       (file["id"], row["id"], json.dumps([annotation.get(c) for c in SOURCE_SCORE_COLUMNS])))
+                                                       (file["id"], row["id"],
+                                                        json.dumps([annotation.get(c) for c in ANNOTATION_PROPERTIES])))
+                if not file["content_sha256"]:
+                    digest = _full_content_sha256(path, limit=before.st_size)
+                    if not digest:
+                        raise ValueError("source checksum could not be computed")
+                    connection.execute("INSERT INTO recovered_legacy_identity VALUES (?,?)", (file["id"], digest))
                 after = path.stat()
                 if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
                     raise ValueError("source changed during recovery")
-            except (OSError, UnicodeError, ValueError, EOFError):
+            except (OSError, UnicodeError, ValueError, EOFError) as error:
                 connection.execute("DELETE FROM recovered_legacy_scores WHERE file_id=?", (file["id"],))
+                raise ValueError(f"Cannot preserve legacy annotations from {path}: {error}. Restore the original source and re-import it before retrying.") from error
+
+    @staticmethod
+    def _save_recovered_checksums(connection):
+        connection.execute("""
+            UPDATE cohort_files SET content_sha256=(
+                SELECT sha256 FROM recovered_legacy_identity WHERE file_id=cohort_files.id
+            ) WHERE id IN (SELECT file_id FROM recovered_legacy_identity)
+        """)
 
     def _recover_legacy_source_records(self, connection, low, high):
-        for row in connection.execute("""
-            SELECT staged.annotation_id,staged.scores FROM retiring_variants r
+        columns = ",".join(ANNOTATION_PROPERTIES)
+        values = ",".join(f"json_extract(s.properties,'$[{i}]')" for i in range(len(ANNOTATION_PROPERTIES)))
+        connection.execute(f"""
+            INSERT INTO rebuilt_annotations(id,{columns})
+            SELECT s.annotation_id,{values} FROM retiring_variants r
             CROSS JOIN cohort_annotations a ON a.variant_id=r.id
-            CROSS JOIN recovered_legacy_scores staged ON staged.annotation_id=a.id
-            CROSS JOIN legacy_annotation_sources l ON l.variant_id=a.variant_id AND l.file_id=staged.file_id
-            WHERE r.id>? AND r.id<=? AND NOT l.intact
-            ORDER BY staged.file_id DESC, staged.rowid
-        """, (low, high)):
-            annotation_id = row["annotation_id"]
-            connection.execute("""
-                INSERT OR IGNORE INTO rebuilt_annotations(id,impact,mane,picked,repeat_masker,segdup,
-                    logofunc_allele_available,loftee_50bp_changed)
-                VALUES (?,'UNKNOWN',0,0,0,0,0,0)
-            """, (annotation_id,))
-            for column, value in zip(SOURCE_SCORE_COLUMNS, json.loads(row["scores"])):
-                if value is not None and value != "":
-                    if column == "logofunc_allele_available":
-                        connection.execute("UPDATE rebuilt_annotations SET logofunc_allele_available=MAX(logofunc_allele_available,?) WHERE id=?", (value, annotation_id))
-                    else:
-                        connection.execute(f"UPDATE rebuilt_annotations SET {column}=COALESCE(NULLIF({column},''),?) WHERE id=?", (value, annotation_id))
+            CROSS JOIN recovered_legacy_scores s ON s.annotation_id=a.id
+            WHERE r.id>? AND r.id<=?
+            ORDER BY s.file_id,s.rowid
+            ON CONFLICT(id) DO UPDATE SET {ANNOTATION_UPDATES}
+        """, (low, high))
 
-    def _seed_legacy_placeholders(self, connection):
+    def _seed_legacy_placeholders(self, connection, low, high):
         # Retain a missing-CSQ row only when neither recovered nor tracked
         # evidence supplies an annotation for the surviving allele.
         unknown = """
-            SELECT DISTINCT variant_id FROM legacy_annotation_sources l WHERE NOT EXISTS (
-                SELECT 1 FROM cohort_annotations a WHERE a.variant_id=l.variant_id AND (
+            SELECT DISTINCT g.variant_id FROM retiring_variants r
+            CROSS JOIN cohort_genotypes g ON g.variant_id=r.id
+            CROSS JOIN cohort_samples s ON s.id=g.sample_id
+            WHERE r.id>? AND r.id<=? AND s.annotation_evidence_complete=0 AND NOT EXISTS (
+                SELECT 1 FROM cohort_annotations a WHERE a.variant_id=g.variant_id AND (
                     EXISTS (SELECT 1 FROM rebuilt_annotations r WHERE r.id=a.id)
                     OR EXISTS (SELECT 1 FROM cohort_annotation_evidence e WHERE e.annotation_id=a.id)
                 )
@@ -4911,14 +4814,14 @@ class CohortStore:
         connection.execute(f"""
             INSERT OR IGNORE INTO cohort_annotations(variant_id,gene,transcript,hgvsc,hgvsp,consequence,impact)
             SELECT variant_id,'—','','','','unannotated','UNKNOWN' FROM ({unknown})
-        """)
+        """, (low, high))
         connection.execute(f"""
             INSERT INTO rebuilt_annotations(id,impact,mane,picked,repeat_masker,segdup,
                                            logofunc_allele_available,loftee_50bp_changed)
             SELECT a.id,'UNKNOWN',0,0,0,0,0,0 FROM cohort_annotations a
             WHERE a.variant_id IN ({unknown}) AND a.gene='—' AND a.transcript=''
               AND a.hgvsc='' AND a.hgvsp='' AND a.consequence='unannotated'
-        """)
+        """, (low, high))
 
     def _restore_carried_annotations(self, connection, low, high):
         bounds = (low, high)
@@ -4936,11 +4839,8 @@ class CohortStore:
         columns = ",".join(ANNOTATION_PROPERTIES)
         connection.execute(f"CREATE TEMP TABLE IF NOT EXISTS rebuilt_annotations(id INTEGER PRIMARY KEY,{columns})")
         connection.execute("DELETE FROM rebuilt_annotations")
-        self._seed_legacy_annotations(connection, low, high)
         self._recover_legacy_source_records(connection, low, high)
-        self._seed_legacy_placeholders(connection)
-        self._restore_legacy_scores(connection, low, high)
-        self._recover_legacy_source_records(connection, low, high)
+        self._seed_legacy_placeholders(connection, low, high)
         # A different source may keep the annotation row alive. Retire a
         # transcript-bound observation when its own source lost that transcript.
         connection.execute(f"""
@@ -4948,8 +4848,8 @@ class CohortStore:
             WHERE o.variant_id IN ({scope}) AND o.annotation_id IS NOT NULL AND o.source_file_id IS NOT NULL
               AND NOT EXISTS (SELECT 1 FROM cohort_annotation_evidence e
                               WHERE e.annotation_id=o.annotation_id AND +e.file_id=o.source_file_id)
-              AND NOT EXISTS (SELECT 1 FROM legacy_annotation_sources l
-                              WHERE l.variant_id=o.variant_id AND l.file_id=o.source_file_id AND l.intact)
+              AND NOT EXISTS (SELECT 1 FROM recovered_legacy_scores r
+                              WHERE r.annotation_id=o.annotation_id AND r.file_id=o.source_file_id)
         """, bounds)
         # The id is the import order. One payload per CSQ record, irrespective
         # of the number of carriers. The temporary accumulator is chunk-local.
@@ -4975,8 +4875,8 @@ class CohortStore:
         connection.execute(f"DELETE FROM cohort_annotations WHERE id IN ({unsupported})", bounds)
         self._reconcile_withheld_promoterai(connection, rebuilt_only=True)
 
-    def _restore_retiring_variants(self, connection, *, chunked=False, restore=True):
-        if restore:
+    def _restore_retiring_variants(self, connection, *, chunked=False, restore=True, staged=False):
+        if restore and not staged:
             self._stage_legacy_source_records(connection)
         low = 0
         while True:
@@ -5063,7 +4963,7 @@ class CohortStore:
                     connection.execute(
                         """
                         UPDATE cohort_files SET sample_count=?, variant_count=?,
-                                                carrier_count=?, mtime_ns=-1
+                                                carrier_count=?
                         WHERE id=?
                         """,
                         (
@@ -5072,6 +4972,8 @@ class CohortStore:
                         ),
                     )
             self._restore_retiring_variants(connection)
+            self._save_recovered_checksums(connection)
+            connection.executemany("UPDATE cohort_files SET mtime_ns=-1 WHERE id=?", ((file_id,) for file_id in file_ids))
             orphaned = connection.execute(
                 """
                 DELETE FROM cohort_variants
@@ -5572,6 +5474,8 @@ class CohortStore:
             sample_ids: list[int] = []
             csq_fields: list[str] = []
             info_fields: set[str] = set()
+            old_record_tags: list[str] = []
+            unresolved = False
             active_predictors: tuple = ()
             saw_fileformat = False
             saw_columns = False
@@ -5609,6 +5513,8 @@ class CohortStore:
                             id_match = re.match(r"##INFO=<ID=([^,>]+)", line)
                             if id_match:
                                 info_fields.add(id_match.group(1))
+                                if BCFTOOLS_OLD_RECORD_SCHEMA in line:
+                                    old_record_tags.append(id_match.group(1))
                             if id_match and id_match.group(1) == "CSQ":
                                 match = re.search(
                                     r"Format:\s*([^\">]+)",
@@ -5712,6 +5618,7 @@ class CohortStore:
                                 )
                                 self._refresh_variant_metadata(connection, "SELECT ?", (variant_id,))
 
+                            original = old_record_context(info, old_record_tags, chrom_raw, pos, ref, alts)
                             matching = [
                                 consequence
                                 for consequence in consequences
@@ -5719,9 +5626,11 @@ class CohortStore:
                                     consequence,
                                     ref=ref,
                                     alts=alts,
-                                    alt_index=alt_index,
+                                    alt_index=alt_index, original=original,
                                 )
                             ]
+                            if len(alts) == 1 and info.get("CSQ") not in (None, "", ".") and not matching:
+                                unresolved = True
 
                             prediction_info = _prediction_info_for_alt(
                                 info,
@@ -5886,12 +5795,12 @@ class CohortStore:
                     """
                     UPDATE cohort_files SET
                       sample_count=?, pass_records=?, excluded_records=?,
-                      variant_count=?, carrier_count=?
+                      variant_count=?, carrier_count=?, preparation_warning=?
                     WHERE id=?
                     """,
                     (
                         len(samples), pass_records, excluded_records,
-                        variant_count, file_carriers, file_id,
+                        variant_count, file_carriers, CSQ_ASSIGNMENT_WARNING if unresolved else "", file_id,
                     ),
                 )
                 if existing:
@@ -5924,6 +5833,7 @@ class CohortStore:
             "carrier_count": carrier_count,
             "import_profile": import_profile,
             "analysis_scope": analysis_scope,
+            "preparation_warning": CSQ_ASSIGNMENT_WARNING if unresolved else "",
         }
 
     def _prepare_indexed_vcf(
@@ -6868,7 +6778,10 @@ class CohortStore:
         self._capture_retiring_variants(connection,
             "SELECT DISTINCT sample_id FROM cohort_genotypes WHERE sample_id NOT IN (SELECT id FROM cohort_samples)")
         published = self._pending_merge_state(connection)[0] == "published"
-        self._restore_retiring_variants(connection, chunked=True, restore=published)
+        staged = published and connection.execute(
+            "SELECT 1 FROM sqlite_temp_master WHERE name='recovered_legacy_identity'"
+        ).fetchone() is not None
+        self._restore_retiring_variants(connection, chunked=True, restore=published, staged=staged)
         connection.execute("PRAGMA foreign_keys=OFF")
         self._delete_in_chunks(
             connection, "cohort_genotypes",
@@ -7081,9 +6994,27 @@ class CohortStore:
                     self._yield_to_waiting_writers()
 
             # ---- phase 2: publish (short transaction) ----
+            # Verify surviving historical sources before publication. Reuse
+            # these staged records during cleanup so failure is still atomic.
+            check_legacy = existing is not None and connection.execute(
+                "SELECT 1 FROM cohort_samples WHERE annotation_evidence_complete=0 LIMIT 1"
+            ).fetchone() is not None
+            if check_legacy:
+                if append_to_existing:
+                    retired = old_sample_ids
+                else:
+                    retired = [row[0] for row in connection.execute(
+                        "SELECT id FROM cohort_samples WHERE file_id=?", (existing["id"],))]
+                connection.execute("CREATE TEMP TABLE IF NOT EXISTS legacy_excluded_samples(id INTEGER PRIMARY KEY)")
+                connection.executemany("INSERT OR IGNORE INTO legacy_excluded_samples VALUES (?)", ((i,) for i in retired))
+                self._capture_retiring_variants(connection, "SELECT id FROM legacy_excluded_samples")
+                self._stage_legacy_source_records(connection)
+                connection.execute("DELETE FROM legacy_excluded_samples")
             pass_records = sum(stage["pass_records"] for stage in stages)
             excluded_records = sum(stage["excluded_records"] for stage in stages)
             with self._write_transaction(connection):
+                if check_legacy:
+                    self._save_recovered_checksums(connection)
                 connection.execute("""
                     DELETE FROM prediction_values WHERE id IN (SELECT id FROM superseded_values)
                 """)
@@ -7592,6 +7523,8 @@ class CohortStore:
                     prepared.path, header, stage_root / "reader-0.sqlite3", progress,
                     sample_indices=sample_indices,
                 )]
+            if any(stage.get("unmatched_csq") for stage in stages):
+                prepared = replace(prepared, warning=" ".join(filter(None, [prepared.warning, CSQ_ASSIGNMENT_WARNING])))
             import_mode = (
                 "parallel_tabix_staged" if reader_count > 1 else "serial_staged"
             )
@@ -8055,6 +7988,7 @@ class CohortStore:
                 for row in connection.execute(ordered, (*parameters, limit)).fetchall()
             ]
             totals = connection.execute(totals_statement, parameters).fetchone()
+            csq_warning = connection.execute("SELECT 1 FROM cohort_files WHERE import_state='ready' AND preparation_warning LIKE '%Some CSQ annotations could not be assigned%' LIMIT 1").fetchone()
         represented_profiles = sorted({
             row.get("profile_hash") or f"{row.get('import_profile')}:{row.get('analysis_scope')}"
             for row in rows
@@ -8073,7 +8007,7 @@ class CohortStore:
                 "under a comparable assay and retention profile are not interpreted as negative."
                 if len(represented_profiles) > 1 else
                 "Absence from this candidate index is not evidence that an individual lacks the variant."
-            ),
+            ) + (" " + CSQ_ASSIGNMENT_WARNING if csq_warning else ""),
         }
 
     def variant_detail(self, variant_key_value: str) -> dict:

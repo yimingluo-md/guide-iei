@@ -128,6 +128,44 @@ class CustomScoresTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, f"data row 2: .*{message}"):
                 self.install()
 
+    def test_iupac_ambiguity_and_missing_ref_are_skipped_but_n_is_indexed(self):
+        skipped = []
+        for code in "RYSWKMBDHVryswkmbdhv":
+            for column in (2, 3):
+                row = [*self.plus]
+                row[column] = "A" + code
+                skipped.append(row)
+        missing_ref = [*self.plus]
+        missing_ref[2] = "."
+        n_ref = [*self.plus]
+        n_ref[1:4] = ["20", "n", "A"]
+        n_alt = [*self.plus]
+        n_alt[1:4] = ["21", "A", "n"]
+        self.write(self.file, self.cols, [self.plus, *skipped, missing_ref, n_ref, n_alt])
+        result = self.install()
+        self.assertEqual((result["rows"], result["skipped_rows"]), (3, 41))
+        self.assertEqual(self.matches(pos=20, ref="N", alt="A")[0]["values"], ["0"])
+        self.assertEqual(self.matches(pos=21, ref="A", alt="N")[0]["values"], ["0"])
+
+        self.write(self.file, self.cols, [*skipped, missing_ref])
+        self.spec["replace"] = True
+        with self.assertRaisesRegex(ValueError, "No indexable variants. Skipped 41 "):
+            self.install()
+
+    def test_ambiguous_rows_still_validate_other_fields(self):
+        for column, value, message in ((1, "bad", "position"), (1, "0", "positive"),
+                                       (2, "?", "REF"), (3, "?", "ALT"),
+                                       (4, "?", "strand")):
+            row = [*self.plus]
+            row[2 if column == 3 else 3] = "R"
+            row[column] = value
+            self.write(self.file, self.cols, [self.plus, row])
+            with self.subTest(column=column, value=value), self.assertRaisesRegex(ValueError, f"data row 2: .*{message}"):
+                self.install()
+        self.write(self.file, self.cols, [self.plus] * 3 + [self.plus[:-1]])
+        with self.assertRaisesRegex(ValueError, "data row 4: Expected .* columns"):
+            self.install()
+
     def test_refseq_versions_case_gene_id_and_optional_dash_convention(self):
         self.plus[4:7] = ["-", "Gene1", "NM_003998.4"]
         self.minus[4:7] = ["-1", "Gene1", "NM_003998"]
