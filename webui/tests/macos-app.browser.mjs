@@ -114,9 +114,12 @@ try {
   await clickText("Import and review variants");
   await page.waitForFunction(() => document.body.textContent.includes("Prioritized variants"));
   await page.waitForFunction(() => document.body.textContent.includes("DEMO01") && document.querySelectorAll("tbody tr").length > 0);
-  const reviewGene = await page.$eval("tbody tr td:nth-child(3)", (cell) => cell.textContent.trim());
+  const reviewGene = await page.$eval("tbody tr .gene", (cell) => cell.textContent.trim());
   await page.type('input[placeholder="Gene, HGVS, ID, locus…"]', reviewGene);
-  await page.waitForFunction((gene) => [...document.querySelectorAll("tbody tr")].every((row) => row.cells[2].textContent.trim() === gene), {}, reviewGene);
+  await page.waitForFunction((gene) => {
+    const cells = [...document.querySelectorAll("tbody tr .gene")];
+    return cells.length > 0 && cells.every((cell) => cell.textContent.trim() === gene);
+  }, {}, reviewGene);
   await page.click("tbody .star-button");
   await page.evaluate(() => { window.__reviewTable = document.querySelector("tbody"); });
   const reviewRows = await page.$$eval("tbody tr", (rows) => rows.length);

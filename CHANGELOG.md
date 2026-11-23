@@ -5,7 +5,11 @@ version here, in the `VERSION` file, and in the release tag always agree.
 
 ## Unreleased
 
-### November 22, 2026
+## 0.6.3 — 2026-11-22
+
+Apple Silicon beta for macOS 13 or newer. Choose the **arm64.dmg** download to install GUIDE-IEI. To update an existing installation, quit GUIDE-IEI and replace the app in Applications. Your Sample Library and annotation datasets are stored separately. After opening the new app, check Cohort Search for entries flagged for reindexing.
+
+### Annotation and review
 
 - **Regulatory and gene evidence.** Search genes and gene sets using ENCODE-rE2G predicted targets. Gene-less intergenic hits can be opened from Cohort Search and retained when filtering by SCREEN activity. The included gene-knowledge data now cover GenCC submissions.
 - **Predictors.** Review GPN-Star scores and import selected columns from a custom score table. Enabled full dbNSFP replaces automatic starters for metrics it supplies. In older VCFs containing multiple CADD sources, Variant Review shows each provider’s Phred and raw scores together.
@@ -13,7 +17,7 @@ version here, in the `VERSION` file, and in the release tag always agree.
 - **Annotation and phenotypes.** Equivalent compact and right-padded frameshifts now give the same LOFTEE 50-bp result in the corrected exon-boundary cases. Indexed predictors recognize equivalent padded indels, ClinGen recognizes mitochondrial chromosome aliases, and manual phenotype saves preserve age units.
 - **Updating existing data.** Reindex older samples flagged in Cohort Search. To refresh affected frameshift annotations, rerun annotation from the input VCF and import the updated result. Check previously saved phenotype ages against the source if their units look wrong.
 
-### Earlier source updates
+### Setup and dataset preparation
 
 - Offer optional recommended WGS downloads in the Mac startup window, off by
   default: Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI. Show purpose,

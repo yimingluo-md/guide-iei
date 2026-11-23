@@ -37,9 +37,13 @@ jobs:
       - name: Environment setup (doctor + user-space install)
         run: bash scripts/setup_environment.sh --install --yes --skip-container
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
       - name: Python test dependencies (including SCREEN and GPN-Star)
         run: |
-          python3 -m pip install --user -r requirements-dev.txt || python3 -m pip install --break-system-packages --user -r requirements-dev.txt
+          python3 -m pip install --only-binary=pyarrow,numpy -r requirements-dev.txt
           python3 -c "import pyarrow.parquet"
 
       # The library projection tests run bcftools natively; without it the
