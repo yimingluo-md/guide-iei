@@ -14,6 +14,14 @@ performed on the user's own computer. Network access occurs only when the
 user initiates a dataset download, an update check, or an optional
 per-variant SpliceAI lookup for indels ([FAQ](docs/FAQ.md)).
 
+## Updates
+
+**November 22, 2026 · Source update on `main`**
+
+Whole-genome review can find variants linked to a target gene through ENCODE-rE2G and review intergenic hits with ENCODE SCREEN. GenCC gene–disease evidence, GPN-Star scores, and user-supplied predictor tables are also available. The latest fixes improve cohort reindexing, preserve the source of predictor scores, and correct the LOFTEE 50-bp calculation for repeat-padded frameshifts.
+
+The downloadable Apple Silicon app is still **v0.6.2 beta**. The changes above are available in the source checkout. [User guide](https://yimingluo-md.github.io/guide-iei/) · [Changelog](CHANGELOG.md#unreleased) · [Mac installer and release notes](https://github.com/yimingluo-md/guide-iei/releases/tag/v0.6.2)
+
 ## Motivation
 
 The developer is a clinician running a genetics clinic and ordering genetic

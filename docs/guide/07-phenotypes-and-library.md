@@ -56,6 +56,9 @@ sample IDs, so a rerun or second assay never requires re-entering the
 clinical picture. A record carries sex at birth, ages at evaluation and
 onset, present features, pertinent negatives, current diagnosis, a
 free-text summary, and notes; only the individual identifier is required.
+Enter the numeric age and select its unit. For example, enter `180` and
+choose **days**. If an age entered in an earlier version shows the wrong
+unit, check the original record and correct the saved phenotype.
 Two boundaries are deliberate:
 
 - **Reported race and ethnicity are stored as reported, and nothing

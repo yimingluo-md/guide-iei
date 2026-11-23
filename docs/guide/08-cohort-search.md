@@ -102,14 +102,15 @@ Cohort Search" enabled, or use the library's per-dataset and bulk actions
 (Add to Cohort Search, Remove selected). The records live in a local
 database on this workstation.
 
-Four query forms: an **exact variant** (locus or rsID — alleles are matched
-by their minimal representation, so `1:100:AT:ATT` and `1:100:A:AT` find the
-same carriers, and results display that canonical form); **qualifying
-variants in one gene**; a **gene list** — paste symbols or insert a saved
-list from Gene lists (an IUIS panel, a custom panel), up to 2,000 genes
-per query; and a **genomic region** (`chrom:start-end`, up to 5 Mb) for
-non-coding questions — who carries anything in this enhancer window, this
-promoter, this topological neighborhood. Opening the region tab selects
+Choose a search based on the question you want to answer.
+
+- **Exact variant** finds carriers by locus or rsID. Equivalent allele spellings such as `1:100:AT:ATT` and `1:100:A:AT` find the same carriers.
+- **Gene** finds qualifying variants annotated to one gene.
+- **Gene list** accepts up to 2,000 pasted symbols or a saved list, such as the IUIS panel.
+- **Genomic region** finds carriers in a window of up to 5 Mb. Enter `chrom:start-end`.
+- **Predicted target gene** finds indexed variants in regulatory elements linked to the gene through installed ENCODE-rE2G data. This can identify intergenic variants far from the target. [Predicted regulatory target genes](05-whole-genome.md#predicted-regulatory-target-genes)
+
+Opening the region tab selects
 all IMPACT tiers, because non-coding records are MODIFIER and the coding
 default would hide them. The gene and region forms share the qualifying
 filters (impact, popmax, predictors, ClinVar). This is the scalable route for large collections:
@@ -120,9 +121,6 @@ field the variant page displays reflects the full record.
 
 For a gene-list search, an allele that qualifies for two panel genes appears
 under both genes. It counts once in that sample’s qualifying variant count.
-If an older search entry shows a score that differs from its stored VCF,
-open **Sample Library → More actions → Rebuild search index** for the
-affected sample. This rereads its VCF without rerunning annotation.
 
 When a new gene–disease association is published, this is the two-minute
 check across the entire collection — without touching the original files.
@@ -139,6 +137,12 @@ its stored class. Mitochondrial genotypes do not qualify as diploid.
 Gene and gene-list searches share their MANE and impact selections. Region
 and predicted-target searches each start with all transcripts and impact
 tiers, and each remembers its own edits while the query panel is open.
+
+## Updating older cohort entries
+
+If Cohort Search shows a reindexing notice after a software update, open **Manage samples** to identify the flagged entries. In **Sample Library**, expand the callset, find each affected sample, and choose **More actions → Rebuild search index**. If the sample shows **Cohort index needs repair**, choose **Repair Cohort Search**. Rebuilding rereads the annotated VCF. A full WGS index requires access to the original annotated file.
+
+Each sample keeps its own capture profile when several samples share a VCF. When you remove or replace a sample, Cohort Search updates the transcript evidence, rsID, original coordinates, and unscored-indel reason using the surviving sources. If only the removed sample supplied an rsID, search by chromosome, position, reference, and alternate allele to find any remaining carriers.
 
 ## Building a large collection: bulk import
 

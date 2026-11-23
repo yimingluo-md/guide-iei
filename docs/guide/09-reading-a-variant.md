@@ -124,6 +124,11 @@ splice), three layers are presented:
   annotation. At a splice boundary, the recalculation requires an edit that
   can be placed in the coding sequence. If the placement is ambiguous,
   GUIDE-IEI keeps the original LOFTEE value and records the gap in annotation QC.
+  The November 2026 source update corrects exon-boundary cases where a
+  multiallelic VCF adds shared bases to the right of a frameshift insertion or
+  deletion. If an earlier run flagged such an edit as `outside_cds`, rerun
+  annotation from the input VCF and import the new result to refresh the
+  50-bp calculation. Rebuilding Cohort Search alone rereads the old value.
 - **Frame-restoring haplotypes.** When a sample carries nearby indels that
   jointly restore the reading frame, the combined consequence is evaluated
   per haplotype. Fully restored, phase-confirmed events are excluded from

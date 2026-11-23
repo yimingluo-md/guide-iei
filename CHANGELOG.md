@@ -5,6 +5,16 @@ version here, in the `VERSION` file, and in the release tag always agree.
 
 ## Unreleased
 
+### November 22, 2026
+
+- **Regulatory and gene evidence.** Search genes and gene sets using ENCODE-rE2G predicted targets. Gene-less intergenic hits can be opened from Cohort Search and retained when filtering by SCREEN activity. The included gene-knowledge data now cover GenCC submissions.
+- **Predictors.** Review GPN-Star scores and import selected columns from a custom score table. Enabled full dbNSFP replaces automatic starters for metrics it supplies. In older VCFs containing multiple CADD sources, Variant Review shows each provider’s Phred and raw scores together.
+- **Sample Library and Cohort Search.** Samples in the same VCF can keep different capture profiles. Reindexing one sample preserves its siblings’ settings and the file’s carrier count. Removing or replacing a source restores surviving transcript evidence, rsIDs, original coordinates, and unscored-indel reasons. Combined library reviews can recover full transcript details from the originating file.
+- **Annotation and phenotypes.** Equivalent compact and right-padded frameshifts now give the same LOFTEE 50-bp result in the corrected exon-boundary cases. Indexed predictors recognize equivalent padded indels, ClinGen recognizes mitochondrial chromosome aliases, and manual phenotype saves preserve age units.
+- **Updating existing data.** Reindex older samples flagged in Cohort Search. To refresh affected frameshift annotations, rerun annotation from the input VCF and import the updated result. Check previously saved phenotype ages against the source if their units look wrong.
+
+### Earlier source updates
+
 - Offer optional recommended WGS downloads in the Mac startup window, off by
   default: Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI. Show purpose,
   missing-resource space estimates and progress; reuse existing installers and

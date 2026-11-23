@@ -31,6 +31,16 @@ GUIDE-IEI software is MIT-licensed. Annotation datasets retain their own
 licenses; some are restricted to noncommercial use.
 [View dataset licenses](guide/03-datasets.md#data-sources-and-licenses).
 
+## Recent updates
+
+The guide covers the current source on `main`. The downloadable Mac beta is **v0.6.2**. The November 2026 changes are available to users running the newer source.
+
+- **Finding regulatory variants.** Search a gene or gene set for variants in linked regulatory elements. Intergenic hits can also be reviewed using SCREEN tissue activity. [Whole-genome analysis](guide/05-whole-genome.md#predicted-regulatory-target-genes)
+- **Reviewing an existing cohort.** After updating, open **Cohort Search → Manage samples** to identify entries that need reindexing. [Updating older cohort entries](guide/08-cohort-search.md#updating-older-cohort-entries)
+- **Revisiting frameshifts.** If you previously reviewed a frameshift at an exon boundary on a multiallelic record, rerun annotation to refresh its LOFTEE 50-bp result. [Reading a variant page](guide/09-reading-a-variant.md)
+
+[Full changelog on GitHub](../CHANGELOG.md#unreleased)
+
 ## Chapters
 
 1. [What GUIDE-IEI does](guide/01-what-guide-iei-does.md)
