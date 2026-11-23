@@ -26,6 +26,68 @@ from local_service.desktop_endpoint import read_endpoint, write_endpoint
 
 
 class DesktopAppTests(unittest.TestCase):
+    def test_lost_launcher_keeps_service_and_first_launch_alive_until_browser_quit(self):
+        import yaml
+        # No real preparation or downloads: simulate an installation waiting
+        # for authorization while exercising the real supervisor and service.
+        boot = '''
+from functools import partial
+from local_service import desktop_app
+desktop_app.prepare_engine = partial(desktop_app.prepare_engine, call=lambda *_: {
+    "available": False, "busy": False, "package": {"installable": True},
+    "annotation_path": "/synthetic/references", "free_bytes": 1000,
+    "estimated_required_bytes": 500})
+raise SystemExit(desktop_app.main())
+'''
+        for setup in ("0", "1"):
+            with self.subTest(setup=setup), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                env = dict(os.environ, HOME=tmp, IEI_APP_SUPPORT_DIR=tmp,
+                    IEI_WORKBENCH_STATE_DIR=str(root / "data"),
+                    IEI_WORKBENCH_STORAGE_REGISTRY=str(root / "storage.json"),
+                    IEI_DEFAULT_ANNOTATION_ROOT=str(root / "refs"), IEI_UI_PORT="3000",
+                    PYTHONPATH=str(Path(yaml.__file__).resolve().parents[1]),
+                    IEI_DESKTOP_LAUNCHER_PID="0", IEI_DESKTOP_INSTANCE_ID="lost-window",
+                    IEI_DESKTOP_SETUP=setup, IEI_AUTO_START_DOCKER="0", IEI_MAC_TOOL_DISCOVERY="0",
+                    IEI_DESKTOP_STARTUP_STATUS=str(root / "status.json"),
+                    IEI_DESKTOP_STARTUP_CONTROL=str(root / "control.json"),
+                    IEI_DESKTOP_ENDPOINT_FILE=str(root / "endpoint.json"), IEI_DESKTOP_NO_BROWSER="1")
+                args = ["-c", boot] if setup == "1" else ["-m", "local_service.desktop_app"]
+                with subprocess.Popen([sys.executable, "-B", *args], cwd=Path(__file__).resolve().parents[1], env=env) as supervisor:
+                    try:
+                        deadline = time.monotonic() + 30
+                        status = {}
+                        while time.monotonic() < deadline:
+                            self.assertIsNone(supervisor.poll())
+                            try:
+                                status = json.loads((root / "status.json").read_text())
+                                saved = read_endpoint(root / "desktop-endpoint.json")
+                                if saved and status.get("phase") == ("waiting" if setup == "1" else "ready"):
+                                    break
+                            except (OSError, ValueError):
+                                pass
+                            time.sleep(.1)
+                        else:
+                            self.fail(f"Service did not become ready: {status}")
+                        time.sleep(2.5)  # Exceeds the old orphan Quit retry interval.
+                        self.assertIsNone(supervisor.poll())
+                        base = f"http://127.0.0.1:{saved['port']}"
+                        self.assertEqual(desktop_app.api(base, "/api/service/status")["instance_id"], "lost-window")
+                        duplicate_env = dict(env, IEI_DESKTOP_INSTANCE_ID="new-window",
+                                             IEI_DESKTOP_ENDPOINT_FILE=str(root / "reopened.json"))
+                        duplicate = subprocess.run([sys.executable, "-B", "-m", "local_service.desktop_app"],
+                            cwd=Path(__file__).resolve().parents[1], env=duplicate_env, timeout=15)
+                        # Source checkouts lack the packaged build identity and
+                        # deliberately take the safe older-build recovery path.
+                        self.assertEqual(duplicate.returncode, desktop_app.OTHER_BUILD)
+                        self.assertEqual(read_endpoint(root / "reopened.json"), saved)
+                        desktop_app.api(base, "/api/service/quit", {"confirm": True, "instance_id": "lost-window"})
+                        self.assertEqual(supervisor.wait(timeout=15), 0)
+                    finally:
+                        if supervisor.poll() is None:
+                            supervisor.terminate()
+                            supervisor.wait(timeout=15)
+
     def test_late_setup_quit_and_offline_storage_restart_allow_reopen(self):
         import yaml
         # Use the real lifecycle endpoint and child processes. Stub only
@@ -259,6 +321,52 @@ raise SystemExit(desktop_app.main())
                     patch.object(desktop_app.subprocess, "Popen", side_effect=launch):
                 with self.assertRaisesRegex(RuntimeError, "during preparation .*17"):
                     desktop_app.run_workbench(root, root, endpoint, root / "saved", "owned")
+
+    def test_running_supervisor_retries_control_io_and_honors_quit(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            endpoint, control = root / "session", root / "control.json"
+            claimed = control.with_suffix(".reading")
+            control.write_text(json.dumps({"action": "quit", "request_id": "synthetic"}))
+            child = Mock(returncode=None)
+            child.poll.side_effect = lambda: child.returncode
+            def launch(*args, **kwargs):
+                write_endpoint(endpoint, 3000, "owned")
+                return child
+            opener = Mock()
+            opener.open.return_value = io.BytesIO(b'{"ok":true}')
+            failures = {"replace": 1, "read": 1, "unlink": 1}
+            replace, read, unlink = Path.replace, Path.read_text, Path.unlink
+            def flaky_replace(path, target):
+                if path == control and failures["replace"]:
+                    failures["replace"] -= 1
+                    raise PermissionError("synthetic secret")
+                return replace(path, target)
+            def flaky_read(path, *args, **kwargs):
+                if path == claimed and path.exists() and failures["read"]:
+                    failures["read"] -= 1
+                    raise OSError("synthetic secret")
+                return read(path, *args, **kwargs)
+            def flaky_unlink(path, *args, **kwargs):
+                if path == claimed and failures["unlink"]:
+                    failures["unlink"] -= 1
+                    raise OSError("synthetic secret")
+                return unlink(path, *args, **kwargs)
+            def quit_service(*args):
+                child.returncode = 0
+            env = {"IEI_DESKTOP_STARTUP_CONTROL": str(control), "IEI_DESKTOP_NO_BROWSER": "1"}
+            with patch.dict(os.environ, env, clear=True), patch.object(desktop_app, "port_available", return_value=True), \
+                    patch.object(desktop_app.signal, "signal"), patch.object(desktop_app.time, "sleep"), \
+                    patch.object(desktop_app.urllib.request, "build_opener", return_value=opener), \
+                    patch.object(desktop_app.subprocess, "Popen", side_effect=launch), \
+                    patch.object(desktop_app, "api", side_effect=quit_service) as api, \
+                    patch.object(Path, "replace", flaky_replace), patch.object(Path, "read_text", flaky_read), \
+                    patch.object(Path, "unlink", flaky_unlink), patch("builtins.print") as output:
+                self.assertEqual(desktop_app.run_workbench(root, root, endpoint, root / "saved", "owned"), 0)
+            self.assertEqual(failures, {"replace": 0, "read": 0, "unlink": 0})
+            api.assert_called_once_with("http://127.0.0.1:3000", "/api/service/quit",
+                                        {"confirm": True, "instance_id": "owned"})
+            output.assert_not_called()
 
     def test_stale_endpoint_never_opens_foreign_service(self):
         with tempfile.TemporaryDirectory() as temporary:

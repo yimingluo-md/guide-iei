@@ -2485,8 +2485,6 @@ def _stage_vcf_records(
                         consequence, ref=ref, alts=alts, alt_index=alt_index
                     )
                 ]
-                if not matching and len(alts) == 1:
-                    matching = consequences
                 prediction_info = _prediction_info_for_alt(
                     info,
                     alt=alt,
@@ -4795,8 +4793,113 @@ class CohortStore:
                 )
             )
         """)
-        # Keep exact allele/carrier lookups working even when no transcript
-        # identity can be recovered. This is the importer's missing-CSQ row.
+
+    def _stage_legacy_source_records(self, connection):
+        """Scan each ambiguous surviving source once, staging carrier-bound scores."""
+        connection.execute("CREATE TEMP TABLE IF NOT EXISTS recovered_legacy_scores (file_id INTEGER, annotation_id INTEGER, scores TEXT)")
+        connection.execute("CREATE INDEX IF NOT EXISTS recovered_legacy_by_annotation ON recovered_legacy_scores(annotation_id)")
+        connection.execute("DELETE FROM recovered_legacy_scores")
+        files = connection.execute("""
+            SELECT DISTINCT f.* FROM retiring_variants r
+            CROSS JOIN cohort_genotypes g ON g.variant_id=r.id
+            CROSS JOIN cohort_samples s ON s.id=g.sample_id
+            CROSS JOIN cohort_files f ON f.id=s.file_id
+            WHERE s.annotation_evidence_complete=0 AND f.mtime_ns<0
+              AND NOT EXISTS (SELECT 1 FROM cohort_samples other WHERE other.file_id=f.id
+                              AND other.annotation_evidence_complete=1)
+            ORDER BY f.id DESC
+        """).fetchall()
+        for file in files:
+            path = Path(file["path"])
+            try:
+                before = path.stat()
+                if before.st_size != file["size_bytes"]:
+                    continue
+                if file["content_sha256"]:
+                    if _full_content_sha256(path, limit=before.st_size) != file["content_sha256"]:
+                        continue
+                elif file["content_probe"] and _content_probe(path) != file["content_probe"]:
+                    continue
+                header = read_vcf_header(path)
+                indices = {name: i for i, name in enumerate(header.samples)}
+                opener = gzip.open if path.name.lower().endswith(COMPRESSED_SUFFIXES) else open
+                with opener(path, "rt", encoding="utf-8") as stream:
+                    for line in stream:
+                        if line.startswith("#") or not line.strip():
+                            continue
+                        cols = line.rstrip("\r\n").split("\t")
+                        if len(cols) < 9 + len(header.samples):
+                            raise ValueError("truncated VCF record")
+                        if cols[6] not in ("PASS", "."):
+                            continue
+                        try:
+                            pos = int(cols[1])
+                        except ValueError:
+                            continue
+                        alts = tuple(cols[4].split(","))
+                        info = info_map(cols[7])
+                        retained = wgs_retained_alts(info, len(alts))
+                        for alt_index, alt in enumerate(alts):
+                            if retained is not None and retained[alt_index] == "0":
+                                continue
+                            key = variant_key(normalize_chromosome(cols[0]), pos, cols[3], alt)
+                            carriers = connection.execute("""
+                                SELECT s.name,g.genotype FROM cohort_variants v
+                                JOIN retiring_variants r ON r.id=v.id
+                                JOIN cohort_genotypes g ON g.variant_id=v.id
+                                JOIN cohort_samples s ON s.id=g.sample_id
+                                WHERE v.variant_key=? AND s.file_id=? AND s.annotation_evidence_complete=0
+                            """, (key, file["id"])).fetchall()
+                            if not any(row["name"] in indices and
+                                       (gt := parse_genotype(cols[8], cols[9+indices[row["name"]]], alt_index))["carrier"]
+                                       and gt["gt"] == row["genotype"] for row in carriers):
+                                continue
+                            matching = [entry for entry in parse_csq_entries(info.get("CSQ", ""), list(header.csq_fields))
+                                        if consequence_matches_alt(entry, ref=cols[3], alts=alts, alt_index=alt_index)]
+                            prediction_info = _prediction_info_for_alt(info, alt=alt, alt_index=alt_index, alts=alts)
+                            for record in _prediction_annotation_records(prediction_info, matching):
+                                annotation = annotation_from(record)
+                                identity = (key, annotation["gene"], annotation["transcript"], annotation["hgvsc"],
+                                            annotation["hgvsp"], annotation["consequence"])
+                                row = connection.execute("""
+                                    SELECT a.id FROM cohort_annotations a JOIN cohort_variants v ON v.id=a.variant_id
+                                    WHERE v.variant_key=? AND a.gene=? AND a.transcript=? AND a.hgvsc=?
+                                      AND a.hgvsp=? AND a.consequence=?
+                                """, identity).fetchone()
+                                if row:
+                                    connection.execute("INSERT INTO recovered_legacy_scores VALUES (?,?,?)",
+                                                       (file["id"], row["id"], json.dumps([annotation.get(c) for c in SOURCE_SCORE_COLUMNS])))
+                after = path.stat()
+                if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                    raise ValueError("source changed during recovery")
+            except (OSError, UnicodeError, ValueError, EOFError):
+                connection.execute("DELETE FROM recovered_legacy_scores WHERE file_id=?", (file["id"],))
+
+    def _recover_legacy_source_records(self, connection, low, high):
+        for row in connection.execute("""
+            SELECT staged.annotation_id,staged.scores FROM retiring_variants r
+            CROSS JOIN cohort_annotations a ON a.variant_id=r.id
+            CROSS JOIN recovered_legacy_scores staged ON staged.annotation_id=a.id
+            CROSS JOIN legacy_annotation_sources l ON l.variant_id=a.variant_id AND l.file_id=staged.file_id
+            WHERE r.id>? AND r.id<=? AND NOT l.intact
+            ORDER BY staged.file_id DESC, staged.rowid
+        """, (low, high)):
+            annotation_id = row["annotation_id"]
+            connection.execute("""
+                INSERT OR IGNORE INTO rebuilt_annotations(id,impact,mane,picked,repeat_masker,segdup,
+                    logofunc_allele_available,loftee_50bp_changed)
+                VALUES (?,'UNKNOWN',0,0,0,0,0,0)
+            """, (annotation_id,))
+            for column, value in zip(SOURCE_SCORE_COLUMNS, json.loads(row["scores"])):
+                if value is not None and value != "":
+                    if column == "logofunc_allele_available":
+                        connection.execute("UPDATE rebuilt_annotations SET logofunc_allele_available=MAX(logofunc_allele_available,?) WHERE id=?", (value, annotation_id))
+                    else:
+                        connection.execute(f"UPDATE rebuilt_annotations SET {column}=COALESCE(NULLIF({column},''),?) WHERE id=?", (value, annotation_id))
+
+    def _seed_legacy_placeholders(self, connection):
+        # Retain a missing-CSQ row only when neither recovered nor tracked
+        # evidence supplies an annotation for the surviving allele.
         unknown = """
             SELECT DISTINCT variant_id FROM legacy_annotation_sources l WHERE NOT EXISTS (
                 SELECT 1 FROM cohort_annotations a WHERE a.variant_id=l.variant_id AND (
@@ -4816,7 +4919,6 @@ class CohortStore:
             WHERE a.variant_id IN ({unknown}) AND a.gene='—' AND a.transcript=''
               AND a.hgvsc='' AND a.hgvsp='' AND a.consequence='unannotated'
         """)
-        self._restore_legacy_scores(connection, low, high)
 
     def _restore_carried_annotations(self, connection, low, high):
         bounds = (low, high)
@@ -4835,6 +4937,10 @@ class CohortStore:
         connection.execute(f"CREATE TEMP TABLE IF NOT EXISTS rebuilt_annotations(id INTEGER PRIMARY KEY,{columns})")
         connection.execute("DELETE FROM rebuilt_annotations")
         self._seed_legacy_annotations(connection, low, high)
+        self._recover_legacy_source_records(connection, low, high)
+        self._seed_legacy_placeholders(connection)
+        self._restore_legacy_scores(connection, low, high)
+        self._recover_legacy_source_records(connection, low, high)
         # A different source may keep the annotation row alive. Retire a
         # transcript-bound observation when its own source lost that transcript.
         connection.execute(f"""
@@ -4870,6 +4976,8 @@ class CohortStore:
         self._reconcile_withheld_promoterai(connection, rebuilt_only=True)
 
     def _restore_retiring_variants(self, connection, *, chunked=False, restore=True):
+        if restore:
+            self._stage_legacy_source_records(connection)
         low = 0
         while True:
             row = connection.execute(
@@ -5614,8 +5722,6 @@ class CohortStore:
                                     alt_index=alt_index,
                                 )
                             ]
-                            if not matching and len(alts) == 1:
-                                matching = consequences
 
                             prediction_info = _prediction_info_for_alt(
                                 info,
@@ -6803,29 +6909,35 @@ class CohortStore:
         content_probe: str = "",
         content_sha256: str = "",
         sample_names: tuple[str, ...] | None = None,
+        trusted_legacy_source: bool = False,
     ) -> tuple[int, int]:
         stat = source_path.stat()
         aliases = [f"stage_{index}" for index in range(len(stages))]
         indexed_samples = tuple(sample_names) if sample_names else header.samples
-        # A sample-restricted import of a file that is ALREADY indexed under
-        # the same profile and identical bytes appends/replaces only the
+        # A sample-restricted import of an already indexed file with
+        # compatible content identity appends/replaces only the
         # addressed samples. Replacing the whole file row here is what made a
         # sibling's full-WGS reindex drop every co-resident sample.
-        append_to_existing = bool(
-            sample_names and existing is not None
-            and existing["import_profile"] == import_profile
-            and existing["analysis_scope"] == analysis_scope
-            and existing["prefilter_options"] == prefilter_options_json
-            and existing["size_bytes"] == stat.st_size
-            and existing["mtime_ns"] in (-1, stat.st_mtime_ns)
-            and (
-                (content_sha256 and existing["content_sha256"] == content_sha256)
-                or (
-                    not content_sha256 and content_probe
-                    and existing["content_probe"] == content_probe
-                )
+        # The full digest takes precedence over the weaker probe. A legacy
+        # row without either identity is usable only when the library has
+        # independently verified its retained source against its checksum.
+        old_sha = existing["content_sha256"] if existing else ""
+        old_probe = existing["content_probe"] if existing else ""
+        same_content = bool(
+            existing and existing["size_bytes"] == stat.st_size and (
+                (old_sha and content_sha256 and old_sha == content_sha256)
+                or ((not old_sha or not content_sha256) and old_probe and content_probe and old_probe == content_probe
+                    and (trusted_legacy_source or existing["mtime_ns"] == stat.st_mtime_ns))
+                or (not old_sha and not old_probe and trusted_legacy_source)
             )
         )
+        append_to_existing = bool(sample_names and existing is not None and same_content)
+        mixed_or_legacy = bool(append_to_existing and (
+            not (old_sha or old_probe)
+            or existing["import_profile"] != import_profile
+            or existing["analysis_scope"] != analysis_scope
+            or existing["prefilter_options"] != prefilter_options_json
+        ))
         connection = self._connect()
         connection.isolation_level = None  # explicit, bounded transactions
         published = False
@@ -7003,11 +7115,22 @@ class CohortStore:
                     connection.execute(
                         "DELETE FROM cohort_files WHERE id = ?", (existing["id"],)
                     )
+                if append_to_existing and (
+                    existing["import_profile"] != import_profile
+                    or existing["analysis_scope"] != analysis_scope
+                    or existing["prefilter_options"] != prefilter_options_json
+                ):
+                    # Do not let a later whole-file import treat a mixture of
+                    # per-sample settings as one uniform file-level profile.
+                    connection.execute(
+                        "UPDATE cohort_files SET prefilter_options=? WHERE id=?",
+                        ('{"_mixed_sample_profiles":true}', file_id),
+                    )
                 variant_count, carrier_count = self._published_variant_counts(connection, file_id)
                 published_samples = {row[0] for row in connection.execute(
                     "SELECT name FROM cohort_samples WHERE file_id=?", (file_id,)
                 )}
-                mtime_ns = stat.st_mtime_ns if published_samples == set(header.samples) else -1
+                mtime_ns = stat.st_mtime_ns if published_samples == set(header.samples) and not mixed_or_legacy else -1
                 connection.execute(
                     """
                     UPDATE cohort_files SET
@@ -7277,11 +7400,12 @@ class CohortStore:
         prefilter_options: dict | None = None,
         prefilter_metadata: dict | None = None,
         restrict_samples: Iterable[str] | None = None,
+        trusted_legacy_source: bool = False,
     ) -> dict:
         """Index a VCF into the cohort store.
 
         ``restrict_samples`` indexes only the named sample columns. When the
-        file is already indexed under the same profile with identical bytes,
+        file has a compatible content identity,
         those samples are (re)placed inside the existing cohort file; every
         other sample keeps its rows. The sample library uses this for a
         full-WGS reindex of one dataset whose original VCF also carries
@@ -7296,6 +7420,7 @@ class CohortStore:
                     progress=progress, source_path=source_path, import_profile=import_profile,
                     analysis_scope=analysis_scope, prefilter_options=prefilter_options,
                     prefilter_metadata=prefilter_metadata, restrict_samples=restrict_samples,
+                    trusted_legacy_source=trusted_legacy_source,
                 )
         finally:
             with self._import_jobs_lock:
@@ -7310,6 +7435,7 @@ class CohortStore:
         prefilter_options: dict | None = None,
         prefilter_metadata: dict | None = None,
         restrict_samples: Iterable[str] | None = None,
+        trusted_legacy_source: bool = False,
     ) -> dict:
         if import_profile not in {"full", "prefiltered"}:
             raise ValueError("import_profile must be 'full' or 'prefiltered'")
@@ -7496,6 +7622,7 @@ class CohortStore:
                 content_probe=content_probe,
                 content_sha256=content_sha,
                 sample_names=restricted,
+                trusted_legacy_source=trusted_legacy_source,
             )
 
         pass_records = sum(stage["pass_records"] for stage in stages)

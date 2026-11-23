@@ -18,6 +18,9 @@ while [[ $# -gt 0 ]]; do
         *) die "unknown preflight argument: $1" ;;
     esac
 done
+if [[ "$MODE" != "--dry-run" ]]; then
+    python3 "${ROOT}/pipeline/publish_annotation.py" --preflight "$OUTPUT"
+fi
 if [[ -z "$INPUT_ASSEMBLY" ]]; then
     INPUT_ASSEMBLY="$(yaml_get "$CONFIG" input.default_assembly)"
     INPUT_ASSEMBLY="${INPUT_ASSEMBLY:-GRCh38}"

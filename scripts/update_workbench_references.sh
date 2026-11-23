@@ -25,4 +25,6 @@ python3 "${HERE}/build_workbench_reference_data.py" \
 
 # Build the richer public gene-knowledge layer after the reviewed IUIS table
 # has been regenerated. OMIM is intentionally not part of this update.
-bash "${HERE}/update_gene_knowledge.sh"
+bash "${HERE}/update_gene_knowledge.sh" \
+    "${ROOT}/webui/public/bundled-data/gene_knowledge_public.sqlite3" \
+    "${ROOT}/webui/public/bundled-data/gene_knowledge_manifest.json"

@@ -81,6 +81,7 @@ try {
   let batches = 0;
   let failScreen = false;
   let missingLinks = false;
+  let targetStatusRequests = 0;
   let targetRequests = 0;
   const targetPayloads = [];
   const geneLookups = [];
@@ -119,6 +120,7 @@ try {
       return json(imported ? [{...imported, id:"mock", rows:1, matches:[{context:{strand:"+"}, unresolved:["strand"], values:["0"]}]}] : []);
     }
     if (url.pathname === "/api/element-gene-links/search-status") {
+      targetStatusRequests++;
       if (missingLinks) return request.respond({status: 400, headers, contentType: "application/json",
         body: JSON.stringify({error: "Install ENCODE-rE2G in Annotation datasets first"})});
       const {gene} = JSON.parse(request.postData());
@@ -283,6 +285,27 @@ try {
     await geneSearch.press("Backspace");
     if (value) await geneSearch.type(value);
   };
+  missingLinks = true;
+  const statusBeforeEmpty = targetStatusRequests;
+  await geneMode(true);
+  await page.waitForSelector(".table-frame tbody tr");
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(targetStatusRequests, statusBeforeEmpty, "An empty target search must not check the index");
+  assert(!(await page.evaluate(() => [...document.querySelectorAll("button")].find(button => button.textContent === "Export TSV").disabled)));
+  await setSearch("1:100:A:G");
+  await waitCount(1);
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(targetStatusRequests, statusBeforeEmpty, "A locus without a selected gene set must not check the index");
+  await setSearch("NFKB1");
+  await page.waitForFunction(() => document.body.textContent.includes("Install ENCODE-rE2G in Annotation datasets"));
+  assert(await page.evaluate(() => [...document.querySelectorAll("button")].find(button => button.textContent === "Export TSV").disabled));
+  await setSearch("");
+  await page.waitForFunction(() => !document.body.textContent.includes("Install ENCODE-rE2G in Annotation datasets"));
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert(!(await page.evaluate(() => document.body.textContent.includes("Install ENCODE-rE2G in Annotation datasets"))));
+  assert(!(await page.evaluate(() => [...document.querySelectorAll("button")].find(button => button.textContent === "Export TSV").disabled)));
+  missingLinks = false;
+  await geneMode(false);
   await setSearch("nfk");
   await waitCount(1);
   assert.equal(await page.$eval(".table-frame tbody .gene", el => el.textContent), "NFKB1");

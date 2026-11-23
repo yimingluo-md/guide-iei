@@ -399,7 +399,7 @@ def _evaluate_alts(
         ):
             reasons_by_alt.append(())
             continue
-        matched = consequences if len(alts) == 1 else [
+        matched = [
             entry for entry in consequences
             if consequence_matches_alt(entry, ref=ref, alts=alts, alt_index=alt_index)
         ]

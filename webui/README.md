@@ -49,7 +49,8 @@ default and two deliberately separate paths:
 - includes bundled IUIS October 2024 IEI (505 genes) and dominant-inheritance
   (137 genes) filters
 - filters by samples, gene sets, impact, gnomAD popmax, ClinVar P/LP,
-  homozygous calls, candidate compound heterozygotes and predictor thresholds
+  diploid homozygous ALT calls, haploid or possible single-copy calls,
+  candidate compound heterozygotes and predictor thresholds
 - accepts standard PED input or manual proband/mother/father mapping for
   confidence-tiered de novo screening and parental-origin/phase-aware
   compound-heterozygous analysis

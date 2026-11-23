@@ -90,9 +90,9 @@ def test_record_wide_csq_indel_anchor():
     assert allele_index({"Allele": "-"}, "AT", alts) == 0
     assert allele_index({"Allele": "TT"}, "AT", alts) == 1
     assert allele_index({"Allele": "TT", "ALLELE_NUM": "1"}, "AT", alts) == 0
-    assert allele_index({"Allele": "TT"}, "AT", ["ATT", "ATTT"]) is None
+    assert allele_index({"Allele": "TT"}, "AT", ["ATT", "ATTT"]) == 0
     # AT is the stripped form of AAT and the suffix-trimmed form of ATA.
-    assert allele_index({"Allele": "AT"}, "A", ["AAT", "ATA"]) is None
+    assert allele_index({"Allele": "AT"}, "A", ["AAT", "ATA"]) == 0
     # Biallelic PTC inputs use prefix-first spelling even in a repeat.
     assert allele_index({"Allele": "TA"}, "A", ["ATA"]) == 0
     assert allele_index({"Allele": "AT"}, "A", ["ATA"]) is None
@@ -443,7 +443,8 @@ def test_right_padded_boundary_edits_through_postprocessor(tmp_path):
 
         for entry, status in [
             (entries["padded_deletion"][1], "outside_cds"),
-            (entries["padded_deletion"][2], "allele_mapping_failed"),
+            # The record-level "-" spelling uniquely identifies ALT 1.
+            (entries["padded_deletion"][2], "outside_cds"),
             (entries["bad_padding"][0], "ref_mismatch"),
         ]:
             assert entry["PTC_calc_status"] == status

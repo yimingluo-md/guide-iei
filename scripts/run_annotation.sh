@@ -81,6 +81,9 @@ if [[ "$INPUT" == "$AAMATCH_FINAL" || "$INPUT" -ef "$AAMATCH_FINAL" ]]; then
     die "input collides with the run's .aamatch output: $AAMATCH_FINAL — choose a different output path"
 fi
 WORKDIR="$(dirname "$OUTPUT")"
+if [[ "$DRY" != "1" ]]; then
+    python3 "${ROOT}/pipeline/publish_annotation.py" --preflight "$REQUESTED_OUTPUT"
+fi
 INPUT_BASE="$(basename "$INPUT")"; INPUT_BASE="${INPUT_BASE%.gz}"; INPUT_BASE="${INPUT_BASE%.vcf}"
 
 # Shared with UI preflight, but scan every row and the gzip trailer here.

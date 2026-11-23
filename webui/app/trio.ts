@@ -252,11 +252,17 @@ export function assessDeNovo(
     }
   }
   if (context === "diploid" && tokens[0] === tokens[1]) {
-    if (!relevantParents.every(([, parent]) => adequate(parent, thresholds.parentMinDp, thresholds.minGq))) {
-      return { ...base, status: "possible", reasons: ["Parental calls are insufficient to assess the homozygous ALT genotype."] };
-    }
-    if (relevantParents.some(([, parent]) => !parent?.carrier)) {
+    const supportedParents = relevantParents.filter(([, parent]) => adequate(parent, thresholds.parentMinDp, thresholds.minGq));
+    if (supportedParents.some(([, parent]) => !parent?.carrier)) {
       return { ...base, status: "mendelian_conflict", reasons: ["A homozygous ALT child requires a copy from each parent under the diploid inheritance model."] };
+    }
+    if (supportedParents.length < relevantParents.length) {
+      const carriers = supportedParents.filter(([, parent]) => parent?.carrier).map(([label]) => label);
+      const uncertain = relevantParents.filter(([, parent]) => !adequate(parent, thresholds.parentMinDp, thresholds.minGq)).map(([label]) => label);
+      if (carriers.length) {
+        return { ...base, status: "inherited", reasons: [`ALT allele is present in the ${carriers.join(" and ")}; the ${uncertain.join(" and ")} has insufficient evidence to assess the other copy.`] };
+      }
+      return { ...base, status: "possible", reasons: ["Parental calls are insufficient to assess the homozygous ALT genotype."] };
     }
   }
   const carrierParents = relevantParents

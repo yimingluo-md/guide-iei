@@ -63,6 +63,10 @@ int main(int argc, const char *argv[]) {
             @"estimated_required_bytes": @(64.0*1024*1024*1024)};
         guide.plan = planWithJob(nil); guide.preparing = YES;
         [guide buildControls]; [guide refreshStatus:nil];
+        NSCAssert(![guide windowShouldClose:guide.window], @"Closing controls must not terminate the app");
+        NSCAssert(!guide.quitting && !guide.window.visible, @"Closing controls leaves work running");
+        [guide showControls:nil];
+        NSCAssert(guide.window.visible, @"Controls can be reopened");
         NSCAssert(guide.wgsChoice.state == NSControlStateValueOff, @"WGS must default off");
         NSCAssert(guide.posts == 0, @"Polling must never start a download");
         NSCAssert([guide.wgsSummary.stringValue containsString:@"112.0 GB"], @"Show download size");

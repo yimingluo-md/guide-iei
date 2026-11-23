@@ -27,20 +27,33 @@ def write_status(path, phase, message, log_path="", **details):
 
 
 def take_control_message(control_path):
-    # Claim the current message before reading. A new Quit can arrive while
-    # we process Prepare and must survive removal of the previous message.
+    # Finish an earlier claim before taking another: the producer may have
+    # placed a new Quit at control_path while this file was inaccessible.
     claimed = control_path.with_suffix(".reading")
     try:
-        control_path.replace(claimed)
-    except FileNotFoundError:
-        return {}
-    try:
-        message = json.loads(claimed.read_text())
-        return message if isinstance(message, dict) else {}
-    except ValueError:
-        return {}
-    finally:
+        try:
+            contents = claimed.read_text()
+        except FileNotFoundError:
+            control_path.replace(claimed)
+            contents = claimed.read_text()
+        try:
+            message = json.loads(contents)
+        except ValueError:
+            message = {}
+        # Do not deliver until removal succeeds, otherwise an unlink failure
+        # would replay the same action on every poll.
         claimed.unlink(missing_ok=True)
+        return message if isinstance(message, dict) else {}
+    except UnicodeError:
+        try:
+            claimed.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return {}
+    except OSError:
+        # Transient filesystem failures are retried on the next poll. Avoid
+        # logging exceptions or contents from this user-controlled channel.
+        return {}
 
 
 def take_action(control_path):
@@ -48,7 +61,7 @@ def take_action(control_path):
 
 
 def prepare_engine(base, support, status_path, control_path, alive, call=api, pause=time.sleep, *,
-                   essential=False, launcher_gone=lambda: False):
+                   essential=False):
     """Return True when ready, False for an accepted Quit, or None if supervision ended."""
     deferred = support / "annotation-setup-deferred.json"
     phase, job, log_path = "checking", None, ""
@@ -73,7 +86,7 @@ def prepare_engine(base, support, status_path, control_path, alive, call=api, pa
     publish(phase, "Checking installed annotation components…")
     while alive():
         action = take_action(control_path)
-        if action == "quit" or launcher_gone():
+        if action == "quit":
             quit_requested = True
         if action == "prepare" and phase in {"waiting", "failed"}:
             authorized = True

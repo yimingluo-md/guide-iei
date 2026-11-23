@@ -494,7 +494,7 @@
 - (BOOL)applicationShouldHandleReopen:(NSApplication *)app hasVisibleWindows:(BOOL)visible {
     [self showControls:nil]; return YES;
 }
-- (BOOL)windowShouldClose:(NSWindow *)sender { [NSApp terminate:nil]; return NO; }
+- (BOOL)windowShouldClose:(NSWindow *)sender { [sender orderOut:nil]; return NO; }
 - (void)checkSetupQuitReply:(NSString *)requestID {
     if (!self.quitting || !self.worker.running) return;
     NSDictionary *status = [self startupStatus];

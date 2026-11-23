@@ -43,20 +43,22 @@ def _vep_alt_allele(ref: str, alt: str) -> str:
 def csq_allele_index(entry: dict[str, str], ref: str, alts: Sequence[str]) -> int | None:
     """Resolve a CSQ entry only when its allele identifies one ALT."""
     number = entry.get("ALLELE_NUM", "")
-    if number.isdigit():
+    allele = entry.get("Allele", "").upper()
+    # A splitter can retain record-wide CSQs and their original allele numbers.
+    # On a single-ALT row the allele spelling is the only reliable discriminator.
+    if len(alts) != 1 and number.isdigit():
         index = int(number) - 1
         return index if 0 <= index < len(alts) else None
-    allele = entry.get("Allele", "").upper()
     if allele in {"", "."}:
-        return 0 if len(alts) == 1 else None
+        return 0 if len(alts) == 1 and (not number or number == "." or number == "1") else None
     record_alts = _vep_record_alts(ref, alts)
-    candidates = [
-        index for index, alt in enumerate(alts)
-        if allele == alt.upper()
-        or allele == record_alts[index].upper()
-        or allele == _vep_alt_allele(ref, alt).upper()
-    ]
-    return candidates[0] if len(candidates) == 1 else None
+    if len(alts) == 1 and re.fullmatch(r"[ACGTN]+", ref, re.I) and re.fullmatch(r"[ACGTN]+", alts[0], re.I) and alts[0][0].upper() == ref[0].upper():
+        record_alts = [alts[0][1:] or "-"]
+    for spellings in (alts, record_alts, [_vep_alt_allele(ref, alt) for alt in alts]):
+        candidates = [index for index, spelling in enumerate(spellings) if allele == spelling.upper()]
+        if candidates:
+            return candidates[0] if len(candidates) == 1 else None
+    return None
 
 
 def normalize_chrom(value: object) -> str:

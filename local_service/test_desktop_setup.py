@@ -7,7 +7,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from local_service.desktop_setup import prepare_engine, take_action
+from local_service.desktop_setup import prepare_engine, take_action, take_control_message
 
 
 class DesktopSetupTests(unittest.TestCase):
@@ -69,6 +69,39 @@ class DesktopSetupTests(unittest.TestCase):
         with patch.object(Path, "read_text", read_then_quit):
             self.assertEqual(take_action(self.control), "prepare")
         self.assertEqual(take_action(self.control), "quit")
+
+    def test_control_files_recover_from_rename_read_and_unlink_errors(self):
+        claimed = self.control.with_suffix(".reading")
+        self.action("prepare")
+        with patch.object(Path, "replace", side_effect=PermissionError("synthetic secret")):
+            self.assertEqual(take_control_message(self.control), {})
+        self.assertTrue(self.control.exists())
+
+        read = Path.read_text
+        def fail_claimed_read(path, *args, **kwargs):
+            if path == claimed and path.exists():
+                raise OSError("synthetic secret")
+            return read(path, *args, **kwargs)
+        with patch.object(Path, "read_text", fail_claimed_read):
+            self.assertEqual(take_control_message(self.control), {})
+        self.assertTrue(claimed.exists())
+        self.action("quit")
+        with patch.object(Path, "unlink", side_effect=PermissionError("synthetic secret")):
+            self.assertEqual(take_control_message(self.control), {})
+            self.assertEqual(take_control_message(self.control), {})
+        self.assertEqual(take_action(self.control), "prepare")
+        self.assertEqual(take_action(self.control), "quit")
+        self.assertEqual(take_control_message(self.control), {})
+
+    def test_claimed_quit_waits_for_unlink_recovery_without_replay(self):
+        self.action("quit")
+        with patch.object(Path, "unlink", side_effect=OSError("synthetic secret")):
+            self.assertIsNone(take_action(self.control))
+            self.action("prepare")
+            self.assertIsNone(take_action(self.control))
+        self.assertEqual(take_action(self.control), "quit")
+        self.assertEqual(take_action(self.control), "prepare")
+        self.assertIsNone(take_action(self.control))
 
     def test_returning_install_waits_for_runtime_even_if_prepare_is_clicked(self):
         for legacy in (True, False):

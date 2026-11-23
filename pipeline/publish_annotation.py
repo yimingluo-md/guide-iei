@@ -1,10 +1,33 @@
 """Publish a staged annotation and its legacy name, with the pointer last."""
+import errno
 import fcntl
 import os
 from pathlib import Path
 import shutil
 import sys
 from tempfile import TemporaryDirectory
+
+
+def preflight_output(requested: Path) -> None:
+    """Check the same directory lock used by publication before expensive work."""
+    directory = requested.parent
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(directory, os.O_RDONLY)
+        try:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError as exc:
+                # A concurrent publisher holding the lock proves it works.
+                if exc.errno not in (errno.EAGAIN, errno.EACCES):
+                    raise
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ValueError(
+            f"Cannot lock annotation output directory {directory}: {exc}. "
+            "Choose an output location on a filesystem that supports directory locking."
+        ) from exc
 
 
 def link_or_copy(source: Path, destination: Path) -> None:
@@ -91,4 +114,10 @@ def publish(final: Path, requested: Path) -> None:
 
 
 if __name__ == "__main__":
-    publish(Path(sys.argv[1]), Path(sys.argv[2]))
+    if len(sys.argv) == 3 and sys.argv[1] == "--preflight":
+        try:
+            preflight_output(Path(sys.argv[2]))
+        except ValueError as exc:
+            sys.exit(f"ERROR {exc}")
+    else:
+        publish(Path(sys.argv[1]), Path(sys.argv[2]))

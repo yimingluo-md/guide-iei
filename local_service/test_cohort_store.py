@@ -16,8 +16,30 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from local_service.cohort_store import (
-    CohortStore, annotation_from, parse_genotype, single_copy_locus,
+    CohortStore, annotation_from, consequence_matches_alt, parse_genotype, single_copy_locus,
 )
+
+
+def test_consequence_allele_resolution_order():
+    cases = [
+        ("A", ("AT", "T"), {"Allele": "T"}, [1]),
+        ("AT", ("ATT", "ATTT"), {"Allele": "TT"}, [0]),
+        ("AT", ("A", "ATT", "G"), {"Allele": "T"}, [1]),
+        ("CTT", ("C", "CT", "G"), {"Allele": "-"}, []),
+        ("A", ("T", "T"), {"Allele": "T"}, []),
+        ("A", ("AT", "T"), {"Allele": "T", "ALLELE_NUM": "1"}, [0]),
+        ("A", ("AT", "T"), {"Allele": "T", "ALLELE_NUM": "3"}, []),
+        ("A", ("T",), {"Allele": "T", "ALLELE_NUM": "2"}, [0]),
+        ("A", ("T",), {"Allele": "G", "ALLELE_NUM": "1"}, []),
+        ("AT", ("ATT",), {"Allele": "TT", "ALLELE_NUM": "2"}, [0]),
+        ("A", ("T",), {"Allele": "", "ALLELE_NUM": "2"}, []),
+        ("A", ("T",), {"Allele": ".", "ALLELE_NUM": "bad"}, []),
+        ("A", ("T",), {}, [0]),
+    ]
+    for ref, alts, entry, expected in cases:
+        assert [i for i in range(len(alts)) if consequence_matches_alt(
+            entry, ref=ref, alts=alts, alt_index=i
+        )] == expected
 
 
 CSQ_FIELDS = [
@@ -252,6 +274,20 @@ def review_text(store, review, index=0):
 
 
 class CohortStoreTests(unittest.TestCase):
+    def test_split_single_alt_import_filters_record_wide_annotations(self):
+        source = self.root / "split.vcf"
+        source.write_text(
+            '##fileformat=VCFv4.2\n##reference=GRCh38\n'
+            '##contig=<ID=1,length=248956422>\n'
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|Consequence|IMPACT|SYMBOL|Gene|Feature|HGVSc|HGVSp">\n'
+            '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n'
+            '1\t100\t.\tA\tT\t99\tPASS\tCSQ=G|1|missense_variant|MODERATE|WRONG|GW|TW|c.1A>G|p.A1G,T|2|missense_variant|MODERATE|RIGHT|GR|TR|c.1A>T|p.A1T\tGT\t0/1\n'
+        )
+        self.store.import_vcf(source)
+        with self.store._session() as connection:
+            rows = connection.execute('SELECT gene, transcript, hgvsc, hgvsp FROM cohort_annotations').fetchall()
+        self.assertEqual([tuple(row) for row in rows], [('RIGHT', 'TR', 'c.1A>T', 'p.A1T')])
+
     def test_wgs_cadd_value_precedes_dbnsfp_duplicate(self):
         annotation = annotation_from({
             "CADD_PHRED": "21.5",
@@ -2470,6 +2506,25 @@ class ChunkedMergeTests(unittest.TestCase):
         self.assertEqual(self.store.import_paths([str(self.vcf)], force=True)["imported"], 1)
         self.assertEqual({row[9] for row in self._snapshot()["annotations"]}, {31.0})
         self.assertEqual(self.store.stats()["variants"], 50)
+
+    def test_restricted_probe_only_requires_mtime_unless_trusted(self):
+        from local_service import cohort_store as module
+        with patch.object(module, "_full_content_sha256", return_value=""):
+            self.store.import_vcf(self.vcf)
+            stat = self.vcf.stat()
+            os.utime(self.vcf, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+            with self.assertRaisesRegex(ValueError, "Re-import the complete callset"):
+                self.store.import_vcf(self.vcf, restrict_samples=("P1",), force=True)
+            self.assertEqual({s["name"] for s in self.store.list_samples()}, {"P1", "P2"})
+            self.store.import_vcf(self.vcf, restrict_samples=("P1",), force=True, trusted_legacy_source=True)
+            self.assertEqual({s["name"] for s in self.store.list_samples()}, {"P1", "P2"})
+
+    def test_restricted_full_digest_allows_changed_mtime(self):
+        self.store.import_vcf(self.vcf)
+        stat = self.vcf.stat()
+        os.utime(self.vcf, ns=(stat.st_atime_ns, stat.st_mtime_ns + 2_000_000_000))
+        self.store.import_vcf(self.vcf, restrict_samples=("P1",), force=True)
+        self.assertEqual({s["name"] for s in self.store.list_samples()}, {"P1", "P2"})
 
     def test_failed_sample_restricted_reimport_keeps_the_addressed_sample(self):
         """Reviewer reproduction: the addressed sample's rows were removed

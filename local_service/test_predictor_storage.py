@@ -988,6 +988,45 @@ class PredictorImportIntegrationTests(unittest.TestCase):
         with store._session() as connection:
             self.assertEqual(connection.execute("SELECT cadd FROM cohort_annotations").fetchone()[0], 0)
 
+    def test_legacy_joint_source_recovers_only_surviving_carrier_scores(self):
+        fields = ["Allele", "Consequence", "IMPACT", "SYMBOL", "Feature", "PICK",
+                  "SpliceAI_pred_DS_AG", "AlphaMissense_score"]
+        def entry(splice, alpha):
+            return "|".join(["G", "missense_variant", "MODERATE", "GENE1", "ENST1", "1", splice, alpha])
+        for scenario in ("shared", "mixed", "missing", "changed", "genotype_mismatch"):
+            with self.subTest(scenario=scenario):
+                path = self.root / (scenario + ".vcf")
+                rows = (f"1\t100\t.\tA\tG\t99\tPASS\tCSQ={entry('0.8', '0.9')}\tGT\t0/1\t0/1\n"
+                        if scenario != "mixed" else
+                        f"1\t100\t.\tA\tG\t99\tPASS\tCSQ={entry('0.8', '0.9')}\tGT\t0/1\t0/0\n"
+                        + f"1\t100\t.\tA\tG\t99\tPASS\tCSQ={entry('', '')}\tGT\t0/0\t0/1\n")
+                path.write_text("##fileformat=VCFv4.2\n##reference=GRCh38\n"
+                                + '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
+                                + "|".join(fields) + '">\n'
+                                + "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tA\tB\n" + rows)
+                database = self.root / (scenario + ".sqlite3")
+                store = CohortStore(database)
+                store.import_vcf(path)
+                # Simulate a pre-evidence database whose scores were merged
+                # across carriers and whose source has no modern fingerprint.
+                with store._session() as c:
+                    c.execute("DELETE FROM cohort_annotation_evidence")
+                    c.execute("DELETE FROM cohort_source_scores")
+                    c.execute("UPDATE cohort_samples SET annotation_evidence_complete=0")
+                    if scenario != "changed":
+                        c.execute("UPDATE cohort_files SET content_sha256='',content_probe=''")
+                if scenario == "changed":
+                    path.write_text(path.read_text().replace("0.8", "0.7"))
+                if scenario == "genotype_mismatch":
+                    path.write_text(path.read_text().replace("0/1\t0/1", "0/1\t0/0"))
+                if scenario == "missing":
+                    path.unlink()
+                sample = next(s for s in store.list_samples() if s["name"] == "A")
+                store.remove_samples([sample["id"]])
+                with store._session() as c:
+                    scores = tuple(c.execute("SELECT spliceai,alpha_missense FROM cohort_annotations").fetchone())
+                self.assertEqual(scores, (0.8, 0.9) if scenario == "shared" else (None, None))
+
     def test_partial_funcvep_never_replaces_exact_values(self):
         fields = dict(Allele="G", ALLELE_NUM=1, Consequence="missense_variant", IMPACT="MODERATE",
                       SYMBOL="GENE1", Gene="ENSG000001", Feature="ENST_SOURCE",
@@ -1175,6 +1214,27 @@ class PredictorImportIntegrationTests(unittest.TestCase):
             ("AT", "GENEA", "ENSTA", 20.0),
         ]
 
+    def test_literal_allele_wins_over_minimized_sibling_on_import(self):
+        vcf = self.root / "ordered-alleles.vcf"
+        vcf.write_text(
+            '##fileformat=VCFv4.2\n##reference=GRCh38\n'
+            '##contig=<ID=1,length=248956422>\n'
+            '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|SYMBOL">\n'
+            '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n'
+            '1\t310\t.\tA\tAT,T\t99\tPASS\tCSQ=T|EXACT\tGT\t1/2\n',
+            encoding="utf-8",
+        )
+        store = CohortStore(self.root / "ordered-alleles.sqlite3")
+        store.import_vcf(vcf)
+        with store._session() as connection:
+            rows = connection.execute(
+                "SELECT cohort_variants.alt, cohort_annotations.gene "
+                "FROM cohort_annotations JOIN cohort_variants "
+                "ON cohort_variants.id = cohort_annotations.variant_id "
+                "ORDER BY cohort_variants.alt"
+            ).fetchall()
+        assert [tuple(row) for row in rows] == [("AT", "—"), ("T", "EXACT")]
+
     def test_ambiguous_minimized_indel_alleles_remain_unannotated(self):
         fields = ["Allele", "Consequence", "IMPACT", "SYMBOL"]
         vcf = self.root / "multiallelic-ambiguous.vcf"
@@ -1184,9 +1244,9 @@ class PredictorImportIntegrationTests(unittest.TestCase):
             '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: '
             + "|".join(fields) + '">\n'
             "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tP1\n"
-            "1\t320\t.\tCTT\tC,CT\t99\tPASS\t"
+            "1\t320\t.\tCTT\tC,CT,G\t99\tPASS\t"
             "CSQ=-|frameshift_variant|HIGH|GENEA,"
-            "-|inframe_deletion|MODERATE|GENEB\tGT:AD\t1/2:0,10,10\n",
+            "-|inframe_deletion|MODERATE|GENEB\tGT:AD\t1/2:0,10,10,0\n",
             encoding="utf-8",
         )
         store = CohortStore(self.root / "multiallelic-ambiguous.sqlite3")

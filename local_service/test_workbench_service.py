@@ -1070,8 +1070,28 @@ class AnnotationJobServiceTests(unittest.TestCase):
                 relative = Path(directory) / safe_name
                 self.assertEqual(staged["filename"], safe_name)
                 self.assertEqual(staged["relative_path"], str(relative))
-                self.assertEqual(Path(staged["path"]), (batch / relative).resolve())
-                self.assertEqual((batch / relative).read_bytes(), b"x")
+                staged_path = Path(staged["path"])
+                self.assertEqual(staged_path.parent.parent, (batch / directory).resolve())
+                self.assertEqual(staged_path.read_bytes(), b"x")
+
+    def test_staged_upload_paths_keep_their_contents_after_collisions_and_retries(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        names = ["P1+father.vcf", "P1father.vcf", "P1!father.vcf", "P1father.vcf"]
+        def upload(item):
+            index, name = item
+            contents = bytes([index])
+            return self.service.stage_file(name, name, "batch", 1, io.BytesIO(contents))
+
+        with ThreadPoolExecutor(max_workers=len(names)) as pool:
+            results = list(pool.map(upload, enumerate(names)))
+        paths = [Path(result["path"]) for result in results]
+        self.assertEqual(len(set(paths)), len(names))
+        self.assertEqual([path.read_bytes() for path in paths], [bytes([i]) for i in range(4)])
+        self.assertEqual(results[0]["filename"], names[0])
+        with self.assertRaisesRegex(ValueError, "complete file"):
+            self.service.stage_file(names[1], names[1], "batch", 2, io.BytesIO(b"x"))
+        self.assertEqual(set(paths[0].parent.parent.iterdir()), {path.parent for path in paths})
 
     def test_staging_checks_original_suffix_and_resolved_destination(self):
         with self.assertRaisesRegex(ValueError, "only .vcf"):
@@ -2949,7 +2969,9 @@ python3 -c 'import os, sys; assert os.path.samefile(sys.prefix, os.environ["EXPE
     def test_loopback_http_cohort_import_and_query(self):
         cohort_vcf = self.root / "cohort.vep.vcf.gz"
         write_vcf(cohort_vcf)
-        self.service.cohort.hts_backend = FakeHtsBackend()
+        from local_service.cohort_store import HtsBackend
+        backend = HtsBackend.discover()
+        self.service.cohort.hts_backend = backend if backend and backend.native_tools.get("bcftools") else FakeHtsBackend()
         self.service.cohort.index_readers = 2
         server = create_server(self.service, "127.0.0.1", 0)
         thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -3072,6 +3094,9 @@ python3 -c 'import os, sys; assert os.path.samefile(sys.prefix, os.environ["EXPE
                 item for item in library_import["datasets"]
                 if item["vcf_sample_name"] == "P1"
             )
+            if backend and backend.native_tools.get("bcftools"):
+                retained = self.service.sample_library.get(p1_dataset["id"])
+                self.assertNotEqual(retained["managed_checksum"], retained["managed_artifact_checksum"])
             mapped = post(
                 f"/api/sample-library/{p1_dataset['id']}/identity",
                 {"mode": "existing", "individual_id": "CASE-P1"},

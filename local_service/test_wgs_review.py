@@ -50,6 +50,16 @@ def variant(
 
 
 class WgsPrefilterTests(unittest.TestCase):
+    def test_split_single_alt_uses_only_matching_allele_evidence(self):
+        options = WgsPrefilterOptions(noncoding_mode="none")
+        def row(csq):
+            return f"1\t100\t.\tA\tT\t99\tPASS\tCSQ={csq}\tGT\t0/1\n"
+        wrong = "G|1|WRONG|0.001|0.9|.|."
+        right = "T|2|RIGHT|0.001|0.1|.|."
+        self.assertFalse(record_passes(row(wrong + ',' + right), HEADER, options, {}))
+        self.assertTrue(record_passes(row(wrong + ',' + right.replace('0.1', '0.9')), HEADER, options, {}))
+        self.assertFalse(record_passes(row('G|1|WRONG|0.001|0.9|.|.'), HEADER, options, {}))
+
     def test_nonfinite_scores_and_filter_thresholds(self):
         from local_service.cohort_store import parse_number
         from local_service.wgs_review import _numbers, _info_numbers
@@ -164,14 +174,14 @@ class WgsPrefilterTests(unittest.TestCase):
         ))
 
     def test_multi_allelic_match_failure_does_not_exclude_by_pooled_af(self):
-        # Audit repro (SVC-8): with no ALLELE_NUM and a minimised Allele that
-        # matches neither ALT, one allele's CSQ values must not decide the
+        # With no ALLELE_NUM and a minimised Allele that matches both
+        # deletions, one allele's CSQ values must not decide the
         # other allele's fate. Unattributable AF must not exclude; the rare
         # allele retains the record through its region route.
         csq_common = "|".join(("-", "", "NFKB1", "0.30", ".", ".", "10"))
         csq_rare = "|".join(("-", "", "NFKB1", "0.00001", ".", ".", "10"))
         record = (
-            "1\t100\t.\tCTT\tC,CT\t99\tPASS\t"
+            "1\t100\t.\tCTT\tC,CT,G\t99\tPASS\t"
             f"CSQ={csq_common},{csq_rare}\tGT\t1/2\n"
         )
         options = WgsPrefilterOptions(noncoding_mode="ccre")
@@ -185,7 +195,7 @@ class WgsPrefilterTests(unittest.TestCase):
         csq_quiet = "|".join(("-", "", "NFKB1", "0.001", "0.1", ".", "10"))
         csq_splice = "|".join(("-", "", "NFKB1", "0.001", "0.9", ".", "10"))
         record = (
-            "1\t100\t.\tCTT\tC,CT\t99\tPASS\t"
+            "1\t100\t.\tCTT\tC,CT,G\t99\tPASS\t"
             f"CSQ={csq_quiet},{csq_splice}\tGT\t1/2\n"
         )
         options = WgsPrefilterOptions(noncoding_mode="none")

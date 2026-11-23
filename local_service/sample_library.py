@@ -183,6 +183,7 @@ class SampleLibrary:
                   managed_path TEXT NOT NULL,
                   managed_index_path TEXT,
                   managed_checksum TEXT NOT NULL,
+                  managed_artifact_checksum TEXT NOT NULL DEFAULT '',
                   managed_size_bytes INTEGER NOT NULL,
                   analysis_scope TEXT NOT NULL,
                   index_scope TEXT NOT NULL DEFAULT 'compact',
@@ -247,6 +248,7 @@ class SampleLibrary:
         ("library_current_uniqueness_v1", "_migrate_current_uniqueness"),
         ("portable_paths_v2", "_migrate_portable_paths"),
         ("sample_cohort_profiles_v1", "_migrate_sample_cohort_profiles"),
+        ("managed_artifact_checksum_v1", "_migrate_managed_artifact_checksum"),
     )
 
     def _run_migrations(self) -> None:
@@ -285,6 +287,8 @@ class SampleLibrary:
 
     @staticmethod
     def _migration_needed(key: str, connection: sqlite3.Connection) -> bool:
+        if key == "managed_artifact_checksum_v1":
+            return "managed_artifact_checksum" not in {row["name"] for row in connection.execute("PRAGMA table_info(library_datasets)")}
         if key == "library_versions_v1":
             columns = {
                 row["name"] for row in connection.execute("PRAGMA table_info(library_datasets)")
@@ -308,6 +312,10 @@ class SampleLibrary:
                 "library_datasets_callset_idx",
             } <= indexes
         return False
+
+    def _migrate_managed_artifact_checksum(self, connection: sqlite3.Connection) -> None:
+        if self._migration_needed("managed_artifact_checksum_v1", connection):
+            connection.execute("ALTER TABLE library_datasets ADD COLUMN managed_artifact_checksum TEXT NOT NULL DEFAULT ''")
 
     def migration_status(self) -> dict:
         with self._session() as connection:
@@ -908,6 +916,7 @@ class SampleLibrary:
         managed_storage_path = self._stored_managed_path(managed_path)
         managed_storage_index = self._stored_managed_path(managed_index)
         managed_stat = managed_path.stat()
+        managed_artifact_checksum = _sha256(managed_path)
         include_in_cohort = bool(payload.get("include_in_cohort", True))
         qc_settings = payload.get("qc_settings") or {}
         prefilter_settings = payload.get("prefilter_settings") or {}
@@ -1084,20 +1093,20 @@ class SampleLibrary:
                     INSERT INTO library_datasets(
                       id,sample_id,vcf_sample_name,original_name,original_path,
                       original_checksum,original_size_bytes,original_mtime_ns,
-                      managed_path,managed_index_path,managed_checksum,managed_size_bytes,
+                      managed_path,managed_index_path,managed_checksum,managed_artifact_checksum,managed_size_bytes,
                       analysis_scope,index_scope,capture_kit,target_bed,annotation_bundle,
                       resource_versions,qc_settings,prefilter_settings,retention_routes,
                       complete_settings,settings_hash,profile_label,source_record_count,
                       retained_record_count,include_in_cohort,status,warnings,imported_at,updated_at,
                       callset_id,callset_fingerprint,version_id,version_number,is_current,
                       cohort_preferred,supersedes_version_id
-                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                     """,
                     (
                         dataset_id, sample_id, vcf_sample, original_name, original_path,
                         original_checksum or None, original_size, original_mtime,
                         managed_storage_path, managed_storage_index,
-                        review_checksum, managed_stat.st_size, analysis_scope, index_scope,
+                        review_checksum, managed_artifact_checksum, managed_stat.st_size, analysis_scope, index_scope,
                         str(payload.get("capture_kit") or "").strip(),
                         str(payload.get("target_bed") or "").strip(),
                         _json(annotation_bundle), _json(resource_versions), _json(qc_settings),
@@ -1735,8 +1744,6 @@ class SampleLibrary:
             source = self._original_path(record.get("original_path"))
             if not source.is_file():
                 raise ValueError("the original full WGS VCF path is not available")
-            if record.get("original_checksum") and self._checksum(source) != record["original_checksum"]:
-                raise ValueError("the original full WGS file has changed")
             path = source
             import_profile = "full"
             options = {}
@@ -1748,10 +1755,41 @@ class SampleLibrary:
                 else "full"
             )
             options = record["prefilter_settings"]
+        # The review input checksum identifies a callset; compression can
+        # change the bytes of the retained artifact, which has its own digest.
+        actual_checksum = _sha256(path)
+        if full_wgs:
+            if not record.get("original_checksum") or actual_checksum != record["original_checksum"]:
+                raise ValueError("the original full WGS file has changed or its checksum is unavailable")
+        else:
+            expected = record.get("managed_artifact_checksum")
+            if not expected and actual_checksum == record.get("managed_checksum"):
+                expected = actual_checksum  # legacy byte-for-byte copy
+            if not expected:
+                # Legacy recompressed copies can be authenticated against the
+                # original review input if its own stored digest still matches.
+                original = self._original_path(record["original_path"]) if record.get("original_path") else None
+                if (original and original.is_file() and record.get("original_checksum") == record.get("managed_checksum")
+                        and _sha256(original) == record["managed_checksum"]):
+                    def decoded_digest(candidate):
+                        opener = gzip.open if candidate.name.lower().endswith(COMPRESSED_SUFFIXES) else open
+                        digest = hashlib.sha256()
+                        with opener(candidate, "rb") as handle:
+                            while block := handle.read(8 * 1024 * 1024):
+                                digest.update(block)
+                        return digest.digest()
+                    if decoded_digest(original) == decoded_digest(path):
+                        expected = actual_checksum
+            if not expected or actual_checksum != expected:
+                raise ValueError("the source file has changed or its checksum is unavailable")
+            if not record.get("managed_artifact_checksum"):
+                with self._session() as connection:
+                    connection.execute("UPDATE library_datasets SET managed_artifact_checksum=? WHERE managed_path=? AND managed_checksum=? AND managed_artifact_checksum=''", (actual_checksum, record["managed_path"], record["managed_checksum"]))
         result = self.cohort.import_vcf(
             path, force=True, import_profile=import_profile,
             analysis_scope=record["analysis_scope"], prefilter_options=options,
             restrict_samples=(record["vcf_sample_name"],),
+            trusted_legacy_source=True,
         )
         if record.get("cohort_file_id") != result.get("id"):
             self._remove_cohort_records([record])

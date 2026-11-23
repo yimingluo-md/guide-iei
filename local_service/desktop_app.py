@@ -138,7 +138,7 @@ def run_workbench(root, support, endpoint, saved_path, instance_id):
     browser_opened = False
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        while not stopping and not launcher_gone():
+        while not stopping:
             started = time.monotonic()
             endpoint.unlink(missing_ok=True)
             if status_file:
@@ -149,9 +149,6 @@ def run_workbench(root, support, endpoint, saved_path, instance_id):
             ], cwd=root, env=env)
             if not opened:
                 while child.poll() is None and time.monotonic() - started < 120 and not stopping:
-                    if launcher_gone():
-                        stop(signal.SIGTERM, None)
-                        break
                     try:
                         selected = read_endpoint(endpoint)
                         if not selected or selected["instance_id"] != instance_id:
@@ -169,10 +166,12 @@ def run_workbench(root, support, endpoint, saved_path, instance_id):
                                 if status_file and env.get("IEI_DESKTOP_SETUP", "1") != "0":
                                     prepared = prepare_engine(url, support, Path(status_file),
                                             control_path, lambda: not stopping and child.poll() is None,
-                                            essential=True, launcher_gone=launcher_gone)
-                                    if prepared is None and not stopping and not launcher_gone():
+                                            essential=True)
+                                    if prepared is None and not stopping:
                                         if child.poll() == 75:
                                             break  # Repeat startup with the new storage roots.
+                                        if child.poll() == 0:
+                                            return 0  # Explicit Quit from the browser during setup.
                                         raise RuntimeError(f"Workbench service exited during preparation (exit {child.returncode}).")
                                     if not prepared:
                                         stop(signal.SIGTERM, None)
@@ -187,7 +186,6 @@ def run_workbench(root, support, endpoint, saved_path, instance_id):
                     child.terminate()
                     raise RuntimeError("The workbench did not become ready. See the startup log.")
             quit_accepted = False
-            next_orphan_retry = 0
             while child.poll() is None:
                 if stopping:
                     try:
@@ -201,17 +199,15 @@ def run_workbench(root, support, endpoint, saved_path, instance_id):
                 # prepare_engine returns. Keep its Quit channel alive here.
                 message = take_control_message(control_path) if control_path else {}
                 orphaned = launcher_gone()
-                if not quit_accepted and (message.get("action") == "quit" or
-                        (orphaned and time.monotonic() >= next_orphan_retry)):
+                if not quit_accepted and message.get("action") == "quit":
                     try:
                         api(url, "/api/service/quit", {"confirm": True, "instance_id": instance_id})
                         quit_accepted = True
                     except (RuntimeError, OSError, ValueError) as exc:
                         # Honor service blockers such as storage migration.
-                        # A surviving window can retry; without one, retry
-                        # automatically once the service can safely stop.
-                        next_orphan_retry = time.monotonic() + 2
-                        if status_file and not orphaned:
+                        # A surviving window can retry. Window loss is never
+                        # authorization to stop active work.
+                        if status_file:
                             write_status(Path(status_file), "ready", "Workbench running.",
                                          quit_request_id=message.get("request_id"),
                                          quit_error=str(exc) or "The workbench could not confirm shutdown.")

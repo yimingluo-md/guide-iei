@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import tempfile
+import os
 import unittest
 from unittest import mock
 import sqlite3
@@ -365,6 +366,47 @@ class SampleLibraryTests(unittest.TestCase):
         for dataset in reused["datasets"]:
             self.assertEqual(dataset["cohort_sample_entry_id"], self.library.get(dataset["id"])["cohort_sample_entry_id"])
 
+    def test_repair_after_mtime_change_and_legacy_identity(self):
+        first, sibling = self.divergent_profiles()
+        managed = self.library.file(first["id"])
+        stat = managed.stat()
+        os.utime(managed, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        self.cohort.remove_samples([first["cohort_sample_entry_id"]])
+        reused = self.library.import_vcf(self.vcf, self.payload())
+        self.assertEqual(reused["import_outcome"], "exact_current")
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE cohort_files SET prefilter_options=? WHERE id=?", ('{"old_setting":true}', sibling["cohort_file_id"]))
+        self.library.reindex(first["id"])
+        self.assert_sample_profiles([first, sibling])
+        self.assertEqual(self.library.get(sibling["id"])["cohort_sample_entry_id"], sibling["cohort_sample_entry_id"])
+        with sqlite3.connect(self.database) as db:
+            db.execute("UPDATE cohort_files SET content_sha256='', content_probe='', prefilter_options='{}' WHERE id=?", (sibling["cohort_file_id"],))
+        self.library.reindex(first["id"])
+        self.assert_sample_profiles([first, sibling])
+        with sqlite3.connect(self.database) as db:
+            identity = db.execute("SELECT content_sha256, content_probe, mtime_ns FROM cohort_files WHERE id=?", (sibling["cohort_file_id"],)).fetchone()
+        self.assertEqual(identity, ('', '', -1))
+
+    def test_repair_preserves_excluded_sibling(self):
+        imported = self.library.import_vcf(self.vcf, self.payload())
+        first, sibling = imported["datasets"]
+        self.library.exclude_from_cohort(sibling["id"])
+        managed = self.library.file(first["id"])
+        stat = managed.stat()
+        os.utime(managed, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+        self.library.reindex(first["id"])
+        self.assertEqual(self.library.get(sibling["id"])["cohort_index_status"], "not_included")
+        self.assertEqual([s["name"] for s in self.cohort.list_samples()], [first["vcf_sample_name"]])
+
+    def test_repair_rejects_changed_managed_bytes_without_touching_sibling(self):
+        first, sibling = self.divergent_profiles()
+        managed = self.library.file(first["id"])
+        managed.write_bytes(managed.read_bytes() + b"\n")
+        with self.assertRaisesRegex(ValueError, "changed"):
+            self.library.reindex(first["id"])
+        self.assertEqual(self.library.get(sibling["id"])["cohort_sample_entry_id"], sibling["cohort_sample_entry_id"])
+        self.assertEqual(self.library.get(first["id"])["cohort_index_status"], "ready")
+
     def test_reindex_publishes_metadata_edited_during_scan(self):
         imported = self.library.import_vcf(self.vcf, {**self.payload(), "analysis_scope": "whole_genome"})
         first, second = imported["datasets"]
@@ -675,6 +717,41 @@ class SampleLibraryTests(unittest.TestCase):
             "analysis_scopes": ["whole_genome"],
         })
         self.assertEqual(excluded["rows"], [])
+
+    def test_recompressed_managed_artifact_repair_and_legacy_backfill(self):
+        from local_service.cohort_store import HtsBackend
+        backend = HtsBackend.discover()
+        if not backend or not backend.native_tools.get("bcftools"):
+            self.skipTest("native bcftools and tabix required")
+        self.cohort.hts_backend = backend
+        self.cohort.enable_auto_index = True
+        imported = self.library.import_vcf(self.vcf, self.payload(include=True))
+        first, second = [item["id"] for item in imported["datasets"]]
+        record = self.library.get(first)
+        self.assertNotEqual(record["managed_checksum"], record["managed_artifact_checksum"])
+        with self.library._session() as connection:
+            connection.execute("UPDATE library_datasets SET managed_artifact_checksum='' WHERE managed_path=?", (record["managed_path"],))
+        self.library.exclude_from_cohort(first)
+        self.library.reindex(first)
+        self.assertTrue(self.library.get(first)["managed_artifact_checksum"])
+        self.assertTrue(self.library.get(second)["managed_artifact_checksum"])
+        self.assertEqual({s["name"] for s in self.cohort.list_samples()}, {"P1", "P2"})
+
+    def test_full_wgs_reindex_hashes_original_once_and_reports_change(self):
+        imported = self.library.import_vcf(self.vcf, {**self.payload(include=False), "analysis_scope": "whole_genome"})
+        dataset_id = imported["datasets"][0]["id"]
+        from local_service import sample_library as module
+        original_hash = module._sha256
+        calls = []
+        def counted(path):
+            calls.append(path)
+            return original_hash(path)
+        with mock.patch.object(module, "_sha256", side_effect=counted):
+            self.library.reindex(dataset_id, full_wgs=True)
+        self.assertEqual(calls.count(self.vcf.resolve()), 1)
+        self.vcf.write_text(self.vcf.read_text() + "\n")
+        with self.assertRaisesRegex(ValueError, "original full WGS file has changed"):
+            self.library.reindex(dataset_id, full_wgs=True)
 
     def test_cohort_membership_is_state_driven_and_repairable(self):
         imported = self.library.import_vcf(self.vcf, self.payload(include=False))
@@ -1094,7 +1171,7 @@ class SampleLibraryTests(unittest.TestCase):
             self.assertEqual(record["callset_id"], record["managed_checksum"])
         status = library.migration_status()
         self.assertTrue(all(item["applied_at"] for item in status["migrations"]))
-        self.assertEqual(status["schema_version"], "sample_cohort_profiles_v1")
+        self.assertEqual(status["schema_version"], "managed_artifact_checksum_v1")
 
     def test_migration_step_is_atomic_with_its_marker(self):
         """A step that fails half-way leaves neither columns nor marker: the

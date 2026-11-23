@@ -4818,7 +4818,7 @@ class AnnotationJobService:
         safe_parts = [
             "".join(
                 character for character in part
-                if character.isalnum() or character in " ._-()"
+                if character.isalnum() or character in " ._-()+"
             ).strip()
             for part in (*directories, basename)
         ]
@@ -4829,29 +4829,25 @@ class AnnotationJobService:
         if batch_root not in destination.parents:
             raise ValueError("invalid relative file path")
         destination.parent.mkdir(parents=True, exist_ok=True)
-        # Unique partial name: a retried upload of the same relative path
-        # previously interleaved writes into one shared .partial and the last
-        # replace published a corrupted file that passed the byte-count check.
-        temporary = destination.with_name(
-            f"{destination.name}.{uuid.uuid4().hex}.partial"
-        )
-        remaining = length
-        with temporary.open("wb") as handle:
-            while remaining:
-                chunk = stream.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    temporary.unlink(missing_ok=True)
-                    raise ValueError("upload ended before the complete file was received")
-                handle.write(chunk)
-                remaining -= len(chunk)
-        temporary.replace(destination)
-        if os.name == "posix":
-            try:
-                # Staged uploads carry patient variants; do not let the
-                # ambient umask leave them readable to other local users.
-                os.chmod(destination, 0o600)
-            except OSError:
-                pass
+        # A path already returned to an import/job must keep identifying the
+        # same bytes, even on a retry or a case-insensitive filesystem.
+        upload_dir = Path(tempfile.mkdtemp(prefix="upload-", dir=destination.parent))
+        destination = upload_dir / safe_parts[-1]
+        temporary = upload_dir / ".partial"
+        try:
+            fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                remaining = length
+                while remaining:
+                    chunk = stream.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise ValueError("upload ended before the complete file was received")
+                    handle.write(chunk)
+                    remaining -= len(chunk)
+            temporary.replace(destination)
+        except BaseException:
+            shutil.rmtree(upload_dir)
+            raise
         return {
             "path": str(destination),
             "filename": destination.name,

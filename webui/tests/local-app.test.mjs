@@ -600,6 +600,9 @@ test("explains what a prediction threshold does with a missing score (review M1)
   // The two genotype searches distinguish diploid ALT and single-copy calls.
   assert.match(source, /Homozygous ALT \(diploid\)/);
   assert.match(source, /Haploid GT or hemizygous X\/Y/);
+  assert.match(source, /Haploid GT or possible single-copy X\/Y/);
+  assert.match(source, /hasSingleCopyCandidate\(row, sex, carrierQc\)/);
+  assert.match(source, /inclusion does not establish hemizygosity/);
   // The CcreContextPanel allele props are not named `ref` (review M36).
   assert.doesNotMatch(source, /<CcreContextPanel[^>]* ref=\{/);
   assert.match(source, /<CcreContextPanel[^>]* refAllele=\{/);

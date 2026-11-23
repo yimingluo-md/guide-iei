@@ -850,6 +850,19 @@ export function hasHomozygousCarrier(row: VariantRow, sex: SampleSex, qc?: Varia
     && (!qc || !carrierQcFailures({ evidence }, row, qc).length));
 }
 
+// This is a discovery view: a diploid-coded call at an unresolved X/Y locus
+// is a candidate for ploidy review, not a determination of hemizygosity.
+export function hasSingleCopyCandidate(row: VariantRow, sex: SampleSex, qc?: VariantQcSettings) {
+  const contig = normalizedContig(row.chrom);
+  const nonParSexChromosome = (contig === "X" || contig === "Y")
+    && transmissionContext(row, "male") !== "diploid";
+  const matches = (gt: string) => /^[1-9]\d*$/.test(gt)
+    || (sex !== "female" && nonParSexChromosome && /^([1-9]\d*)[|/]\1$/.test(gt));
+  if (!row.carriers) return matches(row.genotype);
+  return row.carriers.some(({ evidence }) => evidence.called && evidence.carrier && matches(evidence.gt)
+    && (!qc || !carrierQcFailures({ evidence }, row, qc).length));
+}
+
 export function candidateCompoundHetKeys(rows: VariantRow[], qc?: VariantQcSettings) {
   type Entry = { rowKey: string; allele: string; haplotype: string };
   const groups = new Map<string, Entry[]>();
@@ -1550,22 +1563,29 @@ function consequenceMatchesAlt(
   consequence: Record<string, string>, ref: string, alts: string[], altIndex: number,
 ) {
   const alleleNumber = consequence.ALLELE_NUM;
-  if (/^\d+$/.test(alleleNumber)) return Number(alleleNumber) === altIndex + 1;
+  if (alts.length !== 1 && /^\d+$/.test(alleleNumber)) return Number(alleleNumber) === altIndex + 1;
   const allele = consequence.Allele || "";
-  if (!allele || allele === ".") return alts.length === 1;
+  if (!allele || allele === ".") {
+    return alts.length === 1 && (!alleleNumber || alleleNumber === "." || alleleNumber === "1");
+  }
   const token = allele.toUpperCase();
   // VEP 113 strips one common anchor across the record, including from
   // same-length siblings of an indel. Star alleles keep their spelling.
   const starAllele = (alt: string) => alt === "*" || alt === "<*>";
-  const stripAnchor = alts.length > 1 && /^[ACGTN]+$/i.test(ref)
-    && alts.some(alt => alt.length !== ref.length)
+  const stripAnchor = /^[ACGTN]+$/i.test(ref)
+    && (alts.length === 1 || alts.some(alt => alt.length !== ref.length))
     && alts.every(alt => starAllele(alt) || (/^[ACGTN]+$/i.test(alt)
       && alt[0].toUpperCase() === ref[0].toUpperCase()));
-  const matches = (alt: string) => alt.toUpperCase() === token
-    || (stripAnchor && !starAllele(alt) && (alt.slice(1).toUpperCase() || "-") === token)
-    || vepAltAllele(ref, alt).toUpperCase() === token;
-  return matches(alts[altIndex])
-    && !alts.some((alt, index) => index !== altIndex && matches(alt));
+  const tiers = [
+    alts,
+    alts.map(alt => stripAnchor && !starAllele(alt) ? (alt.slice(1) || "-") : alt),
+    alts.map(alt => vepAltAllele(ref, alt)),
+  ];
+  for (const spellings of tiers) {
+    const matches = spellings.flatMap((spelling, index) => spelling.toUpperCase() === token ? [index] : []);
+    if (matches.length) return matches.length === 1 && matches[0] === altIndex;
+  }
+  return false;
 }
 
 function minimum(record: Record<string, string>, keys: string[]) {
@@ -2230,7 +2250,7 @@ export async function parseVcfFiles(
         // shared array those rows reference. The popmax decision is made
         // once per variant, at parse time, so the union of many exomes
         // stays bounded (an unavailable popmax always retains the variant).
-        const matching = alts.length === 1 ? consequences : consequences.filter(
+        const matching = consequences.filter(
           (csq) => consequenceMatchesAlt(csq, ref, alts, altIndex),
         );
         const allSelected = matching.length ? matching : [{} as Record<string, string>];

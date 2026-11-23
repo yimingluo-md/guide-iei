@@ -240,8 +240,53 @@ class AnnotationRetirementTests(unittest.TestCase):
         self.assertTrue(all(row["impact"] == "UNKNOWN" and not row["mane"] for row in summary.values()))
         self.assertEqual(self.high_samples(), set())
         self.store.remove_samples([ids["Sibling"]])
-        unknown, = self.annotations()
-        self.assertEqual((unknown["consequence"], unknown["cadd"]), ("unannotated", None))
+        recovered, = self.annotations()
+        self.assertEqual((recovered["transcript"], recovered["consequence"], recovered["cadd"]),
+                         ("ENST_GENE", "missense_variant", 0))
+
+    def test_legacy_recovery_scans_source_once_across_chunks(self):
+        import builtins
+        import local_service.cohort_store as module
+
+        positions = range(100, 106)
+        write_records(self.low, ["Keep", "Sibling"], [
+            record for pos in positions for record in (
+                (pos, SURVIVING, ["0/1", "0/0"]),
+                (pos, UNIQUE, ["0/0", "0/1"]),
+            )
+        ])
+        self.store.import_vcf(self.low)
+        with self.store._session() as c:
+            c.execute("DROP TABLE cohort_annotation_evidence")
+            c.execute("ALTER TABLE cohort_samples DROP COLUMN annotation_evidence_complete")
+        self.store = CohortStore(self.db)
+        ids = {s["name"]: s["id"] for s in self.store.list_samples()}
+        real_open, real_hash = builtins.open, module._full_content_sha256
+        with patch("local_service.cohort_store.MERGE_CHUNK_VARIANTS", 2), \
+                patch("builtins.open", wraps=real_open) as opened, \
+                patch.object(module, "_full_content_sha256", wraps=real_hash) as hashed:
+            self.store.remove_samples([ids["Sibling"]])
+        source_opens = [call for call in opened.call_args_list if str(call.args[0]) == str(self.low)]
+        self.assertLessEqual(len(source_opens), 2)  # header and record stream
+        self.assertEqual(hashed.call_count, 1)
+        for pos in positions:
+            rows = self.store.variant_detail(f"1:{pos}:A:G")["annotations"]
+            self.assertEqual([(r["transcript"], r["cadd"]) for r in rows], [("ENST_GENE", 0)])
+
+    def test_legacy_recovery_rejects_same_size_changed_probe_without_sha(self):
+        write_records(self.low, ["Keep", "Sibling"], [(100, SURVIVING, ["0/1", "0/1"])])
+        self.store.import_vcf(self.low)
+        with self.store._session() as c:
+            c.execute("UPDATE cohort_files SET content_sha256=''")
+            c.execute("DROP TABLE cohort_annotation_evidence")
+            c.execute("ALTER TABLE cohort_samples DROP COLUMN annotation_evidence_complete")
+        self.store = CohortStore(self.db)
+        content = self.low.read_text()
+        self.low.write_text(content.replace("missense_variant", "nonsense_variant"))
+        ids = {s["name"]: s["id"] for s in self.store.list_samples()}
+        self.store.remove_samples([ids["Sibling"]])
+        row, = self.annotations()
+        self.assertEqual((row["transcript"], row["consequence"], row["cadd"]), ("", "unannotated", None))
 
     def test_library_supersession_and_reactivation_on_a_shared_allele(self):
         self.store.import_vcf(self.low)

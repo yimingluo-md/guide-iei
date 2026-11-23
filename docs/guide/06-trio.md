@@ -61,7 +61,9 @@ about *evidence*, not about biology:
   allele balance) fails the screen.
 - **Mendelian conflict** — the genotypes fit no simple de novo model;
   consider genotyping error, CNV overlap, or sample identity.
-- **Inherited** — a transmitting parent carries the allele.
+- **Inherited** — a transmitting parent has a well-supported ALT call. For a
+  homozygous ALT child, an insufficient call in the other parent leaves the
+  origin of the other copy unresolved.
 
 The thresholds behind these tiers (defaults: DP ≥ 10, GQ ≥ 20, proband
 allele balance 0.20–0.80, and parental alternate-allele fraction ≤ 0.02) are
@@ -95,6 +97,15 @@ as female or a genotype with unexpected ploidy also requires review.
 The compound filter excludes mitochondrial pairs and pairs where either
 locus is single-copy or has unresolved ploidy. Open **Show cis and
 excluded pairs** in Family analysis to see the reason.
+
+In Variant Review, **Homozygous ALT (diploid)** requires a diploid ALT GT
+at a locus assessed as diploid. Use **Haploid GT or possible single-copy X/Y**
+to find haploid ALT GTs anywhere, plus diploid-coded ALT calls such as `1/1`
+on non-PAR X/Y when sex is male or unknown. A single-sample review without
+family sex information treats sex as unknown. These diploid-coded calls may
+be single-copy or diploid; inclusion does not establish hemizygosity. Review
+sex, GT encoding and ploidy. PAR calls are selected by GT ploidy, and active
+call QC still applies.
 
 ## Compound heterozygotes: reading phase
 

@@ -141,7 +141,7 @@ import {
 } from "./local-service";
 import { GPN_STAR_MODELS,
   ADDITIONAL_DBNSFP_PREDICTORS,
-  candidateCompoundHetKeys, hasHomozygousCarrier, carrierQcFailures,
+  candidateCompoundHetKeys, hasHomozygousCarrier, hasSingleCopyCandidate, carrierQcFailures,
   normalizedVariantKey,
   isPlaceholderAlt,
   collapseToOneRowPerVariant, reviewCallKey, summarizeReviewGenes,
@@ -315,7 +315,7 @@ async function loadTranscriptEvidence(row: VariantRow, variantKey: string): Prom
     ({ key, gene, transcript, consequence, hgvsC, hgvsP, mane, maneSelect, picked }));
 }
 
-type Zygosity = "all" | "hom" | "compound" | "de_novo";
+type Zygosity = "all" | "hom" | "single_copy" | "compound" | "de_novo";
 type DisplayItem =
   | "quality" | "population" | "gnomadPopulations" | "clinvar" | "transcript" | "geneConstraint"
   | "alphaMissense" | "cadd" | "spliceAI" | "promoterAI" | "loGoFunc"
@@ -1272,6 +1272,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
     const geneQuery = /^[a-z][a-z0-9.-]*$/i.test(searchText) && !/^rs\d+$/i.test(searchText);
     const symbol = geneQuery ? searchText.toUpperCase() : "";
     const genes = selectedGenes ? [...selectedGenes].sort() : (symbol ? [symbol] : []);
+    if (!genes.length || !screenActivityRows.length) return null;
     return {symbol, genes, searchText, listSearch: selectedGenes !== null, rows: screenActivityRows, annotatedMatch};
   }, [regulatoryGeneSearch, regulatoryScreenPending, regulatoryScreenError, selectedGenes, searchText, screenActivityRows, annotatedMatch]);
 
@@ -1338,7 +1339,7 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
     return () => { active = false; window.clearTimeout(timer); };
   }, [targetInput]);
 
-  const targetFilterPending = Boolean(targetInput && targetInput.genes.length && targetInput.rows.length && targetResult?.input !== targetInput);
+  const targetFilterPending = Boolean(targetInput && targetResult?.input !== targetInput);
   const currentTargets = targetInput && targetResult?.input === targetInput ? targetResult : null;
   const targetFilterError = currentTargets?.error;
   const regulatoryReasons = useMemo(() => {
@@ -1396,10 +1397,11 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
   ), [deNovoAssessments]);
 
   const filtered = useMemo(() => screenFilteredRows.filter((row) => {
-    if (zygosity === "hom") {
+    if (zygosity === "hom" || zygosity === "single_copy") {
       const sex = row.sample === trio?.proband ? trio.probandSex : row.sample === trio?.mother
         ? "female" : row.sample === trio?.father ? "male" : "unknown";
-      if (!hasHomozygousCarrier(row, sex, carrierQc)) return false;
+      if (!(zygosity === "hom" ? hasHomozygousCarrier(row, sex, carrierQc)
+        : hasSingleCopyCandidate(row, sex, carrierQc))) return false;
     }
     if (zygosity === "compound" && !compoundKeys.has(row.key)) return false;
     if (zygosity === "de_novo" && !deNovoCandidateKeys.has(row.key)) return false;
@@ -1912,8 +1914,10 @@ function WorkbenchSession({ rows, setRows, summary, setSummary, saved, setSaved,
           <FilterSection title="Genotype">
             <Check label="Hide confirmed frame-restored events" checked={excludeConfirmedFrameRestored} onChange={setExcludeConfirmedFrameRestored} note="Hidden by default; possible/unphased events always remain visible" />
             <select value={zygosity} onChange={(event) => setZygosity(event.target.value as Zygosity)}>
-              <option value="all">All non-reference</option><option value="hom">Homozygous</option><option value="compound">Candidate compound het</option><option value="de_novo">Trio de novo candidate</option>
+              <option value="all">All non-reference</option><option value="hom">Homozygous ALT (diploid)</option><option value="single_copy">Haploid GT or possible single-copy X/Y</option><option value="compound">Candidate compound het</option><option value="de_novo">Trio de novo candidate</option>
             </select>
+            {zygosity === "hom" && <p className="microcopy">Requires diploid ALT at a diploid locus. For non-PAR X/Y with unknown sex, check the possible single-copy view.</p>}
+            {zygosity === "single_copy" && <p className="microcopy">Includes haploid ALT GT anywhere and diploid-coded ALT at non-PAR X/Y for male or unknown sex. Unknown sex and diploid-coded calls require ploidy review; inclusion does not establish hemizygosity. PAR uses GT ploidy.</p>}
             {zygosity === "compound" && <p className="microcopy">{trio ? "Uses parental origin or available phase; cis pairs are excluded." : "Requires two distinct heterozygous alleles in the same sample and gene. Known cis pairs are excluded. Configure a trio to assess non-PAR X."}</p>}
             {zygosity === "de_novo" && <p className="microcopy">{trio ? "High-confidence, possible, and possible parental-mosaic candidates." : "Configure a trio in Family analysis first."}</p>}
           </FilterSection>

@@ -23,7 +23,7 @@ const moduleUrl = `data:text/javascript;base64,${Buffer.from(compiled).toString(
 const {
   ADDITIONAL_DBNSFP_PREDICTORS,
   alphaGenomeAviScores,
-  candidateCompoundHetKeys, hasHomozygousCarrier, transmissionContext,
+  candidateCompoundHetKeys, hasHomozygousCarrier, hasSingleCopyCandidate, transmissionContext,
   canonicalVariantKey,
   hasClinGenPathogenicEvidence,
   hasGeniaPathogenicEvidence,
@@ -500,7 +500,7 @@ test("separately-called files aggregate: N carry, popmax at parse, drift warning
     return new File([vcf], name);
   };
   const rare = (gts) => `1\t100\trs1\tA\tG\t99\tPASS\tCSQ=${PASS_CSQ}\tGT:DP:GQ:AD\t${gts.join("\t")}`;
-  const common = (gts) => `1\t300\trs3\tG\tC\t99\tPASS\tCSQ=${PASS_CSQ.replace("|0.0002|", "|0.35|")}\tGT:DP:GQ:AD\t${gts.join("\t")}`;
+  const common = (gts) => `1\t300\trs3\tG\tC\t99\tPASS\tCSQ=${PASS_CSQ.replace(/^G\|/, "C|").replace("|0.0002|", "|0.35|")}\tGT:DP:GQ:AD\t${gts.join("\t")}`;
   const groupA = Array.from({ length: 9 }, (_, i) => `A${i + 1}`);
   const groupB = Array.from({ length: 9 }, (_, i) => `B${i + 1}`);
   const carryFirst = (names) => names.map((name, index) => (index === 0 ? "0/1:30:99:15,15" : "0/0:30:99:30,0"));
@@ -1860,8 +1860,7 @@ test("indexes Number=A INFO values by allele instead of taking the maximum", asy
 });
 
 test("does not cross-assign consequences on a multi-allelic allele-match failure", async () => {
-  // Audit UI-4: without ALLELE_NUM, a minimised indel Allele ('-') matches no
-  // raw ALT and every consequence was previously attached to every allele.
+  // Without ALLELE_NUM, '-' matches both deletions at the minimization tier.
   const fields = ["Allele", "Consequence", "IMPACT", "SYMBOL"];
   const vcf = [
     "##fileformat=VCFv4.2",
@@ -1869,7 +1868,7 @@ test("does not cross-assign consequences on a multi-allelic allele-match failure
     "##contig=<ID=1,length=248956422>",
     `##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: ${fields.join("|")}">`,
     "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
-    "1\t100\t.\tCTT\tC,CT\t99\tPASS\tCSQ=-|frameshift_variant|HIGH|GENEA,-|inframe_deletion|MODERATE|GENEB\tGT\t1/2",
+    "1\t100\t.\tCTT\tC,CT,G\t99\tPASS\tCSQ=-|frameshift_variant|HIGH|GENEA,-|inframe_deletion|MODERATE|GENEB\tGT\t1/2",
     "",
   ].join("\n");
   const result = await parseVcfFiles([new File([vcf], "indel.vcf")]);
@@ -1878,6 +1877,21 @@ test("does not cross-assign consequences on a multi-allelic allele-match failure
     assert.equal(row.gene, "—"); // but with no fabricated annotation
     assert.notEqual(row.gene, "GENEA");
   }
+});
+
+test("filters record-wide CSQs on split single-ALT rows", async () => {
+  const vcf = [
+    "##fileformat=VCFv4.2", "##reference=GRCh38",
+    "##contig=<ID=1,length=248956422>",
+    '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|ALLELE_NUM|Consequence|IMPACT|SYMBOL|Feature|HGVSc|HGVSp">',
+    "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+    "1\t100\t.\tA\tT\t99\tPASS\tCSQ=G|1|missense_variant|MODERATE|WRONG|TW|c.1A>G|p.A1G,T|2|missense_variant|MODERATE|RIGHT|TR|c.1A>T|p.A1T\tGT\t0/1",
+  ].join("\n");
+  const { rows } = await parseVcfFiles([new File([vcf], "split.vcf")]);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].gene, "RIGHT");
+  assert.equal(rows[0].hgvsC, "c.1A>T");
+  assert.equal(rows[0].hgvsP, "p.A1T");
 });
 
 test("matches unique VEP-minimized alleles on multi-allelic indels", async () => {
@@ -1915,9 +1929,27 @@ test("attributes VEP 113 record-wide indel alleles to a unique ALT", async () =>
   assert.deepEqual(await parse("A,ATT,<*>", "TT|INS,-|DEL"), { A: "DEL", ATT: "INS" });
   // The third ALT prevents record-wide stripping, even though it isn't carried.
   assert.deepEqual(await parse("A,ATT,G", "TT|INS"), { A: "—", ATT: "—" });
-  // TT is both the stripped form of ATT and the minimal form of ATTT.
-  assert.deepEqual(await parse("ATT,ATTT", "TT|AMBIG"), { ATT: "—", ATTT: "—" });
+  // Record-wide spelling takes priority over individual minimization.
+  assert.deepEqual(await parse("ATT,ATTT", "TT|RECORD"), { ATT: "RECORD", ATTT: "—" });
   assert.deepEqual(await parse("A,ATT", "TT|NUMBERED|1", true), { A: "NUMBERED", ATT: "—" });
+});
+
+test("prefers literal alleles to other spellings and honors explicit numbers", async () => {
+  const parse = async csq => {
+    const vcf = [
+      "##fileformat=VCFv4.2",
+      "##reference=GRCh38",
+      "##contig=<ID=1,length=248956422>",
+      '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|SYMBOL|ALLELE_NUM">',
+      "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tPATIENT",
+      `1\t100\t.\tA\tAT,T\t99\tPASS\tCSQ=${csq}\tGT\t1/2`,
+    ].join("\n");
+    const { rows } = await parseVcfFiles([new File([vcf], "ordered.vcf")]);
+    return Object.fromEntries(rows.map(row => [row.alt, row.gene]));
+  };
+  assert.deepEqual(await parse("T|EXACT|"), { AT: "—", T: "EXACT" });
+  assert.deepEqual(await parse("T|NUMBERED|1"), { AT: "NUMBERED", T: "—" });
+  assert.deepEqual(await parse("T|INVALID|3"), { AT: "—", T: "—" });
 });
 
 test("emits a row for a half-called carrier genotype", async () => {
@@ -2167,4 +2199,33 @@ test("GRCh38 PAR intervals are inclusive and single-copy or uncertain loci canno
     const het = { ...base, genotype: "0/1" };
     assert.equal(candidateCompoundHetKeys([het, { ...het, key: "b", pos: het.pos + 1 }]).size, 0);
   }
+});
+
+test("single-copy discovery respects GT ploidy, PAR, sex and carrier QC", () => {
+  const row = { key: "a", sample: "S", gene: "G", chrom: "X", pos: 3000000, ref: "A", alt: "C", genotype: "1/1" };
+  for (const sex of ["unknown", "male"]) {
+    assert.equal(hasSingleCopyCandidate(row, sex), true);
+    assert.equal(hasSingleCopyCandidate({ ...row, chrom: "Y" }, sex), true);
+    for (const pos of [10001, 2781479, 155701383, 156030895]) {
+      assert.equal(hasSingleCopyCandidate({ ...row, pos }, sex), false);
+    }
+    for (const pos of [10001, 2781479, 56887903, 57217415]) {
+      assert.equal(hasSingleCopyCandidate({ ...row, chrom: "Y", pos }, sex), false);
+    }
+    assert.equal(hasSingleCopyCandidate({ ...row, chrom: "1" }, sex), false);
+    assert.equal(hasSingleCopyCandidate({ ...row, chrom: "MT" }, sex), false);
+  }
+  assert.equal(hasSingleCopyCandidate(row, "female"), false);
+  for (const chrom of ["X", "Y", "1", "MT"]) {
+    assert.equal(hasSingleCopyCandidate({ ...row, chrom, pos: 10001, genotype: "1" }, "female"), true);
+  }
+  for (const genotype of ["0", "1/.", "./1", "1/2", "0/1", "./."]) {
+    assert.equal(hasSingleCopyCandidate({ ...row, genotype }, "unknown"), false);
+  }
+  assert.equal(hasSingleCopyCandidate({ ...row, genotype: "2|2" }, "unknown"), true);
+  const evidence = { gt: "1/1", called: true, carrier: true, dp: 1 };
+  const cohort = { ...row, genotype: "1/2 carry", carriers: [{ sample: "S", evidence }] };
+  assert.equal(hasSingleCopyCandidate(cohort, "unknown"), true);
+  assert.equal(hasSingleCopyCandidate(cohort, "unknown", { ...NO_VARIANT_QC, minDp: 10 }), false);
+  assert.equal(hasSingleCopyCandidate({ ...cohort, carriers: [{ sample: "S", evidence: { ...evidence, called: false } }] }, "unknown"), false);
 });

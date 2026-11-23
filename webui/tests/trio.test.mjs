@@ -143,6 +143,38 @@ test("a 1/2 child is not labelled homozygous alternate", () => {
   assert.notEqual(assessDeNovo(variant, trio).status, "mendelian_conflict");
 });
 
+test("homozygous ALT separates supported parental evidence from incomplete segregation", () => {
+  for (const carrierParent of ["MOTHER", "FATHER"]) {
+    const otherParent = carrierParent === "MOTHER" ? "FATHER" : "MOTHER";
+    for (const uncertain of [undefined, evidence("./.", 30, 99, 0, 0), evidence("0/1", 1, 1, 0, 1), evidence("0/0", 1, 1, 1, 0)]) {
+      const variant = row({ sampleGenotypes: {
+        CHILD: evidence("1/1", 30, 99, 0, 30),
+        [carrierParent]: evidence("0/1", 30, 99, 15, 15),
+        [otherParent]: uncertain,
+      } });
+      const assessment = assessDeNovo(variant, trio);
+      assert.equal(assessment.status, "inherited");
+      assert.match(assessment.reasons[0], new RegExp(carrierParent.toLowerCase()));
+      assert.match(assessment.reasons[0], new RegExp(`${otherParent.toLowerCase()}.*insufficient.*other copy`));
+    }
+    const conflict = row({ sampleGenotypes: {
+      CHILD: evidence("1/1", 30, 99, 0, 30),
+      [carrierParent]: evidence("0/0", 30, 99, 30, 0),
+      [otherParent]: evidence("./.", 0, 0, 0, 0),
+    } });
+    assert.equal(assessDeNovo(conflict, trio).status, "mendelian_conflict");
+  }
+  const bothCarriers = row({ sampleGenotypes: {
+    CHILD: evidence("1/1", 30, 99, 0, 30),
+    MOTHER: evidence("0/1", 30, 99, 15, 15),
+    FATHER: evidence("0/1", 30, 99, 15, 15),
+  } });
+  assert.equal(assessDeNovo(bothCarriers, trio).status, "inherited");
+  bothCarriers.sampleGenotypes.MOTHER = evidence("./.", 0, 0, 0, 0);
+  bothCarriers.sampleGenotypes.FATHER = evidence("0/1", 1, 1, 0, 1);
+  assert.equal(assessDeNovo(bothCarriers, trio).status, "possible");
+});
+
 async function parseMultiallelicTrio(child, mother, father) {
   const vcf = [
     "##fileformat=VCFv4.2",

@@ -67,7 +67,9 @@ Each proband carrier is classified as:
   screen.
 - **Mendelian conflict** — the genotype combination is not a simple de novo
   model.
-- **Inherited** — at least one parent carries the ALT allele.
+- **Inherited** — at least one transmitting parent has a well-supported ALT
+  call. For a homozygous ALT child, an insufficient call in the other parent
+  leaves the origin of the other copy unresolved.
 
 Defaults are screening values, not clinical rules:
 
@@ -134,6 +136,11 @@ the same carrier, gene and contig. Calls on the same phased haplotype in
 one source are excluded. In cohort review, each participating carrier
 must pass active QC at both alleles. The homozygous filter likewise
 requires a carrier with a qualifying diploid ALT genotype.
+The Variant Review **Haploid GT or possible single-copy X/Y** filter finds
+haploid ALT calls and diploid-coded ALT calls at non-PAR X/Y when sex is male
+or unknown. Unknown sex and diploid encoding leave the latter calls ambiguous;
+review ploidy before interpreting them as hemizygous. PAR calls are selected
+according to GT ploidy, and active carrier QC applies.
 
 This is candidate discovery, not proof of molecular diagnosis. Review read
 evidence, transcript compatibility, gene-disease mechanism, sample identity,
