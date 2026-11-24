@@ -16,11 +16,11 @@ per-variant SpliceAI lookup for indels ([FAQ](docs/FAQ.md)).
 
 ## Updates
 
-**November 22, 2026 · Source update on `main`**
+**November 24, 2026 · Apple Silicon beta 0.6.3**
 
 Whole-genome review can find variants linked to a target gene through ENCODE-rE2G and review intergenic hits with ENCODE SCREEN. GenCC gene–disease evidence, GPN-Star scores, and user-supplied predictor tables are also available. The latest fixes improve cohort reindexing, preserve the source of predictor scores, and correct the LOFTEE 50-bp calculation for repeat-padded frameshifts.
 
-The downloadable Apple Silicon app is still **v0.6.2 beta**. The changes above are available in the source checkout. [User guide](https://yimingluo-md.github.io/guide-iei/) · [Changelog](CHANGELOG.md#unreleased) · [Mac installer and release notes](https://github.com/yimingluo-md/guide-iei/releases/tag/v0.6.2)
+The Apple Silicon beta includes these changes and the new GPN-Star PHRED filters. [User guide](https://yimingluo-md.github.io/guide-iei/) · [Changelog](CHANGELOG.md#063--2026-11-24) · [Mac installer and release notes](https://github.com/yimingluo-md/guide-iei/releases/tag/v0.6.3)
 
 ## Motivation
 
@@ -108,17 +108,17 @@ laboratory framework in the user's jurisdiction.
 
 ## Quickstart
 
-**Mac beta — [Download the ready-to-run installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.2/GUIDE-IEI-macOS-0.6.2-arm64.dmg).**
+**Mac beta — [Download the ready-to-run installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.3/GUIDE-IEI-macOS-0.6.3-arm64.dmg).**
 For **Apple Silicon (M-series), macOS 13 or newer**. Open the DMG and drag
 **GUIDE-IEI** to Applications (a standard account can use `~/Applications`).
-The 0.6.2 app is Developer ID signed, notarized and stapled. Python, the review
+The 0.6.3 app is Developer ID signed, notarized and stapled. Python, the review
 interface and the VEP engine image are bundled. First launch needs internet
 to prepare missing container tools and a Linux VM before opening the browser;
 Python, Node, Homebrew and Docker Desktop need not be installed separately.
 Choose data locations in **Storage**, then install large annotation datasets
 in **Import & QC**. They are not included in the installer.
 
-Use the [release page](https://github.com/yimingluo-md/guide-iei/releases/tag/v0.6.2)
+Use the [release page](https://github.com/yimingluo-md/guide-iei/releases/tag/v0.6.3)
 for installation notes, checksums and source materials. Choose the **DMG**, not
 GitHub's **Source code** links. This is a public beta, not a claim of testing
 every Mac/dataset combination; start with test data and keep backups. Intel

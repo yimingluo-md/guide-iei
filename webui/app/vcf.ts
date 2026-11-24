@@ -288,6 +288,7 @@ export type PredictorObservation = {
     | "sample_haplotype";
   matchStatus: "exact" | "partial" | "ambiguous" | "unmatched";
   matchedOn: string[];
+  sourceRelease?: string;
   target?: Record<string, string>;
   values: Record<string, number | string | boolean>;
   provenance?: Record<string, number | string | boolean>;
@@ -2044,6 +2045,12 @@ export async function parseVcfFiles(
       );
     }
     const lines = await vcfHeaderLines(file);
+    const gpnReleases = new Map<string, string>();
+    for (const { id, prefix } of GPN_STAR_MODELS) {
+      const header = "##GPNStar_" + prefix.slice(3) + "_release=";
+      const declarations = lines.filter(line => line.startsWith(header));
+      if (declarations.length === 1) gpnReleases.set(id, declarations[0].slice(header.length).trim());
+    }
     const infoNumbers = new Map<string, string>();
     let csqFields: string[] = [];
     const oldRecordTags: string[] = [];
@@ -2685,6 +2692,8 @@ export async function parseVcfFiles(
                 llr: gpnStarScore(alleleInfo[prefix + "_LLR"]),
                 abs_llr: gpnStarScore(alleleInfo[prefix + "_ABSLLR"]),
               });
+              const release = gpnReleases.get(id);
+              if (predictions[id] && release) predictions[id].sourceRelease = release;
             }
             addPrediction("alphagenome_avi", "allele", ALLELE_MATCH_DIMENSIONS, avi);
             for (const evidence of [starterAm, starterCadd]) {

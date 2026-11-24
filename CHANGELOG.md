@@ -5,11 +5,14 @@ version here, in the `VERSION` file, and in the release tag always agree.
 
 ## Unreleased
 
-## 0.6.3 — 2026-11-22
+## 0.6.3 — 2026-11-24
 
 Apple Silicon beta for macOS 13 or newer. Choose the **arm64.dmg** download to install GUIDE-IEI. To update an existing installation, quit GUIDE-IEI and replace the app in Applications. Your Sample Library and annotation datasets are stored separately. After opening the new app, check Cohort Search for entries flagged for reindexing.
 
 ### Annotation and review
+
+- **GPN-Star PHRED.** Variant Review shows the numeric genome-wide constraint rank and signed calibrated LLR. The optional PHRED ≥ 20 filter selects the top 1% of scored GRCh38 SNVs for the chosen model. Existing VCFs with the matching source release can be reviewed immediately.
+- **Cohort and transcript review.** Preserve evidence from remaining samples when retiring legacy cohort entries, restore annotations on split alleles with recorded source coordinates, and handle missing and ambiguous alleles in custom score imports.
 
 - **Regulatory and gene evidence.** Search genes and gene sets using ENCODE-rE2G predicted targets. Gene-less intergenic hits can be opened from Cohort Search and retained when filtering by SCREEN activity. The included gene-knowledge data now cover GenCC submissions.
 - **Predictors.** Review GPN-Star scores and import selected columns from a custom score table. Enabled full dbNSFP replaces automatic starters for metrics it supplies. In older VCFs containing multiple CADD sources, Variant Review shows each provider’s Phred and raw scores together.
@@ -18,6 +21,8 @@ Apple Silicon beta for macOS 13 or newer. Choose the **arm64.dmg** download to i
 - **Updating existing data.** Reindex older samples flagged in Cohort Search. To refresh affected frameshift annotations, rerun annotation from the input VCF and import the updated result. Check previously saved phenotype ages against the source if their units look wrong.
 
 ### Setup and dataset preparation
+
+- The source launcher selects a free local port when its preferred port is busy. The Mac app also handles Quit during a service restart.
 
 - Offer optional recommended WGS downloads in the Mac startup window, off by
   default: Full SpliceAI MANE 1.5, ENCODE SCREEN and AlphaGenome AVI. Show purpose,

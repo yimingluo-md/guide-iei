@@ -15,10 +15,11 @@ const { parseVcfFiles } = await import(`data:text/javascript;base64,${Buffer.fro
 const fixture = await parseVcfFiles([new File([
   '##fileformat=VCFv4.2\n##reference=GRCh38\n##contig=<ID=1,length=248956422>\n',
   '##INFO=<ID=CSQ,Number=.,Type=String,Description="Format: Allele|Consequence|IMPACT|SYMBOL|Gene|Feature|HGVSc|HGVSp|MANE_SELECT|PICK|CADD_phred|CADD_raw|StarterCADD_phred|StarterCADD_match|StarterCADD_match_status">\n',
+  '##GPNStar_m447_release=5c799b2ec6aa089f0caa8294ae72adb4510f81ae\n##GPNStar_v100_release=5c799b2ec6aa089f0caa8294ae72adb4510f81ae\n',
   '##INFO=<ID=GPNm447_LLR,Number=A,Type=Float,Description="test">\n##INFO=<ID=GPNm447_ABSLLR,Number=A,Type=Float,Description="test">\n',
   '##INFO=<ID=GPNv100_LLR,Number=A,Type=Float,Description="test">\n##INFO=<ID=GPNv100_ABSLLR,Number=A,Type=Float,Description="test">\n',
   '#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tSYNTHETIC_ONLY\n',
-  '1\t100\t.\tA\tG\t99\tPASS\tGPNm447_LLR=0;GPNm447_ABSLLR=-0.5;GPNv100_LLR=-2;GPNv100_ABSLLR=0.25;CSQ=G|missense_variant|MODERATE|AJAP1|ENSG_TEST|ENST00000378191|ENST00000378191.5:c.829+12772C>T||NM_TEST|1|30|0|23.4|allele|exact\tGT:DP:GQ:AD\t0/1:40:99:20,20\n',
+  '1\t100\t.\tA\tG\t99\tPASS\tGPNm447_LLR=-10.144;GPNm447_ABSLLR=10.144;GPNv100_LLR=-2;GPNv100_ABSLLR=0.25;CSQ=G|missense_variant|MODERATE|AJAP1|ENSG_TEST|ENST00000378191|ENST00000378191.5:c.829+12772C>T||NM_TEST|1|30|0|23.4|allele|exact\tGT:DP:GQ:AD\t0/1:40:99:20,20\n',
 ], "synthetic-screen.vcf")]);
 const base = fixture.rows[0];
 fixture.rows = Array.from({ length: 1501 }, (_, i) => ({ ...base, key: `synthetic:${i}`, pos: 100 + i,
@@ -434,6 +435,11 @@ try {
   await waitCount(1502);
   await page.click('button[aria-label="Remove SpliceAI max filter"]');
   await waitCount(1503);
+  await addMetric("phred", "GPN-Star-V phred");
+  await waitCount(0);
+  assert.equal(await page.$eval('input[aria-label="GPN-Star-V phred value"]', el => el.value), "20");
+  await page.click('button[aria-label="Remove GPN-Star-V phred filter"]');
+  await waitCount(1503);
   failScreen = true;
   await toggleScreen();
   await page.waitForFunction(() => document.body.textContent.includes("SCREEN filtering could not finish"));
@@ -442,8 +448,11 @@ try {
   await page.click(".table-frame tbody tr");
   await page.waitForSelector(".transcript-table-scroll");
   assert(!(await page.evaluate(() => document.body.textContent.includes("Missing is not evidence that the variant is benign"))));
-  await page.waitForFunction(() => [...document.querySelectorAll(".predictor-card")].some(
-    card => card.textContent.includes("GPN-Star-M") && card.textContent.includes("Calibrated absLLR -0.5")));
+  await page.waitForFunction(() => [...document.querySelectorAll(".predictor-card")].some(card =>
+    card.querySelector("span")?.textContent === "GPN-Star-M PHRED"
+    && card.querySelector("strong")?.textContent === "31.32"
+    && card.querySelector("small")?.textContent === "Calibrated LLR -10.144"
+    && !/absLLR|Top 0.1%|Score details/.test(card.textContent)));
   async function setReviewScope(scope) {
     await page.evaluate((value) => {
       const shell = document.querySelector(".app-shell");
@@ -455,7 +464,7 @@ try {
   await setReviewScope("exome");
   await page.waitForFunction(() => {
     const cards = [...document.querySelectorAll(".predictor-card")];
-    return cards.some(card => card.textContent.includes("GPN-Star-V") && card.textContent.includes("Calibrated absLLR 0.25"))
+    return cards.some(card => card.querySelector("span")?.textContent === "GPN-Star-V PHRED" && card.querySelector("small")?.textContent === "Calibrated LLR -2")
       && !cards.some(card => card.textContent.includes("GPN-Star-M"));
   });
   await setReviewScope("whole_genome");

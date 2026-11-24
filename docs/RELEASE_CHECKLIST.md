@@ -1,6 +1,6 @@
 # Apple Silicon beta release checklist
 
-Target: GUIDE-IEI 0.6.2, Apple Silicon, macOS 13 or newer. This is a checklist,
+Target: GUIDE-IEI 0.6.3, Apple Silicon, macOS 13 or newer. This is a checklist,
 not a statement that unrecorded checks have passed. Keep results with the exact
 source commit, build ID, host macOS version and artifact checksums. Use synthetic
 or public regression variants only. Do not delete an existing library or its
@@ -67,7 +67,7 @@ databases to simulate a clean machine.
   `make_release.sh --engine-sources DIR` checks the image identity and archive
   hash; keep equivalent no-charge source access beside the binary download.
   Confirm every saved image layer excludes the removed Kent/Math::CDF material.
-- Review the draft: signed `GUIDE-IEI-macOS-0.6.2-arm64.dmg` is the primary Mac
+- Review the draft: signed `GUIDE-IEI-macOS-0.6.3-arm64.dmg` is the primary Mac
   download, optional matching ZIP, source/update archive separately labelled,
   combined `sha256sums.txt`, release notes and known limitations.
 - Keep the release marked **prerelease** for the beta. The normal `/releases/latest`

@@ -57,7 +57,7 @@ export function PredictionScoreFilters({ metrics, rules, onChange, total }: {
       <input type="search" autoFocus aria-label="Search predictor metrics" placeholder="Search metrics" value={query} onChange={e => setQuery(e.target.value)}
         onKeyDown={e => { if (e.key === "Escape") setPicking(false); }}/>
       <div className="score-metric-list">{choices.map(metric => <button key={metric.id} type="button" onClick={() => {
-        onChange([...rules, { id: crypto.randomUUID(), metric: metric.id, operator: metric.numeric ? "gte" : "oneOf", first: "", second: "", choices: [] }]);
+        onChange([...rules, { id: crypto.randomUUID(), metric: metric.id, operator: metric.numeric ? "gte" : "oneOf", first: metric.suggestedMinimum ?? "", second: "", choices: [] }]);
         setPicking(false);
       }}>{metric.label}</button>)}{!choices.length && <small>No matching metrics.</small>}</div>
     </div>}

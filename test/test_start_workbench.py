@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -20,6 +21,9 @@ class ProductionLauncherTests(unittest.TestCase):
             binaries = root / "bin"
             binaries.mkdir()
             shutil.copy2(ROOT / "scripts/start_workbench.sh", root / "scripts/start_workbench.sh")
+            # Use the real loopback selection code with the disposable backend.
+            (root / "local_service").mkdir()
+            shutil.copy2(ROOT / "local_service/desktop_endpoint.py", root / "local_service/desktop_endpoint.py")
             scripts = {
                 "curl": "#!/bin/sh\nexit 7\n",
                 "git": "#!/bin/sh\necho fixed-commit\n",
@@ -35,6 +39,8 @@ class ProductionLauncherTests(unittest.TestCase):
                 ),
                 "python3": f"#!{sys.executable}\n" + (
                     "import os, pathlib, signal, sys, time\n"
+                    "if '-c' in sys.argv and 'select_ui_port' in sys.argv[2]:\n"
+                    "    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
                     "if '-m' not in sys.argv: sys.exit(0)\n"
                     "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
                     "root = pathlib.Path(os.environ['TEST_LAUNCH_ROOT'])\n"
@@ -46,13 +52,30 @@ class ProductionLauncherTests(unittest.TestCase):
                 executable = binaries / name
                 executable.write_text(content)
                 executable.chmod(0o755)
-            result = subprocess.run(["bash", str(root / "scripts/start_workbench.sh")],
-                env={**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
-                     "IEI_PYTHON_BIN": str(binaries / "python3"), "IEI_NODE_BIN": str(binaries / "node"),
-                     "IEI_WEB_MODE": "production", "IEI_SERVICE_START_TIMEOUT": "3", "TEST_LAUNCH_ROOT": str(root)},
-                capture_output=True, text=True, timeout=10)
+            with socket.socket() as occupied:
+                occupied.bind(("127.0.0.1", 0))
+                occupied.listen()
+                busy_port = occupied.getsockname()[1]
+                env = {**os.environ, "PATH": str(binaries) + os.pathsep + os.environ["PATH"],
+                       "IEI_PYTHON_BIN": str(binaries / "python3"), "IEI_NODE_BIN": str(binaries / "node"),
+                       "IEI_WEB_MODE": "production", "IEI_SERVICE_PORT": "43117",
+                       "IEI_UI_PORT": str(busy_port), "IEI_SERVICE_START_TIMEOUT": "3", "TEST_LAUNCH_ROOT": str(root)}
+                result = subprocess.run(["bash", str(root / "scripts/start_workbench.sh")],
+                                        env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             self.assertTrue((root / "webui/frontend-stopped").exists())
+
+            chosen = int((root / "webui/.next/.iei-ui-port-43117").read_text())
+            self.assertNotIn(chosen, (busy_port, 43117))
+            self.assertIn(f"http://127.0.0.1:{chosen}", result.stdout)
+            (binaries / "curl").write_text(
+                "#!/bin/sh\ncase \"$*\" in\n"
+                "*43117/api/health) echo ' {\"worker_ok\": true}' ;;\n"
+                f"*:{chosen}) echo '<title>GUIDE-IEI</title>' ;;\n*) exit 7 ;;\nesac\n"
+            )
+            reopened = subprocess.run(["bash", str(root / "scripts/start_workbench.sh")],
+                                      env=env, capture_output=True, text=True, timeout=5, check=True)
+            self.assertIn(f"already running at http://127.0.0.1:{chosen}", reopened.stdout)
 
     def test_service_port_change_rebuilds_embedded_browser_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -62,12 +85,17 @@ class ProductionLauncherTests(unittest.TestCase):
             binaries = root / "bin"
             binaries.mkdir()
             shutil.copy2(ROOT / "scripts/start_workbench.sh", root / "scripts/start_workbench.sh")
+            # Use the real loopback selection code with the disposable backend.
+            (root / "local_service").mkdir()
+            shutil.copy2(ROOT / "local_service/desktop_endpoint.py", root / "local_service/desktop_endpoint.py")
             scripts = {
                 "curl": "#!/bin/sh\nexit 7\n",
                 "git": "#!/bin/sh\necho fixed-commit\n",
                 "node": "#!/bin/sh\necho 22\n",
                 "python3": f"#!{sys.executable}\n" + (
-                    "import signal, sys, time\n"
+                    "import os, signal, sys, time\n"
+                    "if '-c' in sys.argv and 'select_ui_port' in sys.argv[2]:\n"
+                    "    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])\n"
                     "if '-m' in sys.argv:\n"
                     "    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
                     "    while True: time.sleep(0.01)\n"

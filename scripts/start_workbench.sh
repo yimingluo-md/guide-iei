@@ -7,7 +7,7 @@ ROOT="$(cd "${HERE}/.." && pwd)"
 SERVICE_PORT="${IEI_SERVICE_PORT:-43117}"
 SERVICE_START_TIMEOUT="${IEI_SERVICE_START_TIMEOUT:-120}"
 UI_PORT="${IEI_UI_PORT:-3000}"
-UI_URL="http://127.0.0.1:${UI_PORT}"
+UI_PORT_FILE="${ROOT}/webui/.next/.iei-ui-port-${SERVICE_PORT}"
 
 # --bootstrap is the double-click entry path (GUIDE-IEI.app on macOS, the
 # Windows launcher via WSL): prepare the environment on first use, then
@@ -28,30 +28,30 @@ open_browser() {
     fi
 }
 
+if ! [[ "$UI_PORT" =~ ^[1-9][0-9]{0,4}$ && "$SERVICE_PORT" =~ ^[1-9][0-9]{0,4}$ ]] \
+   || (( UI_PORT > 65535 || SERVICE_PORT > 65535 )); then
+    echo "ERROR: IEI_UI_PORT and IEI_SERVICE_PORT must be ports between 1 and 65535." >&2
+    exit 2
+fi
+
 ui_is_guide_iei() {
-    curl -s -m 2 "$UI_URL" 2>/dev/null | grep -q "GUIDE-IEI"
+    curl --noproxy '*' -fsS -m 2 "http://127.0.0.1:$1" 2>/dev/null | grep -F '<title>GUIDE-IEI</title>' >/dev/null
 }
 service_is_guide_iei() {
-    # The service answers long before the UI does on a first launch (npm ci
-    # and the production build run in between), so a second double-click
-    # must be recognised from the SERVICE port too — a second service on the
-    # same state used to disturb the live one before failing to bind.
-    curl -s -m 2 "http://127.0.0.1:${SERVICE_PORT}/api/health" 2>/dev/null | grep -q '"ok"'
+    curl --noproxy '*' -fsS -m 2 "http://127.0.0.1:${SERVICE_PORT}/api/health" 2>/dev/null | grep -F '"worker_ok"' >/dev/null
 }
 
-# Single instance: if the workbench is already up, just open it.
-if ui_is_guide_iei; then
-    echo "GUIDE-IEI is already running at ${UI_URL}."
-    if [[ "$BOOTSTRAP" == "1" ]]; then open_browser "$UI_URL"; fi
-    exit 0
-fi
-if curl -s -m 2 -o /dev/null "$UI_URL" 2>/dev/null; then
-    echo "ERROR: port ${UI_PORT} is in use by another application." >&2
-    echo "Set IEI_UI_PORT to a free port and start again." >&2
-    exit 1
-fi
+# On a second launch the service can be ready before the Next.js build.
 if service_is_guide_iei; then
-    echo "GUIDE-IEI's annotation service is already running on 127.0.0.1:${SERVICE_PORT}"
+    saved_port="$(cat "$UI_PORT_FILE" 2>/dev/null || true)"
+    for port in "$saved_port" "$UI_PORT"; do
+        if [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] && (( port <= 65535 )) && ui_is_guide_iei "$port"; then
+            echo "GUIDE-IEI is already running at http://127.0.0.1:${port}."
+            if [[ "$BOOTSTRAP" == "1" ]]; then open_browser "http://127.0.0.1:${port}"; fi
+            exit 0
+        fi
+    done
+    echo "GUIDE-IEI's annotation service is already running on 127.0.0.1:${SERVICE_PORT}."
     echo "(another launch is probably still preparing the interface). Wait for that"
     echo "window to finish, or stop it before starting again."
     exit 0
@@ -315,13 +315,26 @@ if [[ "${IEI_WEB_MODE:-production}" != "dev" && "$WEB_BUILD_REQUIRED" == "1" ]];
         printf '%s\n' "$SOURCE_STAMP" > "${ROOT}/webui/.next/.iei-source-stamp"
     fi
 fi
+# Choose immediately before starting Next so a long build does not leave
+# an unused port reservation. Always retry the preferred origin on a new run.
+preferred_port="$UI_PORT"
+UI_PORT="$(cd "$ROOT" && "$PYTHON_BIN" -c 'from local_service.desktop_endpoint import select_ui_port
+import sys
+print(select_ui_port(int(sys.argv[1]), int(sys.argv[2])))' "$preferred_port" "$SERVICE_PORT")"
+UI_URL="http://127.0.0.1:${UI_PORT}"
+if [[ "$UI_PORT" != "$preferred_port" ]]; then
+    echo "Port ${preferred_port} is in use."
+fi
+echo "GUIDE-IEI workbench: ${UI_URL}"
+mkdir -p "$(dirname "$UI_PORT_FILE")"
+printf '%s\n' "$UI_PORT" > "$UI_PORT_FILE"
 # Open the browser once the UI answers; the poller waits in the background
 # while the paired service and Next.js processes run below.
 if [[ "$BOOTSTRAP" == "1" ]]; then
     (
         for _ in $(seq 1 240); do
             sleep 0.5
-            if curl -s -m 2 "$UI_URL" 2>/dev/null | grep -q "GUIDE-IEI"; then
+            if ui_is_guide_iei "$UI_PORT"; then
                 open_browser "$UI_URL"
                 exit 0
             fi

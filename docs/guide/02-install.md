@@ -40,7 +40,7 @@ GUIDE-IEI's application code is MIT-licensed. Annotation datasets retain their
 own terms, including noncommercial restrictions where applicable. See
 [Data sources and licenses](03-datasets.md#data-sources-and-licenses).
 
-**Mac:** [download the signed and notarized 0.6.2 installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.2/GUIDE-IEI-macOS-0.6.2-arm64.dmg),
+**Mac:** [download the signed and notarized 0.6.3 installer](https://github.com/yimingluo-md/guide-iei/releases/download/v0.6.3/GUIDE-IEI-macOS-0.6.3-arm64.dmg),
 or open the [GUIDE-IEI releases page](https://github.com/yimingluo-md/guide-iei/releases)
 for release notes and checksums. The initial self-contained beta is Apple
 Silicon only; prereleases do not appear at GitHub's “latest stable” link.
@@ -154,7 +154,7 @@ issue, not a failed Quit operation.
   gene lists and display preferences separately for each port. Settings saved
   at the usual address reappear when the app returns to it. Use **Open Workbench** in the app to
   reopen the current address rather than relying on an old browser bookmark.
-  Terminal-based launchers use port 3000 by default. The workbench runs on
+  Terminal-based launchers also try port 3000 first and print the selected address. The workbench runs on
   your machine and uses the browser as its display.
 - **For Terminal-based launchers, keep the Terminal window open.** Closing
   it stops the local workbench service. Later launches skip the preparation.
@@ -263,7 +263,7 @@ distribution before setup. Advanced Linux users may use their own working
 container engine instead. File preparation/indexing also needs native file tools
 or a container backend; setup reports what is missing.
 
-Open **http://127.0.0.1:3000** in your normal Windows browser. Direct terminal
+Open the local address printed in Ubuntu in your normal Windows browser. Direct terminal
 starts may not open the browser automatically. Keep Ubuntu open; **Ctrl+C** stops
 the workbench. Diagnostics appear in Ubuntu, not the Windows launcher's log folder.
 
@@ -479,7 +479,7 @@ bash scripts/setup_environment.sh --install
 bash scripts/start_workbench.sh
 ```
 
-Then open **`http://127.0.0.1:3000`** in a browser.
+Then open the local address printed by the launcher in a browser.
 `setup_environment.sh` run without options is the pure setup check —
 report only, change nothing. On Linux and WSL2, one component — the
 container runtime — is a system package; the installer prints the exact

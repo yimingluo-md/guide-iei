@@ -6,6 +6,7 @@ import DataLicensesPanel from "./DataLicensesPanel";
 import { datasetForScope, groupDatasetSources } from "./dataset-setup";
 import { startSerialPolling } from "./serial-polling";
 import { GenccEvidence } from "./gencc-evidence";
+import { gpnConstraintQ } from "./gpn-star-rank";
 import { PredictionScoreFilters } from "./PredictionScoreFilters";
 import { compileRule, reviewMetrics, type PredictionRule } from "./prediction-filters";
 import { screenVariantBatches } from "./review-filters";
@@ -2453,12 +2454,14 @@ function VariantReviewWorkspace({ rows, selected, setSelected, saved, setSaved, 
     { key: "cadd", label: "CADD phred", value: selected.cadd, note: caddSource, strong: (selected.cadd ?? 0) >= 20 },
     { key: "spliceAI", label: "SpliceAI max", value: selected.spliceAI, strong: (selected.spliceAI ?? 0) >= 0.2 },
     { key: "promoterAI", label: "PromoterAI", value: selected.promoterAI, note: "signed promoter-effect score", strong: selected.promoterAI !== null && selected.promoterAI !== undefined && Math.abs(selected.promoterAI) >= 0.8 },
-    ...GPN_STAR_MODELS.flatMap(({ id, label }) => {
+    ...GPN_STAR_MODELS.flatMap<PredictorCardItem>(({ id, label }) => {
       const values = selected.predictions?.[id]?.values;
       if ((id === "gpn_star_m" && analysisScope !== "whole_genome") || !values) return [];
-      return [{ key: id, label, value: typeof values.llr === "number" ? values.llr : null,
-        note: typeof values.abs_llr === "number" ? `Calibrated absLLR ${values.abs_llr}` : "Calibrated LLR",
-        noteTitle: "More negative LLR indicates greater predicted constraint. Positive calibrated absLLR indicates a larger effect than a neutral substitution." }];
+      const q = gpnConstraintQ(selected, id);
+      const llr = typeof values.llr === "number" ? values.llr : null;
+      return [{ key: id, label: label + " PHRED", value: q,
+        displayText: q === null ? "—" : q > 0 && q < 0.01 ? q.toPrecision(2) : (Math.floor(q * 100) / 100).toFixed(2),
+        note: llr === null ? "Calibrated LLR unavailable" : `Calibrated LLR ${llr}`, noteWhenMissing: true }];
     }),
     { key: "alphaGenomeAvi", label: "AlphaGenome AVI", value: selected.alphaGenomeAviPhred, note: "Phred score", noteTitle: "Genome-wide variant-impact rank, not a clinical pathogenicity classification. AVI includes AlphaMissense and conservation inputs; these are not independent evidence." },
     { key: "alphaGenomeAviRaw", label: "AlphaGenome AVI raw", value: selected.alphaGenomeAviRaw, note: "Raw logit" },
@@ -5992,7 +5995,7 @@ function downloadTsv(rows: VariantRow[], qcSettings: VariantQcSettings, savedVie
     "MANE", "PICK", "RepeatMasker", "SegDup",
     ...detectedDbnsfp.flatMap((definition) => [definition.scoreColumn, ...(definition.predictionColumn ? [definition.predictionColumn] : [])])];
   headers.push("AlphaGenomeAVI_phred", "AlphaGenomeAVI_raw",
-    ...GPN_STAR_MODELS.flatMap(({ prefix }) => [prefix + "_LLR", prefix + "_ABSLLR"]),
+    ...GPN_STAR_MODELS.flatMap(({ prefix }) => [prefix + "_LLR", prefix + "_ABSLLR", prefix + "_GUIDE_IEI_constraint_Q", prefix + "_source_release"]),
     "transcript", "source_vcf", "review_record_number");
   const blob = reviewTsvBlob(RESEARCH_USE_NOTICE, headers, rows, row => [
     row.sample, fullVariantId(row), row.chrom, row.pos, row.ref, row.alt, row.originalAssembly ?? "",
@@ -6021,7 +6024,7 @@ function downloadTsv(rows: VariantRow[], qcSettings: VariantQcSettings, savedVie
     row.mane, row.picked, row.repeat, row.segdup,
     ...detectedDbnsfp.flatMap((definition) => [row.dbnsfpPredictors?.[definition.id]?.score ?? "", ...(definition.predictionColumn ? [row.dbnsfpPredictors?.[definition.id]?.prediction ?? ""] : [])]),
     row.alphaGenomeAviPhred, row.alphaGenomeAviRaw,
-    ...GPN_STAR_MODELS.flatMap(({ id }) => [row.predictions?.[id]?.values.llr, row.predictions?.[id]?.values.abs_llr]),
+    ...GPN_STAR_MODELS.flatMap(({ id }) => [row.predictions?.[id]?.values.llr, row.predictions?.[id]?.values.abs_llr, gpnConstraintQ(row, id), row.predictions?.[id]?.sourceRelease]),
     row.transcript, row.source, row.sourceRecordNumber,
   ]);
   downloadBlob(blob, savedView ? "iei-saved-candidates.tsv" : "iei-prioritized-variants.tsv");

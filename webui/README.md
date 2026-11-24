@@ -6,7 +6,7 @@ hosted website.
 
 ## Workstation architecture
 
-- The user interface is opened in a browser at `http://127.0.0.1:3000`.
+- The source launcher prints the browser address. It prefers `http://127.0.0.1:3000` and selects an available port if needed.
 - The UI and annotation service bind to loopback only and are not exposed to
   the LAN.
 - Already annotated VCFs are parsed locally. A browser-selected file may be
@@ -92,7 +92,7 @@ From the pipeline root, start both processes:
 bash scripts/start_workbench.sh
 ```
 
-Then open `http://127.0.0.1:3000`.
+Then open the local address printed by the launcher.
 
 Or start them separately:
 
@@ -213,7 +213,7 @@ cd ~/guide-iei
 bash scripts/start_workbench.sh
 ```
 
-Open `http://127.0.0.1:3000` from Windows. WSL forwards localhost to the
+Open the local address printed by the launcher from Windows. WSL forwards localhost to the
 Windows host. Keep the project, inputs, working outputs, and large VEP
 references in the WSL Linux filesystem (for example under `~/`) rather than
 `/mnt/c/`; annotation is heavily I/O-bound. Docker Desktop must have WSL

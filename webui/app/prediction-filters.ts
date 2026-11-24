@@ -1,4 +1,5 @@
 import registry from "../../config/predictor-registry.json";
+import { gpnConstraintQ } from "./gpn-star-rank";
 import type { VariantRow } from "./vcf";
 
 type Value = string | number | boolean | null | undefined;
@@ -7,6 +8,7 @@ type Metric = {
   label: string;
   numeric: boolean;
   fields: string[];
+  suggestedMinimum?: string;
   read: (row: VariantRow) => Value;
 };
 export type ReviewMetric = Metric & { count: number; categories: string[] };
@@ -78,6 +80,15 @@ for (const predictor of registry.predictors) {
     if (summaryFields[id]) summaryMetrics.push(entry);
     const group = observationMetrics.get(predictor.id) ?? [];
     group.push(entry);
+    const model = predictor.id;
+    if (metric.id === "llr" && (model === "gpn_star_m" || model === "gpn_star_v")) {
+      const rank: Metric = {
+        id: model + ".constraint_q", label: predictor.label + " phred",
+        numeric: true, fields: [], suggestedMinimum: "20", read: row => gpnConstraintQ(row, model),
+      };
+      allMetrics.set(rank.id, rank);
+      group.push(rank);
+    }
     observationMetrics.set(predictor.id, group);
   }
 }

@@ -775,3 +775,16 @@ was applied. **Not classified** is distinct from uncertain significance;
 zero subjects were reported in the export, not that the allele is benign. The
 variant export supplies no gene or disease context, so the software does not
 borrow that context from the selected VEP transcript.
+
+## GPN-Star genome-wide constraint rank
+
+Variant Review derives a PHRED-like rank from the signed calibrated LLR for each exact SNV match. For a score (s), the rank is `Q = 10 × log10(N / count(LLR ≤ s))`. The count includes every allele tied at that score. The reference population is all unique scored substitutions in the corresponding full GRCh38 model on chromosomes 1–22, X and Y. Exome review uses the same denominator. Clinical classification, the observed cohort, consequence class and transcript count play no part in the calculation. [Pinned GPN-Star release](https://huggingface.co/datasets/songlab/gpn-star-scores/tree/5c799b2ec6aa089f0caa8294ae72adb4510f81ae) · [CADD rank-scaling convention](https://cadd.bihealth.org/info)
+
+| Model | Scored SNVs (N) | Largest signed LLR at Q ≥ 10 | At Q ≥ 20 | At Q ≥ 30 |
+|---|---:|---:|---:|---:|
+| M (447 mammals) | 8,803,915,140 | −2.393 | −5.449 | −9.852 |
+| V (100 vertebrates) | 8,804,242,314 | −1.975 | −5.651 | −10.688 |
+
+These are empirical rank boundaries for this release. Q20 on both models means each places the allele within its own top 1%. It does not imply equivalent clinical performance or two independent lines of evidence. The workbench retains the upstream LLR and absLLR and includes the derived Q and source release in review TSV exports.
+
+To regenerate the bundled reference, run `python scripts/build_gpn_star_ranks.py references/gpn-star config/gpn-star-ranks.json` in a Python environment with NumPy and PyArrow. The builder verifies each pinned shard checksum and row count, validates ordered unique SNVs, and excludes nonfinite LLRs. It verifies that the integer score bins round-trip exactly to the upstream Float32 values. A second pass over the source LLRs checks the total and the counts on both sides of each published Q boundary. When changing the source revision, regenerate the table and update the counts and boundaries above.

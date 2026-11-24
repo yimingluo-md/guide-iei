@@ -21,6 +21,40 @@ except ImportError:
 
 
 class GpnStarTest(unittest.TestCase):
+    def test_rank_reference_matches_source_revision_and_allele_counts(self):
+        ranks = json.loads((gpn.ROOT / "config/gpn-star-ranks.json").read_text())
+        self.assertEqual(ranks["revision"], gpn.REVISION)
+        self.assertEqual(ranks["assembly"], "GRCh38")
+        self.assertEqual(set(ranks["models"]), set(gpn.MODELS.values()))
+        for model, table in ranks["models"].items():
+            pins = gpn.assets(model)
+            self.assertEqual(set(ranks["chromosomes"]), set(pins))
+            counts = table["cumulative"]
+            self.assertEqual(counts[-1] + table["excluded_nonfinite"], sum(p["rows"] for p in pins.values()))
+            self.assertGreater(counts[0], 0)
+            self.assertEqual(counts, sorted(counts))
+
+    @unittest.skipUnless(pq, "requires optional Parquet reader")
+    def test_rank_builder_ties_missing_scores_and_duplicate_alleles(self):
+        from scripts.build_gpn_star_ranks import recount, shard_histogram
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "scores.parquet"
+
+            def write(positions, alts, scores):
+                table = pa.table({"chrom": ["1"] * len(scores), "pos": positions, "ref": ["A"] * len(scores),
+                                  "alt": alts, "llr_calibrated": pa.array(scores, type=pa.float32())})
+                pq.write_table(table, path, row_group_size=2)
+                return {"size": path.stat().st_size, "rows": len(scores), "sha256": gpn.sha256(path)}
+
+            pin = write([1, 1, 2, 3, 4, 5], ["C", "G", "T", "T", "C", "G"],
+                        [-2.015, -2.015, None, float("nan"), float("inf"), 0])
+            self.assertEqual(shard_histogram(path, pin, "1"), {-2015: 2, 0: 1})
+            self.assertEqual(recount(path, [-2, 0]).tolist(), [2, 3])
+            with self.assertRaisesRegex(ValueError, "duplicate"):
+                shard_histogram(path, write([1, 1], ["C", "C"], [1, 1]), "1")
+            with self.assertRaisesRegex(ValueError, "Lossy"):
+                shard_histogram(path, write([1], ["C"], [0.12345]), "1")
+
     def test_configured_directory_expands_home_and_preserves_other_paths(self):
         with patch.dict(os.environ, {"HOME": "/tmp/gpn-home"}):
             self.assertEqual(gpn.configured_directory("~/scores"), Path("/tmp/gpn-home/scores"))

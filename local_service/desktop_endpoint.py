@@ -43,6 +43,16 @@ def port_available(port):
     return True
 
 
+def select_ui_port(preferred, service_port):
+    """Choose a loopback port for the source launcher's separate browser UI."""
+    if preferred != service_port and port_available(preferred):
+        return preferred
+    for candidate in range(3001, 65536):
+        if candidate not in (preferred, service_port) and port_available(candidate):
+            return candidate
+    raise OSError("No available local port for the workbench interface")
+
+
 def read_endpoint(path):
     try:
         data = json.loads(Path(path).read_text(encoding="utf-8"))
