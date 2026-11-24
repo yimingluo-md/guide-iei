@@ -90,6 +90,20 @@ def reopen_endpoint(saved, root, endpoint):
     return result
 
 
+def quit_owned_service(url, instance_id, child):
+    try:
+        api(url, "/api/service/quit", {"confirm": True, "instance_id": instance_id})
+    except OSError:
+        # A browser-requested restart can close the socket before the native
+        # Quit receives its reply. Only accept an orderly exit of our child.
+        try:
+            exit_code = child.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            exit_code = None
+        if exit_code not in (0, 75):
+            raise
+
+
 def run_workbench(root, support, endpoint, saved_path, instance_id):
     saved = read_endpoint(saved_path)
     if saved:
@@ -201,7 +215,7 @@ def run_workbench(root, support, endpoint, saved_path, instance_id):
                 orphaned = launcher_gone()
                 if not quit_accepted and message.get("action") == "quit":
                     try:
-                        api(url, "/api/service/quit", {"confirm": True, "instance_id": instance_id})
+                        quit_owned_service(url, instance_id, child)
                         quit_accepted = True
                     except (RuntimeError, OSError, ValueError) as exc:
                         # Honor service blockers such as storage migration.

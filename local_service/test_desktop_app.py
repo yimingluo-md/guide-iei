@@ -26,6 +26,25 @@ from local_service.desktop_endpoint import read_endpoint, write_endpoint
 
 
 class DesktopAppTests(unittest.TestCase):
+    def test_quit_connection_reset_only_accepts_orderly_child_exit(self):
+        for outcome in (0, 75, 1, subprocess.TimeoutExpired("service", 10)):
+            with self.subTest(outcome=outcome), patch.object(desktop_app, "api", side_effect=ConnectionResetError):
+                child = Mock()
+                child.wait.side_effect = [outcome]
+                if outcome in (0, 75):
+                    desktop_app.quit_owned_service("http://localhost", "owned", child)
+                else:
+                    with self.assertRaises(ConnectionResetError):
+                        desktop_app.quit_owned_service("http://localhost", "owned", child)
+                child.wait.assert_called_once_with(timeout=10)
+
+    def test_quit_preserves_service_refusal(self):
+        child = Mock()
+        with patch.object(desktop_app, "api", side_effect=RuntimeError("migration in progress")):
+            with self.assertRaisesRegex(RuntimeError, "migration in progress"):
+                desktop_app.quit_owned_service("http://localhost", "owned", child)
+        child.wait.assert_not_called()
+
     def test_lost_launcher_keeps_service_and_first_launch_alive_until_browser_quit(self):
         import yaml
         # No real preparation or downloads: simulate an installation waiting
